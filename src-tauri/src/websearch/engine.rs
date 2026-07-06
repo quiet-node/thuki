@@ -147,6 +147,9 @@ pub(crate) fn parse_ddg_html(body: &str) -> Vec<SearchHit> {
         if title_text.is_empty() || url.is_empty() {
             continue;
         }
+        if is_ad_result(result.value().attr("class"), &url) {
+            continue;
+        }
         let snippet_text = result
             .select(&snippet)
             .next()
@@ -159,6 +162,14 @@ pub(crate) fn parse_ddg_html(body: &str) -> Vec<SearchHit> {
         });
     }
     hits
+}
+
+/// Whether a result row is a sponsored ad rather than an organic result:
+/// DuckDuckGo marks ad rows with a `result--ad` class and points them at a
+/// `duckduckgo.com/y.js` ad-redirect URL. Either signal drops the row so ads
+/// never reach the fetch or writer stages.
+fn is_ad_result(class_attr: Option<&str>, url: &str) -> bool {
+    class_attr.is_some_and(|c| c.contains("result--ad")) || url.contains("duckduckgo.com/y.js")
 }
 
 /// Resolves a SERP href to an absolute URL, decoding DuckDuckGo's
@@ -306,6 +317,33 @@ mod tests {
     #[test]
     fn parse_html_empty_on_junk() {
         assert!(parse_ddg_html("<html><body>no results</body></html>").is_empty());
+    }
+
+    #[test]
+    fn parse_html_skips_ad_rows() {
+        // Sponsored rows carry a `result--ad` class and/or a `y.js` ad-redirect
+        // URL; neither must reach the writer.
+        let body = r#"
+          <div class="result result--ad">
+            <a class="result__a" href="https://duckduckgo.com/y.js?ad_domain=spam.example">Sponsored</a>
+            <a class="result__snippet">buy now</a>
+          </div>
+          <div class="result">
+            <a class="result__a" href="https://real.example/">Real</a>
+            <a class="result__snippet">genuine</a>
+          </div>
+        "#;
+        let hits = parse_ddg_html(body);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].url, "https://real.example/");
+    }
+
+    #[test]
+    fn is_ad_result_flags_ad_class_and_yjs_only() {
+        assert!(is_ad_result(Some("result result--ad"), "https://real/"));
+        assert!(is_ad_result(None, "https://duckduckgo.com/y.js?ad_domain=x"));
+        assert!(!is_ad_result(Some("result web-result"), "https://real/"));
+        assert!(!is_ad_result(None, "https://real/"));
     }
 
     #[test]
