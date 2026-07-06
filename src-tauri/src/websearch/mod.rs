@@ -19,3 +19,23 @@ pub mod engine;
 pub mod fetch;
 pub mod prepass;
 pub mod rank;
+pub mod writer;
+
+/// The registration host of a URL, or an empty string when it does not parse.
+/// Shared by the engine's per-domain result cap and the writer's per-source
+/// trust label.
+pub(crate) fn domain_of(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn domain_of_extracts_host_or_empty() {
+        assert_eq!(super::domain_of("https://sub.example.com/path"), "sub.example.com");
+        assert_eq!(super::domain_of("not a url"), "");
+    }
+}

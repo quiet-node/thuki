@@ -218,7 +218,7 @@ pub(crate) fn dedupe_and_cap(
         if !seen_urls.insert(hit.url.clone()) {
             continue;
         }
-        let count = per_domain.entry(domain_of(&hit.url)).or_insert(0);
+        let count = per_domain.entry(super::domain_of(&hit.url)).or_insert(0);
         if *count >= max_per_domain {
             continue;
         }
@@ -226,15 +226,6 @@ pub(crate) fn dedupe_and_cap(
         out.push(hit);
     }
     out
-}
-
-/// The registration host of a URL, for the per-domain cap. Empty when the URL
-/// does not parse.
-fn domain_of(url: &str) -> String {
-    url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_string))
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -467,9 +458,4 @@ mod tests {
         assert!(ddg_search(&transport, "q").await.is_empty());
     }
 
-    #[test]
-    fn domain_of_extracts_host() {
-        assert_eq!(domain_of("https://sub.example.com/path"), "sub.example.com");
-        assert_eq!(domain_of("not a url"), "");
-    }
 }
