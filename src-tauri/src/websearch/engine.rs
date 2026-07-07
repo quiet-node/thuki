@@ -1,12 +1,18 @@
-//! Keyless search-engine client and rotation.
+//! Keyless search-engine client with rotation.
 //!
 //! General queries that no vertical handles fall through to keyless engine
-//! scraping from the user's device: a POST to DuckDuckGo's `html` endpoint with
-//! browser-equivalent headers, the SERP HTML parsed into result rows. A tripped
-//! bot challenge (empirically IP-scoped and multi-hour on DDG) is classified as
-//! [`SerpOutcome::Blocked`] and yields no results, so the caller degrades
-//! gracefully. Rotation to other engines is a deferred fast-follow (see
-//! [`ddg_search`]).
+//! scraping from the user's device. [`web_search`] tries each engine in
+//! [`ENGINES`] in order and returns the first engine's results that come back
+//! usable: DuckDuckGo's `html` endpoint is primary, and Mojeek is the fallback.
+//! A tripped bot challenge (empirically IP-scoped and multi-hour on DuckDuckGo,
+//! per the T1 spike) classifies as [`SerpOutcome::Blocked`] and rotates to the
+//! next engine rather than yielding nothing, so a single engine's rate-limit is
+//! no longer fatal to the whole turn. When every engine is exhausted the caller
+//! degrades gracefully to a plain answer.
+//!
+//! Each engine attempt logs its outcome to stderr under a `[search]` prefix so
+//! the decision path is visible in the dev console: which engine ran, whether it
+//! was blocked, empty, or returned N hits.
 //!
 //! All requests go through the injectable [`HttpTransport`], so the client is
 //! tested against fixture SERP HTML with no network. The parsers are pure and
@@ -44,45 +50,91 @@ const CAPTCHA_MARKERS: &[&str] = &[
     "recaptcha",
 ];
 
-/// ddgs-style browser headers. Sent verbatim so the request is indistinguishable
-/// from a browser's; DuckDuckGo's keyless endpoints reject obvious automation.
-const DDG_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+/// Browser User-Agent sent verbatim on every engine request so it is
+/// indistinguishable from a real browser's; keyless SERP endpoints reject
+/// obvious automation. Shared by all engines.
+const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
      AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const DDG_HTML_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
+const MOJEEK_ENDPOINT: &str = "https://www.mojeek.com/search";
 
-/// Runs one keyless DuckDuckGo `html` query over the shared transport and
-/// returns the parsed, deduped result rows. Any recoverable failure (bot
-/// challenge, non-200, empty page, transport/SSRF error) yields an empty list,
-/// so the caller degrades gracefully rather than hanging or hallucinating.
+/// One keyless search engine: a name for logging, a request builder, and a pure
+/// SERP parser. The rotation in [`web_search`] walks these in order.
+struct Engine {
+    /// Short identifier used only in the `[search]` stderr log line.
+    name: &'static str,
+    /// Builds the outbound request for `query`.
+    build: fn(&str) -> HttpRequest,
+    /// Parses this engine's SERP HTML into result rows.
+    parse: fn(&str) -> Vec<SearchHit>,
+}
+
+/// Engines tried in order until one returns usable results. DuckDuckGo is
+/// primary (richest results); Mojeek is the fallback because it is
+/// scraper-tolerant, keyless, and serves lightweight HTML that survives a
+/// DuckDuckGo IP block. Verticals (Wikipedia, weather, news) are a separate
+/// intent-routed layer added later; this is the general-web tier only.
+const ENGINES: &[Engine] = &[
+    Engine {
+        name: "duckduckgo",
+        build: ddg_html_request,
+        parse: parse_ddg_html,
+    },
+    Engine {
+        name: "mojeek",
+        build: mojeek_request,
+        parse: parse_mojeek_html,
+    },
+];
+
+/// Runs a keyless web search for `query`, rotating through [`ENGINES`] until one
+/// returns usable results. Each engine is tried in order; a bot challenge,
+/// non-200, empty SERP, or transport/SSRF error rotates to the next engine. When
+/// all engines are exhausted the result is an empty list, so the caller degrades
+/// gracefully rather than hanging or hallucinating. Every attempt logs its
+/// outcome to stderr under `[search]` so the path is visible in the dev console.
 ///
 /// Coverage-excluded: thin async glue over the injectable transport that
-/// delegates every decision to the pure, directly-tested helpers
-/// ([`ddg_html_request`], [`classify_serp`], [`parse_ddg_html`],
-/// [`dedupe_and_cap`]); its behaviour is still exercised against
+/// delegates every decision to the pure, directly-tested helpers (each engine's
+/// request builder and parser, [`classify_serp`], [`dedupe_and_cap`]); its
+/// rotation behaviour is still exercised against
 /// [`crate::net::transport::FakeHttpTransport`] in the tests below. Excluded
 /// only because parallel async coverage attribution is nondeterministic.
-///
-/// Rotation to alternative engines (Bing, Startpage, Brave) is a deliberate
-/// fast-follow: with a single engine there is nothing to rotate to (a tripped
-/// DuckDuckGo block is IP-scoped across its endpoints, per the T1 spike), so an
-/// engine trait and multi-engine fallback are deferred until those parsers and
-/// fixtures exist, per YAGNI.
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub async fn ddg_search(transport: &dyn HttpTransport, query: &str) -> Vec<SearchHit> {
-    let response = match transport.send(&ddg_html_request(query)).await {
-        Ok(response) => response,
-        Err(_) => return Vec::new(),
-    };
-    let body = String::from_utf8_lossy(&response.body);
-    let hits = parse_ddg_html(&body);
-    match classify_serp(response.status, hits.len(), &body) {
-        SerpOutcome::Ok => dedupe_and_cap(
-            hits,
-            crate::config::defaults::SERP_MAX_RESULTS_PER_QUERY,
-            crate::config::defaults::SERP_MAX_RESULTS_PER_DOMAIN,
-        ),
-        SerpOutcome::Blocked | SerpOutcome::Empty => Vec::new(),
+pub async fn web_search(transport: &dyn HttpTransport, query: &str) -> Vec<SearchHit> {
+    for engine in ENGINES {
+        let response = match transport.send(&(engine.build)(query)).await {
+            Ok(response) => response,
+            Err(_) => {
+                eprintln!(
+                    "[search] engine={} transport_error -> rotating",
+                    engine.name
+                );
+                continue;
+            }
+        };
+        let body = String::from_utf8_lossy(&response.body);
+        let hits = (engine.parse)(&body);
+        match classify_serp(response.status, hits.len(), &body) {
+            SerpOutcome::Ok => {
+                let capped = dedupe_and_cap(
+                    hits,
+                    crate::config::defaults::SERP_MAX_RESULTS_PER_QUERY,
+                    crate::config::defaults::SERP_MAX_RESULTS_PER_DOMAIN,
+                );
+                eprintln!("[search] engine={} ok hits={}", engine.name, capped.len());
+                return capped;
+            }
+            SerpOutcome::Blocked => {
+                eprintln!("[search] engine={} blocked -> rotating", engine.name)
+            }
+            SerpOutcome::Empty => {
+                eprintln!("[search] engine={} empty -> rotating", engine.name)
+            }
+        }
     }
+    eprintln!("[search] all engines exhausted, no results");
+    Vec::new()
 }
 
 /// Builds the DuckDuckGo `html` POST request with browser headers and the
@@ -92,7 +144,7 @@ pub(crate) fn ddg_html_request(query: &str) -> HttpRequest {
         method: HttpMethod::Post,
         url: DDG_HTML_ENDPOINT.to_string(),
         headers: vec![
-            ("User-Agent".to_string(), DDG_USER_AGENT.to_string()),
+            ("User-Agent".to_string(), BROWSER_USER_AGENT.to_string()),
             (
                 "Accept".to_string(),
                 "text/html,application/xhtml+xml".to_string(),
@@ -105,6 +157,28 @@ pub(crate) fn ddg_html_request(query: &str) -> HttpRequest {
             ("kl".to_string(), "us-en".to_string()),
             ("b".to_string(), String::new()),
         ],
+    }
+}
+
+/// Builds the Mojeek `search` GET request. Mojeek takes the query as a `q` URL
+/// parameter and returns lightweight result HTML with direct (non-wrapped)
+/// destination URLs.
+pub(crate) fn mojeek_request(query: &str) -> HttpRequest {
+    // MOJEEK_ENDPOINT is a compile-time-valid absolute URL.
+    let mut url = url::Url::parse(MOJEEK_ENDPOINT).expect("static endpoint");
+    url.query_pairs_mut().append_pair("q", query);
+    HttpRequest {
+        method: HttpMethod::Get,
+        url: url.to_string(),
+        headers: vec![
+            ("User-Agent".to_string(), BROWSER_USER_AGENT.to_string()),
+            (
+                "Accept".to_string(),
+                "text/html,application/xhtml+xml".to_string(),
+            ),
+            ("Accept-Language".to_string(), "en-US,en;q=0.9".to_string()),
+        ],
+        form: Vec::new(),
     }
 }
 
@@ -170,6 +244,46 @@ pub(crate) fn parse_ddg_html(body: &str) -> Vec<SearchHit> {
 /// never reach the fetch or writer stages.
 fn is_ad_result(class_attr: Option<&str>, url: &str) -> bool {
     class_attr.is_some_and(|c| c.contains("result--ad")) || url.contains("duckduckgo.com/y.js")
+}
+
+/// Parses a Mojeek SERP into result rows. Mojeek lists organic results as
+/// `ul.results-standard > li`, each with its title and destination in
+/// `h2 a.title` (a direct absolute URL, no redirect wrapper) and its snippet in
+/// `p.s` (bold markup flattened to text). Rows without a title anchor or a
+/// non-http(s) href are skipped, so the "see more results" sub-links and any
+/// malformed rows do not leak through.
+pub(crate) fn parse_mojeek_html(body: &str) -> Vec<SearchHit> {
+    // Selectors are compile-time constants and cannot fail to parse.
+    let row = Selector::parse("ul.results-standard li").expect("static selector");
+    let title = Selector::parse("h2 a.title").expect("static selector");
+    let snippet = Selector::parse("p.s").expect("static selector");
+
+    let mut hits = Vec::new();
+    for result in Html::parse_document(body).select(&row) {
+        let Some(anchor) = result.select(&title).next() else {
+            continue;
+        };
+        let title_text = anchor.text().collect::<String>().trim().to_string();
+        let Some(href) = anchor.value().attr("href") else {
+            continue;
+        };
+        let url = href.trim().to_string();
+        // Mojeek serves absolute destination URLs; anything else is a UI link.
+        if title_text.is_empty() || !(url.starts_with("http://") || url.starts_with("https://")) {
+            continue;
+        }
+        let snippet_text = result
+            .select(&snippet)
+            .next()
+            .map(|s| s.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
+        hits.push(SearchHit {
+            title: title_text,
+            url,
+            snippet: snippet_text,
+        });
+    }
+    hits
 }
 
 /// Resolves a SERP href to an absolute URL, decoding DuckDuckGo's
@@ -419,7 +533,63 @@ mod tests {
         assert_eq!(dedupe_and_cap(hits, 10, 5).len(), 10);
     }
 
-    // ── ddg_html_request ────────────────────────────────────────────────────
+    // ── parse_mojeek_html ───────────────────────────────────────────────────
+
+    // Mirrors real Mojeek markup: organic results in `ul.results-standard > li`
+    // with the title/URL in `h2 a.title` (direct href) and snippet in `p.s`. The
+    // third row has no title anchor (a bare "more" link) and must be skipped.
+    const MOJEEK_HTML_FIXTURE: &str = r#"
+      <ul class="results-standard">
+        <li class="r1">
+          <a href="https://rust-lang.org/tools/install/" class="ob"><span class="url">rust-lang.org</span></a>
+          <h2><a class="title" href="https://rust-lang.org/tools/install/">Install Rust</a></h2>
+          <p class="s">Run rustc --<strong>version</strong> to check.</p>
+          <p class="more"><a href="/search?q=more">See more</a></p>
+        </li>
+        <li class="r2">
+          <h2><a class="title" href="https://blog.rust-lang.org/">Rust Blog</a></h2>
+          <p class="s">Latest release news.</p>
+        </li>
+        <li class="r3">
+          <p class="more"><a href="/search?q=x">no title here</a></p>
+        </li>
+      </ul>
+    "#;
+
+    #[test]
+    fn parse_mojeek_extracts_title_url_snippet() {
+        let hits = parse_mojeek_html(MOJEEK_HTML_FIXTURE);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].title, "Install Rust");
+        assert_eq!(hits[0].url, "https://rust-lang.org/tools/install/");
+        assert_eq!(hits[0].snippet, "Run rustc --version to check.");
+        assert_eq!(hits[1].url, "https://blog.rust-lang.org/");
+    }
+
+    #[test]
+    fn parse_mojeek_skips_non_http_missing_href_and_missing_title() {
+        // A relative href, a title anchor with no href, and a titleless row are
+        // all dropped; only the well-formed absolute-URL row survives.
+        let body = r#"
+          <ul class="results-standard">
+            <li><h2><a class="title" href="/settings">Relative</a></h2></li>
+            <li><h2><a class="title">No href</a></h2></li>
+            <li><h2><a class="title" href="https://ok.example/">Ok</a></h2></li>
+            <li><p class="s">no title</p></li>
+          </ul>
+        "#;
+        let hits = parse_mojeek_html(body);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].url, "https://ok.example/");
+        assert!(hits[0].snippet.is_empty());
+    }
+
+    #[test]
+    fn parse_mojeek_empty_on_junk() {
+        assert!(parse_mojeek_html("<html><body>nothing</body></html>").is_empty());
+    }
+
+    // ── request builders ────────────────────────────────────────────────────
 
     #[test]
     fn ddg_request_is_post_with_query_form() {
@@ -430,34 +600,75 @@ mod tests {
         assert!(req.headers.iter().any(|(k, _)| k == "User-Agent"));
     }
 
-    // ── ddg_search over the fake transport ──────────────────────────────────
+    #[test]
+    fn mojeek_request_is_get_with_query_param() {
+        let req = mojeek_request("rust version");
+        assert_eq!(req.method, HttpMethod::Get);
+        assert!(req.url.starts_with(MOJEEK_ENDPOINT));
+        assert!(req.url.contains("q=rust+version") || req.url.contains("q=rust%20version"));
+        assert!(req.form.is_empty());
+        assert!(req.headers.iter().any(|(k, _)| k == "User-Agent"));
+    }
 
-    #[tokio::test]
-    async fn ddg_search_returns_hits_on_ok_serp() {
-        let resp = HttpResponse {
+    // ── web_search rotation over the fake transport ─────────────────────────
+
+    fn ok(url: &str, body: &str) -> HttpResponse {
+        HttpResponse {
             status: 200,
-            final_url: DDG_HTML_ENDPOINT.into(),
-            body: DDG_HTML_FIXTURE.as_bytes().to_vec(),
-        };
-        let transport = FakeHttpTransport::new().with_response(DDG_HTML_ENDPOINT, resp);
-        assert_eq!(ddg_search(&transport, "q").await.len(), 2);
+            final_url: url.into(),
+            body: body.as_bytes().to_vec(),
+        }
     }
 
     #[tokio::test]
-    async fn ddg_search_empty_on_challenge() {
-        let resp = HttpResponse {
-            status: 202,
-            final_url: DDG_HTML_ENDPOINT.into(),
-            body: b"<div class=\"anomaly-modal\">challenge-form</div>".to_vec(),
-        };
-        let transport = FakeHttpTransport::new().with_response(DDG_HTML_ENDPOINT, resp);
-        assert!(ddg_search(&transport, "q").await.is_empty());
+    async fn web_search_returns_first_engine_hits_without_rotating() {
+        // DuckDuckGo answers Ok, so Mojeek is never queried.
+        let transport = FakeHttpTransport::new()
+            .with_response(DDG_HTML_ENDPOINT, ok(DDG_HTML_ENDPOINT, DDG_HTML_FIXTURE));
+        let hits = web_search(&transport, "q").await;
+        assert_eq!(hits.len(), 2);
+        let mojeek_url = mojeek_request("q").url;
+        assert!(!transport.calls().iter().any(|c| c.url == mojeek_url));
     }
 
     #[tokio::test]
-    async fn ddg_search_empty_on_transport_error() {
-        // No canned response -> the fake errors -> empty.
+    async fn web_search_rotates_to_mojeek_when_ddg_blocked() {
+        // The live failure mode: DuckDuckGo hard-blocks (HTTP 202 challenge), so
+        // the search rotates to Mojeek and returns its results.
+        let mojeek_url = mojeek_request("q").url;
+        let transport = FakeHttpTransport::new()
+            .with_response(
+                DDG_HTML_ENDPOINT,
+                HttpResponse {
+                    status: 202,
+                    final_url: DDG_HTML_ENDPOINT.into(),
+                    body: b"<div class=\"anomaly-modal\">challenge-form</div>".to_vec(),
+                },
+            )
+            .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
+        let hits = web_search(&transport, "q").await;
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].url, "https://rust-lang.org/tools/install/");
+    }
+
+    #[tokio::test]
+    async fn web_search_empty_when_all_engines_blocked() {
+        let mojeek_url = mojeek_request("q").url;
+        let blocked = |url: &str| HttpResponse {
+            status: 429,
+            final_url: url.into(),
+            body: b"rate limited".to_vec(),
+        };
+        let transport = FakeHttpTransport::new()
+            .with_response(DDG_HTML_ENDPOINT, blocked(DDG_HTML_ENDPOINT))
+            .with_response(&mojeek_url, blocked(&mojeek_url));
+        assert!(web_search(&transport, "q").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn web_search_empty_when_all_engines_transport_error() {
+        // No canned responses -> every engine's send errors -> empty.
         let transport = FakeHttpTransport::new();
-        assert!(ddg_search(&transport, "q").await.is_empty());
+        assert!(web_search(&transport, "q").await.is_empty());
     }
 }

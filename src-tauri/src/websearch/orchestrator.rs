@@ -32,7 +32,7 @@ use tokio_util::sync::CancellationToken;
 use crate::commands::ChatMessage;
 use crate::net::transport::HttpTransport;
 use crate::websearch::assemble::{assemble_context, SourceBlock};
-use crate::websearch::engine::{ddg_search, SearchHit};
+use crate::websearch::engine::{web_search, SearchHit};
 use crate::websearch::fetch::fetch_pages;
 use crate::websearch::prefilter::{prefilter, PreFilterVerdict};
 use crate::websearch::prepass::{InferenceError, PrePass, PrePassDecision, SearchDecision};
@@ -92,6 +92,7 @@ pub async fn run_search(
 ) -> SearchOutcome {
     // Stage one: deterministic pre-filter, no model call.
     let verdict = prefilter(latest_user, today);
+    eprintln!("[search] prefilter={verdict:?}");
     if verdict == PreFilterVerdict::ForceNo {
         return SearchOutcome::NoSearch;
     }
@@ -110,6 +111,11 @@ pub async fn run_search(
         Err(InferenceError::Request(_)) => return SearchOutcome::NoSearch,
     };
     let decision = resolve_decision(verdict, classified);
+    eprintln!(
+        "[search] decision={:?} queries={}",
+        decision.decision,
+        decision.queries.len()
+    );
     match decision.decision {
         SearchDecision::No => SearchOutcome::NoSearch,
         // `cached` is mapped to `web` for now (a correct re-search).
@@ -185,7 +191,7 @@ async fn run_web(
         if cancel.is_cancelled() {
             return SearchOutcome::Cancelled;
         }
-        hits.extend(ddg_search(deps.transport, query).await);
+        hits.extend(web_search(deps.transport, query).await);
     }
     let hits = dedupe_hits(hits);
     if hits.is_empty() {
