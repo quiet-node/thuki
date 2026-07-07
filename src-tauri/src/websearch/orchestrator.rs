@@ -8,10 +8,18 @@
 //! network. The caller (the built-in chat route) supplies the real
 //! implementations and a status callback that forwards progress to the UI.
 //!
+//! The decision is two-stage. The deterministic [`super::prefilter`] runs first,
+//! with no model call: it forces the obvious turns (a greeting needs no web, a
+//! "latest ..." question always does) and defers only the ambiguous middle to
+//! the persona-free classifier ([`PrePass`]). A `ForceWeb` verdict overrides the
+//! classifier's own decision (see [`resolve_decision`]) but still uses its
+//! standalone rewrite and queries.
+//!
 //! Failure policy, in order of how it degrades:
-//! - pre-pass cancelled → [`SearchOutcome::Cancelled`] (the caller stops);
-//! - pre-pass infra error → [`SearchOutcome::NoSearch`] (answer from the model,
-//!   never block the user on a search-infra failure);
+//! - `ForceNo` from the pre-filter → [`SearchOutcome::NoSearch`], no model call;
+//! - classifier cancelled → [`SearchOutcome::Cancelled`] (the caller stops);
+//! - classifier infra error → [`SearchOutcome::NoSearch`] (answer from the
+//!   model, never block the user on a search-infra failure);
 //! - `no` decision, empty results, or nothing worth citing after ranking →
 //!   [`SearchOutcome::NoSearch`];
 //! - cancellation mid-pipeline → [`SearchOutcome::Cancelled`].
@@ -26,7 +34,8 @@ use crate::net::transport::HttpTransport;
 use crate::websearch::assemble::{assemble_context, SourceBlock};
 use crate::websearch::engine::{ddg_search, SearchHit};
 use crate::websearch::fetch::fetch_pages;
-use crate::websearch::prepass::{InferenceError, PrePass, SearchDecision};
+use crate::websearch::prefilter::{prefilter, PreFilterVerdict};
+use crate::websearch::prepass::{InferenceError, PrePass, PrePassDecision, SearchDecision};
 use crate::websearch::rank::{select_chunks, Scorer};
 use crate::websearch::writer::writer_messages;
 
@@ -81,18 +90,26 @@ pub async fn run_search(
     cancel: &CancellationToken,
     status: &(dyn Fn(SearchPhase) + Send + Sync),
 ) -> SearchOutcome {
+    // Stage one: deterministic pre-filter, no model call.
+    let verdict = prefilter(latest_user, today);
+    if verdict == PreFilterVerdict::ForceNo {
+        return SearchOutcome::NoSearch;
+    }
+    // Stage two: the persona-free classifier decides the ambiguous middle and
+    // rewrites the query. A `ForceWeb` verdict still runs it, for the rewrite.
     status(SearchPhase::Deciding);
-    let decision = match deps
+    let classified = match deps
         .prepass
-        .decide(chat_system_prompt, history, latest_user, today, cancel)
+        .decide(history, latest_user, today, cancel)
         .await
     {
-        Ok(decision) => decision,
+        Ok(classified) => classified,
         Err(InferenceError::Cancelled) => return SearchOutcome::Cancelled,
         // A search-infra failure must never block the answer: fall back to a
         // plain, model-only response.
         Err(InferenceError::Request(_)) => return SearchOutcome::NoSearch,
     };
+    let decision = resolve_decision(verdict, classified);
     match decision.decision {
         SearchDecision::No => SearchOutcome::NoSearch,
         // `cached` is mapped to `web` for now (a correct re-search).
@@ -112,6 +129,32 @@ pub async fn run_search(
             )
             .await
         }
+    }
+}
+
+/// Combines the pre-filter verdict with the classifier's result into the final
+/// decision. `ForceWeb` overrides the classifier's own `search` value to `web`
+/// (the deterministic freshness signal is authoritative), keeping the
+/// classifier's standalone rewrite and queries and backfilling a query from the
+/// rewrite when the classifier, having leaned "no", produced none. Any other
+/// verdict leaves the classifier's decision untouched.
+fn resolve_decision(verdict: PreFilterVerdict, classified: PrePassDecision) -> PrePassDecision {
+    match verdict {
+        PreFilterVerdict::ForceWeb => {
+            let queries = if classified.queries.is_empty() {
+                vec![classified.standalone_question.clone()]
+            } else {
+                classified.queries
+            };
+            PrePassDecision {
+                decision: SearchDecision::Web,
+                standalone_question: classified.standalone_question,
+                queries,
+            }
+        }
+        // Ambiguous honours the classifier verbatim; ForceNo never reaches here
+        // (it short-circuits before the model call).
+        PreFilterVerdict::Ambiguous | PreFilterVerdict::ForceNo => classified,
     }
 }
 
@@ -300,10 +343,12 @@ mod tests {
     // ── run_search: decision branches ─────────────────────────────────────────
 
     #[tokio::test]
-    async fn no_decision_yields_no_search() {
+    async fn classifier_no_decision_yields_no_search() {
+        // An ambiguous turn ("tell me a joke") reaches the classifier, which
+        // returns `no`: the Deciding phase is emitted, then no search runs.
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::No,
-            standalone_question: "hi".into(),
+            standalone_question: "tell me a joke".into(),
             queries: vec![],
         }));
         let transport = FakeHttpTransport::new();
@@ -312,7 +357,7 @@ mod tests {
             &deps(&prepass, &transport, &Bm25Scorer),
             "sys",
             &[],
-            "hi",
+            "tell me a joke",
             16384,
             "2026-07-05",
             "en-US",
@@ -322,6 +367,118 @@ mod tests {
         .await;
         assert!(matches!(outcome, SearchOutcome::NoSearch));
         assert_eq!(*phases.lock().unwrap(), vec![SearchPhase::Deciding]);
+    }
+
+    #[tokio::test]
+    async fn prefilter_force_no_short_circuits_without_classifier() {
+        // A greeting is force-skipped by the pre-filter: no Deciding phase, and
+        // the classifier is never consulted (it would have returned Web).
+        let prepass = FakePrePass::returning(Ok(web_decision(vec!["should not run"])));
+        let transport = transport_with_serp_and_page();
+        let (phases, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "hi there, thanks!",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::NoSearch));
+        assert!(phases.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn prefilter_force_web_overrides_classifier_no() {
+        // The pre-filter forces web on "latest ..."; the classifier leaned `no`
+        // with no queries, yet the pipeline still searches, using the
+        // classifier's standalone rewrite (which matches the fixture page).
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::No,
+            standalone_question: "when was the treaty of versailles signed in paris".into(),
+            queries: vec![],
+        }));
+        let transport = transport_with_serp_and_page();
+        let (phases, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "the latest on the treaty",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Answer { .. }));
+        assert_eq!(
+            *phases.lock().unwrap(),
+            vec![
+                SearchPhase::Deciding,
+                SearchPhase::Searching,
+                SearchPhase::Reading
+            ]
+        );
+    }
+
+    // ── resolve_decision (pure) ───────────────────────────────────────────────
+
+    #[test]
+    fn resolve_force_web_overrides_no_and_backfills_queries() {
+        let out = resolve_decision(
+            PreFilterVerdict::ForceWeb,
+            PrePassDecision {
+                decision: SearchDecision::No,
+                standalone_question: "current tokyo weather".into(),
+                queries: vec![],
+            },
+        );
+        assert_eq!(out.decision, SearchDecision::Web);
+        assert_eq!(out.queries, vec!["current tokyo weather"]);
+    }
+
+    #[test]
+    fn resolve_force_web_keeps_existing_queries() {
+        let out = resolve_decision(
+            PreFilterVerdict::ForceWeb,
+            PrePassDecision {
+                decision: SearchDecision::No,
+                standalone_question: "q".into(),
+                queries: vec!["a".into(), "b".into()],
+            },
+        );
+        assert_eq!(out.decision, SearchDecision::Web);
+        assert_eq!(out.queries, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn resolve_ambiguous_keeps_classifier_decision() {
+        let classified = PrePassDecision {
+            decision: SearchDecision::No,
+            standalone_question: "q".into(),
+            queries: vec![],
+        };
+        let out = resolve_decision(PreFilterVerdict::Ambiguous, classified.clone());
+        assert_eq!(out, classified);
+    }
+
+    #[test]
+    fn resolve_force_no_passes_classifier_through_unchanged() {
+        // Totality: ForceNo does not reach this in run_search, but the function
+        // is total and leaves the input untouched.
+        let classified = PrePassDecision {
+            decision: SearchDecision::Web,
+            standalone_question: "q".into(),
+            queries: vec!["a".into()],
+        };
+        let out = resolve_decision(PreFilterVerdict::ForceNo, classified.clone());
+        assert_eq!(out, classified);
     }
 
     #[tokio::test]

@@ -1,26 +1,37 @@
-//! The pre-pass: the invisible search trigger.
+//! The classifier: stage two of the search decision, for the ambiguous middle
+//! the deterministic [`super::prefilter`] could not resolve.
 //!
-//! One grammar-constrained LLM call per message decides whether the web is
-//! needed and, if so, rewrites the (possibly context-dependent) message into a
-//! standalone question plus 1-3 keyword queries. The model is constrained by a
-//! strict `response_format` JSON schema, verified to coexist with the engine's
+//! One grammar-constrained LLM call decides whether the web is needed and, if
+//! so, rewrites the (possibly context-dependent) message into a standalone
+//! question plus 1-3 keyword queries. The model is constrained by a strict
+//! `response_format` JSON schema, verified to coexist with the engine's
 //! reasoning-control flow, so even small local models emit a parseable shape.
 //!
-//! ## Prompt shape (latency-critical)
+//! ## Prompt shape (persona-free by design)
 //!
-//! The bundled engine runs `--parallel 1` with prefix-based KV caching, so the
-//! pre-pass prompt is built as the *chat prompt plus an appended decision
-//! instruction*: same system prompt, same history, the decision instruction
-//! appended to a copy of the latest user turn. The expensive system+history
-//! prefix is therefore identical to the writer's prompt and is reused from
-//! cache instead of being prefilled twice per message.
+//! The classifier runs under its **own** short system prompt, NOT the chat
+//! persona. This is deliberate: the chat persona instructs the model how to
+//! behave toward the user (including, historically, to deflect current-info
+//! questions), which biases a decision made inside that context. Decoupling the
+//! decision from the persona is the correctness fix at the heart of this
+//! module's redesign. A few-shot header and an explicit "when unsure of your own
+//! freshness, choose web" rule bias the small local models toward searching
+//! rather than answering from stale memory. Only the last few conversation turns
+//! are embedded, as plain text for pronoun resolution, so a follow-up like "what
+//! about there?" can still be rewritten into a standalone query.
+//!
+//! Dropping the persona prefix costs a small extra prefill on the ambiguous
+//! turns that reach this stage (the engine runs `--parallel 1`), traded
+//! knowingly for a correct decision. The pre-filter already resolves the obvious
+//! turns with no model call at all, so this stage fires far less often than a
+//! per-message pre-pass would.
 //!
 //! ## Failure policy
 //!
 //! A malformed or unparseable response degrades to [`SearchDecision::No`]
 //! (answer directly) rather than a spurious search: a false negative is cheap
-//! and recoverable through the explicit `/search` force alias, whereas a
-//! false positive spends latency and a third-party request on nothing.
+//! and recoverable, whereas a false positive spends latency and a third-party
+//! request on nothing.
 
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
@@ -70,11 +81,11 @@ const MAX_QUERIES: usize = 3;
 #[async_trait]
 pub trait PrePass: Send + Sync {
     /// Decides search intent for `latest_user_message` given the conversation
-    /// so far. Never returns a bad-JSON error: an unparseable model response
-    /// degrades in-band to [`SearchDecision::No`].
+    /// so far, under the classifier's own persona-free prompt. Never returns a
+    /// bad-JSON error: an unparseable model response degrades in-band to
+    /// [`SearchDecision::No`].
     async fn decide(
         &self,
-        chat_system_prompt: &str,
         history: &[ChatMessage],
         latest_user_message: &str,
         today: &str,
@@ -119,14 +130,12 @@ impl BuiltinPrePass {
 impl PrePass for BuiltinPrePass {
     async fn decide(
         &self,
-        chat_system_prompt: &str,
         history: &[ChatMessage],
         latest_user_message: &str,
         today: &str,
         cancel: &CancellationToken,
     ) -> Result<PrePassDecision, InferenceError> {
-        let messages =
-            build_prepass_messages(chat_system_prompt, history, latest_user_message, today);
+        let messages = build_prepass_messages(history, latest_user_message, today);
         let raw = crate::openai::request_openai_json(
             &self.base_url,
             &self.model,
@@ -149,9 +158,20 @@ impl PrePass for BuiltinPrePass {
     }
 }
 
-/// The instruction appended to a copy of the latest user turn. Kept as a strict
-/// suffix so the system+history prefix stays identical to the writer prompt.
-const DECISION_INSTRUCTION: &str = "\n\n---\nSilently decide whether answering the message above needs a web search. Output ONLY a JSON object with these fields:\n- \"search\": \"no\" if you can answer directly from your own knowledge or this conversation; \"cached\" if earlier turns already fetched the needed web sources; \"web\" if fresh web results are required (current events, prices, releases, anything after your knowledge cutoff, or facts you are unsure of).\n- \"standalone_question\": the message above rewritten as a single self-contained question that needs no conversation context.\n- \"queries\": 1 to 3 short keyword search queries (not full sentences). Always include today's date context where the question is time-sensitive.\nDo not answer the question itself.";
+/// The classifier's own system prompt: a short, persona-free routing role with a
+/// few-shot header and an explicit bias toward searching when the model cannot
+/// vouch for its own freshness. Kept separate from the chat persona on purpose
+/// (see module docs): the persona must not colour the decision.
+const CLASSIFIER_SYSTEM: &str = "You are a retrieval-routing classifier inside a local AI assistant. Your only job is to decide whether answering the user's latest message needs a fresh web search, and if so to rewrite it into a standalone search query. You never answer the message itself.\n\nOutput ONLY a JSON object: {\"search\": \"no\"|\"cached\"|\"web\", \"standalone_question\": \"...\", \"queries\": [\"...\"]}.\n\nChoose \"search\":\n- \"web\" when a good answer needs information that changes over time or is past your training cutoff: news, prices, weather, sports results, software versions, releases, schedules, who currently holds a role, or any live fact; OR when you are not confident your own knowledge is current and correct.\n- \"cached\" when the needed web sources were already fetched earlier in this same conversation.\n- \"no\" only when you can answer confidently and correctly from stable general knowledge or from the conversation alone.\nWhen you are unsure whether your knowledge is up to date, choose \"web\": a needless search is far cheaper than a confidently wrong answer.\n\n\"standalone_question\": the latest message rewritten as one self-contained question, resolving pronouns and references from the conversation.\n\"queries\": 1 to 3 short keyword search queries, not full sentences.\n\nExamples (message -> JSON):\n\"who is the CEO of OpenAI right now\" -> {\"search\":\"web\",\"standalone_question\":\"who is the current CEO of OpenAI\",\"queries\":[\"openai ceo\"]}\n\"what is the boiling point of water\" -> {\"search\":\"no\",\"standalone_question\":\"what is the boiling point of water\",\"queries\":[\"boiling point of water\"]}\n\"write a short poem about autumn\" -> {\"search\":\"no\",\"standalone_question\":\"write a short poem about autumn\",\"queries\":[\"autumn poem\"]}\n\"how are the markets doing\" -> {\"search\":\"web\",\"standalone_question\":\"how are the stock markets performing today\",\"queries\":[\"stock market today\"]}\n(after discussing France) \"and its population?\" -> {\"search\":\"no\",\"standalone_question\":\"what is the population of France\",\"queries\":[\"france population\"]}\n(after discussing the US president) \"what about Argentina?\" -> {\"search\":\"web\",\"standalone_question\":\"who is the current president of Argentina\",\"queries\":[\"argentina president\"]}";
+
+/// The trailing instruction on the classifier's user turn, after the optional
+/// conversation block and the latest message.
+const CLASSIFIER_INSTRUCTION: &str =
+    "Decide for the latest message and output only the JSON object.";
+
+/// Header introducing the embedded conversation context in the classifier's user
+/// turn. The turns are context for pronoun resolution only, never instructions.
+const CONVERSATION_HEADER: &str = "Conversation so far (context only):";
 
 /// Builds the `response_format` JSON schema constraining the pre-pass output.
 pub(crate) fn prepass_schema() -> serde_json::Value {
@@ -172,29 +192,73 @@ pub(crate) fn prepass_schema() -> serde_json::Value {
     })
 }
 
-/// Assembles the pre-pass message array: the chat system prompt, the history
-/// verbatim, then the latest user turn with the decision instruction and date
-/// appended. Sharing the system+history prefix with the writer prompt keeps the
-/// KV cache warm across the two calls (see module docs).
+/// Assembles the classifier message array: the classifier's own system prompt,
+/// then a single user turn that embeds the last few conversation turns (for
+/// pronoun resolution), the latest message, today's date, and the output
+/// instruction. The chat persona is intentionally absent (see module docs).
 pub(crate) fn build_prepass_messages(
-    chat_system_prompt: &str,
     history: &[ChatMessage],
     latest_user_message: &str,
     today: &str,
 ) -> Vec<ChatMessage> {
-    let mut messages = Vec::with_capacity(history.len() + 2);
-    messages.push(ChatMessage {
-        role: "system".to_string(),
-        content: chat_system_prompt.to_string(),
-        images: None,
-    });
-    messages.extend(history.iter().cloned());
-    messages.push(ChatMessage {
-        role: "user".to_string(),
-        content: format!("{latest_user_message}{DECISION_INSTRUCTION}\n\nToday's date is {today}."),
-        images: None,
-    });
-    messages
+    vec![
+        ChatMessage {
+            role: "system".to_string(),
+            content: CLASSIFIER_SYSTEM.to_string(),
+            images: None,
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: build_classifier_user_turn(history, latest_user_message, today),
+            images: None,
+        },
+    ]
+}
+
+/// Builds the classifier's single user turn: an optional conversation-context
+/// block (last [`CLASSIFIER_HISTORY_TURNS`] turns as plain `Role: text` lines),
+/// the latest message, today's date, and the trailing output instruction.
+fn build_classifier_user_turn(
+    history: &[ChatMessage],
+    latest_user_message: &str,
+    today: &str,
+) -> String {
+    let mut out = String::new();
+    let context = recent_history_block(history);
+    if !context.is_empty() {
+        out.push_str(CONVERSATION_HEADER);
+        out.push('\n');
+        out.push_str(&context);
+        out.push_str("\n\n");
+    }
+    out.push_str("Latest message: ");
+    out.push_str(latest_user_message.trim());
+    out.push_str("\n\nToday's date is ");
+    out.push_str(today);
+    out.push_str(".\n");
+    out.push_str(CLASSIFIER_INSTRUCTION);
+    out
+}
+
+/// Formats the last [`CLASSIFIER_HISTORY_TURNS`] conversation turns as plain
+/// `Role: text` lines for context. Returns an empty string when there is no
+/// history. Message images are ignored: the classifier reasons over text only.
+fn recent_history_block(history: &[ChatMessage]) -> String {
+    let start = history
+        .len()
+        .saturating_sub(crate::config::defaults::CLASSIFIER_HISTORY_TURNS);
+    history[start..]
+        .iter()
+        .map(|m| {
+            let role = if m.role == "assistant" {
+                "Assistant"
+            } else {
+                "User"
+            };
+            format!("{role}: {}", m.content.trim())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The wire shape the grammar constrains the model to. Parsed leniently: the
@@ -296,7 +360,6 @@ impl FakePrePass {
 impl PrePass for FakePrePass {
     async fn decide(
         &self,
-        _chat_system_prompt: &str,
         _history: &[ChatMessage],
         _latest_user_message: &str,
         _today: &str,
@@ -331,22 +394,50 @@ mod tests {
     // ── message assembly ────────────────────────────────────────────────────
 
     #[test]
-    fn messages_share_system_and_history_prefix() {
-        let history = vec![user("earlier question"), {
-            let mut m = user("earlier answer");
+    fn messages_use_persona_free_classifier_system_prompt() {
+        let msgs = build_prepass_messages(&[], "who won", "2026-07-05");
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "system");
+        // The classifier prompt, not the chat persona.
+        assert_eq!(msgs[0].content, CLASSIFIER_SYSTEM);
+        assert!(msgs[0].content.contains("retrieval-routing classifier"));
+        assert!(msgs[0].content.contains("choose \"web\""));
+        assert_eq!(msgs[1].role, "user");
+        assert!(msgs[1].content.contains("Latest message: who won"));
+        assert!(msgs[1].content.contains("2026-07-05"));
+    }
+
+    #[test]
+    fn user_turn_embeds_recent_history_for_pronoun_resolution() {
+        let history = vec![user("what is the capital of France"), {
+            let mut m = user("Paris.");
             m.role = "assistant".into();
             m
         }];
-        let msgs = build_prepass_messages("PERSONA", &history, "and now?", "2026-07-05");
-        assert_eq!(msgs.len(), 4);
-        assert_eq!(msgs[0].role, "system");
-        assert_eq!(msgs[0].content, "PERSONA");
-        assert_eq!(msgs[1].content, "earlier question");
-        assert_eq!(msgs[2].content, "earlier answer");
-        assert_eq!(msgs[3].role, "user");
-        assert!(msgs[3].content.starts_with("and now?"));
-        assert!(msgs[3].content.contains("2026-07-05"));
-        assert!(msgs[3].content.contains("\"search\""));
+        let msgs = build_prepass_messages(&history, "and its population?", "2026-07-05");
+        let turn = &msgs[1].content;
+        assert!(turn.contains("Conversation so far"));
+        assert!(turn.contains("User: what is the capital of France"));
+        assert!(turn.contains("Assistant: Paris."));
+        assert!(turn.contains("Latest message: and its population?"));
+    }
+
+    #[test]
+    fn user_turn_omits_conversation_block_when_no_history() {
+        let msgs = build_prepass_messages(&[], "hello", "2026-07-05");
+        assert!(!msgs[1].content.contains("Conversation so far"));
+        assert!(msgs[1].content.starts_with("Latest message: hello"));
+    }
+
+    #[test]
+    fn history_block_keeps_only_the_most_recent_turns() {
+        // More turns than the cap: only the last CLASSIFIER_HISTORY_TURNS survive.
+        let cap = crate::config::defaults::CLASSIFIER_HISTORY_TURNS;
+        let history: Vec<ChatMessage> = (0..cap + 3).map(|i| user(&format!("turn {i}"))).collect();
+        let block = recent_history_block(&history);
+        assert!(!block.contains("turn 0"));
+        assert!(block.contains(&format!("turn {}", cap + 2)));
+        assert_eq!(block.lines().count(), cap);
     }
 
     // ── parse ───────────────────────────────────────────────────────────────
@@ -465,7 +556,7 @@ mod tests {
         };
         let fake = FakePrePass::returning(Ok(want.clone()));
         let got = fake
-            .decide("sys", &[], "q", "2026-07-05", &CancellationToken::new())
+            .decide(&[], "q", "2026-07-05", &CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(got, want);
@@ -475,7 +566,7 @@ mod tests {
     async fn fake_prepass_propagates_error() {
         let fake = FakePrePass::returning(Err(InferenceError::Cancelled));
         assert_eq!(
-            fake.decide("sys", &[], "q", "2026-07-05", &CancellationToken::new())
+            fake.decide(&[], "q", "2026-07-05", &CancellationToken::new())
                 .await,
             Err(InferenceError::Cancelled)
         );

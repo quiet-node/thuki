@@ -755,18 +755,48 @@ pub const HTTP_REQUEST_TIMEOUT_S: u64 = 15;
 /// Not user-tunable: an internal robustness bound.
 pub const HTTP_CONNECT_TIMEOUT_S: u64 = 8;
 
-// ─── Web-search pre-pass ─────────────────────────────────────────────────────
+// ─── Web-search decision (pre-filter + classifier) ───────────────────────────
 
-/// Token cap for the grammar-constrained search pre-pass response. The JSON
-/// itself is tiny (~60 tokens), but reasoning-family models (e.g. gpt-oss)
-/// spend internal tokens on chain-of-thought before emitting the JSON, so the
-/// budget carries headroom: too small and the reasoning exhausts it before any
-/// JSON is produced, yielding an empty body. Measured ~500 reasoning tokens on
-/// the bundled models, so 768 leaves margin plus the JSON.
+/// Maximum number of leading characters of the user's message the deterministic
+/// search pre-filter scans for its keyword and phrase signals. The request text
+/// that carries a temporal or freshness signal is short and lives at the front;
+/// a signal buried deep inside a large pasted document is better resolved by the
+/// classifier than force-matched here. Bounding the scan keeps the pre-filter's
+/// tokenisation strictly linear in a small constant, so a multi-megabyte pasted
+/// message cannot turn the per-turn decision into a CPU-bound denial-of-service.
 ///
-/// Not user-tunable: part of the pre-pass prompt/parse contract, not a latency
+/// Not user-tunable: a defense-in-depth bound on attacker-controlled input size,
+/// not a quality knob.
+pub const PREFILTER_MAX_SCAN_CHARS: usize = 4096;
+
+/// Maximum number of most-recent conversation turns the persona-free classifier
+/// embeds as context when rewriting a follow-up into a standalone question. Only
+/// a few turns are needed to resolve pronouns ("what about there?"); embedding
+/// the whole history would bloat the classifier prompt and slow the warm-slot
+/// decision without improving disambiguation.
+///
+/// Not user-tunable: a classifier-prompt shape constant.
+pub const CLASSIFIER_HISTORY_TURNS: usize = 4;
+
+/// Token cap for the grammar-constrained classifier response. The JSON itself is
+/// tiny (~60 tokens), but reasoning-family models (e.g. gpt-oss) spend internal
+/// tokens on chain-of-thought before emitting the JSON, and ignore the
+/// `enable_thinking:false` hint the structured-output path sets. If the budget is
+/// too small the reasoning exhausts it before any JSON is produced, yielding an
+/// empty body that degrades to a `no` decision: silent under-searching, the exact
+/// failure the two-stage trigger exists to prevent.
+///
+/// The persona-free classifier prompt is a richer task (a few-shot classification
+/// header) than the old single-line pre-pass instruction, and a richer prompt
+/// draws *more* reasoning from these models, so the budget carries generous
+/// headroom over the ~500 reasoning tokens measured on the older prompt. The cap
+/// only bites when reasoning would otherwise truncate the JSON; the real
+/// wall-clock guard is [`PREPASS_TIMEOUT_S`], so erring high costs nothing on
+/// normal turns.
+///
+/// Not user-tunable: part of the classifier prompt/parse contract, not a latency
 /// or quality knob the user should tune.
-pub const PREPASS_MAX_TOKENS: i32 = 768;
+pub const PREPASS_MAX_TOKENS: i32 = 1536;
 
 /// Per-call wall-clock timeout for the search pre-pass (seconds). One warm-slot
 /// classification call; a few seconds is generous, and exceeding it means the

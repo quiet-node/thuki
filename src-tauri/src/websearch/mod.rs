@@ -8,7 +8,9 @@
 //!
 //! The stages are built as independent, injectable units so the orchestrator's
 //! decision logic is unit-testable without a live model or network:
-//! - [`prepass`] — the `no｜cached｜web` trigger and query rewrite.
+//! - [`prefilter`] — the deterministic stage-one search verdict (no model call).
+//! - [`prepass`] — the persona-free classifier for the ambiguous middle: the
+//!   `no｜cached｜web` decision and query rewrite.
 //! - [`engine`] — keyless search-engine scraping with rotation.
 //! - [`fetch`] — concurrent page fetch + readability extraction.
 //! - [`rank`] — chunking + BM25 extractive filter behind a `Scorer` seam.
@@ -20,6 +22,7 @@ pub mod assemble;
 pub mod engine;
 pub mod fetch;
 pub mod orchestrator;
+pub mod prefilter;
 pub mod prepass;
 pub mod rank;
 pub mod writer;
