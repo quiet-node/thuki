@@ -1062,6 +1062,61 @@ mod tests {
         assert_eq!(std::fs::read(store.blob_path(&sha)).unwrap(), body);
     }
 
+    #[tokio::test]
+    async fn resume_receiving_416_keeps_partial_uncorrupted() {
+        // A resume request whose server answers 416 Range Not Satisfiable (the
+        // real-world trigger is upstream metadata overstating total_bytes, so the
+        // resume Range reaches past the true EOF). The run must fail cleanly (Http
+        // kind, no panic) and leave the on-disk partial untouched for a later
+        // attempt: neither truncated nor appended to, so nothing is corrupted.
+        let server = MockServer::start().await;
+        let body = body_of(8192);
+        let sha = sha256_of(&body);
+        Mock::given(method("GET"))
+            .and(path("/q/resolve/main/w.gguf"))
+            .and(header("range", "bytes=1000-"))
+            .respond_with(ResponseTemplate::new(416))
+            .mount(&server)
+            .await;
+
+        let (_dir, store) = make_store();
+        std::fs::write(store.partial_path(&sha), &body[..1000]).unwrap();
+        // A 1000-byte prefix of an 8192-byte file: the partial is not full-length,
+        // so download_one takes the network resume path (Range sent) instead of
+        // skipping straight to verify, which is what makes a 416 reachable here.
+        let spec = spec_for(
+            format!("{}/q/resolve/main/w.gguf", server.uri()),
+            "w.gguf",
+            &body,
+        );
+        let (events, emit) = collector();
+
+        let result = run_download_test(
+            &[spec],
+            &store,
+            &reqwest::Client::new(),
+            CancellationToken::new(),
+            emit,
+        )
+        .await;
+        assert_eq!(result, Err(()));
+        assert_eq!(
+            last_event(&events),
+            DownloadEvent::Failed {
+                kind: DownloadFailKind::Http,
+                message: "server returned HTTP 416".to_string(),
+            }
+        );
+        // The partial survives unchanged: no truncation, no appended bytes, no
+        // blob installed. A later resume can retry from the same 1000 bytes.
+        assert_eq!(store.existing_partial_len(&sha), Some(1000));
+        assert_eq!(
+            std::fs::read(store.partial_path(&sha)).unwrap(),
+            &body[..1000]
+        );
+        assert!(!store.blob_path(&sha).exists());
+    }
+
     // ── Cancellation ─────────────────────────────────────────────────────────
 
     #[tokio::test]
