@@ -58,51 +58,131 @@ const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7
 const DDG_HTML_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
 const MOJEEK_ENDPOINT: &str = "https://www.mojeek.com/search";
 
-/// One keyless search engine: a name for logging, a request builder, and a pure
-/// SERP parser. The rotation in [`web_search`] walks these in order.
+/// One keyless search engine: a name for logging and cooldown keying, a request
+/// builder, a pure SERP parser, and how long to skip it after it blocks. The
+/// rotation in [`web_search`] walks these in order.
 struct Engine {
-    /// Short identifier used only in the `[search]` stderr log line.
+    /// Identifier used in the `[search]` stderr log line and as the cooldown key.
     name: &'static str,
     /// Builds the outbound request for `query`.
     build: fn(&str) -> HttpRequest,
     /// Parses this engine's SERP HTML into result rows.
     parse: fn(&str) -> Vec<SearchHit>,
+    /// How long the engine is skipped after a block (seconds). Matches the
+    /// engine's observed block behaviour: hours for DuckDuckGo, soft minutes for
+    /// the fallbacks.
+    cooldown_s: u64,
 }
 
 /// Engines tried in order until one returns usable results. DuckDuckGo is
 /// primary (richest results); Mojeek is the fallback because it is
 /// scraper-tolerant, keyless, and serves lightweight HTML that survives a
 /// DuckDuckGo IP block. Verticals (Wikipedia, weather, news) are a separate
-/// intent-routed layer added later; this is the general-web tier only.
+/// intent-routed layer added later; this is the general-web tier only. Other
+/// candidates were probed live and rejected: Brave/Startpage/Qwant serve
+/// JS-shell pages with no parseable server-side results, Ecosia and Presearch
+/// return 403 to non-browser clients, and Bing's organic markup no longer ships
+/// in the initial HTML.
 const ENGINES: &[Engine] = &[
     Engine {
         name: "duckduckgo",
         build: ddg_html_request,
         parse: parse_ddg_html,
+        cooldown_s: crate::config::defaults::ENGINE_COOLDOWN_PRIMARY_S,
     },
     Engine {
         name: "mojeek",
         build: mojeek_request,
         parse: parse_mojeek_html,
+        cooldown_s: crate::config::defaults::ENGINE_COOLDOWN_FALLBACK_S,
     },
 ];
 
+/// Cross-turn engine block memory. When an engine returns a bot challenge or
+/// rate-limit response it is marked here and skipped for its cooldown window on
+/// subsequent queries, instead of being re-hammered on every query of every
+/// turn (which wastes a request, adds latency, and feeds the volume signal that
+/// keeps volume-triggered blocks alive).
+///
+/// Thread-safe: the map is behind a `Mutex`, and the lock is held only for the
+/// map lookup/insert, never across I/O. Memory-bounded by construction: keys
+/// are the static engine names, so the map can never exceed [`ENGINES`] len.
+pub struct EngineHealth {
+    blocked_until: std::sync::Mutex<std::collections::HashMap<&'static str, std::time::Instant>>,
+}
+
+impl EngineHealth {
+    /// Creates an empty registry (no engine cooling).
+    pub fn new() -> Self {
+        Self {
+            blocked_until: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Marks `name` blocked for the next `cooldown_s` seconds.
+    fn mark_blocked(&self, name: &'static str, cooldown_s: u64) {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(cooldown_s);
+        self.blocked_until.lock().unwrap().insert(name, until);
+    }
+
+    /// Whether `name` is inside its cooldown window. Expired entries are pruned
+    /// on read so the map self-cleans.
+    fn is_cooling(&self, name: &'static str) -> bool {
+        let mut map = self.blocked_until.lock().unwrap();
+        match map.get(name) {
+            Some(until) if *until > std::time::Instant::now() => true,
+            Some(_) => {
+                map.remove(name);
+                false
+            }
+            None => false,
+        }
+    }
+}
+
+impl Default for EngineHealth {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The process-wide [`EngineHealth`] shared by every turn, so a block observed
+/// on one message is remembered on the next. Coverage-excluded: a static
+/// constructor call; the registry's behaviour is tested through instance
+/// methods on locally-built registries.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn global_engine_health() -> &'static EngineHealth {
+    static GLOBAL: std::sync::LazyLock<EngineHealth> = std::sync::LazyLock::new(EngineHealth::new);
+    &GLOBAL
+}
+
 /// Runs a keyless web search for `query`, rotating through [`ENGINES`] until one
-/// returns usable results. Each engine is tried in order; a bot challenge,
-/// non-200, empty SERP, or transport/SSRF error rotates to the next engine. When
-/// all engines are exhausted the result is an empty list, so the caller degrades
-/// gracefully rather than hanging or hallucinating. Every attempt logs its
-/// outcome to stderr under `[search]` so the path is visible in the dev console.
+/// returns usable results. Engines inside their block cooldown (see
+/// [`EngineHealth`]) are skipped outright; a bot challenge or rate-limit
+/// response marks the engine blocked for its cooldown window and rotates; an
+/// empty SERP or transport/SSRF error rotates without marking (an empty page is
+/// a bad query, not a ban). When all engines are exhausted the result is an
+/// empty list, so the caller degrades gracefully rather than hanging or
+/// hallucinating. Every attempt logs its outcome to stderr under `[search]` so
+/// the path is visible in the dev console.
 ///
 /// Coverage-excluded: thin async glue over the injectable transport that
 /// delegates every decision to the pure, directly-tested helpers (each engine's
-/// request builder and parser, [`classify_serp`], [`dedupe_and_cap`]); its
-/// rotation behaviour is still exercised against
+/// request builder and parser, [`classify_serp`], [`dedupe_and_cap`],
+/// [`EngineHealth`]); its rotation behaviour is still exercised against
 /// [`crate::net::transport::FakeHttpTransport`] in the tests below. Excluded
 /// only because parallel async coverage attribution is nondeterministic.
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub async fn web_search(transport: &dyn HttpTransport, query: &str) -> Vec<SearchHit> {
+pub async fn web_search(
+    transport: &dyn HttpTransport,
+    query: &str,
+    health: &EngineHealth,
+) -> Vec<SearchHit> {
     for engine in ENGINES {
+        if health.is_cooling(engine.name) {
+            eprintln!("[search] engine={} cooling -> skipped", engine.name);
+            continue;
+        }
         let response = match transport.send(&(engine.build)(query)).await {
             Ok(response) => response,
             Err(_) => {
@@ -126,7 +206,11 @@ pub async fn web_search(transport: &dyn HttpTransport, query: &str) -> Vec<Searc
                 return capped;
             }
             SerpOutcome::Blocked => {
-                eprintln!("[search] engine={} blocked -> rotating", engine.name)
+                health.mark_blocked(engine.name, engine.cooldown_s);
+                eprintln!(
+                    "[search] engine={} blocked -> cooldown {}s",
+                    engine.name, engine.cooldown_s
+                );
             }
             SerpOutcome::Empty => {
                 eprintln!("[search] engine={} empty -> rotating", engine.name)
@@ -625,7 +709,7 @@ mod tests {
         // DuckDuckGo answers Ok, so Mojeek is never queried.
         let transport = FakeHttpTransport::new()
             .with_response(DDG_HTML_ENDPOINT, ok(DDG_HTML_ENDPOINT, DDG_HTML_FIXTURE));
-        let hits = web_search(&transport, "q").await;
+        let hits = web_search(&transport, "q", &EngineHealth::new()).await;
         assert_eq!(hits.len(), 2);
         let mojeek_url = mojeek_request("q").url;
         assert!(!transport.calls().iter().any(|c| c.url == mojeek_url));
@@ -646,7 +730,7 @@ mod tests {
                 },
             )
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let hits = web_search(&transport, "q").await;
+        let hits = web_search(&transport, "q", &EngineHealth::new()).await;
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].url, "https://rust-lang.org/tools/install/");
     }
@@ -662,13 +746,78 @@ mod tests {
         let transport = FakeHttpTransport::new()
             .with_response(DDG_HTML_ENDPOINT, blocked(DDG_HTML_ENDPOINT))
             .with_response(&mojeek_url, blocked(&mojeek_url));
-        assert!(web_search(&transport, "q").await.is_empty());
+        assert!(web_search(&transport, "q", &EngineHealth::new())
+            .await
+            .is_empty());
     }
 
     #[tokio::test]
     async fn web_search_empty_when_all_engines_transport_error() {
         // No canned responses -> every engine's send errors -> empty.
         let transport = FakeHttpTransport::new();
-        assert!(web_search(&transport, "q").await.is_empty());
+        assert!(web_search(&transport, "q", &EngineHealth::new())
+            .await
+            .is_empty());
+    }
+
+    // ── EngineHealth cooldown ───────────────────────────────────────────────
+
+    #[test]
+    fn health_marks_and_reports_cooling_until_expiry() {
+        let health = EngineHealth::new();
+        assert!(!health.is_cooling("duckduckgo"));
+        health.mark_blocked("duckduckgo", 3600);
+        assert!(health.is_cooling("duckduckgo"));
+        // A zero-second cooldown is expired on the next read and pruned.
+        health.mark_blocked("mojeek", 0);
+        assert!(!health.is_cooling("mojeek"));
+        assert!(!health.is_cooling("mojeek"));
+    }
+
+    #[test]
+    fn health_default_is_empty() {
+        assert!(!EngineHealth::default().is_cooling("duckduckgo"));
+    }
+
+    #[tokio::test]
+    async fn web_search_skips_cooling_engine_entirely() {
+        // DuckDuckGo is inside its cooldown: no request goes to it at all, and
+        // Mojeek serves the query.
+        let health = EngineHealth::new();
+        health.mark_blocked("duckduckgo", 3600);
+        let mojeek_url = mojeek_request("q").url;
+        let transport = FakeHttpTransport::new()
+            .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
+        let hits = web_search(&transport, "q", &health).await;
+        assert_eq!(hits.len(), 2);
+        assert!(!transport.calls().iter().any(|c| c.url == DDG_HTML_ENDPOINT));
+    }
+
+    #[tokio::test]
+    async fn web_search_block_marks_cooldown_for_next_query() {
+        // First query: DuckDuckGo answers with a challenge -> marked blocked.
+        // Second query: DuckDuckGo is skipped without a request (one DDG POST
+        // total across both queries).
+        let health = EngineHealth::new();
+        let mojeek_url = mojeek_request("q").url;
+        let transport = FakeHttpTransport::new()
+            .with_response(
+                DDG_HTML_ENDPOINT,
+                HttpResponse {
+                    status: 202,
+                    final_url: DDG_HTML_ENDPOINT.into(),
+                    body: b"<div class=\"anomaly-modal\">challenge-form</div>".to_vec(),
+                },
+            )
+            .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
+        let _ = web_search(&transport, "q", &health).await;
+        let _ = web_search(&transport, "q", &health).await;
+        let ddg_posts = transport
+            .calls()
+            .into_iter()
+            .filter(|c| c.url == DDG_HTML_ENDPOINT)
+            .count();
+        assert_eq!(ddg_posts, 1, "blocked engine must not be re-queried");
+        assert!(health.is_cooling("duckduckgo"));
     }
 }

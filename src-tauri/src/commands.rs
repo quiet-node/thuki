@@ -650,6 +650,7 @@ async fn run_builtin_search(
         prepass: &prepass,
         transport: &transport,
         scorer: &scorer,
+        health: crate::websearch::engine::global_engine_health(),
     };
     let status = |phase| on_chunk(StreamChunk::SearchStatus { phase });
     let outcome = crate::websearch::orchestrator::run_search(
@@ -667,6 +668,11 @@ async fn run_builtin_search(
     match outcome {
         crate::websearch::orchestrator::SearchOutcome::Answer { messages, sources } => {
             on_chunk(StreamChunk::SearchSources(source_metas(&sources)));
+            BuiltinSearchResult::Grounded(messages)
+        }
+        // Search wanted but unreachable: stream the disclosure-bearing messages
+        // (no sources to attach), so the answer names its unverified freshness.
+        crate::websearch::orchestrator::SearchOutcome::Unreachable { messages } => {
             BuiltinSearchResult::Grounded(messages)
         }
         crate::websearch::orchestrator::SearchOutcome::NoSearch => BuiltinSearchResult::Plain,

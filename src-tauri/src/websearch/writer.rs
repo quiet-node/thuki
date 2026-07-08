@@ -107,6 +107,37 @@ pub(crate) fn build_writer_messages(
     messages
 }
 
+/// The appendix added to the latest user turn when a search was wanted but no
+/// web sources could be retrieved (engines blocked or nothing citable). Makes
+/// the model disclose the failed verification instead of silently presenting
+/// possibly-stale memory as current: the silent-stale answer is the worst
+/// failure mode this pipeline has.
+const UNREACHABLE_APPENDIX: &str = "\n\n---\nNote: an automatic web search was attempted for this message, but no web sources could be retrieved right now. Answer from your own knowledge, and state clearly, in one short sentence, that you could not verify current information and your answer may be out of date.";
+
+/// Assembles the fallback messages for a turn where search was wanted but
+/// unreachable: the chat system prompt, the history verbatim, then the latest
+/// user turn with [`UNREACHABLE_APPENDIX`]. The shared system+history prefix
+/// keeps the KV cache warm, same as the writer path.
+pub(crate) fn unreachable_messages(
+    chat_system_prompt: &str,
+    history: &[ChatMessage],
+    latest_user_message: &str,
+) -> Vec<ChatMessage> {
+    let mut messages = Vec::with_capacity(history.len() + 2);
+    messages.push(ChatMessage {
+        role: "system".into(),
+        content: chat_system_prompt.into(),
+        images: None,
+    });
+    messages.extend(history.iter().cloned());
+    messages.push(ChatMessage {
+        role: "user".into(),
+        content: format!("{latest_user_message}{UNREACHABLE_APPENDIX}"),
+        images: None,
+    });
+    messages
+}
+
 /// Production entry point: mints a fresh random nonce and builds the writer
 /// messages. Coverage-excluded thin wrapper over [`build_writer_messages`]
 /// (tested with a fixed nonce); the only extra behaviour is the per-request
@@ -206,6 +237,22 @@ mod tests {
         assert!(appendix.contains("en-US"));
         assert!(appendix.contains("[n] citation"));
         assert!(appendix.contains("<<<UNTRUSTED_WEB_CONTENT NONCE>>>"));
+    }
+
+    // ── unreachable_messages ──────────────────────────────────────────────────
+
+    #[test]
+    fn unreachable_messages_share_prefix_and_append_disclosure() {
+        let history = vec![user("earlier")];
+        let msgs = unreachable_messages("PERSONA", &history, "weather in Tokyo");
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].content, "PERSONA");
+        assert_eq!(msgs[1].content, "earlier");
+        assert!(msgs[2].content.starts_with("weather in Tokyo"));
+        assert!(msgs[2]
+            .content
+            .contains("no web sources could be retrieved"));
+        assert!(msgs[2].content.contains("may be out of date"));
     }
 
     // ── build_writer_messages ─────────────────────────────────────────────────

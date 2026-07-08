@@ -822,6 +822,29 @@ pub const SERP_MAX_RESULTS_PER_QUERY: usize = 10;
 /// Not user-tunable: a result-diversity bound.
 pub const SERP_MAX_RESULTS_PER_DOMAIN: usize = 2;
 
+/// Hit count at which the orchestrator stops issuing further search queries for
+/// the turn. The classifier may emit up to 3 queries, but firing them all
+/// back-to-back is a self-inflicted burst that trips the keyless engines' rate
+/// limits (observed live: Mojeek served queries 1-2 then throttled query 3).
+/// Once one query has returned this many usable hits, the remaining queries add
+/// burst risk and latency for marginal recall, so they are skipped.
+///
+/// Not user-tunable: a rate-limit-survival bound on third-party request volume.
+pub const SERP_EARLY_STOP_HITS: usize = 8;
+
+/// How long a search engine is skipped after it returns a bot challenge or
+/// rate-limit response (seconds), keyed per engine. Re-hammering a blocked
+/// engine wastes a request per query, adds latency, and feeds the very volume
+/// signal that keeps the block alive (DuckDuckGo's IP block is multi-hour and
+/// volume-triggered, per the T1 spike). DuckDuckGo gets a long cooldown to
+/// match its observed multi-hour blocks; the fallback engines get a short one
+/// because their throttles are soft and clear quickly.
+///
+/// Not user-tunable: rate-limit-survival bounds on third-party request volume.
+pub const ENGINE_COOLDOWN_PRIMARY_S: u64 = 1800;
+/// Cooldown for fallback engines (seconds). See [`ENGINE_COOLDOWN_PRIMARY_S`].
+pub const ENGINE_COOLDOWN_FALLBACK_S: u64 = 120;
+
 // ─── Web-search fetch + extract ──────────────────────────────────────────────
 
 /// `num_ctx` at or above which the fetch stage is allowed the larger page

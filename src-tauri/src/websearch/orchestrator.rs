@@ -20,9 +20,21 @@
 //! - classifier cancelled → [`SearchOutcome::Cancelled`] (the caller stops);
 //! - classifier infra error → [`SearchOutcome::NoSearch`] (answer from the
 //!   model, never block the user on a search-infra failure);
-//! - `no` decision, empty results, or nothing worth citing after ranking →
-//!   [`SearchOutcome::NoSearch`];
+//! - `no` decision → [`SearchOutcome::NoSearch`];
+//! - a `web` decision whose retrieval yields nothing (every engine blocked or
+//!   empty, or nothing worth citing after ranking) →
+//!   [`SearchOutcome::Unreachable`]: the model still answers, but is explicitly
+//!   told to disclose that it could not verify current information. Silently
+//!   presenting stale memory as current on a turn that wanted the web is the
+//!   pipeline's worst failure mode, so it is never allowed to happen silently;
 //! - cancellation mid-pipeline → [`SearchOutcome::Cancelled`].
+//!
+//! Query volume is bounded two ways: the loop stops issuing further queries
+//! once one has returned enough hits ([`SERP_EARLY_STOP_HITS`]), and blocked
+//! engines sit out a cooldown window ([`EngineHealth`]) instead of being
+//! re-hammered on every query. Both exist because the keyless engines'
+//! rate-limits are volume-triggered: the pipeline's own burst was observed
+//! live tripping them.
 //!
 //! `cached` is mapped to `web` for now (a correct re-search); the TTL'd
 //! multi-turn source cache is a later optimisation.
@@ -30,14 +42,15 @@
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::ChatMessage;
+use crate::config::defaults::SERP_EARLY_STOP_HITS;
 use crate::net::transport::HttpTransport;
 use crate::websearch::assemble::{assemble_context, SourceBlock};
-use crate::websearch::engine::{web_search, SearchHit};
+use crate::websearch::engine::{web_search, EngineHealth, SearchHit};
 use crate::websearch::fetch::fetch_pages;
 use crate::websearch::prefilter::{prefilter, PreFilterVerdict};
 use crate::websearch::prepass::{InferenceError, PrePass, PrePassDecision, SearchDecision};
 use crate::websearch::rank::{select_chunks, Scorer};
-use crate::websearch::writer::writer_messages;
+use crate::websearch::writer::{unreachable_messages, writer_messages};
 
 /// Progress phase reported to the UI while the pipeline runs, before any answer
 /// token streams.
@@ -54,8 +67,8 @@ pub enum SearchPhase {
 
 /// What the orchestrator resolved for this turn.
 pub enum SearchOutcome {
-    /// Answer the user directly with the plain chat prompt (no decision, an
-    /// infra failure, or a search that found nothing worth citing).
+    /// Answer the user directly with the plain chat prompt (a `no` decision or
+    /// a search-infra failure before any retrieval was wanted).
     NoSearch,
     /// Answer with the source-grounded writer prompt. `messages` already embeds
     /// the delimited sources; `sources` is the citation metadata for the UI.
@@ -63,6 +76,11 @@ pub enum SearchOutcome {
         messages: Vec<ChatMessage>,
         sources: Vec<SourceBlock>,
     },
+    /// A search was wanted but retrieval produced nothing (engines blocked or
+    /// nothing citable). `messages` is the plain chat prompt plus an appendix
+    /// telling the model to disclose the failed verification, so a stale answer
+    /// is never presented as current.
+    Unreachable { messages: Vec<ChatMessage> },
     /// The user cancelled during the pipeline; the caller emits `Cancelled` and
     /// streams nothing.
     Cancelled,
@@ -73,6 +91,8 @@ pub struct SearchDeps<'a> {
     pub prepass: &'a dyn PrePass,
     pub transport: &'a dyn HttpTransport,
     pub scorer: &'a dyn Scorer,
+    /// Cross-turn engine block memory; blocked engines sit out their cooldown.
+    pub health: &'a EngineHealth,
 }
 
 /// Runs the pipeline for one turn. `chat_system_prompt`, `history`, and
@@ -191,11 +211,21 @@ async fn run_web(
         if cancel.is_cancelled() {
             return SearchOutcome::Cancelled;
         }
-        hits.extend(web_search(deps.transport, query).await);
+        hits.extend(web_search(deps.transport, query, deps.health).await);
+        // Early stop: once one query has produced enough hits, further queries
+        // add third-party burst (the engines' rate limits are volume-triggered)
+        // and latency for marginal recall.
+        if hits.len() >= SERP_EARLY_STOP_HITS {
+            break;
+        }
     }
     let hits = dedupe_hits(hits);
     if hits.is_empty() {
-        return SearchOutcome::NoSearch;
+        // The turn wanted the web and got nothing: answer with an explicit
+        // could-not-verify disclosure, never a silent stale answer.
+        return SearchOutcome::Unreachable {
+            messages: unreachable_messages(chat_system_prompt, history, latest_user),
+        };
     }
     if cancel.is_cancelled() {
         return SearchOutcome::Cancelled;
@@ -205,7 +235,9 @@ async fn run_web(
     let chunks = select_chunks(&pages, standalone_question, deps.scorer);
     let sources = assemble_context(&chunks, num_ctx);
     if sources.is_empty() {
-        return SearchOutcome::NoSearch;
+        return SearchOutcome::Unreachable {
+            messages: unreachable_messages(chat_system_prompt, history, latest_user),
+        };
     }
     let messages = writer_messages(
         chat_system_prompt,
@@ -315,6 +347,9 @@ mod tests {
             prepass,
             transport,
             scorer,
+            // Each test gets its own leaked registry so a block marked in one
+            // test can never poison a parallel test's rotation.
+            health: Box::leak(Box::new(EngineHealth::new())),
         }
     }
 
@@ -593,9 +628,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn web_with_no_results_degrades_to_no_search() {
+    async fn web_with_no_results_yields_unreachable_disclosure() {
         let prepass = FakePrePass::returning(Ok(web_decision(vec!["q"])));
-        // SERP returns a challenge page -> zero hits.
+        // Every engine fails (DDG challenge; Mojeek has no canned response ->
+        // transport error) -> zero hits -> the answer must disclose the failed
+        // verification instead of silently going stale.
         let transport = FakeHttpTransport::new().with_response(
             DDG_ENDPOINT,
             HttpResponse {
@@ -609,7 +646,7 @@ mod tests {
             &deps(&prepass, &transport, &Bm25Scorer),
             "sys",
             &[],
-            "q",
+            "what is the latest rust version",
             16384,
             "2026-07-05",
             "en-US",
@@ -617,13 +654,16 @@ mod tests {
             &status,
         )
         .await;
-        assert!(matches!(outcome, SearchOutcome::NoSearch));
+        assert!(matches!(&outcome, SearchOutcome::Unreachable { messages }
+            if messages.last().is_some_and(|m|
+                m.content.starts_with("what is the latest rust version")
+                && m.content.contains("no web sources could be retrieved"))));
     }
 
     #[tokio::test]
-    async fn web_with_no_relevant_chunks_degrades_to_no_search() {
+    async fn web_with_no_relevant_chunks_yields_unreachable_disclosure() {
         // The page has real text but shares no term with the standalone question,
-        // so BM25 keeps nothing and there is nothing to cite.
+        // so BM25 keeps nothing: search was wanted, nothing citable -> disclose.
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Web,
             standalone_question: "quantum chromodynamics lagrangian".into(),
@@ -643,7 +683,61 @@ mod tests {
             &status,
         )
         .await;
-        assert!(matches!(outcome, SearchOutcome::NoSearch));
+        assert!(matches!(outcome, SearchOutcome::Unreachable { .. }));
+    }
+
+    #[tokio::test]
+    async fn query_loop_stops_early_once_enough_hits() {
+        // A SERP with more rows than the early-stop threshold: the first query
+        // satisfies it, so the second query is never sent (one SERP POST total).
+        let many_rows: String = (0..SERP_EARLY_STOP_HITS + 2)
+            .map(|i| {
+                format!(
+                    "<div class=\"result\"><a class=\"result__a\" href=\"https://s{i}.example/\">Treaty {i}</a>\
+                     <a class=\"result__snippet\">the treaty signed in paris</a></div>"
+                )
+            })
+            .collect();
+        let prepass = FakePrePass::returning(Ok(web_decision(vec!["q one", "q two"])));
+        let transport = FakeHttpTransport::new()
+            .with_response(
+                DDG_ENDPOINT,
+                HttpResponse {
+                    status: 200,
+                    final_url: DDG_ENDPOINT.into(),
+                    body: many_rows.into_bytes(),
+                },
+            )
+            .with_response(
+                "https://s0.example/",
+                HttpResponse {
+                    status: 200,
+                    final_url: "https://s0.example/".into(),
+                    body: PAGE_HTML.as_bytes().to_vec(),
+                },
+            );
+        let (_p, status) = recorder();
+        let _ = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        let serp_posts = transport
+            .calls()
+            .into_iter()
+            .filter(|c| c.url == DDG_ENDPOINT)
+            .count();
+        assert_eq!(
+            serp_posts, 1,
+            "second query should be skipped by early stop"
+        );
     }
 
     #[tokio::test]
