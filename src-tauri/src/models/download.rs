@@ -57,6 +57,11 @@ pub enum DownloadEvent {
     AllDone,
     /// The user cancelled; the partial is kept for a later resume.
     Cancelled,
+    /// The start was refused because the app is in post-unclean-launch safe
+    /// mode and the download was not user-initiated (issue #296). No slot is
+    /// claimed and no bytes are transferred; a genuine user retry (which passes
+    /// `user_initiated: true`) is not blocked.
+    RejectedSafeMode,
     /// The download failed; `kind` drives the UI state machine.
     Failed {
         kind: DownloadFailKind,
@@ -1423,5 +1428,8 @@ mod tests {
 
         let all_done = serde_json::to_value(DownloadEvent::AllDone).unwrap();
         assert_eq!(all_done, serde_json::json!({ "type": "AllDone" }));
+
+        let rejected = serde_json::to_value(DownloadEvent::RejectedSafeMode).unwrap();
+        assert_eq!(rejected, serde_json::json!({ "type": "RejectedSafeMode" }));
     }
 }

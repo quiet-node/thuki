@@ -2780,10 +2780,18 @@ pub fn get_models_dir_free_bytes(store: tauri::State<'_, storage::ModelStore>) -
 pub fn download_starter(
     tier: String,
     key: String,
+    user_initiated: Option<bool>,
     on_event: tauri::ipc::Channel<download::DownloadEvent>,
     app: tauri::AppHandle,
     download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
+    if safe_mode_rejects_start(
+        app.state::<crate::startup_guard::StartupSafety>().safe_mode(),
+        user_initiated,
+    ) {
+        let _ = on_event.send(download::DownloadEvent::RejectedSafeMode);
+        return Ok(());
+    }
     let starter = starter_for_tier(&tier, system_ram_bytes())?;
     let specs = registry::download_specs(starter);
     let token = claim_download(&download_state, &key, spec_shas(&specs))?;
@@ -2807,10 +2815,18 @@ pub fn download_starter(
 pub fn download_staff_pick(
     id: String,
     key: String,
+    user_initiated: Option<bool>,
     on_event: tauri::ipc::Channel<download::DownloadEvent>,
     app: tauri::AppHandle,
     download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
+    if safe_mode_rejects_start(
+        app.state::<crate::startup_guard::StartupSafety>().safe_mode(),
+        user_initiated,
+    ) {
+        let _ = on_event.send(download::DownloadEvent::RejectedSafeMode);
+        return Ok(());
+    }
     let starter = starter_for_id(&id)?;
     let specs = registry::download_specs(starter);
     let token = claim_download(&download_state, &key, spec_shas(&specs))?;
@@ -2833,11 +2849,19 @@ pub async fn download_repo_model(
     repo: String,
     file: String,
     key: String,
+    user_initiated: Option<bool>,
     on_event: tauri::ipc::Channel<download::DownloadEvent>,
     app: tauri::AppHandle,
     client: tauri::State<'_, reqwest::Client>,
     download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
+    if safe_mode_rejects_start(
+        app.state::<crate::startup_guard::StartupSafety>().safe_mode(),
+        user_initiated,
+    ) {
+        let _ = on_event.send(download::DownloadEvent::RejectedSafeMode);
+        return Ok(());
+    }
     let resolved = resolve_repo_spec(&client, HF_BASE_URL, &repo, &file).await?;
     let specs = repo_download_specs(HF_BASE_URL, &repo, &file, &resolved);
     let token = claim_download(&download_state, &key, spec_shas(&specs))?;
@@ -3019,6 +3043,19 @@ pub(crate) fn finalize_outcome_event(result: Result<(), String>) -> download::Do
 /// can scope its in-flight check to the exact partial(s) this download owns.
 fn spec_shas(specs: &[download::DownloadSpec]) -> Vec<String> {
     specs.iter().map(|s| s.sha256.clone()).collect()
+}
+
+/// Whether a download start must be refused because the app is in
+/// post-unclean-launch safe mode (issue #296) and the start was not user
+/// initiated. `user_initiated` is `Option` so existing frontend invokes that
+/// omit the argument still deserialize: `None` and `Some(false)` are both
+/// treated as NOT user-initiated. Only `Some(true)` (a genuine user click,
+/// which the frontend will pass) is exempt, so a safe-mode launch's silent
+/// auto-refetch is blocked at the backend before any transfer begins while a
+/// deliberate retry is not. When `safe_mode` is false this is always false, so
+/// normal launches are unaffected.
+pub(crate) fn safe_mode_rejects_start(safe_mode: bool, user_initiated: Option<bool>) -> bool {
+    safe_mode && !matches!(user_initiated, Some(true))
 }
 
 /// Runs the claimed download on the async runtime: streams events to the
@@ -5106,6 +5143,20 @@ mod tests {
         for (sha, spec) in shas.iter().zip(&specs) {
             assert_eq!(sha, &spec.sha256);
         }
+    }
+
+    #[test]
+    fn safe_mode_rejects_only_non_user_initiated_starts() {
+        // Not in safe mode: every start is allowed regardless of the flag, so a
+        // normal launch behaves exactly as before.
+        assert!(!safe_mode_rejects_start(false, None));
+        assert!(!safe_mode_rejects_start(false, Some(false)));
+        assert!(!safe_mode_rejects_start(false, Some(true)));
+        // In safe mode: a missing flag (legacy invoke) and an explicit false
+        // (auto-refetch) are both rejected; only an explicit user click passes.
+        assert!(safe_mode_rejects_start(true, None));
+        assert!(safe_mode_rejects_start(true, Some(false)));
+        assert!(!safe_mode_rejects_start(true, Some(true)));
     }
 
     #[test]
