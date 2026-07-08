@@ -798,12 +798,18 @@ pub const CLASSIFIER_HISTORY_TURNS: usize = 4;
 /// or quality knob the user should tune.
 pub const PREPASS_MAX_TOKENS: i32 = 1536;
 
-/// Per-call wall-clock timeout for the search pre-pass (seconds). One warm-slot
-/// classification call; a few seconds is generous, and exceeding it means the
-/// engine is wedged, in which case degrading to a direct answer beats stalling.
+/// Per-call wall-clock timeout for the classifier call (seconds). Sized to fit
+/// [`PREPASS_MAX_TOKENS`] at the observed ~60 tok/s decode of the largest
+/// bundled model plus prefill headroom: a reasoning-family model that ignores
+/// the thinking-off hint can legitimately need most of the token budget, and a
+/// timeout tighter than the budget silently converts those calls into failed
+/// decisions (observed live on gpt-oss-20b at 20 s). The `Reasoning: low`
+/// directive in the classifier prompt keeps typical calls far below this;
+/// exceeding it means the engine is wedged, and the caller degrades rather
+/// than stalling.
 ///
 /// Not user-tunable: an internal robustness bound.
-pub const PREPASS_TIMEOUT_S: u64 = 20;
+pub const PREPASS_TIMEOUT_S: u64 = 35;
 
 // ─── Web-search engine results ───────────────────────────────────────────────
 

@@ -128,9 +128,23 @@ pub async fn run_search(
     {
         Ok(classified) => classified,
         Err(InferenceError::Cancelled) => return SearchOutcome::Cancelled,
-        // A search-infra failure must never block the answer: fall back to a
-        // plain, model-only response.
-        Err(InferenceError::Request(_)) => return SearchOutcome::NoSearch,
+        // Classifier infra failure (engine wedged, call timed out). On a
+        // ForceWeb turn the deterministic signal already decided: search with
+        // the raw message rather than dropping to a stale answer (observed
+        // live: reasoning-heavy models can blow the classifier timeout, and
+        // losing the search on a "latest ..." turn is the worst outcome). On an
+        // ambiguous turn, fall back to a plain model answer.
+        Err(InferenceError::Request(reason)) => {
+            eprintln!("[search] classifier error: {reason}");
+            if verdict != PreFilterVerdict::ForceWeb {
+                return SearchOutcome::NoSearch;
+            }
+            PrePassDecision {
+                decision: SearchDecision::Web,
+                standalone_question: latest_user.trim().to_string(),
+                queries: vec![latest_user.trim().to_string()],
+            }
+        }
     };
     let decision = resolve_decision(verdict, classified);
     eprintln!(
@@ -824,6 +838,32 @@ mod tests {
         )
         .await;
         assert!(matches!(outcome, SearchOutcome::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn classifier_error_on_force_web_turn_still_searches() {
+        // The deterministic ForceWeb signal survives a classifier infra failure
+        // (e.g. a timed-out reasoning-heavy call): the raw message becomes the
+        // query and the search proceeds. The fixture SERP/page ground it.
+        let prepass = FakePrePass::returning(Err(InferenceError::Request("timeout".into())));
+        let transport = transport_with_serp_and_page();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            // ForceWeb via "latest"; words overlap the fixture page so BM25
+            // keeps chunks and the answer grounds.
+            "latest treaty versailles paris",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Answer { .. }));
+        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
     }
 
     #[tokio::test]
