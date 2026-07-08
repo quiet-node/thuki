@@ -1164,8 +1164,35 @@ pub struct DownloadSlot {
     last_event: Option<download::DownloadEvent>,
 }
 
-#[derive(Default)]
-pub struct DownloadState(pub std::sync::Mutex<std::collections::HashMap<String, DownloadSlot>>);
+/// In-flight download slots (`.0`, keyed by download key) plus the shared
+/// concurrency-cap semaphore (`.1`). The semaphore bounds simultaneous
+/// transfers to [`crate::config::defaults::DEFAULT_MAX_CONCURRENT_DOWNLOADS`]
+/// across every download regardless of which slot key or window started it, so
+/// a burst cannot exhaust the machine (issue #296).
+pub struct DownloadState(
+    pub std::sync::Mutex<std::collections::HashMap<String, DownloadSlot>>,
+    tokio::sync::Semaphore,
+);
+
+impl Default for DownloadState {
+    /// Empty slot map and a semaphore seeded with the compile-time concurrency
+    /// cap. This is the only place the cap's permit count is set.
+    fn default() -> Self {
+        Self(
+            std::sync::Mutex::new(std::collections::HashMap::new()),
+            tokio::sync::Semaphore::new(crate::config::defaults::DEFAULT_MAX_CONCURRENT_DOWNLOADS),
+        )
+    }
+}
+
+impl DownloadState {
+    /// The shared concurrency-cap semaphore. A download acquires one permit
+    /// before it transfers bytes and releases it (via RAII) when the transfer
+    /// ends, so no more than the cap ever transfer at once.
+    pub fn permits(&self) -> &tokio::sync::Semaphore {
+        &self.1
+    }
+}
 
 /// Tauri event broadcast to every webview on each download progress update, so a
 /// window that did not start the download (e.g. the Settings panel while
@@ -2786,7 +2813,8 @@ pub fn download_starter(
     download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
     if safe_mode_rejects_start(
-        app.state::<crate::startup_guard::StartupSafety>().safe_mode(),
+        app.state::<crate::startup_guard::StartupSafety>()
+            .safe_mode(),
         user_initiated,
     ) {
         let _ = on_event.send(download::DownloadEvent::RejectedSafeMode);
@@ -2821,7 +2849,8 @@ pub fn download_staff_pick(
     download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
     if safe_mode_rejects_start(
-        app.state::<crate::startup_guard::StartupSafety>().safe_mode(),
+        app.state::<crate::startup_guard::StartupSafety>()
+            .safe_mode(),
         user_initiated,
     ) {
         let _ = on_event.send(download::DownloadEvent::RejectedSafeMode);
@@ -2843,6 +2872,10 @@ pub fn download_staff_pick(
 
 /// Starts downloading a pasted-repo model after resolving its digest, size,
 /// pinned revision, and optional mmproj companion from the Hugging Face API.
+// A Tauri command's arguments are its injected state plus the caller's payload;
+// the safe-mode `user_initiated` flag pushes this one past the lint's default,
+// but every argument is load-bearing and none can be folded away.
+#[allow(clippy::too_many_arguments)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub async fn download_repo_model(
@@ -2856,7 +2889,8 @@ pub async fn download_repo_model(
     download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
     if safe_mode_rejects_start(
-        app.state::<crate::startup_guard::StartupSafety>().safe_mode(),
+        app.state::<crate::startup_guard::StartupSafety>()
+            .safe_mode(),
         user_initiated,
     ) {
         let _ = on_event.send(download::DownloadEvent::RejectedSafeMode);
@@ -3079,6 +3113,16 @@ fn spawn_model_download(
         let on_event_finalize = on_event.clone();
         let result = {
             let store = app.state::<storage::ModelStore>();
+            let dl_state = app.state::<DownloadState>();
+            // Probe the models volume's free space through the same store; the
+            // guardrail thresholds are the compile-time defense-in-depth bounds.
+            let free_probe = || store.free_bytes();
+            let disk = download::DiskGuard {
+                free_bytes: &free_probe,
+                headroom_bytes: crate::config::defaults::DEFAULT_DOWNLOAD_DISK_HEADROOM_BYTES,
+                recheck_interval_bytes:
+                    crate::config::defaults::DEFAULT_DOWNLOAD_DISK_RECHECK_INTERVAL_BYTES,
+            };
             let emit_app = app.clone();
             let emit_key = key.clone();
             let emit_shas = shas.clone();
@@ -3088,7 +3132,16 @@ fn spawn_model_download(
                 let _ = on_event.send(event.clone());
                 broadcast_download_event(&emit_app, &emit_key, &emit_shas, event);
             };
-            download::run_download(&specs, store.inner(), &client, token, emit).await
+            download::run_download(
+                &specs,
+                store.inner(),
+                &client,
+                token,
+                dl_state.permits(),
+                &disk,
+                emit,
+            )
+            .await
         };
         if result.is_ok() {
             let finalized = finalize_install(&app, &model);
@@ -5143,6 +5196,18 @@ mod tests {
         for (sha, spec) in shas.iter().zip(&specs) {
             assert_eq!(sha, &spec.sha256);
         }
+    }
+
+    #[test]
+    fn download_state_seeds_the_concurrency_cap() {
+        // The semaphore is created with exactly the compile-time cap, so the
+        // number of simultaneously-transferring downloads is bounded from the
+        // first launch with no runtime wiring required.
+        let state = DownloadState::default();
+        assert_eq!(
+            state.permits().available_permits(),
+            crate::config::defaults::DEFAULT_MAX_CONCURRENT_DOWNLOADS
+        );
     }
 
     #[test]

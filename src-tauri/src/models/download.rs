@@ -25,6 +25,7 @@ use std::io::Write;
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use super::storage::{ModelStore, StorageError};
@@ -34,6 +35,22 @@ use crate::config::defaults::DOWNLOAD_PROGRESS_MIN_INTERVAL_MS;
 #[derive(Debug, Clone, serde::Serialize, PartialEq)]
 #[serde(tag = "type", content = "data")]
 pub enum DownloadEvent {
+    /// The download is admitted but waiting for a concurrency slot: the
+    /// simultaneous-transfer cap
+    /// ([`crate::config::defaults::DEFAULT_MAX_CONCURRENT_DOWNLOADS`]) is full,
+    /// so no bytes move yet. Emitted at most once, cleared implicitly by the
+    /// first `Started` once a slot frees.
+    Queued,
+    /// The download was refused (preflight) or aborted (mid-transfer) because
+    /// the target volume lacks the model's remaining bytes plus the required
+    /// free-space headroom. `required_bytes` is the space the check demanded
+    /// (remaining bytes plus headroom for the preflight, the bare headroom floor
+    /// for a mid-transfer abort); `available_bytes` is what statfs reported. A
+    /// mid-transfer abort keeps the `.partial` for a later resume.
+    InsufficientDisk {
+        required_bytes: u64,
+        available_bytes: u64,
+    },
     /// A file's download began. `resumed_from` is the partial's prior length
     /// (0 on a fresh download).
     Started {
@@ -93,6 +110,26 @@ pub struct DownloadSpec {
     pub total_bytes: u64,
 }
 
+/// Disk-space admission policy for a download: how free space is probed and the
+/// floor it must stay above. Bundled into one argument so [`run_download`] stays
+/// within the argument-count lint, and so the probe is injectable for tests
+/// (production passes a closure over [`ModelStore::free_bytes`]; tests pass a
+/// deterministic one).
+pub(crate) struct DiskGuard<'a> {
+    /// Free bytes on the target volume, or `None` when statfs cannot determine
+    /// it. `None` means "unknown": the checks are skipped and the download
+    /// proceeds, mirroring the advisory contract of [`ModelStore::free_bytes`]
+    /// (blocking a download because we could not read free space would be worse
+    /// than the rare over-fill it might miss). `Send + Sync` because the guard is
+    /// held across `.await` inside the spawned download task.
+    pub free_bytes: &'a (dyn Fn() -> Option<u64> + Send + Sync),
+    /// Free-space headroom to keep above the download's own byte needs.
+    pub headroom_bytes: u64,
+    /// How many bytes a transfer writes between successive mid-transfer
+    /// re-checks of free space.
+    pub recheck_interval_bytes: u64,
+}
+
 /// Downloads every spec sequentially into store partials, emitting events via
 /// `emit`. Resumes with `Range: bytes=<len>-` when a partial exists; a partial
 /// whose length already equals total_bytes skips the network entirely and goes
@@ -104,18 +141,30 @@ pub struct DownloadSpec {
 /// finalize. Cancellation: raced against the initial send and every body
 /// chunk, so a stalled connection cannot mask it; emits Cancelled and
 /// returns; the partial is KEPT for resume.
-/// Every failure is emitted as a Failed event; the partial is kept except
-/// where verify_and_install already deleted it (checksum mismatch).
-#[allow(clippy::result_unit_err)] // Err carries no detail by design: every failure reaches the UI as a Failed event.
-pub async fn run_download(
+/// Every failure is emitted as a Failed (or, for a space failure,
+/// InsufficientDisk) event; the partial is kept except where
+/// verify_and_install already deleted it (checksum mismatch).
+///
+/// Admission control (issue #296): before any byte transfers, the download
+/// waits on `permits` for one of the
+/// [`crate::config::defaults::DEFAULT_MAX_CONCURRENT_DOWNLOADS`]
+/// concurrency slots (emitting Queued while it waits) so a burst of downloads
+/// cannot all transfer at once, then runs a disk-space preflight via `disk`.
+/// The permit is held for the whole transfer and released on every exit path
+/// by RAII, so a slot is never leaked.
+#[allow(clippy::result_unit_err)] // Err carries no detail by design: every failure reaches the UI as an event.
+pub(crate) async fn run_download(
     specs: &[DownloadSpec],
     store: &ModelStore,
     client: &reqwest::Client,
     cancel: CancellationToken,
+    permits: &Semaphore,
+    disk: &DiskGuard<'_>,
     emit: impl Fn(DownloadEvent),
 ) -> Result<(), ()> {
-    // Validate every digest BEFORE any filesystem use: the sha256 becomes a
-    // file name in the store, so a malformed one must never reach a path.
+    // Validate every digest BEFORE any filesystem, network, or slot use: the
+    // sha256 becomes a file name in the store, so a malformed one must never
+    // reach a path, and a doomed spec must not consume a concurrency slot.
     for spec in specs {
         if !is_valid_sha256(&spec.sha256) {
             emit(DownloadEvent::Failed {
@@ -126,24 +175,111 @@ pub async fn run_download(
         }
     }
 
+    // Bound simultaneous transfers: wait for a slot (Queued while waiting) so a
+    // burst of downloads cannot exhaust memory, disk, and bandwidth all at once.
+    // The permit is held in `_permit` for the whole function and dropped on
+    // every return path, so no slot is ever leaked (success, error, or cancel).
+    let _permit = match acquire_transfer_permit(permits, &cancel, &emit).await {
+        Some(permit) => permit,
+        None => {
+            // Cancelled while queued: nothing was written, so this is a clean
+            // pause with the partial (if any) untouched.
+            emit(DownloadEvent::Cancelled);
+            return Err(());
+        }
+    };
+
+    // Disk preflight: refuse before writing when the volume cannot hold the
+    // bytes still to fetch plus the headroom. Unknown free space (None) proceeds.
+    if let Some(available) = (disk.free_bytes)() {
+        let required = bytes_remaining(specs, store).saturating_add(disk.headroom_bytes);
+        if available < required {
+            emit(DownloadEvent::InsufficientDisk {
+                required_bytes: required,
+                available_bytes: available,
+            });
+            return Err(());
+        }
+    }
+
     for spec in specs {
-        match download_one(spec, store, client, &cancel, &emit).await {
+        match download_one(spec, store, client, &cancel, disk, &emit).await {
             Ok(FileOutcome::Done) => {}
             Ok(FileOutcome::Cancelled) => {
                 emit(DownloadEvent::Cancelled);
                 return Err(());
             }
             Err(e) => {
-                emit(DownloadEvent::Failed {
-                    kind: classify_download_error(&e),
-                    message: failure_message(&e),
-                });
+                emit(download_error_event(e));
                 return Err(());
             }
         }
     }
 
     Ok(())
+}
+
+/// Waits for one of `permits`' concurrency slots, racing cancellation. Returns
+/// the held permit (dropped by the caller to free the slot), or `None` when the
+/// download was cancelled while queued. Emits [`DownloadEvent::Queued`] only
+/// when a slot is not immediately free, so an admitted-and-running download
+/// never reports a spurious queue.
+async fn acquire_transfer_permit<'a>(
+    permits: &'a Semaphore,
+    cancel: &CancellationToken,
+    emit: &impl Fn(DownloadEvent),
+) -> Option<tokio::sync::SemaphorePermit<'a>> {
+    // Fast path: a slot is free, so start immediately with no Queued event.
+    if let Ok(permit) = permits.try_acquire() {
+        return Some(permit);
+    }
+    // Capped out: surface Queued so the row shows a waiting state, then wait,
+    // racing cancellation so a queued download can still be paused instantly.
+    emit(DownloadEvent::Queued);
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => None,
+        // The semaphore is never closed, so acquire only fails on close: the
+        // expect documents that invariant rather than papering over a real error.
+        permit = permits.acquire() => Some(permit.expect("download semaphore is never closed")),
+    }
+}
+
+/// Bytes still to fetch across `specs`: for each, zero when its verified blob
+/// already exists, otherwise its total minus the bytes already on disk in its
+/// partial. The disk preflight adds the headroom to this to decide admission.
+fn bytes_remaining(specs: &[DownloadSpec], store: &ModelStore) -> u64 {
+    specs
+        .iter()
+        .map(|spec| {
+            if store.blob_path(&spec.sha256).exists() {
+                0
+            } else {
+                let have = store.existing_partial_len(&spec.sha256).unwrap_or(0);
+                spec.total_bytes.saturating_sub(have)
+            }
+        })
+        .sum()
+}
+
+/// Maps a download I/O failure onto its terminal event: a space failure becomes
+/// the structured [`DownloadEvent::InsufficientDisk`] (carrying the required and
+/// available byte counts), every other failure a [`DownloadEvent::Failed`] with
+/// its classified kind and message.
+fn download_error_event(e: DownloadIoError) -> DownloadEvent {
+    match e {
+        DownloadIoError::InsufficientDisk {
+            required,
+            available,
+        } => DownloadEvent::InsufficientDisk {
+            required_bytes: required,
+            available_bytes: available,
+        },
+        other => DownloadEvent::Failed {
+            kind: classify_download_error(&other),
+            message: failure_message(&other),
+        },
+    }
 }
 
 /// Per-file result distinguishing completion from user cancellation.
@@ -167,6 +303,7 @@ async fn download_one(
     store: &ModelStore,
     client: &reqwest::Client,
     cancel: &CancellationToken,
+    disk: &DiskGuard<'_>,
     emit: &impl Fn(DownloadEvent),
 ) -> Result<FileOutcome, DownloadIoError> {
     // Already installed as a verified blob: the first file of a multi-file
@@ -199,7 +336,7 @@ async fn download_one(
     // surfaces as an Http failure with the partial kept; Discard is the
     // user's recovery path.
     let streamed_hash = if resumed_from < spec.total_bytes {
-        match fetch_into_partial(spec, store, client, cancel, emit, resumed_from).await? {
+        match fetch_into_partial(spec, store, client, cancel, disk, emit, resumed_from).await? {
             FetchOutcome::Cancelled => return Ok(FileOutcome::Cancelled),
             FetchOutcome::Done { sha256 } => Some(sha256),
         }
@@ -242,6 +379,7 @@ async fn fetch_into_partial(
     store: &ModelStore,
     client: &reqwest::Client,
     cancel: &CancellationToken,
+    disk: &DiskGuard<'_>,
     emit: &impl Fn(DownloadEvent),
     resumed_from: u64,
 ) -> Result<FetchOutcome, DownloadIoError> {
@@ -312,6 +450,7 @@ async fn fetch_into_partial(
         .map_err(DownloadIoError::Write)?;
 
     let mut written = start;
+    let mut last_disk_check = start;
     let mut throttle = ProgressThrottle::new(spec.total_bytes, written);
     let mut stream = response.bytes_stream();
     loop {
@@ -341,6 +480,24 @@ async fn fetch_into_partial(
                 bytes: written,
                 total_bytes: spec.total_bytes,
             });
+        }
+        // Periodic disk re-check: a long transfer can fill the volume long after
+        // the preflight passed (other writers, a second model). Abort cleanly if
+        // free space drops below the headroom floor, keeping the flushed partial
+        // (and its running hash) for a later resume. Unknown free space (None)
+        // proceeds, mirroring the preflight's advisory contract.
+        if written - last_disk_check >= disk.recheck_interval_bytes {
+            last_disk_check = written;
+            if let Some(available) = (disk.free_bytes)() {
+                if available < disk.headroom_bytes {
+                    file.flush().map_err(DownloadIoError::Write)?;
+                    store.save_suspended_hash(&spec.sha256, written, hasher.clone());
+                    return Err(DownloadIoError::InsufficientDisk {
+                        required: disk.headroom_bytes,
+                        available,
+                    });
+                }
+            }
         }
     }
     file.flush().map_err(DownloadIoError::Write)?;
@@ -393,6 +550,12 @@ pub(crate) enum DownloadIoError {
     Write(std::io::Error),
     /// SHA-256 mismatch after a complete download.
     Verify { expected: String, actual: String },
+    /// Free space fell below the headroom floor during the transfer. Carries the
+    /// bytes the check demanded and what was available so the terminal event can
+    /// report both. Routed to [`DownloadEvent::InsufficientDisk`] by
+    /// [`download_error_event`], but also mapped by the classifier/message
+    /// helpers below so the failure taxonomy stays total.
+    InsufficientDisk { required: u64, available: u64 },
 }
 
 pub(crate) fn classify_download_error(e: &DownloadIoError) -> DownloadFailKind {
@@ -407,6 +570,7 @@ pub(crate) fn classify_download_error(e: &DownloadIoError) -> DownloadFailKind {
             _ => DownloadFailKind::Other,
         },
         DownloadIoError::Verify { .. } => DownloadFailKind::Checksum,
+        DownloadIoError::InsufficientDisk { .. } => DownloadFailKind::DiskFull,
     }
 }
 
@@ -420,6 +584,10 @@ fn failure_message(e: &DownloadIoError) -> String {
         DownloadIoError::Verify { expected, actual } => {
             format!("checksum mismatch: expected {expected}, got {actual}")
         }
+        DownloadIoError::InsufficientDisk {
+            required,
+            available,
+        } => format!("insufficient disk: need {required} bytes free, {available} available"),
     }
 }
 
@@ -444,6 +612,7 @@ pub(crate) fn is_valid_sha256(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::defaults::DEFAULT_MAX_CONCURRENT_DOWNLOADS;
     use sha2::{Digest, Sha256};
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
@@ -501,9 +670,28 @@ mod tests {
             .collect()
     }
 
+    /// Probe reporting "free space unknown", so a `DiskGuard` built around it
+    /// skips both the preflight and the mid-transfer re-check.
+    fn unknown_free() -> Option<u64> {
+        None
+    }
+
+    /// A `DiskGuard` that never refuses a download: unknown free space plus a
+    /// never-reached re-check interval. Used by every case not exercising the
+    /// disk guardrail itself.
+    fn permissive_disk() -> DiskGuard<'static> {
+        DiskGuard {
+            free_bytes: &unknown_free,
+            headroom_bytes: 0,
+            recheck_interval_bytes: u64::MAX,
+        }
+    }
+
     /// Test wrapper mirroring the terse `run_download` call the existing cases
-    /// expect. Feature-specific cases (the concurrency cap and disk guardrails)
-    /// call `run_download` directly with a tuned semaphore or `DiskGuard`.
+    /// expect: a fresh unexhausted semaphore (fast permit path, no `Queued`) and
+    /// a permissive `DiskGuard`. Feature-specific cases (the concurrency cap and
+    /// disk guardrails) call `run_download` directly with a tuned semaphore or
+    /// `DiskGuard`.
     async fn run_download_test(
         specs: &[DownloadSpec],
         store: &ModelStore,
@@ -511,7 +699,17 @@ mod tests {
         cancel: CancellationToken,
         emit: impl Fn(DownloadEvent),
     ) -> Result<(), ()> {
-        run_download(specs, store, client, cancel, emit).await
+        let permits = Semaphore::new(DEFAULT_MAX_CONCURRENT_DOWNLOADS);
+        run_download(
+            specs,
+            store,
+            client,
+            cancel,
+            &permits,
+            &permissive_disk(),
+            emit,
+        )
+        .await
     }
 
     // ── Happy path ───────────────────────────────────────────────────────────
@@ -888,7 +1086,8 @@ mod tests {
 
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let result = run_download_test(&[spec], &store, &reqwest::Client::new(), cancel, emit).await;
+        let result =
+            run_download_test(&[spec], &store, &reqwest::Client::new(), cancel, emit).await;
         assert_eq!(result, Err(()));
         assert_eq!(last_event(&events), DownloadEvent::Cancelled);
         // Partial is KEPT with the already-downloaded bytes for resume.
@@ -1327,6 +1526,15 @@ mod tests {
         assert_eq!(classify_download_error(&e), DownloadFailKind::Checksum);
     }
 
+    #[test]
+    fn classify_insufficient_disk_maps_to_disk_full() {
+        let e = DownloadIoError::InsufficientDisk {
+            required: 100,
+            available: 10,
+        };
+        assert_eq!(classify_download_error(&e), DownloadFailKind::DiskFull);
+    }
+
     // ── failure_message / map_storage_error (pure) ───────────────────────────
 
     #[test]
@@ -1348,6 +1556,13 @@ mod tests {
                     actual: "act".to_string(),
                 },
                 "exp",
+            ),
+            (
+                DownloadIoError::InsufficientDisk {
+                    required: 4096,
+                    available: 12,
+                },
+                "4096",
             ),
         ];
         for (error, needle) in cases {
@@ -1444,5 +1659,406 @@ mod tests {
 
         let rejected = serde_json::to_value(DownloadEvent::RejectedSafeMode).unwrap();
         assert_eq!(rejected, serde_json::json!({ "type": "RejectedSafeMode" }));
+
+        let queued = serde_json::to_value(DownloadEvent::Queued).unwrap();
+        assert_eq!(queued, serde_json::json!({ "type": "Queued" }));
+
+        let insufficient = serde_json::to_value(DownloadEvent::InsufficientDisk {
+            required_bytes: 2048,
+            available_bytes: 512,
+        })
+        .unwrap();
+        assert_eq!(
+            insufficient,
+            serde_json::json!({
+                "type": "InsufficientDisk",
+                "data": { "required_bytes": 2048, "available_bytes": 512 }
+            })
+        );
+    }
+
+    // ── Concurrency cap (semaphore) ──────────────────────────────────────────
+
+    #[test]
+    fn download_error_event_maps_disk_and_failure() {
+        // A space failure becomes the structured InsufficientDisk event.
+        let disk = download_error_event(DownloadIoError::InsufficientDisk {
+            required: 9,
+            available: 4,
+        });
+        assert_eq!(
+            disk,
+            DownloadEvent::InsufficientDisk {
+                required_bytes: 9,
+                available_bytes: 4,
+            }
+        );
+        // Every other failure becomes a classified Failed event.
+        let http = download_error_event(DownloadIoError::HttpStatus(500));
+        assert_eq!(
+            http,
+            DownloadEvent::Failed {
+                kind: DownloadFailKind::Http,
+                message: "server returned HTTP 500".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn permit_queues_then_acquires_when_a_slot_frees() {
+        // The single slot is already taken, so the next acquire must surface
+        // Queued and wait, then succeed once the held permit is dropped.
+        let permits = Semaphore::new(1);
+        let held = permits.acquire().await.unwrap();
+        let (events, emit) = collector();
+        let cancel = CancellationToken::new();
+
+        let acquire = acquire_transfer_permit(&permits, &cancel, &emit);
+        let release = async {
+            // `join!` polls `acquire` first, so it has already tried (and failed)
+            // the fast path, emitted Queued, and parked on the exhausted permit
+            // by the time this runs. Confirm the queue, then free the slot so the
+            // parked acquire can complete.
+            assert_eq!(*events.lock().unwrap(), vec![DownloadEvent::Queued]);
+            drop(held);
+        };
+        let (permit, ()) = tokio::join!(acquire, release);
+
+        assert!(
+            permit.is_some(),
+            "the queued download must eventually acquire"
+        );
+        assert_eq!(*events.lock().unwrap(), vec![DownloadEvent::Queued]);
+    }
+
+    #[tokio::test]
+    async fn capped_and_cancelled_emits_cancelled_without_transferring() {
+        // A download that is queued (cap full) and then cancelled must emit
+        // Queued then Cancelled and never touch the network or disk.
+        let (_dir, store) = make_store();
+        let body = body_of(512);
+        let spec = spec_for("http://127.0.0.1:9/unused".to_string(), "w.gguf", &body);
+        let sha = spec.sha256.clone();
+
+        let permits = Semaphore::new(1);
+        let _held = permits.acquire().await.unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let (events, emit) = collector();
+
+        let result = run_download(
+            &[spec],
+            &store,
+            &reqwest::Client::new(),
+            cancel,
+            &permits,
+            &permissive_disk(),
+            emit,
+        )
+        .await;
+
+        assert_eq!(result, Err(()));
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![DownloadEvent::Queued, DownloadEvent::Cancelled]
+        );
+        assert!(store.existing_partial_len(&sha).is_none());
+    }
+
+    #[tokio::test]
+    async fn permit_released_after_success_failure_and_cancel() {
+        // The permit is held for the whole transfer and returned on every exit
+        // path (RAII), so the slot count is restored after success, error, and
+        // cancellation alike: no permit is ever leaked.
+        let client = reqwest::Client::new();
+
+        // Success.
+        let ok_server = MockServer::start().await;
+        let body = body_of(1024);
+        Mock::given(method("GET"))
+            .and(path("/w"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+            .mount(&ok_server)
+            .await;
+        let (_ok_dir, ok_store) = make_store();
+        let ok_spec = spec_for(format!("{}/w", ok_server.uri()), "w.gguf", &body);
+        let ok_permits = Semaphore::new(2);
+        let (_e1, emit1) = collector();
+        assert_eq!(
+            run_download(
+                &[ok_spec],
+                &ok_store,
+                &client,
+                CancellationToken::new(),
+                &ok_permits,
+                &permissive_disk(),
+                emit1,
+            )
+            .await,
+            Ok(())
+        );
+        assert_eq!(
+            ok_permits.available_permits(),
+            2,
+            "permit leaked after success"
+        );
+
+        // Failure (HTTP 500).
+        let err_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/w"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&err_server)
+            .await;
+        let (_err_dir, err_store) = make_store();
+        let err_spec = spec_for(format!("{}/w", err_server.uri()), "w.gguf", b"x");
+        let err_permits = Semaphore::new(2);
+        let (_e2, emit2) = collector();
+        assert_eq!(
+            run_download(
+                &[err_spec],
+                &err_store,
+                &client,
+                CancellationToken::new(),
+                &err_permits,
+                &permissive_disk(),
+                emit2,
+            )
+            .await,
+            Err(())
+        );
+        assert_eq!(
+            err_permits.available_permits(),
+            2,
+            "permit leaked after failure"
+        );
+
+        // Cancellation mid-download (a free slot is taken, then released).
+        let (_c_dir, c_store) = make_store();
+        let c_spec = spec_for("http://127.0.0.1:9/x".to_string(), "w.gguf", &body_of(256));
+        let c_permits = Semaphore::new(2);
+        let c_cancel = CancellationToken::new();
+        c_cancel.cancel();
+        let (_e3, emit3) = collector();
+        assert_eq!(
+            run_download(
+                &[c_spec],
+                &c_store,
+                &client,
+                c_cancel,
+                &c_permits,
+                &permissive_disk(),
+                emit3,
+            )
+            .await,
+            Err(())
+        );
+        assert_eq!(
+            c_permits.available_permits(),
+            2,
+            "permit leaked after cancel"
+        );
+    }
+
+    // ── Disk-space guardrails ────────────────────────────────────────────────
+
+    #[test]
+    fn bytes_remaining_counts_only_the_missing_bytes() {
+        let (_dir, store) = make_store();
+        let a = body_of(1000);
+        let b = body_of(2000);
+        let spec_a = spec_for("http://x/a".to_string(), "a", &a);
+        let spec_b = spec_for("http://x/b".to_string(), "b", &b);
+
+        // Nothing on disk: the full totals count.
+        assert_eq!(
+            bytes_remaining(&[spec_a.clone(), spec_b.clone()], &store),
+            3000
+        );
+        // A partial for `a`: only its remainder counts.
+        std::fs::write(store.partial_path(&spec_a.sha256), &a[..400]).unwrap();
+        assert_eq!(bytes_remaining(&[spec_a], &store), 600);
+        // A completed blob for `b`: zero remaining.
+        std::fs::write(store.blob_path(&spec_b.sha256), &b).unwrap();
+        assert_eq!(bytes_remaining(&[spec_b], &store), 0);
+    }
+
+    #[tokio::test]
+    async fn preflight_refuses_when_disk_is_below_the_floor() {
+        let (_dir, store) = make_store();
+        let body = body_of(1000);
+        let spec = spec_for("http://127.0.0.1:9/x".to_string(), "w.gguf", &body);
+        let sha = spec.sha256.clone();
+        let permits = Semaphore::new(1);
+        // Free (500) < remaining (1000) + headroom (200) = 1200 → refuse.
+        let free = || Some(500u64);
+        let disk = DiskGuard {
+            free_bytes: &free,
+            headroom_bytes: 200,
+            recheck_interval_bytes: u64::MAX,
+        };
+        let (events, emit) = collector();
+
+        let result = run_download(
+            &[spec],
+            &store,
+            &reqwest::Client::new(),
+            CancellationToken::new(),
+            &permits,
+            &disk,
+            emit,
+        )
+        .await;
+
+        assert_eq!(result, Err(()));
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![DownloadEvent::InsufficientDisk {
+                required_bytes: 1200,
+                available_bytes: 500,
+            }]
+        );
+        // No transfer began, so no partial was written, and the slot is free.
+        assert!(store.existing_partial_len(&sha).is_none());
+        assert_eq!(permits.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn midtransfer_recheck_with_unknown_space_completes() {
+        // Free space is unknown (None) at both preflight and every re-check, so
+        // the download proceeds to completion despite the re-check firing.
+        let server = MockServer::start().await;
+        let body = body_of(4096);
+        Mock::given(method("GET"))
+            .and(path("/w"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+            .mount(&server)
+            .await;
+        let (_dir, store) = make_store();
+        let spec = spec_for(format!("{}/w", server.uri()), "w.gguf", &body);
+        let sha = spec.sha256.clone();
+        let permits = Semaphore::new(1);
+        let disk = DiskGuard {
+            free_bytes: &unknown_free,
+            headroom_bytes: 1000,
+            recheck_interval_bytes: 100,
+        };
+        let (_events, emit) = collector();
+
+        let result = run_download(
+            &[spec],
+            &store,
+            &reqwest::Client::new(),
+            CancellationToken::new(),
+            &permits,
+            &disk,
+            emit,
+        )
+        .await;
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(std::fs::read(store.blob_path(&sha)).unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn midtransfer_recheck_with_ample_space_completes() {
+        // The re-check fires repeatedly but free space stays above the floor,
+        // so the download completes (covers the "enough space, continue" arm).
+        let server = MockServer::start().await;
+        let body = body_of(4096);
+        Mock::given(method("GET"))
+            .and(path("/w"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+            .mount(&server)
+            .await;
+        let (_dir, store) = make_store();
+        let spec = spec_for(format!("{}/w", server.uri()), "w.gguf", &body);
+        let sha = spec.sha256.clone();
+        let permits = Semaphore::new(1);
+        let free = || Some(10_000_000u64);
+        let disk = DiskGuard {
+            free_bytes: &free,
+            headroom_bytes: 1000,
+            recheck_interval_bytes: 100,
+        };
+        let (_events, emit) = collector();
+
+        let result = run_download(
+            &[spec],
+            &store,
+            &reqwest::Client::new(),
+            CancellationToken::new(),
+            &permits,
+            &disk,
+            emit,
+        )
+        .await;
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(std::fs::read(store.blob_path(&sha)).unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn midtransfer_recheck_aborts_and_keeps_partial_when_disk_fills() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        // Ample at preflight, then starved: the first mid-transfer re-check
+        // aborts, keeping the flushed partial (and its running hash) for resume.
+        let server = MockServer::start().await;
+        let body = body_of(4096);
+        Mock::given(method("GET"))
+            .and(path("/w"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+            .mount(&server)
+            .await;
+        let (_dir, store) = make_store();
+        let spec = spec_for(format!("{}/w", server.uri()), "w.gguf", &body);
+        let sha = spec.sha256.clone();
+        let permits = Semaphore::new(1);
+
+        let calls = AtomicU32::new(0);
+        let free = || {
+            // Call 0 is the preflight (ample); every later call is a re-check
+            // that finds the volume starved below the headroom floor.
+            if calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                Some(10_000_000u64)
+            } else {
+                Some(10u64)
+            }
+        };
+        let disk = DiskGuard {
+            free_bytes: &free,
+            headroom_bytes: 1000,
+            recheck_interval_bytes: 100,
+        };
+        let (events, emit) = collector();
+
+        let result = run_download(
+            &[spec],
+            &store,
+            &reqwest::Client::new(),
+            CancellationToken::new(),
+            &permits,
+            &disk,
+            emit,
+        )
+        .await;
+
+        assert_eq!(result, Err(()));
+        assert_eq!(
+            last_event(&events),
+            DownloadEvent::InsufficientDisk {
+                required_bytes: 1000,
+                available_bytes: 10,
+            }
+        );
+        // The partial is KEPT for resume, and its running hash was stashed at
+        // the on-disk length so an in-session retry continues without re-hashing.
+        let len = store.existing_partial_len(&sha).unwrap();
+        assert!(len > 0);
+        assert!(store.take_suspended_hash(&sha, len).is_some());
+        assert!(!store.blob_path(&sha).exists());
+        // The permit was released despite the abort.
+        assert_eq!(permits.available_permits(), 1);
     }
 }
