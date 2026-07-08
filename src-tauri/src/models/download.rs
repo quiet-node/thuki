@@ -501,6 +501,19 @@ mod tests {
             .collect()
     }
 
+    /// Test wrapper mirroring the terse `run_download` call the existing cases
+    /// expect. Feature-specific cases (the concurrency cap and disk guardrails)
+    /// call `run_download` directly with a tuned semaphore or `DiskGuard`.
+    async fn run_download_test(
+        specs: &[DownloadSpec],
+        store: &ModelStore,
+        client: &reqwest::Client,
+        cancel: CancellationToken,
+        emit: impl Fn(DownloadEvent),
+    ) -> Result<(), ()> {
+        run_download(specs, store, client, cancel, emit).await
+    }
+
     // ── Happy path ───────────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -522,7 +535,7 @@ mod tests {
         let sha = spec.sha256.clone();
         let (events, emit) = collector();
 
-        let result = run_download(
+        let result = run_download_test(
             &[spec],
             &store,
             &reqwest::Client::new(),
@@ -591,7 +604,7 @@ mod tests {
         );
         let (events, emit) = collector();
 
-        let result = run_download(
+        let result = run_download_test(
             &[spec],
             &store,
             &reqwest::Client::new(),
@@ -625,7 +638,7 @@ mod tests {
         let spec = spec_for("http://127.0.0.1:1/nope".to_string(), "w.gguf", &body);
         let (events, emit) = collector();
 
-        let result = run_download(
+        let result = run_download_test(
             &[spec],
             &store,
             &reqwest::Client::new(),
@@ -674,7 +687,7 @@ mod tests {
         );
         let (events, emit) = collector();
 
-        let result = run_download(
+        let result = run_download_test(
             &[spec],
             &store,
             &reqwest::Client::new(),
@@ -734,7 +747,7 @@ mod tests {
             &body,
         );
         let (events, emit) = collector();
-        let result = run_download(
+        let result = run_download_test(
             &[spec],
             &store,
             &reqwest::Client::new(),
@@ -787,7 +800,7 @@ mod tests {
         );
         let (events, emit) = collector();
 
-        let result = run_download(
+        let result = run_download_test(
             &[spec],
             &store,
             &reqwest::Client::new(),
@@ -818,7 +831,7 @@ mod tests {
         let spec = spec_for("http://127.0.0.1:9/unused".to_string(), "w.gguf", &body);
         let (events, emit) = collector();
 
-        let result = run_download(
+        let result = run_download_test(
             &[spec],
             &store,
             &reqwest::Client::new(),
@@ -875,7 +888,7 @@ mod tests {
 
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let result = run_download(&[spec], &store, &reqwest::Client::new(), cancel, emit).await;
+        let result = run_download_test(&[spec], &store, &reqwest::Client::new(), cancel, emit).await;
         assert_eq!(result, Err(()));
         assert_eq!(last_event(&events), DownloadEvent::Cancelled);
         // Partial is KEPT with the already-downloaded bytes for resume.
@@ -918,7 +931,7 @@ mod tests {
             }
         };
         let (result, ()) = tokio::join!(
-            run_download(&specs, &store, &client, cancel, emit),
+            run_download_test(&specs, &store, &client, cancel, emit),
             canceller
         );
         assert_eq!(result, Err(()));
@@ -976,7 +989,7 @@ mod tests {
             }
         };
         let (result, ()) = tokio::join!(
-            run_download(&specs, &store, &client, cancel, emit),
+            run_download_test(&specs, &store, &client, cancel, emit),
             canceller
         );
         assert_eq!(result, Err(()));
@@ -1011,7 +1024,7 @@ mod tests {
         );
         let (events, emit) = collector();
 
-        let result = run_download(
+        let result = run_download_test(
             &[spec],
             &store,
             &reqwest::Client::new(),
@@ -1040,7 +1053,7 @@ mod tests {
         );
         let (events, emit) = collector();
 
-        let result = run_download(
+        let result = run_download_test(
             &[spec],
             &store,
             &reqwest::Client::new(),
@@ -1076,7 +1089,7 @@ mod tests {
         let sha = spec.sha256.clone();
         let (events, emit) = collector();
 
-        let result = run_download(
+        let result = run_download_test(
             &[spec],
             &store,
             &reqwest::Client::new(),
@@ -1111,7 +1124,7 @@ mod tests {
         };
         let (events, emit) = collector();
 
-        let result = run_download(
+        let result = run_download_test(
             &[spec],
             &store,
             &reqwest::Client::new(),
@@ -1175,7 +1188,7 @@ mod tests {
         let mmproj_sha = specs[1].sha256.clone();
         let (events, emit) = collector();
 
-        let result = run_download(
+        let result = run_download_test(
             &specs,
             &store,
             &reqwest::Client::new(),
@@ -1240,7 +1253,7 @@ mod tests {
                 total_bytes: 4,
             };
             let (events, emit) = collector();
-            let result = run_download(
+            let result = run_download_test(
                 &[valid, invalid],
                 &store,
                 &reqwest::Client::new(),
