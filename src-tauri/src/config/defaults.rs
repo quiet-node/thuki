@@ -162,6 +162,31 @@ pub const DOWNLOAD_PROGRESS_MIN_INTERVAL_MS: u64 = 500;
 /// verify speed.
 pub const BLOB_HASH_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 
+/// Maximum number of model downloads allowed to transfer bytes at the same
+/// time. A start beyond this waits (queued) for a slot before opening its HTTP
+/// transfer. Not user-tunable: a defense-in-depth bound against the
+/// resource-exhaustion this closes (issue #296, where unbounded parallel
+/// downloads plus an auto-load froze a memory-constrained Mac). Exposing it
+/// would let a user re-introduce the very failure the cap exists to prevent.
+pub const DEFAULT_MAX_CONCURRENT_DOWNLOADS: usize = 3;
+
+/// Free-space headroom kept above a download's own byte needs, both in the
+/// pre-download preflight and the periodic mid-transfer re-check. 2 GiB leaves
+/// room for the OS, the app, and other writers so filling the volume to the
+/// brim during a multi-GB model pull cannot wedge the machine. Not
+/// user-tunable: a defense-in-depth floor against the disk-fill failure mode of
+/// issue #296, not a preference; lowering it would re-open that failure.
+pub const DEFAULT_DOWNLOAD_DISK_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// How many bytes a transfer writes between successive free-disk re-checks. A
+/// long download can fill the volume long after the preflight passed (other
+/// apps writing, a second model downloading), so free space is re-probed every
+/// this many bytes and the transfer aborts cleanly (keeping its `.partial` for
+/// resume) if it falls below the headroom floor. 256 MiB bounds the statfs call
+/// rate to a handful per GB while still catching a fill within a few hundred MB.
+/// Not user-tunable: internal safety-probe cadence with no user-visible effect.
+pub const DEFAULT_DOWNLOAD_DISK_RECHECK_INTERVAL_BYTES: u64 = 256 * 1024 * 1024;
+
 /// Maximum accepted length of a single Server-Sent-Events line from a /v1
 /// streaming response. Bounds attacker-controlled data from a chat server
 /// (a malicious or broken server cannot grow a single line unboundedly).
