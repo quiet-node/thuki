@@ -198,7 +198,10 @@ fn write_state(path: &Path, state: &PersistedGuardState) {
     // The struct holds a bool and a u32, so serialization is infallible.
     let bytes = serde_json::to_vec(state).expect("PersistedGuardState serializes");
     if let Err(e) = crate::config::writer::atomic_write_bytes(path, &bytes) {
-        eprintln!("thuki: [startup_guard] failed to persist sentinel to {}: {e}", path.display());
+        eprintln!(
+            "thuki: [startup_guard] failed to persist sentinel to {}: {e}",
+            path.display()
+        );
     }
 }
 
