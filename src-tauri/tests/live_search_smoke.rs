@@ -1,0 +1,160 @@
+//! Live end-to-end smoke of the web-search retrieval pipeline.
+//!
+//! These tests hit the REAL internet through the production transport and the
+//! production `run_search` orchestrator, with only the model-backed classifier
+//! stubbed (its decision quality is validated separately, in the app). They
+//! answer the question unit tests cannot: do the verticals, engines, cooldown,
+//! fetch, ranking, and assembly actually work against today's live endpoints?
+//!
+//! All tests are `#[ignore]`d so no CI or coverage gate ever touches the
+//! network. Run explicitly, single-threaded and human-paced, with:
+//!
+//! ```sh
+//! cargo test --test live_search_smoke -- --ignored --nocapture --test-threads=1
+//! ```
+
+use thuki_agent_lib::commands::ChatMessage;
+use thuki_agent_lib::net::transport::ReqwestTransport;
+use thuki_agent_lib::websearch::engine::EngineHealth;
+use thuki_agent_lib::websearch::orchestrator::{run_search, SearchDeps, SearchOutcome};
+use thuki_agent_lib::websearch::prepass::{
+    InferenceError, PrePass, PrePassDecision, SearchDecision,
+};
+use thuki_agent_lib::websearch::rank::Bm25Scorer;
+
+use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
+
+/// A scripted classifier standing in for the live model: returns a fixed `web`
+/// decision with the given rewrite and queries.
+struct ScriptedPrePass {
+    standalone: &'static str,
+    queries: Vec<&'static str>,
+}
+
+#[async_trait]
+impl PrePass for ScriptedPrePass {
+    async fn decide(
+        &self,
+        _history: &[ChatMessage],
+        _latest_user_message: &str,
+        _today: &str,
+        _cancel: &CancellationToken,
+    ) -> Result<PrePassDecision, InferenceError> {
+        Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            standalone_question: self.standalone.to_string(),
+            queries: self.queries.iter().map(|q| q.to_string()).collect(),
+        })
+    }
+}
+
+/// Runs one live turn through the production pipeline and returns the outcome.
+async fn live_turn(
+    latest_user: &str,
+    standalone: &'static str,
+    queries: Vec<&'static str>,
+) -> SearchOutcome {
+    let transport = ReqwestTransport::new().expect("transport builds");
+    let prepass = ScriptedPrePass {
+        standalone,
+        queries,
+    };
+    let health = EngineHealth::new();
+    let deps = SearchDeps {
+        prepass: &prepass,
+        transport: &transport,
+        scorer: &Bm25Scorer,
+        health: &health,
+    };
+    run_search(
+        &deps,
+        "You are a helpful assistant.",
+        &[],
+        latest_user,
+        16384,
+        "2026-07-08",
+        "en-US",
+        &CancellationToken::new(),
+        &|phase| eprintln!("[smoke] phase={phase:?}"),
+    )
+    .await
+}
+
+/// Asserts the outcome is a grounded answer and prints its source summary.
+fn expect_answer(outcome: SearchOutcome, label: &str) {
+    match outcome {
+        SearchOutcome::Answer { messages, sources } => {
+            eprintln!("[smoke] {label}: ANSWER with {} source(s)", sources.len());
+            for s in &sources {
+                eprintln!("[smoke]   [{}] {} ({})", s.index, s.title, s.url);
+            }
+            let last = messages.last().expect("writer messages non-empty");
+            eprintln!(
+                "[smoke] writer turn tail: ...{}",
+                &last.content[last.content.len().saturating_sub(300)..]
+            );
+            assert!(!sources.is_empty(), "{label}: no sources");
+        }
+        SearchOutcome::Unreachable { .. } => {
+            panic!("{label}: retrieval unreachable (all sources failed live)")
+        }
+        SearchOutcome::NoSearch => panic!("{label}: unexpectedly resolved NoSearch"),
+        SearchOutcome::Cancelled => panic!("{label}: unexpectedly cancelled"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "hits the live internet; run explicitly"]
+async fn live_weather_tokyo_answers_via_open_meteo() {
+    let outcome = live_turn(
+        "weather in Tokyo",
+        "weather in Tokyo",
+        vec!["tokyo weather"],
+    )
+    .await;
+    if let SearchOutcome::Answer { sources, .. } = &outcome {
+        assert_eq!(sources[0].url, "https://open-meteo.com/");
+        assert!(sources[0].text.contains("Current weather in Tokyo"));
+    }
+    expect_answer(outcome, "weather-tokyo");
+}
+
+#[tokio::test]
+#[ignore = "hits the live internet; run explicitly"]
+async fn live_f1_winner_answers_via_news_headlines() {
+    let outcome = live_turn(
+        "who won the most recent F1 race",
+        "who won the most recent F1 race",
+        vec!["f1 race winner"],
+    )
+    .await;
+    if let SearchOutcome::Answer { sources, .. } = &outcome {
+        assert_eq!(sources[0].url, "https://news.google.com/");
+    }
+    expect_answer(outcome, "f1-winner");
+}
+
+#[tokio::test]
+#[ignore = "hits the live internet; run explicitly"]
+async fn live_rust_version_answers_via_engines() {
+    let outcome = live_turn(
+        "what's the latest stable version of Rust?",
+        "latest stable version of rust",
+        vec!["latest stable rust version"],
+    )
+    .await;
+    expect_answer(outcome, "rust-version");
+}
+
+#[tokio::test]
+#[ignore = "hits the live internet; run explicitly"]
+async fn live_bitcoin_price_answers_via_engines() {
+    let outcome = live_turn(
+        "what's the current price of Bitcoin",
+        "current price of bitcoin",
+        vec!["bitcoin price usd"],
+    )
+    .await;
+    expect_answer(outcome, "bitcoin-price");
+}
