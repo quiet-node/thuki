@@ -18,6 +18,7 @@
 pub mod download;
 pub mod gguf;
 pub mod manifest;
+pub mod memory;
 pub mod reasoning;
 pub mod registry;
 pub mod storage;

@@ -101,6 +101,12 @@ pub enum EngineErrorKind {
     /// another model), not a crash: the frontend renders it with the amber
     /// warning accent rather than the red failure accent.
     ModelUnsupported,
+    /// The selected model's estimated footprint does not fit the memory
+    /// available right now (issue #296). A soft, force-overridable refusal
+    /// rather than a crash: the frontend renders it with the amber warning
+    /// accent and offers a "load anyway" retry, sourcing the exact figures
+    /// from the `estimate_model_fit` command.
+    InsufficientMemory,
     /// The requested model has not been pulled yet (HTTP 404).
     ModelNotFound,
     /// No active model has been selected. The user must pick a model from
@@ -120,6 +126,24 @@ pub fn no_model_selected_error() -> EngineError {
     EngineError {
         kind: EngineErrorKind::NoModelSelected,
         message: "No model selected\nPick a model in the picker.".to_string(),
+    }
+}
+
+/// Builds the [`EngineErrorKind::InsufficientMemory`] error returned when the
+/// pre-load memory gate refuses an un-forced load (issue #296). `required` and
+/// `available` are the gate's estimate and the memory it judged available; both
+/// are woven into the copy as approximate GiB so the user sees why. The exact
+/// machine-readable figures for the "load anyway" affordance come from the
+/// `estimate_model_fit` command, keeping one numeric source of truth.
+pub fn insufficient_memory_error(required: u64, available: u64) -> EngineError {
+    let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
+    EngineError {
+        kind: EngineErrorKind::InsufficientMemory,
+        message: format!(
+            "This model may not fit in memory\nIt needs about {:.1} GB but only about {:.1} GB is free. Close some apps, pick a smaller model, or load it anyway.",
+            gib(required),
+            gib(available),
+        ),
     }
 }
 
@@ -254,6 +278,59 @@ pub fn builtin_target(
             .map(|sha| store.blob_path(sha)),
         num_ctx,
     })
+}
+
+/// Runs the pre-load memory gate (issue #296) for the built-in model
+/// `model_id` about to be loaded at `target_path`. Assembles the inputs the
+/// pure [`crate::models::memory::evaluate_load_gate`] needs and delegates every
+/// decision to it:
+/// - the target's weights bytes from the manifest,
+/// - live available memory from the mach VM statistics,
+/// - the currently-resident model's path (so a same-model reload is a no-op and
+///   a different resident model's footprint is credited back, since the engine
+///   evicts before loading), read from the engine status,
+/// - the installed rows mapped to `(weights_bytes, blob_path)` for that credit.
+///
+/// Forgiving on failure: an unreadable manifest returns [`MemoryGate::Proceed`]
+/// rather than blocking a load on a database hiccup. Coverage-off: pure wiring
+/// over tested functions; the gate logic lives in `models::memory`.
+///
+/// [`MemoryGate::Proceed`]: crate::models::memory::MemoryGate::Proceed
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn preflight_memory_gate(
+    conn: &rusqlite::Connection,
+    store: &crate::models::storage::ModelStore,
+    engine: &crate::engine::runner::EngineHandle,
+    model_id: &str,
+    target_path: &std::path::Path,
+    forced: bool,
+) -> crate::models::memory::MemoryGate {
+    use crate::models::memory;
+    // Cannot size the target -> do not block on a database hiccup.
+    let target_weights = match crate::models::manifest::get(conn, model_id) {
+        Ok(Some(row)) => memory::model_weights_bytes(&row),
+        _ => return memory::MemoryGate::Proceed,
+    };
+    // Map every installed row to (weights_bytes, weights blob path) so a
+    // resident model can be matched by path and its footprint credited back.
+    let installed: Vec<(u64, std::path::PathBuf)> = crate::models::manifest::list(conn)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| (memory::model_weights_bytes(&row), store.blob_path(&row.sha256)))
+        .collect();
+    // A live "loaded" status names the resident model's path; anything else
+    // means nothing is resident to credit.
+    let status = engine.current_status();
+    let resident = (status.state == "loaded" && !status.model_path.is_empty())
+        .then(|| std::path::PathBuf::from(&status.model_path));
+    memory::evaluate_load_gate(
+        target_weights,
+        memory::available_memory_bytes(),
+        resident.as_deref(),
+        target_path,
+        &installed,
+        forced,
+    )
 }
 
 /// Parses llama-server's `GET /props` response and reports whether the
@@ -1164,6 +1241,11 @@ pub async fn ask_model(
     conversation_id: String,
     is_first_turn: bool,
     slash_command: Option<String>,
+    // The user's "load anyway" override for the pre-load memory gate (issue
+    // #296). `Some(true)` bypasses the block; `None`/`Some(false)` (the default,
+    // and what existing frontend invokes that omit the field deserialize to)
+    // leaves the gate active.
+    allow_oversized: Option<bool>,
     on_event: Channel<StreamChunk>,
     client: State<'_, reqwest::Client>,
     generation: State<'_, GenerationState>,
@@ -1366,14 +1448,39 @@ pub async fn ask_model(
             .await
         }
         ChatRoute::Builtin { model_id } => {
-            // Resolve the manifest row to blob-store paths inside a scope so
-            // the connection guard drops before any `.await`.
-            let target = {
+            // Resolve the manifest row to blob-store paths and run the pre-load
+            // memory gate inside a scope so the connection guard drops before
+            // any `.await`. The gate (issue #296) refuses an un-forced load
+            // whose estimated footprint does not fit the memory available now;
+            // `allow_oversized == Some(true)` is the user's "load anyway".
+            let resolved = {
                 let conn = db.0.lock().map_err(|e| e.to_string())?;
-                builtin_target(&conn, &model_store, &model_id, config.inference.num_ctx)
+                builtin_target(&conn, &model_store, &model_id, config.inference.num_ctx).map(
+                    |target| {
+                        let gate = preflight_memory_gate(
+                            &conn,
+                            &model_store,
+                            &engine,
+                            &model_id,
+                            &target.model_path,
+                            allow_oversized == Some(true),
+                        );
+                        (target, gate)
+                    },
+                )
             };
-            match target {
-                Ok(target) => {
+            match resolved {
+                Ok((_, crate::models::memory::MemoryGate::Block {
+                    required_bytes,
+                    available_bytes,
+                })) => {
+                    pump(StreamChunk::Error(insufficient_memory_error(
+                        required_bytes,
+                        available_bytes,
+                    )));
+                    String::new()
+                }
+                Ok((target, crate::models::memory::MemoryGate::Proceed)) => {
                     // Observe whether reasoning streamed this turn so the
                     // runtime backstop can mark a model that reasons even with
                     // reasoning requested OFF (see `backstop_mark_reasoning_always`).

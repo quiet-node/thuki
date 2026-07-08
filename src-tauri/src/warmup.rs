@@ -449,27 +449,56 @@ pub fn warm_up_model(
             if !builtin_should_warm(&model_id) {
                 return;
             }
-            // Resolve the manifest row to an engine Target inside a scope so the
-            // connection guard drops before the spawned load. A poisoned lock is
-            // recovered: an unrelated panic does not invalidate the connection.
-            let target = {
+            // Resolve the manifest row to an engine Target and run the pre-load
+            // memory gate inside one scope so the connection guard drops before
+            // the spawned load. A poisoned lock is recovered: an unrelated panic
+            // does not invalidate the connection.
+            let resolved = {
                 let conn = match db.0.lock() {
                     Ok(conn) => conn,
                     Err(poisoned) => poisoned.into_inner(),
                 };
-                crate::commands::builtin_target(&conn, &store, &model_id, num_ctx)
+                crate::commands::builtin_target(&conn, &store, &model_id, num_ctx).map(|target| {
+                    // Never force on an automatic load: an oversized model must
+                    // never be shoved into memory without a user action (issue
+                    // #296). This is the direct freeze fix for the auto-prime.
+                    let gate = crate::commands::preflight_memory_gate(
+                        &conn,
+                        &store,
+                        &engine,
+                        &model_id,
+                        &target.model_path,
+                        false,
+                    );
+                    (target, gate)
+                })
             };
-            // A missing/uninstalled model yields an Err; warmup is best-effort,
-            // so just skip rather than surfacing anything.
-            if let Ok(target) = target {
-                tauri::async_runtime::spawn(warm_builtin(
-                    app,
-                    engine.inner().clone(),
-                    target,
-                    model_id,
-                    system_prompt,
-                    client.inner().clone(),
-                ));
+            match resolved {
+                // Skip an auto-load that would not fit; a user-initiated send can
+                // still force it through the gate in `ask_model`.
+                Ok((_, crate::models::memory::MemoryGate::Block {
+                    required_bytes,
+                    available_bytes,
+                })) => {
+                    eprintln!(
+                        "thuki: [memory gate] skipping auto-prime of {model_id}: needs ~{} MB, ~{} MB available",
+                        required_bytes / (1024 * 1024),
+                        available_bytes / (1024 * 1024),
+                    );
+                }
+                Ok((target, crate::models::memory::MemoryGate::Proceed)) => {
+                    tauri::async_runtime::spawn(warm_builtin(
+                        app,
+                        engine.inner().clone(),
+                        target,
+                        model_id,
+                        system_prompt,
+                        client.inner().clone(),
+                    ));
+                }
+                // A missing/uninstalled model yields an Err; warmup is
+                // best-effort, so just skip rather than surfacing anything.
+                Err(_) => {}
             }
         }
         _ => {}

@@ -485,6 +485,28 @@ pub const HF_SEARCH_LIMIT_MAX: usize = 120;
 /// estimates live in the model registry.
 pub const RUNTIME_OVERHEAD_GB: f64 = 2.0;
 
+/// Fraction of live available memory a model's estimated footprint may occupy
+/// and still be judged to fit with healthy headroom. At or below this it is
+/// "comfortable"; above it (but at or below the ceiling) it is "tight". Feeds
+/// the pre-load memory gate (issue #296) and the `estimate_model_fit` command.
+///
+/// Not user-tunable: a defense-in-depth threshold against the auto-load freeze
+/// of issue #296, not a preference. The footprint estimate is deliberately
+/// approximate (weights plus a fixed overhead), so the gate is forgiving:
+/// crossing this fraction only softens the verdict to "tight", never blocks.
+pub const MODEL_FIT_COMFORT_FRACTION: f64 = 0.60;
+
+/// Ceiling fraction of live available memory a model's estimated footprint may
+/// occupy before the pre-load gate refuses an un-forced load. Modeled on Jan's
+/// published guidance that a model should stay under ~80% of available memory,
+/// leaving the remaining fifth for the OS and other apps so a load cannot wedge
+/// the machine (issue #296).
+///
+/// Not user-tunable: a defense-in-depth OOM bound, not a preference. Because
+/// the footprint estimate can be off by up to ~2x, this hard block triggers
+/// only clearly above the ceiling and a user `force` always bypasses it.
+pub const MODEL_FIT_CEILING_FRACTION: f64 = 0.80;
+
 /// Maximum accepted byte length for a Hugging Face search query before it is
 /// sent upstream. Defense-in-depth bound on attacker-influenced input: the
 /// query reaches the fixed Hub host (no SSRF) and is percent-encoded by the
