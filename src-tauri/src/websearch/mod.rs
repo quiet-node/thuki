@@ -25,6 +25,7 @@ pub mod orchestrator;
 pub mod prefilter;
 pub mod prepass;
 pub mod rank;
+pub mod weather;
 pub mod writer;
 
 /// The registration host of a URL, or an empty string when it does not parse.

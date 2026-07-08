@@ -50,6 +50,7 @@ use crate::websearch::fetch::fetch_pages;
 use crate::websearch::prefilter::{prefilter, PreFilterVerdict};
 use crate::websearch::prepass::{InferenceError, PrePass, PrePassDecision, SearchDecision};
 use crate::websearch::rank::{select_chunks, Scorer};
+use crate::websearch::weather::fetch_weather;
 use crate::websearch::writer::{unreachable_messages, writer_messages};
 
 /// Progress phase reported to the UI while the pipeline runs, before any answer
@@ -206,6 +207,24 @@ async fn run_web(
         return SearchOutcome::Cancelled;
     }
     status(SearchPhase::Searching);
+    // Vertical tier first: an official keyless API that recognises the question
+    // answers it directly and skips the scraped engines entirely (an API cannot
+    // bot-block the way SERPs do). A miss falls through with nothing lost.
+    if let Some(block) = fetch_weather(deps.transport, standalone_question).await {
+        let sources = vec![block];
+        let messages = writer_messages(
+            chat_system_prompt,
+            history,
+            latest_user,
+            &sources,
+            today,
+            locale,
+        );
+        return SearchOutcome::Answer { messages, sources };
+    }
+    if cancel.is_cancelled() {
+        return SearchOutcome::Cancelled;
+    }
     let mut hits: Vec<SearchHit> = Vec::new();
     for query in queries {
         if cancel.is_cancelled() {
@@ -466,6 +485,122 @@ mod tests {
                 SearchPhase::Reading
             ]
         );
+    }
+
+    // ── weather vertical routing ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn weather_question_answers_via_vertical_without_engines() {
+        // The standalone question is a weather question: the vertical resolves
+        // geocode + forecast and the scraped engines are never queried.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            standalone_question: "weather in Tokyo".into(),
+            queries: vec!["tokyo weather".into()],
+        }));
+        let geo_url = crate::websearch::weather::geocode_request("Tokyo").url;
+        let geo_body = r#"{"results":[{"name":"Tokyo","latitude":35.6895,"longitude":139.69171,"country":"Japan"}]}"#;
+        let place = crate::websearch::weather::parse_geocode(geo_body).unwrap();
+        let fc_url = crate::websearch::weather::forecast_request(&place).url;
+        let fc_body = r#"{"current":{"temperature_2m":25.5,"relative_humidity_2m":61,"apparent_temperature":27.9,"weather_code":1,"wind_speed_10m":2.6}}"#;
+        let transport = FakeHttpTransport::new()
+            .with_response(
+                &geo_url,
+                HttpResponse {
+                    status: 200,
+                    final_url: geo_url.clone(),
+                    body: geo_body.as_bytes().to_vec(),
+                },
+            )
+            .with_response(
+                &fc_url,
+                HttpResponse {
+                    status: 200,
+                    final_url: fc_url.clone(),
+                    body: fc_body.as_bytes().to_vec(),
+                },
+            );
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "weather in Tokyo",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(
+            matches!(&outcome, SearchOutcome::Answer { messages, sources }
+            if sources.len() == 1
+                && sources[0].url == "https://open-meteo.com/"
+                && messages.last().is_some_and(|m| m.content.contains("Current weather in Tokyo")))
+        );
+        // No scraped engine was touched.
+        assert!(!transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+    }
+
+    #[tokio::test]
+    async fn cancel_during_vertical_miss_yields_cancelled() {
+        // A weather-shaped question whose geocode call cancels the token and
+        // returns junk: the vertical misses, and the post-vertical cancellation
+        // check aborts before any engine is queried.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            standalone_question: "weather in Xyzzyplace".into(),
+            queries: vec!["q".into()],
+        }));
+        let cancel = CancellationToken::new();
+        let transport = CancelOnSend {
+            token: cancel.clone(),
+            serp: b"not geocode json".to_vec(),
+        };
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &cancel,
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn vertical_miss_falls_through_to_engines() {
+        // A weather-shaped question whose geocode fails (no canned response)
+        // still resolves through the normal engine pipeline.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            standalone_question: "weather in Xyzzyplace treaty versailles paris".into(),
+            queries: vec!["treaty versailles paris".into()],
+        }));
+        let transport = transport_with_serp_and_page();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        // Geocode had no canned response (transport error) -> vertical miss ->
+        // engines ran and grounded the answer.
+        assert!(matches!(outcome, SearchOutcome::Answer { .. }));
+        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
     }
 
     // ── resolve_decision (pure) ───────────────────────────────────────────────
