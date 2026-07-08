@@ -45,6 +45,7 @@ use crate::commands::ChatMessage;
 use crate::config::defaults::SERP_EARLY_STOP_HITS;
 use crate::net::transport::HttpTransport;
 use crate::websearch::assemble::{assemble_context, SourceBlock};
+use crate::websearch::encyclopedia::fetch_encyclopedia;
 use crate::websearch::engine::{web_search, EngineHealth, SearchHit};
 use crate::websearch::fetch::fetch_pages;
 use crate::websearch::news::{fetch_news, is_news_intent};
@@ -258,6 +259,25 @@ async fn run_web(
                 return SearchOutcome::Answer { messages, sources };
             }
         }
+    }
+    if cancel.is_cancelled() {
+        return SearchOutcome::Cancelled;
+    }
+    // Encyclopedia intent goes to Wikipedia last among verticals: its trigger
+    // phrases ("what is", "when was") are the broadest of the three, so
+    // weather/news get first refusal on anything narrower. A miss falls
+    // through to the engines.
+    if let Some(block) = fetch_encyclopedia(deps.transport, standalone_question).await {
+        let sources = vec![block];
+        let messages = writer_messages(
+            chat_system_prompt,
+            history,
+            latest_user,
+            &sources,
+            today,
+            locale,
+        );
+        return SearchOutcome::Answer { messages, sources };
     }
     if cancel.is_cancelled() {
         return SearchOutcome::Cancelled;
@@ -766,6 +786,119 @@ mod tests {
         assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
     }
 
+    // ── encyclopedia vertical routing ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn encyclopedia_question_answers_via_vertical_without_engines() {
+        // A stable factual question: Wikipedia search + summary resolve it and
+        // the scraped engines are never queried.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            standalone_question: "what is photosynthesis".into(),
+            queries: vec!["photosynthesis".into()],
+        }));
+        let search_url =
+            crate::websearch::encyclopedia::search_request("what is photosynthesis").url;
+        let search_body = r#"{"query":{"search":[{"title":"Photosynthesis"}]}}"#;
+        let summary_url = crate::websearch::encyclopedia::summary_request("Photosynthesis").url;
+        let summary_body = r#"{"type":"standard","title":"Photosynthesis","extract":"Photosynthesis is a system of biological processes.","content_urls":{"desktop":{"page":"https://en.wikipedia.org/wiki/Photosynthesis"}}}"#;
+        let transport = FakeHttpTransport::new()
+            .with_response(
+                &search_url,
+                HttpResponse {
+                    status: 200,
+                    final_url: search_url.clone(),
+                    body: search_body.as_bytes().to_vec(),
+                },
+            )
+            .with_response(
+                &summary_url,
+                HttpResponse {
+                    status: 200,
+                    final_url: summary_url.clone(),
+                    body: summary_body.as_bytes().to_vec(),
+                },
+            );
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "what is photosynthesis",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(
+            matches!(&outcome, SearchOutcome::Answer { messages, sources }
+            if sources.len() == 1
+                && sources[0].url == "https://en.wikipedia.org/wiki/Photosynthesis"
+                && messages.last().is_some_and(|m| m.content.contains("Photosynthesis is a system")))
+        );
+        assert!(!transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+    }
+
+    #[tokio::test]
+    async fn cancel_during_encyclopedia_miss_yields_cancelled() {
+        // An encyclopedic-shaped question whose search call cancels the token
+        // and returns junk: the vertical misses, and the post-encyclopedia
+        // cancellation check aborts before any engine is queried.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            standalone_question: "what is xyzzyplace".into(),
+            queries: vec!["q".into()],
+        }));
+        let cancel = CancellationToken::new();
+        let transport = CancelOnSend {
+            token: cancel.clone(),
+            serp: b"not search json".to_vec(),
+        };
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &cancel,
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn encyclopedia_miss_falls_through_to_engines() {
+        // Encyclopedic-shaped question but the search call fails (no canned
+        // response): the engines run and ground the answer as usual.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            standalone_question: "what is the treaty of versailles game".into(),
+            queries: vec!["treaty versailles paris".into()],
+        }));
+        let transport = transport_with_serp_and_page();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Answer { .. }));
+        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+    }
+
     // ── resolve_decision (pure) ───────────────────────────────────────────────
 
     #[test]
@@ -1090,7 +1223,14 @@ mod tests {
     async fn cancel_during_query_loop_yields_cancelled() {
         // Two queries; the transport cancels on the first send, so the second
         // loop iteration's cancellation check aborts before searching again.
-        let prepass = FakePrePass::returning(Ok(web_decision(vec!["q one", "q two"])));
+        // The standalone question deliberately matches no vertical's intent
+        // (weather/news/encyclopedia), so the turn reaches the query loop
+        // instead of being absorbed by a vertical's own cancellation check.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            standalone_question: "xyzzyplace status report".into(),
+            queries: vec!["q one".into(), "q two".into()],
+        }));
         let cancel = CancellationToken::new();
         let transport = CancelOnSend {
             token: cancel.clone(),
@@ -1115,8 +1255,15 @@ mod tests {
     #[tokio::test]
     async fn cancel_after_search_before_fetch_yields_cancelled() {
         // One query returning a hit; the transport cancels on that send, so the
-        // post-search cancellation check aborts before fetching pages.
-        let prepass = FakePrePass::returning(Ok(web_decision(vec!["q"])));
+        // post-search cancellation check aborts before fetching pages. The
+        // standalone question deliberately matches no vertical's intent, so
+        // the turn reaches the engine query instead of being absorbed by a
+        // vertical's own cancellation check.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            standalone_question: "xyzzyplace status report".into(),
+            queries: vec!["q".into()],
+        }));
         let cancel = CancellationToken::new();
         let transport = CancelOnSend {
             token: cancel.clone(),

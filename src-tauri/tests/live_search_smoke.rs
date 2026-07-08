@@ -158,3 +158,22 @@ async fn live_bitcoin_price_answers_via_engines() {
     .await;
     expect_answer(outcome, "bitcoin-price");
 }
+
+#[tokio::test]
+#[ignore = "hits the live internet; run explicitly"]
+async fn live_photosynthesis_answers_via_wikipedia() {
+    let outcome = live_turn(
+        "what is photosynthesis",
+        "what is photosynthesis",
+        vec!["photosynthesis"],
+    )
+    .await;
+    if let SearchOutcome::Answer { sources, .. } = &outcome {
+        assert_eq!(
+            sources[0].url,
+            "https://en.wikipedia.org/wiki/Photosynthesis"
+        );
+        assert!(sources[0].text.contains("Photosynthesis is"));
+    }
+    expect_answer(outcome, "photosynthesis-wiki");
+}

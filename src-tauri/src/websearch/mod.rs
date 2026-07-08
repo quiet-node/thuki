@@ -12,6 +12,8 @@
 //! - [`prepass`] — the persona-free classifier for the ambiguous middle: the
 //!   `no｜cached｜web` decision and query rewrite.
 //! - [`engine`] — keyless search-engine scraping with rotation.
+//! - [`weather`], [`news`], [`encyclopedia`] — intent-routed keyless verticals
+//!   tried ahead of the scraped engines.
 //! - [`fetch`] — concurrent page fetch + readability extraction.
 //! - [`rank`] — chunking + BM25 extractive filter behind a `Scorer` seam.
 //! - [`assemble`] — group ranked chunks into budgeted numbered source blocks.
@@ -19,6 +21,7 @@
 //! - [`orchestrator`] — the fixed pipeline tying the stages together.
 
 pub mod assemble;
+pub mod encyclopedia;
 pub mod engine;
 pub mod fetch;
 pub mod news;
