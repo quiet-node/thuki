@@ -495,15 +495,22 @@ mod tests {
 
     #[test]
     fn gate_credits_resident_model_on_switch() {
-        // Switch A(18 GiB, resident) -> B(18 GiB). Available reads low (2 GiB)
-        // because A is resident, but A is evicted first, so B is judged against
-        // 2 + 18 = 20 GiB and fits.
+        // Switch A(14 GiB, resident) -> B(8 GiB). Live available reads only
+        // 1 GiB because A fills memory; without crediting A, B (~10 GiB with
+        // overhead) is blocked. A is evicted first, so B is judged against
+        // 1 + 14 = 15 GiB and fits. The credit is load-bearing here.
         let a = PathBuf::from("/blobs/a");
         let b = PathBuf::from("/blobs/b");
-        let installed = vec![(18 * BYTES_PER_GIB, a.clone())];
+        let installed = vec![(14 * BYTES_PER_GIB, a.clone())];
+        // Without the credit this exact model would be blocked.
+        assert!(matches!(
+            evaluate_load_gate(8 * BYTES_PER_GIB, BYTES_PER_GIB, None, &b, &installed, false),
+            MemoryGate::Block { .. }
+        ));
+        // With A resident and credited back, it proceeds.
         let gate = evaluate_load_gate(
-            18 * BYTES_PER_GIB,
-            2 * BYTES_PER_GIB,
+            8 * BYTES_PER_GIB,
+            BYTES_PER_GIB,
             Some(&a),
             &b,
             &installed,
