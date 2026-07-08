@@ -47,6 +47,7 @@ use crate::net::transport::HttpTransport;
 use crate::websearch::assemble::{assemble_context, SourceBlock};
 use crate::websearch::engine::{web_search, EngineHealth, SearchHit};
 use crate::websearch::fetch::fetch_pages;
+use crate::websearch::news::{fetch_news, is_news_intent};
 use crate::websearch::prefilter::{prefilter, PreFilterVerdict};
 use crate::websearch::prepass::{InferenceError, PrePass, PrePassDecision, SearchDecision};
 use crate::websearch::rank::{select_chunks, Scorer};
@@ -221,6 +222,28 @@ async fn run_web(
             locale,
         );
         return SearchOutcome::Answer { messages, sources };
+    }
+    if cancel.is_cancelled() {
+        return SearchOutcome::Cancelled;
+    }
+    // News intent goes to the Google News RSS feed first: keyless, not
+    // SERP-bot-gated, and its dated headlines answer the who-won /
+    // what-happened class directly. A miss falls through to the engines.
+    if is_news_intent(standalone_question) {
+        if let Some(query) = queries.first() {
+            if let Some(block) = fetch_news(deps.transport, query).await {
+                let sources = vec![block];
+                let messages = writer_messages(
+                    chat_system_prompt,
+                    history,
+                    latest_user,
+                    &sources,
+                    today,
+                    locale,
+                );
+                return SearchOutcome::Answer { messages, sources };
+            }
+        }
     }
     if cancel.is_cancelled() {
         return SearchOutcome::Cancelled;
@@ -485,6 +508,132 @@ mod tests {
                 SearchPhase::Reading
             ]
         );
+    }
+
+    // ── news vertical routing ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn news_question_answers_via_headlines_without_engines() {
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            standalone_question: "who won the most recent F1 race".into(),
+            queries: vec!["f1 race winner".into()],
+        }));
+        let feed_url = crate::websearch::news::news_request("f1 race winner").url;
+        let feed = r#"<rss><channel><item><title>Leclerc wins British GP - Formula 1</title><pubDate>Wed, 08 Jul 2026 01:11:35 GMT</pubDate></item></channel></rss>"#;
+        let transport = FakeHttpTransport::new().with_response(
+            &feed_url,
+            HttpResponse {
+                status: 200,
+                final_url: feed_url.clone(),
+                body: feed.as_bytes().to_vec(),
+            },
+        );
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "who won the most recent F1 race",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(
+            matches!(&outcome, SearchOutcome::Answer { messages, sources }
+            if sources.len() == 1
+                && sources[0].url == "https://news.google.com/"
+                && messages.last().is_some_and(|m| m.content.contains("Leclerc wins British GP")))
+        );
+        assert!(!transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+    }
+
+    #[tokio::test]
+    async fn news_intent_with_no_queries_skips_feed() {
+        // Totality: an ambiguous turn (no ForceWeb backfill) whose classifier
+        // answered Web with an empty query list cannot query the feed or the
+        // engines and resolves to the unreachable disclosure.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            standalone_question: "who won the game".into(),
+            queries: vec![],
+        }));
+        let transport = FakeHttpTransport::new();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "and that game?",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Unreachable { .. }));
+        assert!(transport.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancel_during_news_miss_yields_cancelled() {
+        // The feed request cancels the token and returns junk: the news vertical
+        // misses, and the post-news cancellation check aborts before engines.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            standalone_question: "who won the race".into(),
+            queries: vec!["race winner".into()],
+        }));
+        let cancel = CancellationToken::new();
+        let transport = CancelOnSend {
+            token: cancel.clone(),
+            serp: b"not a feed".to_vec(),
+        };
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &cancel,
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn news_feed_miss_falls_through_to_engines() {
+        // News intent but the feed errors (no canned response): the engines run
+        // and ground the answer as usual.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            standalone_question: "who won the treaty of versailles game".into(),
+            queries: vec!["treaty versailles paris".into()],
+        }));
+        let transport = transport_with_serp_and_page();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Answer { .. }));
+        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
     }
 
     // ── weather vertical routing ──────────────────────────────────────────────

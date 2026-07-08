@@ -21,6 +21,7 @@
 pub mod assemble;
 pub mod engine;
 pub mod fetch;
+pub mod news;
 pub mod orchestrator;
 pub mod prefilter;
 pub mod prepass;
