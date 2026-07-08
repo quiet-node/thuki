@@ -586,6 +586,21 @@ pub const DEFAULT_SUBSCRIBE_TIMEOUT_SECS: u64 = 15;
 /// Lives next to `config.toml` in `app_config_dir`. Single source of truth so
 /// the writer (commands.rs) and the loader (lib.rs) cannot drift.
 pub const DEFAULT_UPDATER_STATE_FILENAME: &str = "updater_state.json";
+/// Filename of the JSON sentinel that persists the launch circuit breaker's
+/// state across restarts. Lives next to `config.toml` in `app_config_dir`.
+/// Single source of truth so the reader and the writer in `startup_guard`
+/// cannot drift. See `src-tauri/src/startup_guard.rs`.
+pub const DEFAULT_STARTUP_GUARD_FILENAME: &str = "startup_guard.json";
+/// Number of consecutive unclean launches that trips the startup circuit
+/// breaker into safe mode. A launch is "unclean" when the previous launch was
+/// marked dirty at startup and never marked healthy (the app never reached a
+/// responsive state before the next launch), which is exactly the crash-loop
+/// signature from issue #296. Threshold 1 = enter safe mode after a single
+/// unclean launch: the cost of safe mode (the user loads the model manually)
+/// is tiny next to the cost of repeating a whole-machine freeze. Not
+/// user-tunable: it is a crash-loop safety mechanism, not a preference, and
+/// letting a user raise it would re-arm the freeze this guard exists to break.
+pub const DEFAULT_STARTUP_SAFE_MODE_THRESHOLD: u32 = 1;
 /// Defense-in-depth upper bound on snooze duration accepted from the frontend
 /// IPC boundary (in hours). One year is far longer than any UI-driven snooze
 /// the app exposes today, but small enough that `hours * 3600` cannot overflow

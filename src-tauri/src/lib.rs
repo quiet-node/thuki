@@ -29,6 +29,7 @@ pub mod openai;
 pub mod screenshot;
 pub mod search;
 pub mod settings_commands;
+pub mod startup_guard;
 pub mod subscribe;
 pub mod trace;
 pub mod updater;
@@ -564,12 +565,31 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
     // Ollama warms via its native /api/chat, the built-in engine starts
     // (or reuses) its sidecar and primes the KV cache, and openai providers
     // get no warmup (nothing local to warm).
-    let warmup_kind = app_handle
-        .state::<parking_lot::RwLock<crate::config::AppConfig>>()
-        .read()
-        .inference
-        .active_provider_kind()
-        .to_string();
+    //
+    // Launch circuit breaker (issue #296): after an unclean-launch streak we
+    // are in safe mode, and this no-user-action model auto-load is exactly what
+    // froze the machine. In safe mode we resolve an empty provider kind so the
+    // match below falls through to its no-op arm, skipping BOTH the built-in
+    // and Ollama auto-prime. This is broader than the literal "skip
+    // warm_builtin" ask on purpose: both branches are no-user-action model
+    // loads. Safe mode only DEFERS the load to user action, it does not disable
+    // inference: the model still loads on the user's first message via
+    // `ask_model`, which ensures the sidecar on demand. The rest of the
+    // overlay-show path below runs unchanged. When safe_mode is false, behavior
+    // is identical to before.
+    let warmup_kind = if app_handle
+        .state::<startup_guard::StartupSafety>()
+        .safe_mode()
+    {
+        String::new()
+    } else {
+        app_handle
+            .state::<parking_lot::RwLock<crate::config::AppConfig>>()
+            .read()
+            .inference
+            .active_provider_kind()
+            .to_string()
+    };
     match warmup_kind.as_str() {
         crate::config::defaults::PROVIDER_KIND_OLLAMA => {
             let warmup_model = app_handle
@@ -2443,6 +2463,28 @@ pub fn run() {
             // on writer panic. See design doc P10.
             app.manage(parking_lot::RwLock::new(app_config));
 
+            // ── Launch circuit breaker (issue #296) ───────────────────
+            // Detect a previous launch that never reached a healthy state:
+            // the crash-loop signature where Thuki froze the machine while
+            // auto-loading a large model, macOS reopened the app after the
+            // forced power-off, and it re-froze before the user could act.
+            // Runs BEFORE any dangerous auto-op so this launch's dirty
+            // sentinel is already on disk if it freezes too. The reset is the
+            // `mark_startup_healthy` command (called from the frontend once
+            // past startup), NOT a clean-exit signal: Thuki quits only from
+            // the tray, so `RunEvent::Exit` almost never fires.
+            app.manage(startup_guard::run_startup_guard(
+                app.handle(),
+                crate::config::defaults::DEFAULT_STARTUP_SAFE_MODE_THRESHOLD,
+            ));
+
+            // Defense-in-depth on top of the sentinel: ask macOS not to
+            // auto-reopen our overlay after an unclean shutdown, reducing the
+            // chance the dangerous auto-startup path is re-entered with no
+            // user action in the first place.
+            #[cfg(target_os = "macos")]
+            startup_guard::disable_quit_keeps_windows();
+
             // ── Updater state + optional background poller ────────────
             {
                 let updater_state = updater::UpdaterState::default();
@@ -2846,6 +2888,8 @@ pub fn run() {
             warmup::get_engine_status,
             #[cfg(not(coverage))]
             warmup::get_builtin_warm_state,
+            startup_guard::startup_safety,
+            startup_guard::mark_startup_healthy,
             updater::commands::get_updater_state,
             #[cfg(not(coverage))]
             updater::commands::check_for_update,
