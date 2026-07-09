@@ -5,7 +5,8 @@ use std::sync::{
 use tauri::{Emitter, Manager};
 
 use crate::config::defaults::{
-    PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, VRAM_POLL_INTERVAL_SECS,
+    MODEL_FIT_CEILING_FRACTION, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA,
+    VRAM_POLL_INTERVAL_SECS,
 };
 
 type InFlightSlot = Arc<Mutex<Option<(String, Option<String>, String, u32)>>>;
@@ -456,6 +457,28 @@ pub(crate) fn plan_builtin_warmup(
     }
 }
 
+/// Dedupe key for the per-summon auto-prime gate log (issue #296): the model id
+/// plus whether the gate blocked. Byte figures are deliberately excluded
+/// because the live available-memory reading drifts on every poll, which would
+/// defeat the dedupe and re-print the skip line on every overlay-show.
+type GateLogKey = (String, bool);
+
+/// Process-global record of the last auto-prime gate decision reached, so the
+/// skip line prints only when the decision changes rather than once per
+/// overlay-show. A `static` `Mutex` because `spawn_gated_builtin_warmup` runs
+/// on spawned warm-up threads and this state is shared across all of them.
+static LAST_GATE_LOG: Mutex<Option<GateLogKey>> = Mutex::new(None);
+
+/// Whether an auto-prime gate decision should be logged, given the last
+/// decision already recorded. Pure so the dedupe is unit-tested without the
+/// `static` or a spawned thread. Returns `true` when `current` differs from
+/// `last` (the first decision for a model, a model switch, or a flipped
+/// block/proceed decision) and `false` when it repeats. Because the key carries
+/// no byte figures, a changed available-memory reading alone never re-logs.
+fn gate_log_changed(last: &Option<GateLogKey>, current: &GateLogKey) -> bool {
+    last.as_ref() != Some(current)
+}
+
 /// Resolves `model_id` to an engine Target, runs the pre-load memory gate
 /// (issue #296), and spawns `warm_builtin` only when it clears. Shared by
 /// every built-in auto-prime trigger (the overlay-show handler in `lib.rs` and
@@ -517,6 +540,10 @@ pub(crate) fn spawn_gated_builtin_warmup(
     };
     match plan_builtin_warmup(resolved) {
         BuiltinWarmupAction::Warm(target) => {
+            // Record the proceed decision (no log) so a later block for the
+            // same model re-logs after the gate flips open then shut again.
+            *LAST_GATE_LOG.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some((model_id.clone(), false));
             tauri::async_runtime::spawn(warm_builtin(
                 app,
                 engine,
@@ -532,11 +559,31 @@ pub(crate) fn spawn_gated_builtin_warmup(
             required_bytes,
             available_bytes,
         } => {
-            eprintln!(
-                "thuki: [memory gate] skipping auto-prime of {model_id}: needs ~{} MB, ~{} MB available",
-                required_bytes / (1024 * 1024),
-                available_bytes / (1024 * 1024),
-            );
+            // why: the auto-prime gate re-runs on every overlay-show, so this
+            // skip line would spam stderr once per summon. Dedupe on
+            // (model_id, blocked) only - the available-memory reading drifts
+            // every poll, so byte figures are excluded from the key - and log
+            // solely when the decision changes for this model.
+            {
+                let current = (model_id.clone(), true);
+                let mut last = LAST_GATE_LOG.lock().unwrap_or_else(|p| p.into_inner());
+                if gate_log_changed(&last, &current) {
+                    // Usable ceiling = MODEL_FIT_CEILING_FRACTION * available,
+                    // the same bound `preflight_memory_gate` blocks against;
+                    // surfaced so the raw available figure no longer reads like
+                    // a false skip.
+                    let ceiling_bytes =
+                        (available_bytes as f64 * MODEL_FIT_CEILING_FRACTION) as u64;
+                    eprintln!(
+                        "thuki: [memory gate] skipping auto-prime of {model_id}: needs ~{} MB, usable ceiling ~{} MB ({:.0}% of ~{} MB available)",
+                        required_bytes / (1024 * 1024),
+                        ceiling_bytes / (1024 * 1024),
+                        MODEL_FIT_CEILING_FRACTION * 100.0,
+                        available_bytes / (1024 * 1024),
+                    );
+                }
+                *last = Some(current);
+            }
             let _ = app.emit(
                 "warmup:builtin-skipped",
                 BuiltinSkippedPayload {
@@ -2204,5 +2251,42 @@ mod tests {
 
         assert_eq!(engine.status().borrow().state, "stopped");
         engine.shutdown().await;
+    }
+
+    // ── gate_log_changed (auto-prime skip-log dedupe, issue #296) ────────────
+
+    #[test]
+    fn gate_log_changed_first_decision_logs() {
+        // No prior decision recorded: the first block for a model logs.
+        assert!(gate_log_changed(&None, &("qwen".to_string(), true)));
+    }
+
+    #[test]
+    fn gate_log_changed_same_decision_twice_logs_once() {
+        // Same (model, blocked) pair as last time: the repeat does not re-log.
+        let last = Some(("qwen".to_string(), true));
+        assert!(!gate_log_changed(&last, &("qwen".to_string(), true)));
+    }
+
+    #[test]
+    fn gate_log_changed_model_switch_relogs() {
+        let last = Some(("qwen".to_string(), true));
+        assert!(gate_log_changed(&last, &("llama".to_string(), true)));
+    }
+
+    #[test]
+    fn gate_log_changed_flipped_decision_relogs() {
+        // Same model, decision flipped from proceed to block: re-log.
+        let last = Some(("qwen".to_string(), false));
+        assert!(gate_log_changed(&last, &("qwen".to_string(), true)));
+    }
+
+    #[test]
+    fn gate_log_changed_byte_figures_are_not_in_the_key() {
+        // The key is (model, blocked) only; the available-memory reading that
+        // drifts every poll is not part of it, so two blocks for the same model
+        // never re-log no matter how the byte figures differ between reads.
+        let last = Some(("qwen".to_string(), true));
+        assert!(!gate_log_changed(&last, &("qwen".to_string(), true)));
     }
 }
