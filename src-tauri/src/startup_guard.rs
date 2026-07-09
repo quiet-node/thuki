@@ -112,9 +112,16 @@ pub fn healthy_state() -> PersistedGuardState {
 /// Read from multiple subsystems and threads (the auto-prime gate in
 /// `show_overlay`, a future download gate, the `startup_safety` command), so
 /// it uses lock-free atomics. The two fields are set once at init and only
-/// ever cleared together by [`StartupSafety::clear`]; no consumer needs a
-/// consistent pair-read (each reads a single field), so `Relaxed` ordering is
-/// sufficient and a `Mutex` would be overkill.
+/// ever cleared together by [`StartupSafety::clear`]. Most consumers read a
+/// single field, for which `Relaxed` is trivially sufficient. [`snapshot`]
+/// does read both, via two independent `Relaxed` loads, so a `clear()` racing
+/// concurrently can leave it observing a torn pair (new value of one field,
+/// old value of the other) for an instant. That is benign here: `clear()` is a
+/// one-shot reset off any hot path, and a momentarily-inconsistent recovery
+/// snapshot only ever resolves toward "healthy". So `Relaxed` stays sufficient
+/// and a `Mutex` would be overkill.
+///
+/// [`snapshot`]: StartupSafety::snapshot
 #[derive(Debug)]
 pub struct StartupSafety {
     safe_mode: AtomicBool,
