@@ -44,13 +44,16 @@ use tokio_util::sync::CancellationToken;
 use crate::commands::ChatMessage;
 use crate::config::defaults::SERP_EARLY_STOP_HITS;
 use crate::net::transport::HttpTransport;
+use crate::trace::{BoundRecorder, RecorderEvent};
 use crate::websearch::assemble::{assemble_context, SourceBlock};
-use crate::websearch::encyclopedia::fetch_encyclopedia;
+use crate::websearch::encyclopedia::{fetch_encyclopedia, is_volatile_question};
 use crate::websearch::engine::{web_search, EngineHealth, SearchHit};
 use crate::websearch::fetch::fetch_pages;
 use crate::websearch::news::{fetch_news, is_news_intent};
 use crate::websearch::prefilter::{prefilter, PreFilterVerdict};
-use crate::websearch::prepass::{InferenceError, PrePass, PrePassDecision, SearchDecision};
+use crate::websearch::prepass::{
+    InferenceError, PrePass, PrePassDecision, SearchDecision, SearchRoute,
+};
 use crate::websearch::rank::{select_chunks, Scorer};
 use crate::websearch::weather::fetch_weather;
 use crate::websearch::writer::{unreachable_messages, writer_messages};
@@ -96,6 +99,12 @@ pub struct SearchDeps<'a> {
     pub scorer: &'a dyn Scorer,
     /// Cross-turn engine block memory; blocked engines sit out their cooldown.
     pub health: &'a EngineHealth,
+    /// Conversation-bound forensic recorder. The pipeline emits the resolved
+    /// search decision and the retrieval tier to the chat-domain trace so a bad
+    /// route or dead-end is diagnosable after the fact. A `NoopRecorder`-backed
+    /// bound recorder makes every emission a constant-time no-op when tracing is
+    /// off (the production default).
+    pub recorder: &'a BoundRecorder,
 }
 
 /// Runs the pipeline for one turn. `chat_system_prompt`, `history`, and
@@ -117,6 +126,12 @@ pub async fn run_search(
     let verdict = prefilter(latest_user, today);
     eprintln!("[search] prefilter={verdict:?}");
     if verdict == PreFilterVerdict::ForceNo {
+        deps.recorder.record(RecorderEvent::SearchDecided {
+            prefilter: prefilter_label(verdict).to_string(),
+            route: String::new(),
+            standalone_question: latest_user.trim().to_string(),
+            queries: Vec::new(),
+        });
         return SearchOutcome::NoSearch;
     }
     // Stage two: the persona-free classifier decides the ambiguous middle and
@@ -138,10 +153,19 @@ pub async fn run_search(
         Err(InferenceError::Request(reason)) => {
             eprintln!("[search] classifier error: {reason}");
             if verdict != PreFilterVerdict::ForceWeb {
+                deps.recorder.record(RecorderEvent::SearchDecided {
+                    prefilter: prefilter_label(verdict).to_string(),
+                    route: String::new(),
+                    standalone_question: latest_user.trim().to_string(),
+                    queries: Vec::new(),
+                });
                 return SearchOutcome::NoSearch;
             }
+            // No classifier output: search the raw message and route to the
+            // general engine tier (no route hint to steer a vertical).
             PrePassDecision {
                 decision: SearchDecision::Web,
+                route: SearchRoute::Web,
                 standalone_question: latest_user.trim().to_string(),
                 queries: vec![latest_user.trim().to_string()],
             }
@@ -149,10 +173,17 @@ pub async fn run_search(
     };
     let decision = resolve_decision(verdict, classified);
     eprintln!(
-        "[search] decision={:?} queries={}",
+        "[search] decision={:?} route={:?} queries={}",
         decision.decision,
+        decision.route,
         decision.queries.len()
     );
+    deps.recorder.record(RecorderEvent::SearchDecided {
+        prefilter: prefilter_label(verdict).to_string(),
+        route: route_label(decision.route).to_string(),
+        standalone_question: decision.standalone_question.clone(),
+        queries: decision.queries.clone(),
+    });
     match decision.decision {
         SearchDecision::No => SearchOutcome::NoSearch,
         // `cached` is mapped to `web` for now (a correct re-search).
@@ -162,6 +193,7 @@ pub async fn run_search(
                 chat_system_prompt,
                 history,
                 latest_user,
+                decision.route,
                 &decision.standalone_question,
                 &decision.queries,
                 num_ctx,
@@ -172,6 +204,25 @@ pub async fn run_search(
             )
             .await
         }
+    }
+}
+
+/// Stable snake_case label for a pre-filter verdict, for the trace.
+fn prefilter_label(verdict: PreFilterVerdict) -> &'static str {
+    match verdict {
+        PreFilterVerdict::ForceNo => "force_no",
+        PreFilterVerdict::ForceWeb => "force_web",
+        PreFilterVerdict::Ambiguous => "ambiguous",
+    }
+}
+
+/// Stable lowercase label for a classifier route, for the trace.
+fn route_label(route: SearchRoute) -> &'static str {
+    match route {
+        SearchRoute::Weather => "weather",
+        SearchRoute::News => "news",
+        SearchRoute::Wiki => "wiki",
+        SearchRoute::Web => "web",
     }
 }
 
@@ -191,6 +242,9 @@ fn resolve_decision(verdict: PreFilterVerdict, classified: PrePassDecision) -> P
             };
             PrePassDecision {
                 decision: SearchDecision::Web,
+                // Keep the classifier's route hint: ForceWeb overrides only the
+                // yes/no decision, not which source tier best answers the turn.
+                route: classified.route,
                 standalone_question: classified.standalone_question,
                 queries,
             }
@@ -211,6 +265,7 @@ async fn run_web(
     chat_system_prompt: &str,
     history: &[ChatMessage],
     latest_user: &str,
+    route: SearchRoute,
     standalone_question: &str,
     queries: &[String],
     num_ctx: u32,
@@ -226,58 +281,69 @@ async fn run_web(
     // Vertical tier first: an official keyless API that recognises the question
     // answers it directly and skips the scraped engines entirely (an API cannot
     // bot-block the way SERPs do). A miss falls through with nothing lost.
+    //
+    // Weather keeps its own precise gate (location extraction inside
+    // `fetch_weather` self-gates: a non-weather question yields no location and
+    // returns `None`), so it is attempted whenever its own signal matches or the
+    // classifier routed to weather. Either way a miss continues to the next tier.
     if let Some(block) = fetch_weather(deps.transport, standalone_question).await {
-        let sources = vec![block];
-        let messages = writer_messages(
+        return grounded_answer(
+            deps,
+            "weather",
             chat_system_prompt,
             history,
             latest_user,
-            &sources,
+            vec![block],
             today,
             locale,
         );
-        return SearchOutcome::Answer { messages, sources };
     }
     if cancel.is_cancelled() {
         return SearchOutcome::Cancelled;
     }
-    // News intent goes to the Google News RSS feed first: keyless, not
-    // SERP-bot-gated, and its dated headlines answer the who-won /
-    // what-happened class directly. A miss falls through to the engines.
-    if is_news_intent(standalone_question) {
+    // News tier: keyless Google News RSS, not SERP-bot-gated, whose dated
+    // headlines answer the who-won / what-happened / latest-status class
+    // directly. Runs when the classifier routed to news OR the deterministic
+    // token gate matches (kept as a cheap additive hint, no longer the sole
+    // gate). A miss falls through to the engines.
+    if matches!(route, SearchRoute::News) || is_news_intent(standalone_question) {
         if let Some(query) = queries.first() {
             if let Some(block) = fetch_news(deps.transport, query).await {
-                let sources = vec![block];
-                let messages = writer_messages(
+                return grounded_answer(
+                    deps,
+                    "news",
                     chat_system_prompt,
                     history,
                     latest_user,
-                    &sources,
+                    vec![block],
                     today,
                     locale,
                 );
-                return SearchOutcome::Answer { messages, sources };
             }
         }
     }
     if cancel.is_cancelled() {
         return SearchOutcome::Cancelled;
     }
-    // Encyclopedia intent goes to Wikipedia last among verticals: its trigger
-    // phrases ("what is", "when was") are the broadest of the three, so
-    // weather/news get first refusal on anything narrower. A miss falls
-    // through to the engines.
-    if let Some(block) = fetch_encyclopedia(deps.transport, standalone_question).await {
-        let sources = vec![block];
-        let messages = writer_messages(
-            chat_system_prompt,
-            history,
-            latest_user,
-            &sources,
-            today,
-            locale,
-        );
-        return SearchOutcome::Answer { messages, sources };
+    // Wikipedia tier: runs ONLY when the classifier routed to wiki AND the
+    // deterministic volatility guard passes. Wikipedia's lead summary answers a
+    // stable subject, never its live state, so a volatile question (a freshness
+    // marker or a present/future year) must never be served from it. The
+    // vertical itself applies a second, year-mismatch guard after resolving the
+    // article title. A miss or a refusal falls through to the engines.
+    if matches!(route, SearchRoute::Wiki) && !is_volatile_question(standalone_question) {
+        if let Some(block) = fetch_encyclopedia(deps.transport, standalone_question).await {
+            return grounded_answer(
+                deps,
+                "wiki",
+                chat_system_prompt,
+                history,
+                latest_user,
+                vec![block],
+                today,
+                locale,
+            );
+        }
     }
     if cancel.is_cancelled() {
         return SearchOutcome::Cancelled;
@@ -315,6 +381,37 @@ async fn run_web(
             messages: unreachable_messages(chat_system_prompt, history, latest_user),
         };
     }
+    grounded_answer(
+        deps,
+        "engine",
+        chat_system_prompt,
+        history,
+        latest_user,
+        sources,
+        today,
+        locale,
+    )
+}
+
+/// Records the retrieval tier to the trace and builds the source-grounded
+/// [`SearchOutcome::Answer`]. `tier` is the source that answered the turn
+/// ("weather", "news", "wiki", or "engine"); the recorded URLs are the cited
+/// sources', so a trace shows exactly what grounded the reply.
+#[allow(clippy::too_many_arguments)]
+fn grounded_answer(
+    deps: &SearchDeps<'_>,
+    tier: &str,
+    chat_system_prompt: &str,
+    history: &[ChatMessage],
+    latest_user: &str,
+    sources: Vec<SourceBlock>,
+    today: &str,
+    locale: &str,
+) -> SearchOutcome {
+    deps.recorder.record(RecorderEvent::SearchRetrieved {
+        tier: tier.to_string(),
+        urls: sources.iter().map(|s| s.url.clone()).collect(),
+    });
     let messages = writer_messages(
         chat_system_prompt,
         history,
@@ -389,6 +486,7 @@ mod tests {
     fn web_decision(queries: Vec<&str>) -> PrePassDecision {
         PrePassDecision {
             decision: SearchDecision::Web,
+            route: SearchRoute::Web,
             standalone_question: "when was the treaty of versailles signed in paris".into(),
             queries: queries.into_iter().map(String::from).collect(),
         }
@@ -419,6 +517,22 @@ mod tests {
         transport: &'a dyn HttpTransport,
         scorer: &'a dyn Scorer,
     ) -> SearchDeps<'a> {
+        deps_with_recorder(
+            prepass,
+            transport,
+            scorer,
+            Box::leak(Box::new(crate::trace::BoundRecorder::noop_for(
+                crate::trace::ConversationId::new("test"),
+            ))),
+        )
+    }
+
+    fn deps_with_recorder<'a>(
+        prepass: &'a dyn PrePass,
+        transport: &'a dyn HttpTransport,
+        scorer: &'a dyn Scorer,
+        recorder: &'a crate::trace::BoundRecorder,
+    ) -> SearchDeps<'a> {
         SearchDeps {
             prepass,
             transport,
@@ -426,6 +540,7 @@ mod tests {
             // Each test gets its own leaked registry so a block marked in one
             // test can never poison a parallel test's rotation.
             health: Box::leak(Box::new(EngineHealth::new())),
+            recorder,
         }
     }
 
@@ -465,6 +580,7 @@ mod tests {
         // returns `no`: the Deciding phase is emitted, then no search runs.
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::No,
+            route: SearchRoute::Web,
             standalone_question: "tell me a joke".into(),
             queries: vec![],
         }));
@@ -516,6 +632,7 @@ mod tests {
         // classifier's standalone rewrite (which matches the fixture page).
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::No,
+            route: SearchRoute::Web,
             standalone_question: "when was the treaty of versailles signed in paris".into(),
             queries: vec![],
         }));
@@ -550,6 +667,7 @@ mod tests {
     async fn news_question_answers_via_headlines_without_engines() {
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Web,
+            route: SearchRoute::News,
             standalone_question: "who won the most recent F1 race".into(),
             queries: vec!["f1 race winner".into()],
         }));
@@ -592,6 +710,7 @@ mod tests {
         // engines and resolves to the unreachable disclosure.
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Web,
+            route: SearchRoute::News,
             standalone_question: "who won the game".into(),
             queries: vec![],
         }));
@@ -619,6 +738,7 @@ mod tests {
         // misses, and the post-news cancellation check aborts before engines.
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Web,
+            route: SearchRoute::News,
             standalone_question: "who won the race".into(),
             queries: vec!["race winner".into()],
         }));
@@ -649,6 +769,7 @@ mod tests {
         // and ground the answer as usual.
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Web,
+            route: SearchRoute::News,
             standalone_question: "who won the treaty of versailles game".into(),
             queries: vec!["treaty versailles paris".into()],
         }));
@@ -678,6 +799,7 @@ mod tests {
         // geocode + forecast and the scraped engines are never queried.
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Web,
+            route: SearchRoute::Weather,
             standalone_question: "weather in Tokyo".into(),
             queries: vec!["tokyo weather".into()],
         }));
@@ -733,6 +855,7 @@ mod tests {
         // check aborts before any engine is queried.
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Web,
+            route: SearchRoute::Weather,
             standalone_question: "weather in Xyzzyplace".into(),
             queries: vec!["q".into()],
         }));
@@ -763,6 +886,7 @@ mod tests {
         // still resolves through the normal engine pipeline.
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Web,
+            route: SearchRoute::Web,
             standalone_question: "weather in Xyzzyplace treaty versailles paris".into(),
             queries: vec!["treaty versailles paris".into()],
         }));
@@ -794,6 +918,7 @@ mod tests {
         // the scraped engines are never queried.
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Web,
+            route: SearchRoute::Wiki,
             standalone_question: "what is photosynthesis".into(),
             queries: vec!["photosynthesis".into()],
         }));
@@ -848,6 +973,7 @@ mod tests {
         // cancellation check aborts before any engine is queried.
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Web,
+            route: SearchRoute::Wiki,
             standalone_question: "what is xyzzyplace".into(),
             queries: vec!["q".into()],
         }));
@@ -878,6 +1004,7 @@ mod tests {
         // response): the engines run and ground the answer as usual.
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Web,
+            route: SearchRoute::Wiki,
             standalone_question: "what is the treaty of versailles game".into(),
             queries: vec!["treaty versailles paris".into()],
         }));
@@ -907,6 +1034,7 @@ mod tests {
             PreFilterVerdict::ForceWeb,
             PrePassDecision {
                 decision: SearchDecision::No,
+                route: SearchRoute::Weather,
                 standalone_question: "current tokyo weather".into(),
                 queries: vec![],
             },
@@ -921,18 +1049,22 @@ mod tests {
             PreFilterVerdict::ForceWeb,
             PrePassDecision {
                 decision: SearchDecision::No,
+                route: SearchRoute::News,
                 standalone_question: "q".into(),
                 queries: vec!["a".into(), "b".into()],
             },
         );
         assert_eq!(out.decision, SearchDecision::Web);
         assert_eq!(out.queries, vec!["a", "b"]);
+        // ForceWeb overrides only the yes/no decision, never the route hint.
+        assert_eq!(out.route, SearchRoute::News);
     }
 
     #[test]
     fn resolve_ambiguous_keeps_classifier_decision() {
         let classified = PrePassDecision {
             decision: SearchDecision::No,
+            route: SearchRoute::Wiki,
             standalone_question: "q".into(),
             queries: vec![],
         };
@@ -946,6 +1078,7 @@ mod tests {
         // is total and leaves the input untouched.
         let classified = PrePassDecision {
             decision: SearchDecision::Web,
+            route: SearchRoute::Weather,
             standalone_question: "q".into(),
             queries: vec!["a".into()],
         };
@@ -1123,6 +1256,7 @@ mod tests {
         // so BM25 keeps nothing: search was wanted, nothing citable -> disclose.
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Web,
+            route: SearchRoute::Web,
             standalone_question: "quantum chromodynamics lagrangian".into(),
             queries: vec!["q".into()],
         }));
@@ -1228,6 +1362,7 @@ mod tests {
         // instead of being absorbed by a vertical's own cancellation check.
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Web,
+            route: SearchRoute::Web,
             standalone_question: "xyzzyplace status report".into(),
             queries: vec!["q one".into(), "q two".into()],
         }));
@@ -1261,6 +1396,7 @@ mod tests {
         // vertical's own cancellation check.
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Web,
+            route: SearchRoute::Web,
             standalone_question: "xyzzyplace status report".into(),
             queries: vec!["q".into()],
         }));
@@ -1290,6 +1426,7 @@ mod tests {
         // Cached is mapped to Web for now, so it still grounds the answer.
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Cached,
+            route: SearchRoute::Web,
             standalone_question: "treaty of versailles signed paris".into(),
             queries: vec!["treaty versailles".into()],
         }));
@@ -1308,5 +1445,132 @@ mod tests {
         )
         .await;
         assert!(matches!(outcome, SearchOutcome::Answer { .. }));
+    }
+
+    // ── trace emission ────────────────────────────────────────────────────────
+
+    /// Builds a `BoundRecorder` over a `MockRecorder` and returns both so a test
+    /// can drive the pipeline and then assert on the emitted events.
+    fn mock_recorder() -> (
+        std::sync::Arc<crate::trace::recorder::MockRecorder>,
+        crate::trace::BoundRecorder,
+    ) {
+        let mock = std::sync::Arc::new(crate::trace::recorder::MockRecorder::new());
+        let bound = crate::trace::BoundRecorder::new(
+            mock.clone(),
+            crate::trace::ConversationId::new("conv-search"),
+        );
+        (mock, bound)
+    }
+
+    #[tokio::test]
+    async fn trace_records_decision_and_retrieval_on_news_answer() {
+        // A news-routed turn: the trace must carry one SearchDecided (route
+        // "news", the standalone rewrite, the queries) and one SearchRetrieved
+        // (tier "news", the cited feed URL).
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::News,
+            standalone_question: "who won the most recent F1 race".into(),
+            queries: vec!["f1 race winner".into()],
+        }));
+        let feed_url = crate::websearch::news::news_request("f1 race winner").url;
+        let feed = r#"<rss><channel><item><title>Leclerc wins British GP - Formula 1</title><pubDate>Wed, 08 Jul 2026 01:11:35 GMT</pubDate></item></channel></rss>"#;
+        let transport = FakeHttpTransport::new().with_response(
+            &feed_url,
+            HttpResponse {
+                status: 200,
+                final_url: feed_url.clone(),
+                body: feed.as_bytes().to_vec(),
+            },
+        );
+        let (mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let _ = run_search(
+            &deps_with_recorder(&prepass, &transport, &Bm25Scorer, &bound),
+            "sys",
+            &[],
+            "who won the most recent F1 race",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        // The resolved decision is recorded first, carrying the classifier's
+        // route hint, the standalone rewrite, and the queries.
+        assert!(matches!(
+            &events[0],
+            RecorderEvent::SearchDecided { prefilter, route, standalone_question, queries }
+            if prefilter == "force_web"
+                && route == "news"
+                && standalone_question == "who won the most recent F1 race"
+                && queries == &vec!["f1 race winner".to_string()]
+        ));
+        // The retrieval tier and its cited URL follow.
+        assert!(events.iter().any(|e| matches!(
+            e,
+            RecorderEvent::SearchRetrieved { tier, urls }
+            if tier == "news" && urls == &vec!["https://news.google.com/".to_string()]
+        )));
+    }
+
+    #[tokio::test]
+    async fn trace_records_decision_only_on_force_no_turn() {
+        // A greeting is force-skipped: exactly one SearchDecided event with the
+        // "force_no" pre-filter label and an empty route, and no SearchRetrieved.
+        let prepass = FakePrePass::returning(Ok(web_decision(vec!["unused"])));
+        let transport = FakeHttpTransport::new();
+        let (mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let _ = run_search(
+            &deps_with_recorder(&prepass, &transport, &Bm25Scorer, &bound),
+            "sys",
+            &[],
+            "hi there, thanks!",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            RecorderEvent::SearchDecided { prefilter, route, .. }
+            if prefilter == "force_no" && route.is_empty()
+        ));
+    }
+
+    #[tokio::test]
+    async fn trace_records_engine_tier_on_grounded_web_answer() {
+        // A plain web turn that reaches the engines: SearchRetrieved tier is
+        // "engine" and carries the cited source URL.
+        let prepass = FakePrePass::returning(Ok(web_decision(vec!["treaty versailles paris"])));
+        let transport = transport_with_serp_and_page();
+        let (mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let _ = run_search(
+            &deps_with_recorder(&prepass, &transport, &Bm25Scorer, &bound),
+            "sys",
+            &[],
+            "when signed",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            RecorderEvent::SearchRetrieved { tier, urls }
+            if tier == "engine" && urls == &vec!["https://match.example/".to_string()]
+        )));
     }
 }

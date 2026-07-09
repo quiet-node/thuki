@@ -4,22 +4,27 @@
 //! General SERP scraping is a poor fit for "what is X" / "who wrote X" style
 //! questions when the scraped engines are rate-limited, and Wikipedia's own
 //! full-text search plus REST summary API are keyless, stable, and not
-//! bot-gated the way SERPs are. When a turn's standalone question is
-//! recognisably a stable factual/definitional question, the flow is
-//! search → summary → format: full-text search resolves the question to a
-//! canonical article title, the REST summary API returns its lead paragraph,
-//! and the result is wrapped into a single [`SourceBlock`] the writer cites.
+//! bot-gated the way SERPs are. The vertical runs only when the classifier
+//! routed the turn to `wiki` (a stable definitional/historical fact); the
+//! orchestrator gates on that route rather than any substring match here. The
+//! flow is search → summary → format: full-text search resolves the question
+//! to a canonical article title, the REST summary API returns its lead
+//! paragraph, and the result is wrapped into a single [`SourceBlock`] the
+//! writer cites.
 //!
-//! Deliberately excludes bare "who is" questions: verified live 2026-07-08,
-//! Wikipedia's lead summary for an office ("President of France") describes
-//! the office, not its current holder, so "who is the (current) president of
-//! X" would surface a non-answer dressed as a citation. Only verbs that
-//! signal a stable, non-volatile fact ("who wrote", "when was", "define")
-//! trigger this vertical; volatile-officeholder questions fall through to the
-//! scraped-engine/news tiers instead. Also skips disambiguation pages, since a
-//! list of unrelated topics is not an answer. Every step degrades to `None`,
-//! sending the turn down the normal engine path: the vertical can only ever
-//! improve a turn, never lose one.
+//! Two deterministic guards defend against the classifier mis-routing a
+//! volatile question to `wiki`, because Wikipedia's lead summary describes the
+//! stable subject, not its live state (verified live 2026-07-08: the summary
+//! for an office such as "President of France" describes the office, not its
+//! current holder, and the article for an evolving event is pinned to a past
+//! edition). The volatility guard ([`is_volatile_question`]) refuses a question
+//! carrying a freshness marker or a present/future year before any request is
+//! sent; the year-mismatch guard ([`year_mismatch`]) rejects a resolved article
+//! whose title is pinned to a different year than the question asked about.
+//! Disambiguation pages are also skipped, since a list of unrelated topics is
+//! not an answer. Every guard and every step degrades to `None`, sending the
+//! turn down the normal engine path: the vertical can only ever improve a turn,
+//! never lose one.
 //!
 //! Both requests carry a descriptive `User-Agent` identifying Thuki with a
 //! contact URL, per
@@ -27,32 +32,11 @@
 //! verified live 2026-07-08 that a request with no (or a generic) User-Agent
 //! is rejected outright with `403`, unlike Open-Meteo or Google News RSS.
 
+use crate::config::defaults::{
+    WIKI_VOLATILITY_MARKERS, WIKI_VOLATILITY_MIN_YEAR, WIKI_VOLATILITY_PHRASES,
+};
 use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
 use crate::websearch::assemble::SourceBlock;
-
-/// Phrases that signal a stable, definitional/historical question this
-/// vertical can answer confidently. Matched as substrings of the lowercased
-/// standalone question; each is distinctive enough as a phrase that a false
-/// positive substring match is not a realistic concern.
-const ENCYCLOPEDIA_PHRASES: &[&str] = &[
-    "what is",
-    "what are",
-    "what was",
-    "what were",
-    "define",
-    "definition of",
-    "meaning of",
-    "who wrote",
-    "who invented",
-    "who discovered",
-    "who founded",
-    "who created",
-    "when was",
-    "when did",
-    "capital of",
-    "population of",
-    "explain",
-];
 
 /// Wikipedia's keyless full-text search and REST summary endpoints.
 const SEARCH_ENDPOINT: &str = "https://en.wikipedia.org/w/api.php";
@@ -74,11 +58,74 @@ pub(crate) struct WikiSummary {
     pub(crate) page_url: String,
 }
 
-/// Whether `question` is a stable factual/definitional question this vertical
-/// should try to answer.
-pub(crate) fn is_encyclopedia_intent(question: &str) -> bool {
+/// Whether `question` carries a freshness signal that disqualifies the
+/// Wikipedia vertical even when the classifier routed the turn to `wiki`. True
+/// when the lowercased question contains any [`WIKI_VOLATILITY_MARKERS`] token,
+/// any [`WIKI_VOLATILITY_PHRASES`] whole phrase, or a 4-digit year at or after
+/// [`WIKI_VOLATILITY_MIN_YEAR`]. Wikipedia's lead summary answers the stable
+/// subject, never its live state, so such a question must fall through to the
+/// news / engine tiers.
+pub(crate) fn is_volatile_question(question: &str) -> bool {
     let lower = question.to_lowercase();
-    ENCYCLOPEDIA_PHRASES.iter().any(|p| lower.contains(p))
+    let tokens: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect();
+    if tokens.iter().any(|t| WIKI_VOLATILITY_MARKERS.contains(t)) {
+        return true;
+    }
+    if tokens
+        .iter()
+        .any(|t| four_digit_year(t).is_some_and(|y| y >= WIKI_VOLATILITY_MIN_YEAR))
+    {
+        return true;
+    }
+    // Pad the token stream so a phrase matches only on whole-word boundaries.
+    let padded = format!(" {} ", tokens.join(" "));
+    WIKI_VOLATILITY_PHRASES
+        .iter()
+        .any(|phrase| padded.contains(&format!(" {phrase} ")))
+}
+
+/// Whether `question` names a 4-digit year that conflicts with the resolved
+/// article `title`: the question names at least one year, the title names at
+/// least one year, and they share none. This rejects a Wikipedia hit pinned to
+/// a different edition than the question asked about (e.g. a "2026" question
+/// resolving to a "2023" article). When the question names no year, or the
+/// title is not year-pinned, or they share a year, there is no mismatch.
+pub(crate) fn year_mismatch(question: &str, title: &str) -> bool {
+    let q_years = four_digit_years(question);
+    if q_years.is_empty() {
+        return false;
+    }
+    let t_years = four_digit_years(title);
+    if t_years.is_empty() {
+        return false;
+    }
+    !q_years.iter().any(|y| t_years.contains(y))
+}
+
+/// Parses `token` as a bare 4-digit year, or `None` when it is not exactly four
+/// ASCII digits. Used by both volatility and year-mismatch guards.
+fn four_digit_year(token: &str) -> Option<u32> {
+    if token.len() == 4 && token.bytes().all(|b| b.is_ascii_digit()) {
+        token.parse::<u32>().ok()
+    } else {
+        None
+    }
+}
+
+/// Collects every distinct 4-digit year token in `text`, in first-seen order.
+fn four_digit_years(text: &str) -> Vec<u32> {
+    let mut out = Vec::new();
+    for token in text.split(|c: char| !c.is_alphanumeric()) {
+        if let Some(year) = four_digit_year(token) {
+            if !out.contains(&year) {
+                out.push(year);
+            }
+        }
+    }
+    out
 }
 
 /// Builds the full-text search GET request resolving `question` to a
@@ -161,9 +208,11 @@ pub(crate) fn wiki_source_block(summary: &WikiSummary) -> SourceBlock {
     }
 }
 
-/// Runs the full encyclopedia vertical for `standalone_question`: intent
-/// check, full-text search, summary fetch, disambiguation filter. Returns
-/// `None` on any miss so the caller falls through to the scraped-engine tier.
+/// Runs the full encyclopedia vertical for `standalone_question`: full-text
+/// search, summary fetch, disambiguation filter, and the year-mismatch guard.
+/// The caller (orchestrator) is responsible for gating on the `wiki` route and
+/// the [`is_volatile_question`] guard before calling this. Returns `None` on any
+/// miss so the caller falls through to the scraped-engine tier.
 ///
 /// Coverage-excluded: thin async glue over the injectable transport
 /// delegating every decision to the pure helpers above, which are all tested
@@ -174,9 +223,6 @@ pub(crate) async fn fetch_encyclopedia(
     transport: &dyn HttpTransport,
     standalone_question: &str,
 ) -> Option<SourceBlock> {
-    if !is_encyclopedia_intent(standalone_question) {
-        return None;
-    }
     let search_response = match transport.send(&search_request(standalone_question)).await {
         Ok(response) => response,
         Err(e) => {
@@ -213,6 +259,16 @@ pub(crate) async fn fetch_encyclopedia(
         eprintln!("[search] vertical=wiki summary_unusable title={title:?} -> engines");
         return None;
     };
+    // Year-mismatch guard: a resolved article pinned to a different year than
+    // the question asked about is the wrong edition (e.g. a 2026 question
+    // resolving to a 2023 event article), so fall through to the engines.
+    if year_mismatch(standalone_question, &summary.title) {
+        eprintln!(
+            "[search] vertical=wiki year_mismatch title={:?} -> engines",
+            summary.title
+        );
+        return None;
+    }
     eprintln!("[search] vertical=wiki title={}", summary.title);
     Some(wiki_source_block(&summary))
 }
@@ -231,25 +287,65 @@ mod tests {
 
     const DISAMBIGUATION_FIXTURE: &str = r#"{"type":"disambiguation","title":"Mercury","extract":"Mercury most commonly refers to: Mercury (planet)...","content_urls":{"desktop":{"page":"https://en.wikipedia.org/wiki/Mercury"}}}"#;
 
-    // ── intent gate ──────────────────────────────────────────────────────────
+    // ── volatility guard ─────────────────────────────────────────────────────
 
     #[test]
-    fn encyclopedia_intent_matches_stable_factual_questions() {
-        assert!(is_encyclopedia_intent("what is photosynthesis"));
-        assert!(is_encyclopedia_intent("who wrote Hamlet"));
-        assert!(is_encyclopedia_intent("define entropy"));
-        assert!(is_encyclopedia_intent("when was the Eiffel Tower built"));
-        assert!(is_encyclopedia_intent("capital of Japan"));
+    fn volatility_guard_passes_stable_questions() {
+        // Stable definitional/historical facts carry no freshness signal.
+        assert!(!is_volatile_question("what is photosynthesis"));
+        assert!(!is_volatile_question("who wrote Hamlet"));
+        assert!(!is_volatile_question(
+            "when was the Eiffel Tower built in 1889"
+        ));
+        assert!(!is_volatile_question("the 2018 FIFA World Cup final"));
     }
 
     #[test]
-    fn encyclopedia_intent_excludes_volatile_and_unrelated_questions() {
-        // Bare "who is" is deliberately not a trigger: volatile officeholder
-        // questions must not be answered from a static lead summary.
-        assert!(!is_encyclopedia_intent("who is the president of France"));
-        assert!(!is_encyclopedia_intent("weather in Tokyo"));
-        assert!(!is_encyclopedia_intent("who won the F1 race"));
-        assert!(!is_encyclopedia_intent("tell me a joke"));
+    fn volatility_guard_refuses_freshness_markers() {
+        // Marker words, whole-phrase markers, and present/future years all trip.
+        assert!(is_volatile_question("what is the latest iOS version"));
+        assert!(is_volatile_question("current president of France"));
+        assert!(is_volatile_question("what is the status of the merger"));
+        assert!(is_volatile_question("what is trending right now"));
+        assert!(is_volatile_question("the best phones this year"));
+        assert!(is_volatile_question("what is the World Cup 2026"));
+    }
+
+    #[test]
+    fn volatility_guard_marker_matches_whole_tokens_only() {
+        // "recentralise" contains "recent" as a substring but is not the marker
+        // token; whole-token matching must not trip on it.
+        assert!(!is_volatile_question("what does recentralise mean"));
+    }
+
+    // ── year-mismatch guard ──────────────────────────────────────────────────
+
+    #[test]
+    fn year_mismatch_true_when_years_differ() {
+        assert!(year_mismatch(
+            "what is the status of the World Cup 2026",
+            "2023 FIFA Women's World Cup"
+        ));
+    }
+
+    #[test]
+    fn year_mismatch_false_without_conflict() {
+        // No year in the question.
+        assert!(!year_mismatch("what is photosynthesis", "Photosynthesis"));
+        // No year in the title.
+        assert!(!year_mismatch("the 2026 world cup", "FIFA World Cup"));
+        // Shared year.
+        assert!(!year_mismatch("2026 world cup", "2026 FIFA World Cup"));
+    }
+
+    #[test]
+    fn four_digit_years_extracts_distinct_years_only() {
+        assert_eq!(
+            four_digit_years("in 2026 and 2026 and 2030"),
+            vec![2026, 2030]
+        );
+        // 12345 is a 5-digit run, not a year; "wc2026" is not a bare token.
+        assert_eq!(four_digit_years("12345 wc2026"), Vec::<u32>::new());
     }
 
     // ── request builders ─────────────────────────────────────────────────────
@@ -381,17 +477,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_encyclopedia_none_when_not_encyclopedic_or_search_fails() {
+    async fn fetch_encyclopedia_none_when_search_fails() {
+        // Search transport error (no canned response): the vertical falls
+        // through. Routing/volatility gating is the orchestrator's job now, so
+        // fetch_encyclopedia always issues the search request when called.
         let transport = FakeHttpTransport::new();
-        // Not an encyclopedic question: no request is even sent.
-        assert!(fetch_encyclopedia(&transport, "who won the F1 race")
-            .await
-            .is_none());
-        assert!(transport.calls().is_empty());
-        // Encyclopedic question but search transport error: falls through.
         assert!(fetch_encyclopedia(&transport, "what is photosynthesis")
             .await
             .is_none());
+        assert!(transport.calls().iter().any(|c| c.url.contains("srsearch")));
+    }
+
+    #[tokio::test]
+    async fn fetch_encyclopedia_none_on_year_mismatch() {
+        // The question names 2026 but the resolved article is a 2023 edition:
+        // the year-mismatch guard rejects it so the turn reaches the engines.
+        let question = "what is the status of the World Cup 2026";
+        let search_url = search_request(question).url;
+        let summary_url = summary_request("2023 FIFA Women's World Cup").url;
+        let transport = FakeHttpTransport::new()
+            .with_response(
+                &search_url,
+                HttpResponse {
+                    status: 200,
+                    final_url: search_url.clone(),
+                    body: r#"{"query":{"search":[{"title":"2023 FIFA Women's World Cup"}]}}"#
+                        .as_bytes()
+                        .to_vec(),
+                },
+            )
+            .with_response(
+                &summary_url,
+                HttpResponse {
+                    status: 200,
+                    final_url: summary_url.clone(),
+                    body: r#"{"type":"standard","title":"2023 FIFA Women's World Cup","extract":"The 2023 tournament was held in Australia and New Zealand.","content_urls":{"desktop":{"page":"https://en.wikipedia.org/wiki/2023_FIFA_Women%27s_World_Cup"}}}"#
+                        .as_bytes()
+                        .to_vec(),
+                },
+            );
+        assert!(fetch_encyclopedia(&transport, question).await.is_none());
     }
 
     #[tokio::test]

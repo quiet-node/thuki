@@ -50,11 +50,46 @@ pub enum SearchDecision {
     Web,
 }
 
-/// The pre-pass result: the decision plus the rewritten question and queries
-/// used by the retrieval stages when the decision is `Cached` or `Web`.
+/// Which retrieval tier the classifier judged best for this turn. Advisory only:
+/// the orchestrator combines it with deterministic gates (a vertical may still
+/// run on its own signal, and the wiki tier is additionally volatility-guarded),
+/// and an unknown or missing route parses to [`SearchRoute::Web`] (the general
+/// engine tier), never a panic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchRoute {
+    /// Current weather or forecast for a location → weather vertical.
+    Weather,
+    /// Current events, sports results/status, recent developments → news vertical.
+    News,
+    /// Stable definitional or historical facts → Wikipedia vertical.
+    Wiki,
+    /// Everything else (software versions, prices, niche live facts) → engines.
+    Web,
+}
+
+impl SearchRoute {
+    /// Normalises the raw `route` string from the model to a [`SearchRoute`].
+    /// Any value that is not one of the four known tiers (including an empty or
+    /// missing field) maps to [`SearchRoute::Web`], so a malformed route never
+    /// fails the turn and only ever falls back to the general engine tier.
+    pub(crate) fn from_wire(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "weather" => SearchRoute::Weather,
+            "news" => SearchRoute::News,
+            "wiki" => SearchRoute::Wiki,
+            _ => SearchRoute::Web,
+        }
+    }
+}
+
+/// The pre-pass result: the decision, the routing hint, and the rewritten
+/// question and queries used by the retrieval stages when the decision is
+/// `Cached` or `Web`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrePassDecision {
     pub decision: SearchDecision,
+    pub route: SearchRoute,
     pub standalone_question: String,
     pub queries: Vec<String>,
 }
@@ -167,7 +202,7 @@ impl PrePass for BuiltinPrePass {
 /// directive: without it the model spends 1000+ chain-of-thought tokens on a
 /// three-way classification and can blow the call timeout (observed live at
 /// ~63 tok/s decode). Inert plain text for every other model family.
-const CLASSIFIER_SYSTEM: &str = "Reasoning: low\n\nYou are a retrieval-routing classifier inside a local AI assistant. Your only job is to decide whether answering the user's latest message needs a fresh web search, and if so to rewrite it into a standalone search query. You never answer the message itself.\n\nOutput ONLY a JSON object: {\"search\": \"no\"|\"cached\"|\"web\", \"standalone_question\": \"...\", \"queries\": [\"...\"]}.\n\nChoose \"search\":\n- \"web\" when a good answer needs information that changes over time or is past your training cutoff: news, prices, weather, sports results, software versions, releases, schedules, who currently holds a role, or any live fact; OR when you are not confident your own knowledge is current and correct.\n- \"cached\" when the needed web sources were already fetched earlier in this same conversation.\n- \"no\" only when you can answer confidently and correctly from stable general knowledge or from the conversation alone.\nWhen you are unsure whether your knowledge is up to date, choose \"web\": a needless search is far cheaper than a confidently wrong answer.\n\n\"standalone_question\": the latest message rewritten as one self-contained question, resolving pronouns and references from the conversation.\n\"queries\": 1 to 3 short keyword search queries, not full sentences.\n\nExamples (message -> JSON):\n\"who is the CEO of OpenAI right now\" -> {\"search\":\"web\",\"standalone_question\":\"who is the current CEO of OpenAI\",\"queries\":[\"openai ceo\"]}\n\"what is the boiling point of water\" -> {\"search\":\"no\",\"standalone_question\":\"what is the boiling point of water\",\"queries\":[\"boiling point of water\"]}\n\"write a short poem about autumn\" -> {\"search\":\"no\",\"standalone_question\":\"write a short poem about autumn\",\"queries\":[\"autumn poem\"]}\n\"how are the markets doing\" -> {\"search\":\"web\",\"standalone_question\":\"how are the stock markets performing today\",\"queries\":[\"stock market today\"]}\n(after discussing France) \"and its population?\" -> {\"search\":\"no\",\"standalone_question\":\"what is the population of France\",\"queries\":[\"france population\"]}\n(after discussing the US president) \"what about Argentina?\" -> {\"search\":\"web\",\"standalone_question\":\"who is the current president of Argentina\",\"queries\":[\"argentina president\"]}";
+const CLASSIFIER_SYSTEM: &str = "Reasoning: low\n\nYou are a retrieval-routing classifier inside a local AI assistant. Your only job is to decide whether answering the user's latest message needs a fresh web search, to pick which source best answers it, and if so to rewrite it into a standalone search query. You never answer the message itself.\n\nOutput ONLY a JSON object: {\"search\": \"no\"|\"cached\"|\"web\", \"route\": \"weather\"|\"news\"|\"wiki\"|\"web\", \"standalone_question\": \"...\", \"queries\": [\"...\"]}.\n\nChoose \"search\":\n- \"web\" when a good answer needs information that changes over time or is past your training cutoff: news, prices, weather, sports results, software versions, releases, schedules, who currently holds a role, or any live fact; OR when you are not confident your own knowledge is current and correct.\n- \"cached\" when the needed web sources were already fetched earlier in this same conversation.\n- \"no\" only when you can answer confidently and correctly from stable general knowledge or from the conversation alone.\nWhen you are unsure whether your knowledge is up to date, choose \"web\": a needless search is far cheaper than a confidently wrong answer.\n\nChoose \"route\" (which source best answers it):\n- \"weather\" for current weather or forecast for a place.\n- \"news\" for current events, sports results or status, elections, and anything asking the latest, current, or recent state of an evolving topic (a tournament, a race, a conflict, a company).\n- \"wiki\" for stable definitional or historical facts that do not change from month to month.\n- \"web\" for everything else (software versions, prices, product specs, niche live facts).\nWhen a question is about the present state of an ongoing event, route \"news\", never \"wiki\", even if it is phrased like \"what is ...\". Always set a route, even when search is \"no\".\n\n\"standalone_question\": the latest message rewritten as one self-contained question, resolving pronouns and references from the conversation.\n\"queries\": 1 to 3 short keyword search queries, not full sentences.\n\nExamples (message -> JSON):\n\"who is the CEO of OpenAI right now\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"who is the current CEO of OpenAI\",\"queries\":[\"openai ceo\"]}\n\"what is the boiling point of water\" -> {\"search\":\"no\",\"route\":\"wiki\",\"standalone_question\":\"what is the boiling point of water\",\"queries\":[\"boiling point of water\"]}\n\"what is photosynthesis\" -> {\"search\":\"web\",\"route\":\"wiki\",\"standalone_question\":\"what is photosynthesis\",\"queries\":[\"photosynthesis\"]}\n\"weather in Paris\" -> {\"search\":\"web\",\"route\":\"weather\",\"standalone_question\":\"what is the current weather in Paris\",\"queries\":[\"paris weather\"]}\n\"what's the latest status of the World Cup 2026\" -> {\"search\":\"web\",\"route\":\"news\",\"standalone_question\":\"what is the current status of the 2026 World Cup\",\"queries\":[\"world cup 2026 status\"]}\n\"who won the most recent F1 race\" -> {\"search\":\"web\",\"route\":\"news\",\"standalone_question\":\"who won the most recent Formula 1 race\",\"queries\":[\"latest f1 race winner\"]}\n\"write a short poem about autumn\" -> {\"search\":\"no\",\"route\":\"web\",\"standalone_question\":\"write a short poem about autumn\",\"queries\":[\"autumn poem\"]}\n(after discussing France) \"and its population?\" -> {\"search\":\"no\",\"route\":\"wiki\",\"standalone_question\":\"what is the population of France\",\"queries\":[\"france population\"]}\n(after discussing the US president) \"what about Argentina?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"who is the current president of Argentina\",\"queries\":[\"argentina president\"]}";
 
 /// The trailing instruction on the classifier's user turn, after the optional
 /// conversation block and the latest message.
@@ -184,6 +219,7 @@ pub(crate) fn prepass_schema() -> serde_json::Value {
         "type": "object",
         "properties": {
             "search": { "type": "string", "enum": ["no", "cached", "web"] },
+            "route": { "type": "string", "enum": ["weather", "news", "wiki", "web"] },
             "standalone_question": { "type": "string" },
             "queries": {
                 "type": "array",
@@ -192,7 +228,7 @@ pub(crate) fn prepass_schema() -> serde_json::Value {
                 "maxItems": MAX_QUERIES
             }
         },
-        "required": ["search", "standalone_question", "queries"],
+        "required": ["search", "route", "standalone_question", "queries"],
         "additionalProperties": false
     })
 }
@@ -273,6 +309,8 @@ fn recent_history_block(history: &[ChatMessage]) -> String {
 struct PrePassWire {
     search: String,
     #[serde(default)]
+    route: String,
+    #[serde(default)]
     standalone_question: String,
     #[serde(default)]
     queries: Vec<String>,
@@ -292,6 +330,7 @@ pub(crate) fn parse_prepass(raw: &str) -> Option<PrePassDecision> {
     };
     Some(PrePassDecision {
         decision,
+        route: SearchRoute::from_wire(&wire.route),
         standalone_question: wire.standalone_question.trim().to_string(),
         queries: normalize_queries(wire.queries),
     })
@@ -308,6 +347,7 @@ pub(crate) fn prepass_or_no(parsed: Option<PrePassDecision>, latest: &str) -> Pr
         None => {
             return PrePassDecision {
                 decision: SearchDecision::No,
+                route: SearchRoute::Web,
                 standalone_question: latest.trim().to_string(),
                 queries: Vec::new(),
             }
@@ -392,8 +432,50 @@ mod tests {
     fn schema_declares_enum_and_query_bounds() {
         let s = prepass_schema();
         assert_eq!(s["properties"]["search"]["enum"][0], "no");
+        assert_eq!(s["properties"]["route"]["enum"][0], "weather");
+        assert_eq!(s["properties"]["route"]["enum"][3], "web");
         assert_eq!(s["properties"]["queries"]["maxItems"], MAX_QUERIES);
+        assert!(s["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == "route"));
         assert_eq!(s["additionalProperties"], false);
+    }
+
+    // ── route parsing ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn route_from_wire_maps_known_tiers() {
+        assert_eq!(SearchRoute::from_wire("weather"), SearchRoute::Weather);
+        assert_eq!(SearchRoute::from_wire("news"), SearchRoute::News);
+        assert_eq!(SearchRoute::from_wire("wiki"), SearchRoute::Wiki);
+        assert_eq!(SearchRoute::from_wire("web"), SearchRoute::Web);
+        // Case-insensitive and whitespace-tolerant.
+        assert_eq!(SearchRoute::from_wire("  NEWS "), SearchRoute::News);
+    }
+
+    #[test]
+    fn route_from_wire_unknown_or_empty_falls_back_to_web() {
+        assert_eq!(SearchRoute::from_wire("encyclopedia"), SearchRoute::Web);
+        assert_eq!(SearchRoute::from_wire(""), SearchRoute::Web);
+    }
+
+    #[test]
+    fn parse_reads_route_when_present() {
+        let raw = r#"{"search":"web","route":"news","standalone_question":"q","queries":["a"]}"#;
+        assert_eq!(parse_prepass(raw).unwrap().route, SearchRoute::News);
+    }
+
+    #[test]
+    fn parse_defaults_route_to_web_when_missing_or_invalid() {
+        // Missing route field entirely.
+        let missing = r#"{"search":"web","standalone_question":"q","queries":["a"]}"#;
+        assert_eq!(parse_prepass(missing).unwrap().route, SearchRoute::Web);
+        // Present but not a known tier.
+        let invalid =
+            r#"{"search":"web","route":"maps","standalone_question":"q","queries":["a"]}"#;
+        assert_eq!(parse_prepass(invalid).unwrap().route, SearchRoute::Web);
     }
 
     // ── message assembly ────────────────────────────────────────────────────
@@ -518,6 +600,7 @@ mod tests {
     fn web_with_empty_queries_backfills_from_standalone() {
         let parsed = Some(PrePassDecision {
             decision: SearchDecision::Web,
+            route: SearchRoute::Web,
             standalone_question: "capital of France".into(),
             queries: vec![],
         });
@@ -530,6 +613,7 @@ mod tests {
     fn web_with_empty_standalone_backfills_from_latest() {
         let parsed = Some(PrePassDecision {
             decision: SearchDecision::Web,
+            route: SearchRoute::Web,
             standalone_question: "   ".into(),
             queries: vec!["q".into()],
         });
@@ -542,6 +626,7 @@ mod tests {
     fn no_decision_passes_through_without_query_backfill() {
         let parsed = Some(PrePassDecision {
             decision: SearchDecision::No,
+            route: SearchRoute::Web,
             standalone_question: "hello".into(),
             queries: vec![],
         });
@@ -556,6 +641,7 @@ mod tests {
     async fn fake_prepass_returns_scripted_decision() {
         let want = PrePassDecision {
             decision: SearchDecision::Web,
+            route: SearchRoute::Web,
             standalone_question: "q".into(),
             queries: vec!["q".into()],
         };

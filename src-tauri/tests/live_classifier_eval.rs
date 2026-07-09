@@ -14,16 +14,29 @@
 //! ```
 
 use thuki_agent_lib::websearch::prefilter::{prefilter, PreFilterVerdict};
-use thuki_agent_lib::websearch::prepass::{BuiltinPrePass, PrePass, SearchDecision};
+use thuki_agent_lib::websearch::prepass::{BuiltinPrePass, PrePass, SearchDecision, SearchRoute};
 
 use tokio_util::sync::CancellationToken;
 
-/// One labelled corpus row.
+/// One labelled corpus row. `route` is the optional expected retrieval tier,
+/// present only on rows where the tier is unambiguous.
 #[derive(serde::Deserialize)]
 struct EvalRow {
     message: String,
     label: String,
     category: String,
+    #[serde(default)]
+    route: Option<String>,
+}
+
+/// Lowercase label for a classifier route, matching the corpus `route` field.
+fn route_label(route: SearchRoute) -> &'static str {
+    match route {
+        SearchRoute::Weather => "weather",
+        SearchRoute::News => "news",
+        SearchRoute::Wiki => "wiki",
+        SearchRoute::Web => "web",
+    }
 }
 
 /// The production two-stage decision, collapsed to "would this turn search?".
@@ -107,6 +120,44 @@ async fn live_two_stage_decision_quality_on_eval_corpus() {
     for m in &misses {
         eprintln!("{m}");
     }
+
+    // Route accuracy (report-only): for every row carrying an expected route,
+    // ask the classifier directly and compare its route hint to the label. This
+    // measures the routing quality the deterministic pre-filter cannot, and is
+    // never a CI gate (the whole test is `#[ignore]`d).
+    let routed: Vec<&EvalRow> = rows.iter().filter(|r| r.route.is_some()).collect();
+    let mut route_correct = 0usize;
+    let mut route_misses: Vec<String> = Vec::new();
+    for row in &routed {
+        let want = row.route.as_deref().unwrap();
+        let got = match prepass
+            .decide(&[], &row.message, today, &CancellationToken::new())
+            .await
+        {
+            Ok(decision) => route_label(decision.route).to_string(),
+            Err(e) => {
+                eprintln!("[eval] route classifier error on {:?}: {e}", row.message);
+                "<error>".to_string()
+            }
+        };
+        if got == want {
+            route_correct += 1;
+        } else {
+            route_misses.push(format!(
+                "  ROUTE MISS ({}): want {} got {} :: {}",
+                row.category, want, got, row.message
+            ));
+        }
+    }
+    let route_total = routed.len();
+    let route_accuracy = route_correct as f64 / route_total as f64;
+    eprintln!(
+        "[eval] route_labelled={route_total} route_correct={route_correct} route_accuracy={route_accuracy:.2}"
+    );
+    for m in &route_misses {
+        eprintln!("{m}");
+    }
+
     assert!(
         accuracy >= 0.8,
         "two-stage decision accuracy {accuracy:.2} below the 0.80 floor; see misses above"

@@ -629,6 +629,7 @@ async fn run_builtin_search(
     history: &[ChatMessage],
     latest_user: &str,
     cancel: &CancellationToken,
+    recorder: &std::sync::Arc<crate::trace::BoundRecorder>,
     on_chunk: &(impl Fn(StreamChunk) + Send + Sync),
 ) -> BuiltinSearchResult {
     // The engine is already warm (the caller holds an activity guard); this
@@ -651,6 +652,7 @@ async fn run_builtin_search(
         transport: &transport,
         scorer: &scorer,
         health: crate::websearch::engine::global_engine_health(),
+        recorder: recorder.as_ref(),
     };
     let status = |phase| on_chunk(StreamChunk::SearchStatus { phase });
     let outcome = crate::websearch::orchestrator::run_search(
@@ -1738,6 +1740,7 @@ pub async fn ask_model(
                             history,
                             &user_msg.content,
                             &cancel_token,
+                            &bound_recorder,
                             &pump,
                         )
                         .await

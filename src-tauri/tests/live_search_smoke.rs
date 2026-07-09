@@ -15,10 +15,11 @@
 
 use thuki_agent_lib::commands::ChatMessage;
 use thuki_agent_lib::net::transport::ReqwestTransport;
+use thuki_agent_lib::trace::{BoundRecorder, ConversationId};
 use thuki_agent_lib::websearch::engine::EngineHealth;
 use thuki_agent_lib::websearch::orchestrator::{run_search, SearchDeps, SearchOutcome};
 use thuki_agent_lib::websearch::prepass::{
-    InferenceError, PrePass, PrePassDecision, SearchDecision,
+    InferenceError, PrePass, PrePassDecision, SearchDecision, SearchRoute,
 };
 use thuki_agent_lib::websearch::rank::Bm25Scorer;
 
@@ -26,8 +27,9 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 /// A scripted classifier standing in for the live model: returns a fixed `web`
-/// decision with the given rewrite and queries.
+/// decision with the given route, rewrite, and queries.
 struct ScriptedPrePass {
+    route: SearchRoute,
     standalone: &'static str,
     queries: Vec<&'static str>,
 }
@@ -43,6 +45,7 @@ impl PrePass for ScriptedPrePass {
     ) -> Result<PrePassDecision, InferenceError> {
         Ok(PrePassDecision {
             decision: SearchDecision::Web,
+            route: self.route,
             standalone_question: self.standalone.to_string(),
             queries: self.queries.iter().map(|q| q.to_string()).collect(),
         })
@@ -52,20 +55,24 @@ impl PrePass for ScriptedPrePass {
 /// Runs one live turn through the production pipeline and returns the outcome.
 async fn live_turn(
     latest_user: &str,
+    route: SearchRoute,
     standalone: &'static str,
     queries: Vec<&'static str>,
 ) -> SearchOutcome {
     let transport = ReqwestTransport::new().expect("transport builds");
     let prepass = ScriptedPrePass {
+        route,
         standalone,
         queries,
     };
     let health = EngineHealth::new();
+    let recorder = BoundRecorder::noop_for(ConversationId::new("smoke"));
     let deps = SearchDeps {
         prepass: &prepass,
         transport: &transport,
         scorer: &Bm25Scorer,
         health: &health,
+        recorder: &recorder,
     };
     run_search(
         &deps,
@@ -109,6 +116,7 @@ fn expect_answer(outcome: SearchOutcome, label: &str) {
 async fn live_weather_tokyo_answers_via_open_meteo() {
     let outcome = live_turn(
         "weather in Tokyo",
+        SearchRoute::Weather,
         "weather in Tokyo",
         vec!["tokyo weather"],
     )
@@ -125,6 +133,7 @@ async fn live_weather_tokyo_answers_via_open_meteo() {
 async fn live_f1_winner_answers_via_news_headlines() {
     let outcome = live_turn(
         "who won the most recent F1 race",
+        SearchRoute::News,
         "who won the most recent F1 race",
         vec!["f1 race winner"],
     )
@@ -140,6 +149,7 @@ async fn live_f1_winner_answers_via_news_headlines() {
 async fn live_rust_version_answers_via_engines() {
     let outcome = live_turn(
         "what's the latest stable version of Rust?",
+        SearchRoute::Web,
         "latest stable version of rust",
         vec!["latest stable rust version"],
     )
@@ -152,6 +162,7 @@ async fn live_rust_version_answers_via_engines() {
 async fn live_bitcoin_price_answers_via_engines() {
     let outcome = live_turn(
         "what's the current price of Bitcoin",
+        SearchRoute::Web,
         "current price of bitcoin",
         vec!["bitcoin price usd"],
     )
@@ -164,6 +175,7 @@ async fn live_bitcoin_price_answers_via_engines() {
 async fn live_photosynthesis_answers_via_wikipedia() {
     let outcome = live_turn(
         "what is photosynthesis",
+        SearchRoute::Wiki,
         "what is photosynthesis",
         vec!["photosynthesis"],
     )

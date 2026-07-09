@@ -1,50 +1,60 @@
-{"message": "what's the latest stable version of Rust?", "label": "search", "category": "versions"}
-{"message": "weather in Tokyo", "label": "search", "category": "weather"}
-{"message": "who won the most recent F1 race", "label": "search", "category": "sports"}
-{"message": "what's the current price of Bitcoin", "label": "search", "category": "prices"}
-{"message": "any news about the merger", "label": "search", "category": "current_events"}
-{"message": "who is the president of France right now", "label": "search", "category": "current_events"}
-{"message": "latest iPhone specs", "label": "search", "category": "versions"}
-{"message": "what's the score of the Lakers game", "label": "search", "category": "sports"}
-{"message": "stock price of Apple", "label": "search", "category": "prices"}
-{"message": "what time is the SpaceX launch today", "label": "search", "category": "current_events"}
-{"message": "is it going to rain tomorrow in London", "label": "search", "category": "weather"}
-{"message": "what are the top headlines", "label": "search", "category": "current_events"}
-{"message": "how is the stock market doing", "label": "search", "category": "prices"}
-{"message": "who is the current CEO of Twitter", "label": "search", "category": "current_events"}
-{"message": "what's new in Python 3.13", "label": "search", "category": "versions"}
-{"message": "exchange rate USD to EUR", "label": "search", "category": "prices"}
-{"message": "what happened at the climate summit", "label": "search", "category": "current_events"}
-{"message": "recent advances in battery tech", "label": "search", "category": "current_events"}
-{"message": "box office numbers for the new Dune", "label": "search", "category": "current_events"}
-{"message": "is ChatGPT down right now", "label": "search", "category": "current_events"}
+{"message": "what's the latest stable version of Rust?", "label": "search", "category": "versions", "route": "web"}
+{"message": "weather in Tokyo", "label": "search", "category": "weather", "route": "weather"}
+{"message": "who won the most recent F1 race", "label": "search", "category": "sports", "route": "news"}
+{"message": "what's the current price of Bitcoin", "label": "search", "category": "prices", "route": "web"}
+{"message": "any news about the merger", "label": "search", "category": "current_events", "route": "news"}
+{"message": "who is the president of France right now", "label": "search", "category": "current_events", "route": "web"}
+{"message": "latest iPhone specs", "label": "search", "category": "versions", "route": "web"}
+{"message": "what's the score of the Lakers game", "label": "search", "category": "sports", "route": "news"}
+{"message": "stock price of Apple", "label": "search", "category": "prices", "route": "web"}
+{"message": "what time is the SpaceX launch today", "label": "search", "category": "current_events", "route": "news"}
+{"message": "is it going to rain tomorrow in London", "label": "search", "category": "weather", "route": "weather"}
+{"message": "what are the top headlines", "label": "search", "category": "current_events", "route": "news"}
+{"message": "how is the stock market doing", "label": "search", "category": "prices", "route": "web"}
+{"message": "who is the current CEO of Twitter", "label": "search", "category": "current_events", "route": "web"}
+{"message": "what's new in Python 3.13", "label": "search", "category": "versions", "route": "web"}
+{"message": "exchange rate USD to EUR", "label": "search", "category": "prices", "route": "web"}
+{"message": "what happened at the climate summit", "label": "search", "category": "current_events", "route": "news"}
+{"message": "recent advances in battery tech", "label": "search", "category": "current_events", "route": "news"}
+{"message": "box office numbers for the new Dune", "label": "search", "category": "current_events", "route": "news"}
+{"message": "is ChatGPT down right now", "label": "search", "category": "current_events", "route": "web"}
 {"message": "and what about Brazil?", "label": "search", "category": "followup_current"}
-{"message": "what is the capital of France", "label": "no", "category": "stable_fact"}
-{"message": "explain how photosynthesis works", "label": "no", "category": "definition"}
-{"message": "2 + 2", "label": "no", "category": "math"}
-{"message": "what is 15% of 240", "label": "no", "category": "math"}
-{"message": "write a haiku about the ocean", "label": "no", "category": "creative"}
-{"message": "hi there", "label": "no", "category": "greeting"}
-{"message": "thank you so much", "label": "no", "category": "greeting"}
-{"message": "summarize this paragraph for me", "label": "no", "category": "creative"}
-{"message": "translate hello into Spanish", "label": "no", "category": "creative"}
-{"message": "what does HTTP stand for", "label": "no", "category": "definition"}
-{"message": "how do I reverse a string in Python", "label": "no", "category": "code_gen"}
-{"message": "explain the theory of relativity", "label": "no", "category": "definition"}
-{"message": "what is the boiling point of water", "label": "no", "category": "stable_fact"}
-{"message": "define entropy", "label": "no", "category": "definition"}
-{"message": "who wrote Pride and Prejudice", "label": "no", "category": "stable_fact"}
-{"message": "rephrase this to be more formal", "label": "no", "category": "creative"}
-{"message": "good morning", "label": "no", "category": "greeting"}
-{"message": "what's the difference between TCP and UDP", "label": "no", "category": "definition"}
-{"message": "draft an email declining the meeting", "label": "no", "category": "creative"}
-{"message": "what is 12 times 8", "label": "no", "category": "math"}
-{"message": "list the primary colors", "label": "no", "category": "stable_fact"}
-{"message": "why is the sky blue", "label": "no", "category": "definition"}
-{"message": "proofread this sentence", "label": "no", "category": "creative"}
-{"message": "what are the rules of chess", "label": "no", "category": "stable_fact"}
-{"message": "ok thanks", "label": "no", "category": "greeting"}
-{"message": "how many continents are there", "label": "no", "category": "stable_fact"}
-{"message": "summarize the plot of Romeo and Juliet", "label": "no", "category": "creative"}
-{"message": "and its population?", "label": "no", "category": "followup_stable"}
-{"message": "what is the population of France", "label": "no", "category": "stable_fact"}
+{"message": "what's the latest status of the World Cup 2026", "label": "search", "category": "sports", "route": "news"}
+{"message": "what's happening with the World Cup 2026", "label": "search", "category": "sports", "route": "news"}
+{"message": "current standings in the Premier League", "label": "search", "category": "sports", "route": "news"}
+{"message": "what is the status of the Artemis mission right now", "label": "search", "category": "current_events", "route": "news"}
+{"message": "latest on the OpenAI lawsuit", "label": "search", "category": "current_events", "route": "news"}
+{"message": "who is winning the 2026 election", "label": "search", "category": "current_events", "route": "news"}
+{"message": "what is the score of the World Cup final", "label": "search", "category": "sports", "route": "news"}
+{"message": "is the World Cup 2026 still going on", "label": "search", "category": "sports", "route": "news"}
+{"message": "what's the current state of the writers strike", "label": "search", "category": "current_events", "route": "news"}
+{"message": "what is the reigning F1 champion right now", "label": "search", "category": "sports", "route": "news"}
+{"message": "what is the capital of France", "label": "no", "category": "stable_fact", "route": "wiki"}
+{"message": "explain how photosynthesis works", "label": "no", "category": "definition", "route": "wiki"}
+{"message": "2 + 2", "label": "no", "category": "math", "route": "web"}
+{"message": "what is 15% of 240", "label": "no", "category": "math", "route": "web"}
+{"message": "write a haiku about the ocean", "label": "no", "category": "creative", "route": "web"}
+{"message": "hi there", "label": "no", "category": "greeting", "route": "web"}
+{"message": "thank you so much", "label": "no", "category": "greeting", "route": "web"}
+{"message": "summarize this paragraph for me", "label": "no", "category": "creative", "route": "web"}
+{"message": "translate hello into Spanish", "label": "no", "category": "creative", "route": "web"}
+{"message": "what does HTTP stand for", "label": "no", "category": "definition", "route": "wiki"}
+{"message": "how do I reverse a string in Python", "label": "no", "category": "code_gen", "route": "web"}
+{"message": "explain the theory of relativity", "label": "no", "category": "definition", "route": "wiki"}
+{"message": "what is the boiling point of water", "label": "no", "category": "stable_fact", "route": "wiki"}
+{"message": "define entropy", "label": "no", "category": "definition", "route": "wiki"}
+{"message": "who wrote Pride and Prejudice", "label": "no", "category": "stable_fact", "route": "wiki"}
+{"message": "rephrase this to be more formal", "label": "no", "category": "creative", "route": "web"}
+{"message": "good morning", "label": "no", "category": "greeting", "route": "web"}
+{"message": "what's the difference between TCP and UDP", "label": "no", "category": "definition", "route": "wiki"}
+{"message": "draft an email declining the meeting", "label": "no", "category": "creative", "route": "web"}
+{"message": "what is 12 times 8", "label": "no", "category": "math", "route": "web"}
+{"message": "list the primary colors", "label": "no", "category": "stable_fact", "route": "wiki"}
+{"message": "why is the sky blue", "label": "no", "category": "definition", "route": "wiki"}
+{"message": "proofread this sentence", "label": "no", "category": "creative", "route": "web"}
+{"message": "what are the rules of chess", "label": "no", "category": "stable_fact", "route": "wiki"}
+{"message": "ok thanks", "label": "no", "category": "greeting", "route": "web"}
+{"message": "how many continents are there", "label": "no", "category": "stable_fact", "route": "wiki"}
+{"message": "summarize the plot of Romeo and Juliet", "label": "no", "category": "creative", "route": "web"}
+{"message": "and its population?", "label": "no", "category": "followup_stable", "route": "wiki"}
+{"message": "what is the population of France", "label": "no", "category": "stable_fact", "route": "wiki"}

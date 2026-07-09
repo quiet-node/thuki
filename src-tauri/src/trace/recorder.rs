@@ -275,6 +275,21 @@ pub enum RecorderEvent {
     /// JPEG snapshot to `image_path`. `displays` is the number of
     /// monitors captured (multi-monitor setups produce one merged image).
     ScreenCaptured { image_path: String, displays: u8 },
+    /// Resolved auto-search decision for a chat turn: the deterministic
+    /// pre-filter verdict, the classifier's routing hint, the standalone
+    /// question rewrite, and the keyword queries. Emitted once per turn that
+    /// reaches the built-in auto-search decision, so a trace shows why a turn
+    /// did or did not search and which source tier it aimed at.
+    SearchDecided {
+        prefilter: String,
+        route: String,
+        standalone_question: String,
+        queries: Vec<String>,
+    },
+    /// Which source tier answered a chat turn's auto-search, and the URLs (or
+    /// titles) it cited. `tier` is one of "weather", "news", "wiki", or
+    /// "engine". Emitted once when retrieval produces a grounded answer.
+    SearchRetrieved { tier: String, urls: Vec<String> },
     /// Final event in a chat-domain file. Emitted by the frontend when
     /// the user resets the conversation or by the backend on app quit
     /// (reason = "quit"). Window-hide does NOT emit this event because
@@ -308,6 +323,8 @@ impl RecorderEvent {
             | RecorderEvent::AssistantTokens { .. }
             | RecorderEvent::AssistantComplete { .. }
             | RecorderEvent::ScreenCaptured { .. }
+            | RecorderEvent::SearchDecided { .. }
+            | RecorderEvent::SearchRetrieved { .. }
             | RecorderEvent::ConversationEnd { .. } => TraceDomain::Chat,
         }
     }
@@ -767,6 +784,23 @@ impl Serialize for RecorderEvent {
                 map.serialize_entry("image_path", image_path)?;
                 map.serialize_entry("displays", displays)?;
             }
+            RecorderEvent::SearchDecided {
+                prefilter,
+                route,
+                standalone_question,
+                queries,
+            } => {
+                map.serialize_entry("kind", "search_decided")?;
+                map.serialize_entry("prefilter", prefilter)?;
+                map.serialize_entry("route", route)?;
+                map.serialize_entry("standalone_question", standalone_question)?;
+                map.serialize_entry("queries", queries)?;
+            }
+            RecorderEvent::SearchRetrieved { tier, urls } => {
+                map.serialize_entry("kind", "search_retrieved")?;
+                map.serialize_entry("tier", tier)?;
+                map.serialize_entry("urls", urls)?;
+            }
             RecorderEvent::ConversationEnd { reason } => {
                 map.serialize_entry("kind", "conversation_end")?;
                 map.serialize_entry("reason", reason)?;
@@ -948,6 +982,16 @@ mod tests {
             RecorderEvent::ScreenCaptured {
                 image_path: "p".into(),
                 displays: 1,
+            },
+            RecorderEvent::SearchDecided {
+                prefilter: "force_web".into(),
+                route: "news".into(),
+                standalone_question: "q".into(),
+                queries: vec!["q".into()],
+            },
+            RecorderEvent::SearchRetrieved {
+                tier: "news".into(),
+                urls: vec!["https://news.google.com/".into()],
             },
             RecorderEvent::ConversationEnd {
                 reason: "quit".into(),
@@ -1259,6 +1303,22 @@ mod tests {
         );
         r.record(
             &cid("conv-chat"),
+            RecorderEvent::SearchDecided {
+                prefilter: "ambiguous".into(),
+                route: "wiki".into(),
+                standalone_question: "what is photosynthesis".into(),
+                queries: vec!["photosynthesis".into()],
+            },
+        );
+        r.record(
+            &cid("conv-chat"),
+            RecorderEvent::SearchRetrieved {
+                tier: "wiki".into(),
+                urls: vec!["https://en.wikipedia.org/wiki/Photosynthesis".into()],
+            },
+        );
+        r.record(
+            &cid("conv-chat"),
             RecorderEvent::ConversationEnd {
                 reason: "quit".into(),
             },
@@ -1274,13 +1334,22 @@ mod tests {
                 "assistant_tokens",
                 "assistant_complete",
                 "screen_captured",
+                "search_decided",
+                "search_retrieved",
                 "conversation_end"
             ]
         );
         assert_eq!(lines[1]["attached_images"], json!(["/tmp/img.jpg"]));
         assert_eq!(lines[1]["slash_command"], "/screen");
         assert_eq!(lines[5]["displays"], 2);
-        assert_eq!(lines[6]["reason"], "quit");
+        assert_eq!(lines[6]["route"], "wiki");
+        assert_eq!(lines[6]["queries"], json!(["photosynthesis"]));
+        assert_eq!(lines[7]["tier"], "wiki");
+        assert_eq!(
+            lines[7]["urls"],
+            json!(["https://en.wikipedia.org/wiki/Photosynthesis"])
+        );
+        assert_eq!(lines[8]["reason"], "quit");
     }
 
     #[test]

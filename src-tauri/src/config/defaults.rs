@@ -811,6 +811,33 @@ pub const PREPASS_MAX_TOKENS: i32 = 1536;
 /// Not user-tunable: an internal robustness bound.
 pub const PREPASS_TIMEOUT_S: u64 = 35;
 
+/// Freshness markers that disqualify a question from the Wikipedia vertical even
+/// when the classifier routed it there. Wikipedia's lead summary describes the
+/// stable subject, not its live state, so a question carrying any of these words
+/// (a volatile "latest/current status of X" phrasing) must never be answered
+/// from a static encyclopedia extract; it falls through to the news / engine
+/// tiers instead. Matched as whole tokens of the lowercased standalone question.
+///
+/// Not user-tunable: a prompt/routing contract guarding a model-routed decision
+/// against a known non-answer failure mode, not a quality knob.
+pub const WIKI_VOLATILITY_MARKERS: &[&str] =
+    &["latest", "current", "status", "today", "recent", "upcoming"];
+
+/// Multi-word freshness phrases that disqualify the Wikipedia vertical, matched
+/// as whole phrases of the lowercased standalone question. Split out from
+/// [`WIKI_VOLATILITY_MARKERS`] because they span a word boundary.
+///
+/// Not user-tunable: same routing-contract rationale as the single-word markers.
+pub const WIKI_VOLATILITY_PHRASES: &[&str] = &["right now", "this year"];
+
+/// Earliest 4-digit year that reads as a present/future freshness signal in a
+/// standalone question, disqualifying the Wikipedia vertical. A year at or above
+/// this is about the live world, which a static encyclopedia extract cannot
+/// answer; a year below it is history, which Wikipedia serves well.
+///
+/// Not user-tunable: a routing-contract bound tied to the volatility guard.
+pub const WIKI_VOLATILITY_MIN_YEAR: u32 = 2025;
+
 // ─── Web-search engine results ───────────────────────────────────────────────
 
 /// Maximum result rows kept from one keyless search-engine query after dedupe.
