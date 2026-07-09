@@ -1165,23 +1165,28 @@ pub struct DownloadSlot {
     last_event: Option<download::DownloadEvent>,
 }
 
-/// In-flight download slots (`.0`, keyed by download key) plus the shared
-/// concurrency-cap semaphore (`.1`). The semaphore bounds simultaneous
-/// transfers to [`crate::config::defaults::DEFAULT_MAX_CONCURRENT_DOWNLOADS`]
-/// across every download regardless of which slot key or window started it, so
-/// a burst cannot exhaust the machine (issue #296).
+/// In-flight download slots (`.0`, keyed by download key), the shared
+/// concurrency-cap semaphore (`.1`), and the shared disk-reservation ledger
+/// (`.2`). The semaphore bounds simultaneous transfers to
+/// [`crate::config::defaults::DEFAULT_MAX_CONCURRENT_DOWNLOADS`] across every
+/// download regardless of which slot key or window started it; the ledger sums
+/// the bytes every admitted download still expects to write so a disk preflight
+/// can account for its concurrent siblings, not just its own need (issue #296).
 pub struct DownloadState(
     pub std::sync::Mutex<std::collections::HashMap<String, DownloadSlot>>,
     tokio::sync::Semaphore,
+    download::DiskReservation,
 );
 
 impl Default for DownloadState {
-    /// Empty slot map and a semaphore seeded with the compile-time concurrency
-    /// cap. This is the only place the cap's permit count is set.
+    /// Empty slot map, a semaphore seeded with the compile-time concurrency cap,
+    /// and an empty reservation ledger. This is the only place the cap's permit
+    /// count is set.
     fn default() -> Self {
         Self(
             std::sync::Mutex::new(std::collections::HashMap::new()),
             tokio::sync::Semaphore::new(crate::config::defaults::DEFAULT_MAX_CONCURRENT_DOWNLOADS),
+            download::DiskReservation::new(),
         )
     }
 }
@@ -1192,6 +1197,15 @@ impl DownloadState {
     /// ends, so no more than the cap ever transfer at once.
     pub fn permits(&self) -> &tokio::sync::Semaphore {
         &self.1
+    }
+
+    /// The shared disk-reservation ledger. A download's preflight reserves its
+    /// remaining bytes here (atomically, accounting for concurrent siblings) and
+    /// releases them (via RAII) when the transfer ends, so two downloads racing
+    /// the same free space cannot both be admitted. Crate-visible because the
+    /// ledger type is internal to the models subsystem.
+    pub(crate) fn reservation(&self) -> &download::DiskReservation {
+        &self.2
     }
 }
 
@@ -3123,6 +3137,9 @@ fn spawn_model_download(
                 headroom_bytes: crate::config::defaults::DEFAULT_DOWNLOAD_DISK_HEADROOM_BYTES,
                 recheck_interval_bytes:
                     crate::config::defaults::DEFAULT_DOWNLOAD_DISK_RECHECK_INTERVAL_BYTES,
+                // The one shared ledger from managed state, so this download's
+                // preflight accounts for every other in-flight download.
+                reservation: dl_state.reservation(),
             };
             let emit_app = app.clone();
             let emit_key = key.clone();
@@ -5209,6 +5226,15 @@ mod tests {
             state.permits().available_permits(),
             crate::config::defaults::DEFAULT_MAX_CONCURRENT_DOWNLOADS
         );
+    }
+
+    #[test]
+    fn download_state_seeds_an_empty_reservation_ledger() {
+        // A fresh state starts with nothing reserved, so the first download's
+        // preflight sees only its own need. The accessor hands back the one
+        // shared ledger every download's DiskGuard borrows.
+        let state = DownloadState::default();
+        assert_eq!(state.reservation().reserved(), 0);
     }
 
     #[test]

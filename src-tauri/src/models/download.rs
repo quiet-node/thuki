@@ -45,8 +45,13 @@ pub enum DownloadEvent {
     /// the target volume lacks the model's remaining bytes plus the required
     /// free-space headroom. `required_bytes` is the space the check demanded
     /// (remaining bytes plus headroom for the preflight, the bare headroom floor
-    /// for a mid-transfer abort); `available_bytes` is what statfs reported. A
-    /// mid-transfer abort keeps the `.partial` for a later resume.
+    /// for a mid-transfer abort). `available_bytes` differs by path: the
+    /// preflight reports the EFFECTIVE free space (statfs free minus what other
+    /// in-flight downloads have reserved), so a refusal caused purely by a
+    /// sibling download's reservation still reads coherently; the mid-transfer
+    /// abort reports the raw statfs free (it re-checks real free space, which
+    /// already reflects every download's actual writes). A mid-transfer abort
+    /// keeps the `.partial` for a later resume.
     InsufficientDisk {
         required_bytes: u64,
         available_bytes: u64,
@@ -128,6 +133,180 @@ pub(crate) struct DiskGuard<'a> {
     /// How many bytes a transfer writes between successive mid-transfer
     /// re-checks of free space.
     pub recheck_interval_bytes: u64,
+    /// Shared bytes-in-flight ledger across every concurrent download. The
+    /// preflight both reads it (to subtract what other downloads have already
+    /// committed to write) and adds this download's own need to it, under one
+    /// lock, so two starts racing the same free space cannot both be admitted
+    /// (issue #296). Borrowed, not owned, precisely so all concurrent downloads
+    /// share ONE ledger: it lives in `DownloadState` alongside the concurrency
+    /// semaphore.
+    pub reservation: &'a DiskReservation,
+}
+
+/// Verdict of the pure disk-admission check: whether a download may proceed
+/// given the free space, what other downloads have reserved, and this
+/// download's own need. Split from the reservation increment so the decision
+/// logic is unit-testable with no I/O and no shared state.
+#[derive(Debug, PartialEq)]
+pub(crate) enum DiskAdmission {
+    /// Enough space (or free space is unknown): admit the download.
+    Proceed,
+    /// Not enough space once other downloads' reservations are subtracted.
+    /// `required_bytes` is this download's remaining bytes plus the headroom;
+    /// `available_bytes` is the free space minus what others already reserved
+    /// (the effective space this download could actually use).
+    Refuse {
+        required_bytes: u64,
+        available_bytes: u64,
+    },
+}
+
+/// Pure disk-admission decision: does `required_bytes` (this download's own
+/// remaining need) plus `headroom_bytes` fit in `free_bytes` after subtracting
+/// `reserved_bytes` (what other in-flight downloads have already committed to
+/// write)?
+///
+/// Forgiving contract: `free_bytes == None` (statfs could not read free space)
+/// always returns [`DiskAdmission::Proceed`], never blocking, mirroring
+/// [`ModelStore::free_bytes`]. The reservation subtraction is what closes the
+/// concurrent-admission race: with `reserved_bytes > 0` from another download, a
+/// request that would fit against the raw free space alone is correctly refused
+/// once `free_bytes - reserved_bytes < required_bytes + headroom_bytes`.
+pub(crate) fn decide_disk_admission(
+    free_bytes: Option<u64>,
+    reserved_bytes: u64,
+    required_bytes: u64,
+    headroom_bytes: u64,
+) -> DiskAdmission {
+    // Unknown free space: proceed, matching the advisory free_bytes contract.
+    let Some(free) = free_bytes else {
+        return DiskAdmission::Proceed;
+    };
+    // Effective space for THIS download is the raw free minus what others have
+    // already reserved. saturating_sub floors at 0 so an over-reservation can
+    // never wrap into a huge "available".
+    let available = free.saturating_sub(reserved_bytes);
+    let required = required_bytes.saturating_add(headroom_bytes);
+    if available < required {
+        DiskAdmission::Refuse {
+            required_bytes: required,
+            available_bytes: available,
+        }
+    } else {
+        DiskAdmission::Proceed
+    }
+}
+
+/// Shared ledger of bytes every currently-admitted download still expects to
+/// write, summed across all concurrent downloads. One instance lives in
+/// [`crate::models::DownloadState`] and is shared (by reference) by every
+/// download's [`DiskGuard`], so the preflight can account for downloads other
+/// than its own.
+///
+/// A `parking_lot::Mutex` (matching the crate's small-shared-state convention,
+/// e.g. the `AppConfig` `RwLock`), not an atomic, because check-and-reserve must
+/// read free space, read the ledger, decide, and increment as ONE critical
+/// section. The lock is never held across an `.await`: [`Self::check_and_reserve`]
+/// is synchronous and releases the guard before returning, and [`ReservationGuard`]
+/// holds only a reference (it re-locks briefly on `Drop`), so the async runtime
+/// is never blocked and the lock cannot poison across a suspension point.
+pub(crate) struct DiskReservation {
+    reserved_bytes: parking_lot::Mutex<u64>,
+}
+
+impl DiskReservation {
+    /// A ledger with nothing reserved.
+    pub(crate) fn new() -> Self {
+        Self {
+            reserved_bytes: parking_lot::Mutex::new(0),
+        }
+    }
+
+    /// Atomically checks whether this download fits and, if so, reserves its
+    /// `required_bytes` against the shared ledger, all under a SINGLE lock
+    /// acquisition. This is what closes the time-of-check-to-time-of-use race
+    /// between two concurrent admissions: whichever download takes the lock
+    /// first increments the ledger before the second reads it, so the second
+    /// sees the higher reservation and is refused if the two no longer fit
+    /// together. `free_bytes` is read INSIDE the lock so the whole decision is
+    /// one consistent snapshot.
+    ///
+    /// On admission returns [`ReserveOutcome::Reserved`] carrying a
+    /// [`ReservationGuard`] that releases exactly `required_bytes` on `Drop`;
+    /// on refusal returns [`ReserveOutcome::Refused`] and the ledger is left
+    /// untouched (a refused download reserves nothing, so there is nothing to
+    /// release). A download admitted because free space was unknown still
+    /// reserves its bytes: it will write them regardless of whether statfs could
+    /// measure the volume, so a later measurable check must still account for
+    /// them.
+    pub(crate) fn check_and_reserve(
+        &self,
+        free_bytes: &(dyn Fn() -> Option<u64> + Send + Sync),
+        required_bytes: u64,
+        headroom_bytes: u64,
+    ) -> ReserveOutcome<'_> {
+        let mut reserved = self.reserved_bytes.lock();
+        match decide_disk_admission(free_bytes(), *reserved, required_bytes, headroom_bytes) {
+            DiskAdmission::Proceed => {
+                // Reserve this download's bytes before releasing the lock so a
+                // concurrent admission sees them immediately.
+                *reserved = reserved.saturating_add(required_bytes);
+                drop(reserved);
+                ReserveOutcome::Reserved(ReservationGuard {
+                    reservation: self,
+                    amount: required_bytes,
+                })
+            }
+            DiskAdmission::Refuse {
+                required_bytes,
+                available_bytes,
+            } => ReserveOutcome::Refused {
+                required_bytes,
+                available_bytes,
+            },
+        }
+    }
+
+    /// Bytes currently reserved across all in-flight downloads. Test-only:
+    /// production never needs to read the ledger outside check-and-reserve, and
+    /// an always-compiled accessor used only by tests would trip the dead-code
+    /// lint under `clippy -D warnings`.
+    #[cfg(test)]
+    pub(crate) fn reserved(&self) -> u64 {
+        *self.reserved_bytes.lock()
+    }
+}
+
+/// Outcome of [`DiskReservation::check_and_reserve`]: either an admitted
+/// download's live reservation (held for the whole transfer) or a refusal
+/// carrying the byte counts for the terminal [`DownloadEvent::InsufficientDisk`].
+pub(crate) enum ReserveOutcome<'a> {
+    Reserved(ReservationGuard<'a>),
+    Refused {
+        required_bytes: u64,
+        available_bytes: u64,
+    },
+}
+
+/// RAII release of a download's disk reservation. Created only for an admitted
+/// download and held (as a named binding) for the entire transfer; on `Drop`
+/// (success, HTTP failure, cancel, mid-transfer disk abort, or panic) it
+/// subtracts exactly the bytes it reserved from the shared ledger, so no
+/// reservation is ever leaked or double-released. Mirrors the concurrency
+/// permit's hold-for-the-whole-transfer RAII pattern.
+pub(crate) struct ReservationGuard<'a> {
+    reservation: &'a DiskReservation,
+    amount: u64,
+}
+
+impl Drop for ReservationGuard<'_> {
+    /// Returns this download's reserved bytes to the shared ledger.
+    /// saturating_sub is defensive: the ledger only ever grows by this exact
+    /// amount at admission, so it can never legitimately underflow here.
+    fn drop(&mut self) {
+        let mut reserved = self.reservation.reserved_bytes.lock();
+        *reserved = reserved.saturating_sub(self.amount);
+    }
 }
 
 /// Downloads every spec sequentially into store partials, emitting events via
@@ -149,9 +328,13 @@ pub(crate) struct DiskGuard<'a> {
 /// waits on `permits` for one of the
 /// [`crate::config::defaults::DEFAULT_MAX_CONCURRENT_DOWNLOADS`]
 /// concurrency slots (emitting Queued while it waits) so a burst of downloads
-/// cannot all transfer at once, then runs a disk-space preflight via `disk`.
-/// The permit is held for the whole transfer and released on every exit path
-/// by RAII, so a slot is never leaked.
+/// cannot all transfer at once, then runs a disk-space preflight via `disk`. The
+/// preflight is reservation-aware and atomic: it subtracts what OTHER in-flight
+/// downloads have already committed to write and adds this download's own need
+/// to the shared ledger under one lock, so two starts racing the same free
+/// space cannot both be admitted. Both the permit and the disk reservation are
+/// held for the whole transfer and released on every exit path by RAII, so
+/// neither a slot nor a reservation is ever leaked.
 #[allow(clippy::result_unit_err)] // Err carries no detail by design: every failure reaches the UI as an event.
 pub(crate) async fn run_download(
     specs: &[DownloadSpec],
@@ -190,17 +373,30 @@ pub(crate) async fn run_download(
     };
 
     // Disk preflight: refuse before writing when the volume cannot hold the
-    // bytes still to fetch plus the headroom. Unknown free space (None) proceeds.
-    if let Some(available) = (disk.free_bytes)() {
-        let required = bytes_remaining(specs, store).saturating_add(disk.headroom_bytes);
-        if available < required {
+    // bytes still to fetch plus the headroom, accounting for what OTHER in-flight
+    // downloads have already reserved. The check-and-reserve is atomic (one lock),
+    // so two downloads racing the same free space cannot both be admitted; unknown
+    // free space (None) proceeds. `_reservation` MUST be a named binding: it is
+    // held across the whole transfer below and released by RAII on every exit
+    // path. A bare `let _ =` would drop it immediately, releasing the reservation
+    // before any byte is written and reopening the race this closes.
+    let _reservation = match disk.reservation.check_and_reserve(
+        disk.free_bytes,
+        bytes_remaining(specs, store),
+        disk.headroom_bytes,
+    ) {
+        ReserveOutcome::Reserved(guard) => guard,
+        ReserveOutcome::Refused {
+            required_bytes,
+            available_bytes,
+        } => {
             emit(DownloadEvent::InsufficientDisk {
-                required_bytes: required,
-                available_bytes: available,
+                required_bytes,
+                available_bytes,
             });
             return Err(());
         }
-    }
+    };
 
     for spec in specs {
         match download_one(spec, store, client, &cancel, disk, &emit).await {
@@ -677,21 +873,24 @@ mod tests {
     }
 
     /// A `DiskGuard` that never refuses a download: unknown free space plus a
-    /// never-reached re-check interval. Used by every case not exercising the
-    /// disk guardrail itself.
-    fn permissive_disk() -> DiskGuard<'static> {
+    /// never-reached re-check interval, over the caller-owned `reservation`.
+    /// Used by every case not exercising the disk guardrail itself. The
+    /// reservation is borrowed (not owned) so its lifetime is the caller's,
+    /// letting the returned guard be held across the download.
+    fn permissive_disk(reservation: &DiskReservation) -> DiskGuard<'_> {
         DiskGuard {
             free_bytes: &unknown_free,
             headroom_bytes: 0,
             recheck_interval_bytes: u64::MAX,
+            reservation,
         }
     }
 
     /// Test wrapper mirroring the terse `run_download` call the existing cases
-    /// expect: a fresh unexhausted semaphore (fast permit path, no `Queued`) and
-    /// a permissive `DiskGuard`. Feature-specific cases (the concurrency cap and
-    /// disk guardrails) call `run_download` directly with a tuned semaphore or
-    /// `DiskGuard`.
+    /// expect: a fresh unexhausted semaphore (fast permit path, no `Queued`), a
+    /// fresh empty reservation, and a permissive `DiskGuard`. Feature-specific
+    /// cases (the concurrency cap and disk guardrails) call `run_download`
+    /// directly with a tuned semaphore, reservation, or `DiskGuard`.
     async fn run_download_test(
         specs: &[DownloadSpec],
         store: &ModelStore,
@@ -700,13 +899,14 @@ mod tests {
         emit: impl Fn(DownloadEvent),
     ) -> Result<(), ()> {
         let permits = Semaphore::new(DEFAULT_MAX_CONCURRENT_DOWNLOADS);
+        let reservation = DiskReservation::new();
         run_download(
             specs,
             store,
             client,
             cancel,
             &permits,
-            &permissive_disk(),
+            &permissive_disk(&reservation),
             emit,
         )
         .await
@@ -1799,6 +1999,7 @@ mod tests {
         let _held = permits.acquire().await.unwrap();
         let cancel = CancellationToken::new();
         cancel.cancel();
+        let reservation = DiskReservation::new();
         let (events, emit) = collector();
 
         let result = run_download(
@@ -1807,7 +2008,7 @@ mod tests {
             &reqwest::Client::new(),
             cancel,
             &permits,
-            &permissive_disk(),
+            &permissive_disk(&reservation),
             emit,
         )
         .await;
@@ -1826,6 +2027,10 @@ mod tests {
         // path (RAII), so the slot count is restored after success, error, and
         // cancellation alike: no permit is ever leaked.
         let client = reqwest::Client::new();
+        // One reservation reused across the three sequential downloads: each
+        // releases its own reservation on return, so the ledger is back to zero
+        // before the next starts.
+        let reservation = DiskReservation::new();
 
         // Success.
         let ok_server = MockServer::start().await;
@@ -1846,7 +2051,7 @@ mod tests {
                 &client,
                 CancellationToken::new(),
                 &ok_permits,
-                &permissive_disk(),
+                &permissive_disk(&reservation),
                 emit1,
             )
             .await,
@@ -1876,7 +2081,7 @@ mod tests {
                 &client,
                 CancellationToken::new(),
                 &err_permits,
-                &permissive_disk(),
+                &permissive_disk(&reservation),
                 emit2,
             )
             .await,
@@ -1902,7 +2107,7 @@ mod tests {
                 &client,
                 c_cancel,
                 &c_permits,
-                &permissive_disk(),
+                &permissive_disk(&reservation),
                 emit3,
             )
             .await,
@@ -1947,10 +2152,12 @@ mod tests {
         let permits = Semaphore::new(1);
         // Free (500) < remaining (1000) + headroom (200) = 1200 → refuse.
         let free = || Some(500u64);
+        let reservation = DiskReservation::new();
         let disk = DiskGuard {
             free_bytes: &free,
             headroom_bytes: 200,
             recheck_interval_bytes: u64::MAX,
+            reservation: &reservation,
         };
         let (events, emit) = collector();
 
@@ -1993,10 +2200,12 @@ mod tests {
         let spec = spec_for(format!("{}/w", server.uri()), "w.gguf", &body);
         let sha = spec.sha256.clone();
         let permits = Semaphore::new(1);
+        let reservation = DiskReservation::new();
         let disk = DiskGuard {
             free_bytes: &unknown_free,
             headroom_bytes: 1000,
             recheck_interval_bytes: 100,
+            reservation: &reservation,
         };
         let (_events, emit) = collector();
 
@@ -2031,10 +2240,12 @@ mod tests {
         let sha = spec.sha256.clone();
         let permits = Semaphore::new(1);
         let free = || Some(10_000_000u64);
+        let reservation = DiskReservation::new();
         let disk = DiskGuard {
             free_bytes: &free,
             headroom_bytes: 1000,
             recheck_interval_bytes: 100,
+            reservation: &reservation,
         };
         let (_events, emit) = collector();
 
@@ -2081,10 +2292,12 @@ mod tests {
                 Some(10u64)
             }
         };
+        let reservation = DiskReservation::new();
         let disk = DiskGuard {
             free_bytes: &free,
             headroom_bytes: 1000,
             recheck_interval_bytes: 100,
+            reservation: &reservation,
         };
         let (events, emit) = collector();
 
@@ -2115,5 +2328,253 @@ mod tests {
         assert!(!store.blob_path(&sha).exists());
         // The permit was released despite the abort.
         assert_eq!(permits.available_permits(), 1);
+    }
+
+    // ── Reservation-aware admission (concurrent-download TOCTOU) ──────────────
+
+    #[test]
+    fn decide_admission_unknown_free_always_proceeds() {
+        // Free space unknown (None): proceed regardless of reservation or need,
+        // preserving the forgiving free_bytes contract.
+        assert_eq!(
+            decide_disk_admission(None, u64::MAX, u64::MAX, u64::MAX),
+            DiskAdmission::Proceed
+        );
+    }
+
+    #[test]
+    fn decide_admission_reservation_flips_a_would_pass_into_a_fail() {
+        // The KEY race-closing property: a request that fits against the raw
+        // free space alone must be refused once another download's reservation
+        // is subtracted.
+        // No reservation: 5_000 + 200 headroom fits in 10_000 → proceed.
+        assert_eq!(
+            decide_disk_admission(Some(10_000), 0, 5_000, 200),
+            DiskAdmission::Proceed
+        );
+        // Same request, but 7_000 reserved by another download: effective free
+        // is 10_000 - 7_000 = 3_000 < 5_000 + 200 → refuse. This is exactly the
+        // 7 GB + 5 GB on 10 GB double-admit the reservation prevents.
+        assert_eq!(
+            decide_disk_admission(Some(10_000), 7_000, 5_000, 200),
+            DiskAdmission::Refuse {
+                required_bytes: 5_200,
+                available_bytes: 3_000,
+            }
+        );
+    }
+
+    #[test]
+    fn decide_admission_saturates_on_overcommit() {
+        // Reserved exceeds free: effective available floors at 0 (never wraps),
+        // and required saturates instead of overflowing.
+        assert_eq!(
+            decide_disk_admission(Some(1_000), 5_000, 10, 10),
+            DiskAdmission::Refuse {
+                required_bytes: 20,
+                available_bytes: 0,
+            }
+        );
+        // required saturates at u64::MAX instead of overflowing, and the tiny
+        // free space is far below it → refuse.
+        assert_eq!(
+            decide_disk_admission(Some(1_000), 0, u64::MAX, 10),
+            DiskAdmission::Refuse {
+                required_bytes: u64::MAX,
+                available_bytes: 1_000,
+            }
+        );
+    }
+
+    #[test]
+    fn check_and_reserve_admits_then_releases_on_drop() {
+        // A fits: it reserves its bytes; dropping the guard returns them.
+        let reservation = DiskReservation::new();
+        let free = || Some(10_000u64);
+        assert_eq!(reservation.reserved(), 0);
+        {
+            let outcome = reservation.check_and_reserve(&free, 4_000, 200);
+            assert!(matches!(outcome, ReserveOutcome::Reserved(_)));
+            assert_eq!(reservation.reserved(), 4_000);
+            // Guard dropped at end of this block.
+        }
+        assert_eq!(reservation.reserved(), 0);
+    }
+
+    #[test]
+    fn check_and_reserve_refusal_reserves_nothing() {
+        // A refused download must leave the ledger untouched: there is nothing
+        // to release, so it must never have been added.
+        let reservation = DiskReservation::new();
+        let free = || Some(100u64);
+        match reservation.check_and_reserve(&free, 10_000, 200) {
+            ReserveOutcome::Refused {
+                required_bytes,
+                available_bytes,
+            } => {
+                assert_eq!(required_bytes, 10_200);
+                assert_eq!(available_bytes, 100);
+            }
+            ReserveOutcome::Reserved(_) => panic!("should have refused"),
+        }
+        assert_eq!(reservation.reserved(), 0);
+    }
+
+    #[test]
+    fn check_and_reserve_serializes_two_admissions() {
+        // Two admissions against ONE ledger: the first reserves, so the second
+        // sees the higher reservation and is refused even though each fits the
+        // raw free space alone. This is the single-lock serialization that
+        // closes the concurrent-admission race, exercised directly.
+        let reservation = DiskReservation::new();
+        let free = || Some(10_000u64);
+        // A (7_000) admitted, holds its reservation live.
+        let _guard_a = match reservation.check_and_reserve(&free, 7_000, 200) {
+            ReserveOutcome::Reserved(g) => g,
+            ReserveOutcome::Refused { .. } => panic!("A should have been admitted"),
+        };
+        assert_eq!(reservation.reserved(), 7_000);
+        // B (5_000) refused: 10_000 - 7_000 = 3_000 < 5_000 + 200.
+        assert!(matches!(
+            reservation.check_and_reserve(&free, 5_000, 200),
+            ReserveOutcome::Refused {
+                required_bytes: 5_200,
+                available_bytes: 3_000,
+            }
+        ));
+        // B reserved nothing, so the ledger still holds only A's bytes.
+        assert_eq!(reservation.reserved(), 7_000);
+    }
+
+    #[tokio::test]
+    async fn run_download_releases_reservation_after_completion() {
+        // A completed download must leave the shared ledger at zero: the RAII
+        // guard released its reservation on the success return path.
+        let server = MockServer::start().await;
+        let body = body_of(1024);
+        Mock::given(method("GET"))
+            .and(path("/w"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+            .mount(&server)
+            .await;
+        let (_dir, store) = make_store();
+        let spec = spec_for(format!("{}/w", server.uri()), "w.gguf", &body);
+        let permits = Semaphore::new(1);
+        let reservation = DiskReservation::new();
+        let free = || Some(10_000_000u64);
+        let disk = DiskGuard {
+            free_bytes: &free,
+            headroom_bytes: 1000,
+            recheck_interval_bytes: u64::MAX,
+            reservation: &reservation,
+        };
+        let (_events, emit) = collector();
+
+        let result = run_download(
+            &[spec],
+            &store,
+            &reqwest::Client::new(),
+            CancellationToken::new(),
+            &permits,
+            &disk,
+            emit,
+        )
+        .await;
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(reservation.reserved(), 0, "reservation leaked after success");
+    }
+
+    #[tokio::test]
+    async fn live_reservation_refuses_a_concurrent_download() {
+        // End-to-end proof that run_download holds its reservation across the
+        // WHOLE transfer, not just past the admission statement. Download A
+        // transfers real bytes behind a response delay; while A is parked in its
+        // transfer its reservation must make a second download B, which would fit
+        // against the raw free space alone, be refused.
+        //
+        // join! polls A first: A acquires its permit and reserves its bytes
+        // synchronously, then parks on the delayed response, so by the time B is
+        // polled A's reservation is live. A bare `let _ =` binding in run_download
+        // would drop A's reservation immediately (before the transfer), and B
+        // would then be admitted, failing this test. The concurrency cap is 2, so
+        // the permit semaphore itself never refuses B: only the reservation does.
+        let server = MockServer::start().await;
+        let body_a = body_of(4_000);
+        let body_b = body_of(4_000);
+        Mock::given(method("GET"))
+            .and(path("/a"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(500))
+                    .set_body_bytes(body_a.clone()),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/b"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body_b.clone()))
+            .mount(&server)
+            .await;
+
+        let (_dir, store) = make_store();
+        let spec_a = spec_for(format!("{}/a", server.uri()), "a.gguf", &body_a);
+        let sha_a = spec_a.sha256.clone();
+        let spec_b = spec_for(format!("{}/b", server.uri()), "b.gguf", &body_b);
+        let sha_b = spec_b.sha256.clone();
+        let client = reqwest::Client::new();
+        // Two permits so the concurrency cap admits both; free space fits either
+        // download alone (7_000) but not both plus headroom together.
+        let permits = Semaphore::new(2);
+        let reservation = DiskReservation::new();
+        let free = || Some(7_000u64);
+        let disk = DiskGuard {
+            free_bytes: &free,
+            headroom_bytes: 200,
+            recheck_interval_bytes: u64::MAX,
+            reservation: &reservation,
+        };
+        let (_events_a, emit_a) = collector();
+        let (events_b, emit_b) = collector();
+        // Bind the single-spec slices so they outlive the join future.
+        let specs_a = [spec_a];
+        let specs_b = [spec_b];
+
+        let (result_a, result_b) = tokio::join!(
+            run_download(
+                &specs_a,
+                &store,
+                &client,
+                CancellationToken::new(),
+                &permits,
+                &disk,
+                emit_a,
+            ),
+            run_download(
+                &specs_b,
+                &store,
+                &client,
+                CancellationToken::new(),
+                &permits,
+                &disk,
+                emit_b,
+            ),
+        );
+
+        // A completes; B is refused by A's live reservation, not the permit cap.
+        assert_eq!(result_a, Ok(()));
+        assert_eq!(result_b, Err(()));
+        assert_eq!(
+            last_event(&events_b),
+            DownloadEvent::InsufficientDisk {
+                required_bytes: 4_200,
+                available_bytes: 3_000,
+            }
+        );
+        // B never entered its transfer: no partial for it.
+        assert!(store.existing_partial_len(&sha_b).is_none());
+        // A installed, and both reservations are released afterward.
+        assert_eq!(std::fs::read(store.blob_path(&sha_a).clone()).unwrap(), body_a);
+        assert_eq!(reservation.reserved(), 0);
     }
 }
