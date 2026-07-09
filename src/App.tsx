@@ -18,7 +18,7 @@ import {
 } from '@tauri-apps/api/window';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { useModel } from './hooks/useModel';
-import type { Message } from './hooks/useModel';
+import type { Message, RetrySnapshot } from './hooks/useModel';
 import { useConversationHistory } from './hooks/useConversationHistory';
 import { useModelSelection } from './hooks/useModelSelection';
 import { useModelCapabilities } from './hooks/useModelCapabilities';
@@ -51,6 +51,7 @@ import type { OnboardingStage } from './view/onboarding/index';
 import { MinimizedIcon } from './components/MinimizedIcon';
 import { HistoryPanel } from './components/HistoryPanel';
 import { ModelPickerPanel } from './components/ModelPickerPanel';
+import { SafeModeRecoveryCard } from './components/SafeModeRecoveryCard';
 import { ImagePreviewModal } from './components/ImagePreviewModal';
 import { TipBar } from './components/TipBar';
 import { UpdateFooterBar } from './components/UpdateFooterBar';
@@ -367,6 +368,33 @@ function App() {
     useState<OnboardingStage | null>(null);
 
   /**
+   * This launch's circuit-breaker verdict (issue #296), read once via
+   * `startup_safety`. `null` until that read resolves. Drives the safe-mode
+   * recovery screen's resolution effect below; does not itself gate render
+   * (that is `safeModeRecovery`, once the model-fit copy is ready).
+   */
+  const [startupSafety, setStartupSafety] = useState<{
+    safeMode: boolean;
+    uncleanCount: number;
+  } | null>(null);
+
+  /**
+   * Non-null exactly when the safe-mode recovery screen (Screen A, issue
+   * #296) should render instead of the normal overlay: the backend reported
+   * safe mode AND a fit estimate resolved for the active model. Carries the
+   * already-formatted copy so the render branch needs no further lookups.
+   * Set once by the resolution effect below and cleared by either
+   * recovery-screen button; never re-set after that, so a dismissal is
+   * permanent for the rest of this launch.
+   */
+  const [safeModeRecovery, setSafeModeRecovery] = useState<{
+    modelName: string;
+    sizeGb: string;
+  } | null>(null);
+  /** Guards the resolution effect below to run its body at most once per launch. */
+  const safeModeResolvedRef = useRef(false);
+
+  /**
    * Whether the ask-bar history panel is currently open.
    * Distinct from the chat-mode history dropdown (controlled by the same toggle
    * but rendered differently based on `isChatMode`).
@@ -423,10 +451,71 @@ function App() {
     activeModel,
     availableModels,
     modelDisplayNames,
+    modelSizesBytes,
     ollamaReachable,
     refreshModels,
     setActiveModel,
   } = useModelSelection();
+
+  /**
+   * Unconditional "we reached a responsive state" signal for the launch
+   * circuit breaker (issue #296). Must fire on every mount regardless of
+   * onboarding stage, safe mode, or user interaction: React successfully
+   * mounting and running this effect IS the health proof, decoupled from
+   * whatever `safe_mode` already decided for THIS launch on the Rust side
+   * (that was resolved synchronously before the frontend even loaded).
+   */
+  useEffect(() => {
+    void invoke('mark_startup_healthy');
+  }, []);
+
+  /**
+   * Reads this launch's circuit-breaker verdict once on mount. A missing or
+   * malformed response (untested commands resolve to `undefined` in the test
+   * double, or a resolver failure in production) degrades to "not in safe
+   * mode" rather than throwing.
+   */
+  useEffect(() => {
+    void invoke<{ safe_mode: boolean; unclean_count: number } | undefined>(
+      'startup_safety',
+    ).then((snapshot) => {
+      setStartupSafety({
+        safeMode: snapshot?.safe_mode ?? false,
+        uncleanCount: snapshot?.unclean_count ?? 0,
+      });
+    });
+  }, []);
+
+  /**
+   * Resolves the safe-mode recovery screen's copy (issue #296 Screen A) at
+   * most once per launch: only once the circuit breaker reports safe mode
+   * AND the active model has resolved to a real, fit-estimable model. A
+   * fresh/mid-onboarding install has no installed model yet, so this simply
+   * never fires there.
+   *
+   * Guarded by a ref, not just the dependency check, so a later, unrelated
+   * `activeModel` change - e.g. the user picking a new model after
+   * dismissing this screen - can never re-trigger it and bring the screen
+   * back.
+   */
+  useEffect(() => {
+    if (safeModeResolvedRef.current) return;
+    if (!startupSafety?.safeMode) return;
+    if (!activeModel) return;
+    safeModeResolvedRef.current = true;
+    void invoke<{ required_bytes: number } | undefined>('estimate_model_fit')
+      .then((estimate) => {
+        if (!estimate) return;
+        setSafeModeRecovery({
+          modelName: modelDisplayNames[activeModel] ?? activeModel,
+          sizeGb: (estimate.required_bytes / 1024 ** 3).toFixed(1),
+        });
+      })
+      .catch(() => {
+        // No installed/resolvable active model: nothing to recover into, so
+        // Screen A stays hidden and the normal flow proceeds untouched.
+      });
+  }, [startupSafety, activeModel, modelDisplayNames]);
 
   // App-root download machine. A built-in model download started on the
   // onboarding picker keeps running here after the picker unmounts, so the
@@ -447,6 +536,7 @@ function App() {
     pauseDownload,
     resumeFromPause,
     discardDownload,
+    cancel: cancelDownload,
   } = download;
   const downloadState = download.state;
   const downloadPhase = downloadState.phase;
@@ -574,6 +664,8 @@ function App() {
     loadMessages,
     getTraceConversationId,
     addOcrTurn,
+    retryMessageWithOversized,
+    retryMessage,
   } = useModel(activeModel, handleTurnComplete);
 
   /**
@@ -2489,6 +2581,23 @@ function App() {
     if (isDownloadPausing) {
       return { kind: 'pausing', percent: percentOf(liveBytes) };
     }
+    // A launch-time auto-resume was refused because the app is in post-crash
+    // safe mode (issue #296): the resume never claimed a slot, so this reuses
+    // the same paused affordance a manual pause shows. Resume re-invokes the
+    // last start with userInitiated forced true (retryDownload always sends
+    // true), unblocking it; Discard abandons the partial exactly as today.
+    if (downloadState.phase === 'rejected_safe_mode') {
+      return {
+        kind: 'paused',
+        percent: percentOf(downloadResumeSeedBytes),
+        onResume: () => void retryDownload(),
+        onDiscard: discardDownload,
+      };
+    }
+    // Admitted but waiting on the concurrency cap; no bytes moving yet.
+    if (downloadState.phase === 'queued') {
+      return { kind: 'queued', onCancel: () => void cancelDownload() };
+    }
     // The ready prompt invites the first message; once acknowledged (the user
     // has sent a message) it never reappears, including on a new conversation
     // or the next summon.
@@ -2545,6 +2654,7 @@ function App() {
     pauseDownload,
     resumeFromPause,
     discardDownload,
+    cancelDownload,
   ]);
 
   /**
@@ -3133,19 +3243,42 @@ function App() {
   }, [isSubmitPending, cancel, setSearchActive, setSelectedContext]);
 
   /**
+   * Turn to replay once the model picker's next selection succeeds (issue
+   * #296 Screen B "Switch model"), or `undefined` when the picker was opened
+   * for some other reason (an `EngineStartFailed` card with no snapshot, or
+   * the unrelated safe-mode recovery screen). Set by
+   * `handleSwitchModelFromError`, explicitly cleared by
+   * `handleChooseDifferentModelFromSafeMode`, and consumed exactly once by
+   * `handleModelSelect` so a stale pending retry can never misfire on a
+   * later, unrelated model switch.
+   */
+  const pendingSwitchRetryRef = useRef<RetrySnapshot | undefined>(undefined);
+
+  /**
    * Persists the user's model choice via the backend and closes the picker panel.
    * On rejection (e.g. the chosen model was uninstalled between render and click),
    * triggers a refresh so the picker list and the active chip resync with the
    * actual backend state instead of silently drifting.
+   *
+   * If a "Switch model" retry is pending (issue #296 Screen B), the pending
+   * snapshot is consumed unconditionally up front - it is only replayed once
+   * the switch genuinely succeeds, so an abandoned `InsufficientMemory` turn
+   * gets replayed against the newly-picked model instead of sitting stale.
    */
   const handleModelSelect = useCallback(
     (model: string) => {
       setIsModelPickerOpen(false);
-      void setActiveModel(model).catch(() => {
-        void refreshModels();
-      });
+      const pendingRetry = pendingSwitchRetryRef.current;
+      pendingSwitchRetryRef.current = undefined;
+      void setActiveModel(model)
+        .then(() => {
+          if (pendingRetry) retryMessage(pendingRetry);
+        })
+        .catch(() => {
+          void refreshModels();
+        });
     },
-    [setActiveModel, refreshModels],
+    [setActiveModel, refreshModels, retryMessage],
   );
 
   /** Closes the model picker panel. Wired to Escape key inside the panel. */
@@ -3177,20 +3310,59 @@ function App() {
   }, [refreshModels, refreshModelCapabilities]);
 
   /**
-   * Opens (never toggles) the model picker from an `EngineStartFailed` error
-   * card so a failed model load is never a dead end. Unlike the toggle, this
-   * always opens: clicking "Switch model" twice must not close the picker. The
-   * builtin provider keeps the chat-mode picker mount reachable (its
-   * `ollamaReachable` flag is manifest-based, true even when the sidecar
-   * failed), so opening here surfaces the picker in place.
+   * Opens (never toggles) the model picker from an `EngineStartFailed` or
+   * `InsufficientMemory` error card so a failed model load is never a dead
+   * end. Unlike the toggle, this always opens: clicking "Switch model" twice
+   * must not close the picker. The builtin provider keeps the chat-mode
+   * picker mount reachable (its `ollamaReachable` flag is manifest-based,
+   * true even when the sidecar failed), so opening here surfaces the picker
+   * in place.
+   *
+   * `snapshot` is the failed turn's own `RetrySnapshot` (`undefined` for
+   * `EngineStartFailed` cards, which never get one assigned). Stashed in
+   * `pendingSwitchRetryRef` so `handleModelSelect` can replay the abandoned
+   * turn once the user actually picks a new model (issue #296 Screen B).
    */
-  const handleSwitchModelFromError = useCallback(() => {
+  const handleSwitchModelFromError = useCallback(
+    (snapshot?: RetrySnapshot) => {
+      pendingSwitchRetryRef.current = snapshot;
+      setIsModelPickerOpen(true);
+      setIsHistoryOpen(false);
+      setIsExportOpen(false);
+      void refreshModels();
+      void refreshModelCapabilities();
+    },
+    [refreshModels, refreshModelCapabilities],
+  );
+
+  /**
+   * "Choose a different model" on the safe-mode recovery screen (issue #296
+   * Screen A): dismisses the recovery card and opens the model picker via
+   * the same never-toggle mechanism as `handleSwitchModelFromError`. This
+   * path has no associated chat turn at all, so it explicitly clears any
+   * pending switch-retry rather than risk an unrelated earlier one leaking
+   * in and firing against this screen's model pick.
+   */
+  const handleChooseDifferentModelFromSafeMode = useCallback(() => {
+    pendingSwitchRetryRef.current = undefined;
+    setSafeModeRecovery(null);
     setIsModelPickerOpen(true);
     setIsHistoryOpen(false);
     setIsExportOpen(false);
     void refreshModels();
     void refreshModelCapabilities();
   }, [refreshModels, refreshModelCapabilities]);
+
+  /**
+   * "Load last model anyway" on the safe-mode recovery screen: just
+   * dismisses the card. `safe_mode` only gates the auto-prime/download
+   * paths, never a user-initiated `ask_model`, so letting the user chat
+   * normally from here already loads the model through the normal, ungated
+   * path - no extra invoke needed.
+   */
+  const handleLoadModelAnywayFromSafeMode = useCallback(() => {
+    setSafeModeRecovery(null);
+  }, []);
 
   /**
    * Synchronizes the React animation state with Tauri-driven overlay visibility
@@ -3457,6 +3629,21 @@ function App() {
     );
   }
 
+  // Safe-mode recovery (issue #296 Screen A). Only reachable once onboarding
+  // is past the branch above (steady state) and the resolution effect has
+  // resolved both the circuit-breaker verdict and a fit-estimable active
+  // model, so no extra gating is needed here.
+  if (safeModeRecovery) {
+    return (
+      <SafeModeRecoveryCard
+        modelName={safeModeRecovery.modelName}
+        sizeGb={safeModeRecovery.sizeGb}
+        onChooseDifferentModel={handleChooseDifferentModelFromSafeMode}
+        onLoadAnyway={handleLoadModelAnywayFromSafeMode}
+      />
+    );
+  }
+
   return (
     // Minimal padding (pt-2 pb-6) provides just enough physical clearance for the
     // tightened drop shadow to render without clipping at the native window edge.
@@ -3584,6 +3771,7 @@ function App() {
                                 }
                                 isModelPickerOpen={isModelPickerOpen}
                                 onSwitchModel={handleSwitchModelFromError}
+                                onLoadAnyway={retryMessageWithOversized}
                                 onMinimize={handleMinimize}
                                 onExportToggle={
                                   messages.length > 0
@@ -3630,6 +3818,7 @@ function App() {
                                       config.inference.activeProviderKind
                                     }
                                     displayNames={modelDisplayNames}
+                                    modelSizesBytes={modelSizesBytes}
                                     downloadInProgress={isDownloadActive(
                                       downloadStripStatus,
                                     )}
@@ -3852,6 +4041,7 @@ function App() {
                       capabilities={modelCapabilities}
                       providerKind={config.inference.activeProviderKind}
                       displayNames={modelDisplayNames}
+                      modelSizesBytes={modelSizesBytes}
                       downloadInProgress={isDownloadActive(downloadStripStatus)}
                       compact
                     />

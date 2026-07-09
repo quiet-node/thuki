@@ -318,6 +318,45 @@ describe('StaffPicksPane', () => {
     expect(starts).toHaveLength(2);
   });
 
+  it('shows each queued row its own distinct FIFO position, not a repeated constant', async () => {
+    await renderPane();
+    fireEvent.click(
+      within(rowFor('Gemma 4 12B')).getByRole('button', { name: 'Download' }),
+    );
+    await flush();
+    const gemmaChannel = lastChannel;
+    fireEvent.click(
+      within(rowFor('Qwen3.5 9B')).getByRole('button', { name: 'Download' }),
+    );
+    await flush();
+    const qwenChannel = lastChannel;
+    fireEvent.click(
+      within(rowFor('gpt-oss 20B')).getByRole('button', { name: 'Download' }),
+    );
+    await flush();
+    const gptOssChannel = lastChannel;
+
+    // All three queue at once: each row now reads its own 1-indexed start
+    // order (1, 2, 3), not the old bug where every row showed the same "#2
+    // in queue" sibling count.
+    act(() => gemmaChannel?.simulateMessage({ type: 'Queued' }));
+    act(() => qwenChannel?.simulateMessage({ type: 'Queued' }));
+    act(() => gptOssChannel?.simulateMessage({ type: 'Queued' }));
+
+    const gemmaRow = rowFor('Gemma 4 12B');
+    expect(
+      within(gemmaRow).getByText('Waiting for a download slot…'),
+    ).toBeInTheDocument();
+    // First in line: no badge (position 1 is implicit).
+    expect(within(gemmaRow).queryByText(/in queue/)).not.toBeInTheDocument();
+    expect(
+      within(rowFor('Qwen3.5 9B')).getByText(/#2 in queue/),
+    ).toBeInTheDocument();
+    expect(
+      within(rowFor('gpt-oss 20B')).getByText(/#3 in queue/),
+    ).toBeInTheDocument();
+  });
+
   it('lifts a fresh config and refreshes when a download completes', async () => {
     const onSaved = vi.fn();
     await renderPane(onSaved);

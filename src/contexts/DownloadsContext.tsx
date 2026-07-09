@@ -167,6 +167,14 @@ export interface DownloadsContextValue {
   startStaffPick: (id: string) => void;
   /** Start (or resume) a Browse-all repo download by repo + GGUF file. */
   startRepoDownload: (repo: string, file: string) => void;
+  /**
+   * This download's 1-indexed position among all currently-queued downloads
+   * (phase `queued`), across both `remote` and `entries` in their Map
+   * insertion order (a stand-in for start order, since neither map ever
+   * reorders an existing key). Returns `undefined` if `key` is not currently
+   * queued. Feeds a row's own "#N in queue" badge while it is queued.
+   */
+  queuePosition: (key: string) => number | undefined;
   /** Cancel the download for `key`; the partial is kept for a later resume. */
   cancel: (key: string) => void;
   /** Retry the failed download for `key` (replays its original command). */
@@ -289,7 +297,15 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
         }
         return next;
       });
-    void invoke(command, { ...args, key, onEvent: channel }).catch((err) =>
+    // Every call here originates from a real click (a row's Download/Resume
+    // button, or `retry`'s replay of one) — no auto-invoke path in this
+    // registry — so `userInitiated: true` is unconditional (issue #296).
+    void invoke(command, {
+      ...args,
+      key,
+      userInitiated: true,
+      onEvent: channel,
+    }).catch((err) =>
       // A rejected invoke means the command failed before streaming (e.g. the
       // repo spec could not be resolved), so no channel event will arrive.
       setEntries((prev) => {
@@ -328,6 +344,24 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
   const cancel = useCallback((key: string) => {
     void invoke('cancel_model_download', { key });
   }, []);
+
+  const queuePosition = useCallback(
+    (key: string): number | undefined => {
+      let n = 0;
+      for (const [k, entry] of remote) {
+        if (entry.acc.state.phase !== 'queued') continue;
+        n += 1;
+        if (k === key) return n;
+      }
+      for (const [k, entry] of entries) {
+        if (entry.acc.state.phase !== 'queued') continue;
+        n += 1;
+        if (k === key) return n;
+      }
+      return undefined;
+    },
+    [entries, remote],
+  );
 
   const retry = useCallback(
     (key: string) => {
@@ -448,6 +482,7 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
       startStaffPick,
       startRepoDownload,
       cancel,
+      queuePosition,
       retry,
       discard,
       clear,
@@ -460,6 +495,7 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
       startStaffPick,
       startRepoDownload,
       cancel,
+      queuePosition,
       retry,
       discard,
       clear,

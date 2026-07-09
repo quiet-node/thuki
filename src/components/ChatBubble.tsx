@@ -242,6 +242,10 @@ interface ChatBubbleProps {
   /** Opens the model picker from an `EngineStartFailed` error card so a failed
    *  model load is never a dead end. Forwarded to the ErrorCard. */
   onSwitchModel?: () => void;
+  /** Replays the turn with the pre-load memory gate bypassed (issue #296).
+   *  Forwarded to the ErrorCard's `InsufficientMemory` branch as the "Load
+   *  anyway" action. */
+  onLoadAnyway?: () => void;
   /** Accumulated thinking/reasoning content from the model, if thinking mode was used. */
   thinkingContent?: string;
   /** Whether a `/think` turn is waiting for the first thinking tokens. */
@@ -328,6 +332,7 @@ export function ChatBubble({
   onReplace,
   errorKind,
   onSwitchModel,
+  onLoadAnyway,
   thinkingContent,
   isThinkingPending,
   pendingLabel,
@@ -359,6 +364,52 @@ export function ChatBubble({
     : activeWarnings.length > 0
       ? 'warn'
       : null;
+
+  /**
+   * Machine-readable figures for the `InsufficientMemory` error card
+   * (issue #296), fetched lazily once the card actually needs them rather
+   * than threaded down as a prop from every ancestor. `undefined` while the
+   * fetch is in flight or if it fails; the ErrorCard falls back to its
+   * generic message render in that case, so a failed fetch never crashes
+   * the bubble. Not reset when `errorKind` moves away from
+   * `InsufficientMemory`: `ErrorCard` only reads this value for that kind,
+   * so a stale estimate lingering in state is inert until the next fetch
+   * overwrites it. The fetch is pinned to this message's own `modelName`
+   * (the model this specific turn failed on), not whatever provider model
+   * is active now, so the returned `requiredBytes` always agrees with the
+   * model named in the card's title even after the user switches models.
+   */
+  const [insufficientMemoryInfo, setInsufficientMemoryInfo] = useState<
+    | { modelName: string; requiredBytes: number; availableBytes: number }
+    | undefined
+  >(undefined);
+
+  useEffect(() => {
+    if (errorKind !== 'InsufficientMemory') return;
+    let cancelled = false;
+    invoke<{
+      required_bytes: number;
+      available_bytes: number;
+      verdict: string;
+    }>('estimate_model_fit', { modelId: modelName })
+      .then((estimate) => {
+        if (cancelled) return;
+        setInsufficientMemoryInfo({
+          modelName:
+            (modelName && displayNames?.[modelName]) ??
+            modelName ??
+            'This model',
+          requiredBytes: estimate.required_bytes,
+          availableBytes: estimate.available_bytes,
+        });
+      })
+      .catch(() => {
+        // Leave undefined; ErrorCard renders its generic fallback.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [errorKind, modelName, displayNames]);
 
   /** Ref on the markdown container so `wrapCitations` can post-process
    *  the rendered DOM after every token update. */
@@ -503,6 +554,8 @@ export function ChatBubble({
                 kind={errorKind}
                 message={content}
                 onSwitchModel={onSwitchModel}
+                onLoadAnyway={onLoadAnyway}
+                insufficientMemoryInfo={insufficientMemoryInfo}
               />
             ) : (
               <MarkdownRenderer

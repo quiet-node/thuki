@@ -43,6 +43,11 @@ const REPO_KEY = downloadKey({
   repo: 'org/repo',
   file: 'w.gguf',
 });
+const REPO2_KEY = downloadKey({
+  kind: 'repo',
+  repo: 'org/repo2',
+  file: 'w2.gguf',
+});
 
 describe('DownloadsContext', () => {
   beforeEach(() => {
@@ -82,6 +87,7 @@ describe('DownloadsContext', () => {
     expect(invoke).toHaveBeenCalledWith('download_staff_pick', {
       id: 'gemma-4-12b',
       key: STAFF_KEY,
+      userInitiated: true,
       onEvent: expect.anything(),
     });
   });
@@ -252,6 +258,7 @@ describe('DownloadsContext', () => {
       repo: 'org/repo',
       file: 'w.gguf',
       key: REPO_KEY,
+      userInitiated: true,
       onEvent: expect.anything(),
     });
   });
@@ -365,6 +372,40 @@ describe('DownloadsContext', () => {
       }),
     );
     expect(result.current.get(STAFF_KEY)).toBeUndefined();
+  });
+
+  it('queuePosition gives each simultaneously-queued entry its own distinct FIFO position', async () => {
+    const { result } = renderHook(() => useDownloads(), { wrapper });
+    await act(async () => {
+      result.current.startStaffPick('gemma-4-12b');
+    });
+    const staffChannel = channel();
+    await act(async () => {
+      result.current.startRepoDownload('org/repo', 'w.gguf');
+    });
+    const repoChannel = channel();
+    await act(async () => {
+      result.current.startRepoDownload('org/repo2', 'w2.gguf');
+    });
+    const repo2Channel = channel();
+
+    // None is queued yet (all still `downloading`), so none has a position.
+    expect(result.current.queuePosition(STAFF_KEY)).toBeUndefined();
+
+    act(() => staffChannel.simulateMessage({ type: 'Queued' }));
+    act(() => repoChannel.simulateMessage({ type: 'Queued' }));
+    act(() => repo2Channel.simulateMessage({ type: 'Queued' }));
+
+    // Each of the 3 simultaneously-queued downloads reads its own 1-indexed
+    // start-order position, not a repeated sibling count (the old bug: all 3
+    // showed the same "#2 in queue").
+    expect(result.current.queuePosition(STAFF_KEY)).toBe(1);
+    expect(result.current.queuePosition(REPO_KEY)).toBe(2);
+    expect(result.current.queuePosition(REPO2_KEY)).toBe(3);
+    // A key that owns no queued entry has no position at all.
+    expect(
+      result.current.queuePosition('staff:does-not-exist'),
+    ).toBeUndefined();
   });
 });
 
@@ -629,5 +670,36 @@ describe('DownloadsContext cross-window', () => {
       result.current.clear('tier:balanced');
     });
     expect(result.current.getActiveDownload(WEIGHTS_SHA)).toBeUndefined();
+  });
+
+  it('queuePosition numbers a remote (other-window) queued download, skipping a non-queued remote entry', async () => {
+    const { result } = renderHook(() => useDownloads(), { wrapper });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // A remote download that is actively downloading (not queued) must not
+    // consume a queue slot or be reported as having a position.
+    act(() =>
+      emitTauriEvent(DOWNLOAD_PROGRESS_EVENT, {
+        key: 'tier:other',
+        shas: [MMPROJ_SHA],
+        event: {
+          type: 'Progress',
+          data: { file: 'w.gguf', bytes: 1, total_bytes: 100 },
+        },
+      } satisfies ActiveDownload),
+    );
+    act(() =>
+      emitTauriEvent(DOWNLOAD_PROGRESS_EVENT, {
+        key: 'tier:balanced',
+        shas: [WEIGHTS_SHA],
+        event: { type: 'Queued' },
+      } satisfies ActiveDownload),
+    );
+    expect(result.current.queuePosition('tier:balanced')).toBe(1);
+    expect(result.current.queuePosition('tier:other')).toBeUndefined();
+    expect(
+      result.current.queuePosition('staff:does-not-exist'),
+    ).toBeUndefined();
   });
 });

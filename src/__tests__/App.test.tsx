@@ -710,6 +710,187 @@ describe('App', () => {
     ).toBeInTheDocument();
   });
 
+  // Regression coverage for issue #296 follow-up (bug 2): "Switch model" used
+  // to just open the picker and leave the abandoned InsufficientMemory turn
+  // stuck on screen forever, unlike "Load anyway" which already replays it.
+  // Picking a new, presumably-fitting model must also replay the turn.
+  describe('onSwitchModel retry wiring (issue #296 follow-up)', () => {
+    it('replays the abandoned InsufficientMemory turn against the newly-picked model, gate not bypassed', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+        estimate_model_fit: {
+          required_bytes: 8 * 1024 ** 3,
+          available_bytes: 4 * 1024 ** 3,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+
+      act(() => {
+        getLastChannel()?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+      expect(
+        await screen.findByText(/may not fit in memory/),
+      ).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      await act(async () => {});
+      expect(
+        screen.getByRole('option', { name: 'qwen2.5:7b' }),
+      ).toBeInTheDocument();
+
+      invoke.mockClear();
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+
+      // The old failed pair is gone (replaced, not stuck forever), and the
+      // replayed turn goes out with the gate NOT bypassed - unlike "Load
+      // anyway", the new model is presumed to actually fit.
+      expect(screen.queryByText(/may not fit in memory/)).toBeNull();
+      expect(invoke).toHaveBeenCalledWith('set_active_model', {
+        model: 'qwen2.5:7b',
+      });
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'hi', allowOversized: false }),
+      );
+    });
+
+    it('does not replay the abandoned turn when the model switch itself fails', async () => {
+      let capturedChannel: { simulateMessage: (data: unknown) => void } | null =
+        null;
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            capturedChannel = args.onEvent as typeof capturedChannel;
+          }
+          if (cmd === 'get_model_picker_state') {
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b', 'qwen2.5:7b'],
+              ollamaReachable: true,
+            };
+          }
+          if (cmd === 'estimate_model_fit') {
+            return {
+              required_bytes: 8 * 1024 ** 3,
+              available_bytes: 4 * 1024 ** 3,
+            };
+          }
+          if (cmd === 'set_active_model') {
+            throw new Error('Model is not installed: qwen2.5:7b');
+          }
+          return undefined;
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+
+      act(() => {
+        capturedChannel?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+      expect(
+        await screen.findByText(/may not fit in memory/),
+      ).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      await act(async () => {});
+
+      invoke.mockClear();
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+
+      // The switch failed: no retry should have fired, and the old failed
+      // card (still describing the abandoned attempt) stays put.
+      expect(invoke).not.toHaveBeenCalledWith('ask_model', expect.anything());
+      expect(screen.getByText(/may not fit in memory/)).toBeInTheDocument();
+    });
+
+    it('consumes the pending retry exactly once: a later unrelated model-select does not re-trigger it', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b', 'llama3.2:3b'],
+          ollamaReachable: true,
+        },
+        estimate_model_fit: {
+          required_bytes: 8 * 1024 ** 3,
+          available_bytes: 4 * 1024 ** 3,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+
+      act(() => {
+        getLastChannel()?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+      await screen.findByText(/may not fit in memory/);
+
+      // First selection consumes the pending retry and replays "hi".
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'hi', allowOversized: false }),
+      );
+
+      // A second, wholly unrelated model switch (via the plain header pill
+      // toggle, not "Switch model") must not re-fire the already-consumed
+      // retry - the pending ref was cleared by the first select above.
+      invoke.mockClear();
+      const pill = screen.getByRole('button', { name: 'Choose model' });
+      fireEvent.click(pill);
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('option', { name: 'llama3.2:3b' }));
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith('set_active_model', {
+        model: 'llama3.2:3b',
+      });
+      expect(invoke).not.toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'hi' }),
+      );
+    });
+  });
+
   it('closes chat-mode model picker when clicking outside the dropdown', async () => {
     enableChannelCaptureWithResponses({
       get_model_picker_state: {
@@ -8210,6 +8391,72 @@ describe('App', () => {
         rerender(builtinTree());
       });
       expect(screen.getByText('Paused · 0%')).toBeInTheDocument();
+    });
+
+    it('shows a queued strip with Cancel while waiting for a download slot', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      const cancel = vi.fn(async () => {});
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'queued' },
+        cancel,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(
+        screen.getByText('Waiting for a download slot…'),
+      ).toBeInTheDocument();
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Cancel download' }),
+        );
+      });
+      expect(cancel).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows a paused strip with Resume when a launch-time auto-resume is rejected in safe mode', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      const retry = vi.fn(async () => {});
+      const discardDownload = vi.fn();
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'rejected_safe_mode' },
+        retry,
+        resumeSeedBytes: 5_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        discardDownload,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(screen.getByText('Paused · 50%')).toBeInTheDocument();
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Resume download' }),
+        );
+      });
+      expect(retry).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Discard download' }),
+        );
+      });
+      expect(discardDownload).toHaveBeenCalledTimes(1);
     });
 
     it('soft-blocks submit while the download is paused', async () => {

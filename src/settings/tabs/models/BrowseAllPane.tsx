@@ -476,6 +476,9 @@ function QuantRow({ file, repo, downloads, onSaved, refetch }: QuantRowProps) {
           grandTotalBytes={isMultipart ? file.size_bytes : null}
           speedBytesPerSec={entry.speedBytesPerSec}
           partLabel={partLabel}
+          queuePosition={
+            phase === 'queued' ? downloads.queuePosition(activeKey) : undefined
+          }
           // The repo download flow has no pre-flight confirm step (only the
           // starter picker does), so the confirm card never renders; these
           // share the same covered dismiss handler rather than dead no-op

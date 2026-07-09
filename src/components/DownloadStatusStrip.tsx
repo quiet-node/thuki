@@ -31,6 +31,13 @@ export type DownloadStripStatus =
     }
   | { kind: 'pausing'; percent: number }
   | { kind: 'verifying'; percent: number }
+  | {
+      kind: 'queued';
+      onCancel: () => void;
+      /** Count of OTHER downloads also waiting for a slot; the "#N in queue"
+       * badge shows only when >= 2, so a lone queued download stays plain. */
+      queueDepth?: number;
+    }
   | { kind: 'ready'; modelName: string }
   | { kind: 'failed'; message: string; onRetry: () => void };
 
@@ -292,6 +299,31 @@ export function DownloadStatusStrip({
             This can take a minute for large models
           </span>
         </span>
+      </Shell>
+    );
+  }
+
+  if (status.kind === 'queued') {
+    // Admitted but no bytes moving yet: same muted treatment as pausing, with
+    // only Cancel (no Download button, nothing to pause). The "#N in queue"
+    // badge only earns its keep once at least one other download is ahead.
+    return (
+      <Shell color={MUTED} fill={MUTED_FILL} percent={0}>
+        <span className="flex-1 leading-snug">
+          Waiting for a download slot…
+          {status.queueDepth !== undefined && status.queueDepth >= 2 ? (
+            <span style={{ color: MUTED }}>
+              {' '}
+              · #{status.queueDepth} in queue
+            </span>
+          ) : null}
+        </span>
+        <Action
+          label="Cancel"
+          ariaLabel="Cancel download"
+          color={MUTED}
+          onClick={status.onCancel}
+        />
       </Shell>
     );
   }

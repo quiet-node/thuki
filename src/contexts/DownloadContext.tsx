@@ -51,17 +51,25 @@ export interface DownloadContextValue extends UseDownloadModel {
   grandTotalBytes: number | null;
   /**
    * Start a fresh download for a tier: clears the resume seed, records the
-   * tier + option, and kicks off the machine.
+   * tier + option, and kicks off the machine. `userInitiated` (default true)
+   * threads to the download command's safe-mode gate (issue #296); the
+   * launch-time auto-resume effect below is the one caller that passes false.
    */
-  beginDownload: (tier: StarterTier, option: StarterOption) => void;
+  beginDownload: (
+    tier: StarterTier,
+    option: StarterOption,
+    userInitiated?: boolean,
+  ) => void;
   /**
    * Resume an interrupted download: floors the bar at `partialBytes`, records
-   * the tier + option, and restarts the machine.
+   * the tier + option, and restarts the machine. Same `userInitiated`
+   * contract as {@link beginDownload}.
    */
   resumeDownload: (
     tier: StarterTier,
     option: StarterOption,
     partialBytes: number,
+    userInitiated?: boolean,
   ) => void;
   /** True while a started download has been paused (cancelled, partial kept). */
   isPaused: boolean;
@@ -147,23 +155,28 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
   }, [pausedForQuitWarning]);
 
   const beginDownload = useCallback(
-    (tier: StarterTier, option: StarterOption) => {
+    (tier: StarterTier, option: StarterOption, userInitiated = true) => {
       setResumeSeedBytes(null);
       setDownloadingTier(tier);
       setActiveOption(option);
       setPauseRequested(false);
-      void start(tier);
+      void start(tier, userInitiated);
     },
     [start],
   );
 
   const resumeDownload = useCallback(
-    (tier: StarterTier, option: StarterOption, partialBytes: number) => {
+    (
+      tier: StarterTier,
+      option: StarterOption,
+      partialBytes: number,
+      userInitiated = true,
+    ) => {
       setResumeSeedBytes(partialBytes);
       setDownloadingTier(tier);
       setActiveOption(option);
       setPauseRequested(false);
-      void resume(tier);
+      void resume(tier, userInitiated);
     },
     [resume],
   );
@@ -197,7 +210,10 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
       if (partial.starter.mmproj_sha256 !== null) {
         await discard(partial.starter.mmproj_sha256);
       }
-      beginDownload(partial.starter.tier, partial);
+      // Not a user click: a post-crash safe-mode session must refuse this
+      // auto-restart (issue #296), not silently resume a download that may
+      // have been implicated in the crash.
+      beginDownload(partial.starter.tier, partial, false);
     })();
   }, [activeProviderKind, discard, beginDownload]);
 

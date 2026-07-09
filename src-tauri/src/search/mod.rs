@@ -338,8 +338,11 @@ fn route_failure_event(err: crate::commands::EngineError) -> SearchEvent {
 /// Maps a [`crate::commands::resolve_llm_transport`] failure onto the search
 /// event stream. `Cancelled` (the user pressed Stop during the engine
 /// ensure) and `Superseded` (a newer settings change preempted the ensure)
-/// are both cancellations, never errors. Engine failures (start failure,
-/// missing manifest row) carry their user-facing message.
+/// are both cancellations, never errors. `Engine` failures carry their
+/// user-facing message, except `InsufficientMemory` (issue #296), which gets
+/// its own typed event so the frontend can render the amber "load anyway"
+/// card instead of a generic error bubble, mirroring the chat-side
+/// `ask_model` bail.
 ///
 /// `SkippedInsufficientMemory` cannot normally arise here: `/search` passes
 /// [`crate::commands::OversizePolicy::Block`], which surfaces an over-large
@@ -351,6 +354,11 @@ fn transport_failure_event(err: crate::commands::TransportError) -> SearchEvent 
         crate::commands::TransportError::Cancelled
         | crate::commands::TransportError::Superseded
         | crate::commands::TransportError::SkippedInsufficientMemory => SearchEvent::Cancelled,
+        crate::commands::TransportError::Engine(e)
+            if e.kind == crate::commands::EngineErrorKind::InsufficientMemory =>
+        {
+            SearchEvent::InsufficientMemory
+        }
         crate::commands::TransportError::Engine(e) => SearchEvent::Error { message: e.message },
     }
 }
@@ -418,5 +426,17 @@ mod tests {
             event,
             SearchEvent::Error { message } if message.contains("could not start")
         ));
+    }
+
+    #[test]
+    fn transport_failure_event_maps_insufficient_memory_to_typed_event() {
+        // The gate's Engine(InsufficientMemory) error must surface as the
+        // dedicated typed event, not the generic Error bubble, so the
+        // frontend can offer the "load anyway" retry (issue #296).
+        let event = transport_failure_event(TransportError::Engine(EngineError {
+            kind: EngineErrorKind::InsufficientMemory,
+            message: "This model may not fit in memory\nIt needs about 8.0 GB but only about 4.0 GB is free. Close some apps, pick a smaller model, or load it anyway.".to_string(),
+        }));
+        assert!(matches!(event, SearchEvent::InsufficientMemory));
     }
 }

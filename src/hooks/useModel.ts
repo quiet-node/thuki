@@ -14,6 +14,7 @@ export type EngineErrorKind =
   | 'EngineUnreachable'
   | 'EngineStartFailed'
   | 'ModelUnsupported'
+  | 'InsufficientMemory'
   | 'ModelNotFound'
   | 'NoModelSelected'
   | 'Other';
@@ -54,6 +55,17 @@ export interface Message {
   searchTraces?: SearchTraceStep[];
   /** Structured retrieval metadata emitted by the backend search pipeline. */
   searchMetadata?: SearchMetadata;
+  /**
+   * Immutable snapshot of the request that produced this message, captured
+   * once at dispatch time (issue #296). Lets `retryMessageWithOversized`
+   * replay the EXACT turn that produced this message with the pre-load
+   * memory gate bypassed, even if later turns have since superseded any
+   * hook-level "most recent request" state. Present on every assistant
+   * message (the outcome isn't known yet at creation time), never mutated
+   * afterward, and read only when this message's `errorKind` is
+   * `InsufficientMemory`.
+   */
+  retrySnapshot?: RetrySnapshot;
 }
 
 /** Raw streaming chunk payload emitted from the Rust chat backend. */
@@ -114,6 +126,43 @@ function normalizeStreamChunk(chunk: RawStreamChunk): StreamChunk {
 export interface SearchOutcome {
   final: boolean;
 }
+
+/**
+ * Snapshot of an `ask()` call, captured at dispatch time and attached to the
+ * specific assistant message it produced, so `retryMessageWithOversized`
+ * (issue #296) can replay that exact turn with the pre-load memory gate
+ * bypassed without the caller re-supplying every argument.
+ */
+interface ChatRetrySnapshot {
+  kind: 'chat';
+  displayContent: string;
+  quotedText?: string;
+  imagePaths?: string[];
+  think?: boolean;
+  promptOverride?: string;
+  displayImagePaths?: string[];
+  replaceCommand?: string;
+  /** Ids of the failed turn's own user/assistant pair, so a retry can
+   *  remove the stale bubble + warning card before appending the fresh
+   *  pair the replay produces (issue #296). */
+  userMessageId: string;
+  assistantMessageId: string;
+}
+
+/** Snapshot of an `askSearch()` call. See {@link ChatRetrySnapshot}. */
+interface SearchRetrySnapshot {
+  kind: 'search';
+  query: string;
+  displayContent?: string;
+  quotedText?: string;
+  /** Ids of the failed turn's own user/assistant pair, so a retry can
+   *  remove the stale bubble + warning card before appending the fresh
+   *  pair the replay produces (issue #296). */
+  userMessageId: string;
+  assistantMessageId: string;
+}
+
+export type RetrySnapshot = ChatRetrySnapshot | SearchRetrySnapshot;
 
 interface ActiveGeneration {
   id: number;
@@ -293,6 +342,10 @@ export function useModel(
       promptOverride?: string,
       displayImagePaths?: string[],
       replaceCommand?: string,
+      /** Bypasses the pre-load memory gate (issue #296). Set by
+       *  `retryMessageWithOversized` when the user clicks "Load anyway";
+       *  omitted by every normal caller. */
+      allowOversized?: boolean,
     ) => {
       if (!displayContent.trim() && (!imagePaths || imagePaths.length === 0)) {
         return;
@@ -323,6 +376,20 @@ export function useModel(
         fromThink: think ? true : undefined,
         replaceCommand,
         modelName: activeModel ?? undefined,
+        // Captured once, here, so a later turn can never overwrite the
+        // retry data this specific message needs (issue #296).
+        retrySnapshot: {
+          kind: 'chat',
+          displayContent,
+          quotedText,
+          imagePaths,
+          think,
+          promptOverride,
+          displayImagePaths,
+          replaceCommand,
+          userMessageId: userMsg.id,
+          assistantMessageId: assistantId,
+        },
       };
 
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
@@ -438,6 +505,7 @@ export function useModel(
           conversationId,
           isFirstTurn,
           slashCommand: think ? '/think' : null,
+          allowOversized: allowOversized ?? false,
           onEvent: channel,
         });
       } catch {
@@ -475,6 +543,10 @@ export function useModel(
       query: string,
       displayContent?: string,
       quotedText?: string,
+      /** Bypasses the pre-load memory gate (issue #296). Set by
+       *  `retryMessageWithOversized` when the user clicks "Load anyway";
+       *  omitted by every normal caller. */
+      allowOversized?: boolean,
     ): Promise<SearchOutcome> => {
       const trimmed = query.trim();
       if (!trimmed) return { final: true };
@@ -499,6 +571,16 @@ export function useModel(
         content: '',
         fromSearch: true,
         modelName: activeModel ?? undefined,
+        // Captured once, here, so a later turn can never overwrite the
+        // retry data this specific message needs (issue #296).
+        retrySnapshot: {
+          kind: 'search',
+          query: trimmed,
+          displayContent,
+          quotedText,
+          userMessageId: userMsg.id,
+          assistantMessageId: assistantId,
+        },
       };
 
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
@@ -694,6 +776,22 @@ export function useModel(
               finish(true);
               break;
             }
+            case 'InsufficientMemory': {
+              errored = true;
+              // Mirror the chat path's `EngineErrorKind::InsufficientMemory`
+              // bail (issue #296) so a `/search` turn renders the same amber
+              // "load anyway" card as a normal chat turn. This fieldless
+              // event carries no figures; `ErrorCard` fetches the exact
+              // numbers itself via `estimate_model_fit` and this content is
+              // only the fallback shown until that resolves (or if it fails).
+              updateAssistant({
+                content:
+                  'This model may not fit in memory\nClose some apps, pick a smaller model, or load it anyway.',
+                errorKind: 'InsufficientMemory',
+              });
+              finish(true);
+              break;
+            }
           }
         };
 
@@ -715,6 +813,7 @@ export function useModel(
           // `message` (the stripped query) is what the search engine
           // receives.
           displayedContent: displayContent ?? trimmed,
+          allowOversized: allowOversized ?? false,
           onEvent: channel,
         }).catch(() => {
           if (!isActiveGeneration(generationId) || errored || cancelled) return;
@@ -728,6 +827,72 @@ export function useModel(
       });
     },
     [onTurnComplete, activeModel, ensureTraceConversationId],
+  );
+
+  /**
+   * Shared replay core for both retry entry points below: drops the failed
+   * turn's own bubble + warning card, then redispatches its exact
+   * `RetrySnapshot` (read off the failed message itself, never off shared
+   * hook state) with `allowOversized` controlling whether the pre-load
+   * memory gate is bypassed. Scoped per-message so a later turn superseding
+   * the hook's in-flight state can never cause the wrong turn to be replayed.
+   */
+  const replaySnapshot = useCallback(
+    (snapshot: RetrySnapshot, allowOversized: boolean) => {
+      // Drop the failed turn's own bubble + warning card before replaying it,
+      // so the retry replaces the turn in place rather than stacking a
+      // duplicate user message above the one still shown as failed.
+      setMessages((prev) =>
+        prev.filter(
+          (message) =>
+            message.id !== snapshot.userMessageId &&
+            message.id !== snapshot.assistantMessageId,
+        ),
+      );
+
+      if (snapshot.kind === 'chat') {
+        void ask(
+          snapshot.displayContent,
+          snapshot.quotedText,
+          snapshot.imagePaths,
+          snapshot.think,
+          snapshot.promptOverride,
+          snapshot.displayImagePaths,
+          snapshot.replaceCommand,
+          allowOversized,
+        );
+      } else {
+        void askSearch(
+          snapshot.query,
+          snapshot.displayContent,
+          snapshot.quotedText,
+          allowOversized,
+        );
+      }
+    },
+    [ask, askSearch],
+  );
+
+  /**
+   * Replays a specific turn's `ask()` / `askSearch()` call with the pre-load
+   * memory gate bypassed (issue #296). Wired to the `InsufficientMemory`
+   * error card's "Load anyway" button.
+   */
+  const retryMessageWithOversized = useCallback(
+    (snapshot: RetrySnapshot) => replaySnapshot(snapshot, true),
+    [replaySnapshot],
+  );
+
+  /**
+   * Replays a specific turn's `ask()` / `askSearch()` call with the pre-load
+   * memory gate left in place (issue #296). Wired to the `InsufficientMemory`
+   * error card's "Switch model" flow: once the user picks a new, presumably-
+   * fitting model, the abandoned turn is replayed against it normally rather
+   * than left stuck describing the old failed attempt forever.
+   */
+  const retryMessage = useCallback(
+    (snapshot: RetrySnapshot) => replaySnapshot(snapshot, false),
+    [replaySnapshot],
   );
 
   /** Cancels the currently active generation. */
@@ -859,5 +1024,7 @@ export function useModel(
     loadMessages,
     getTraceConversationId,
     addOcrTurn,
+    retryMessageWithOversized,
+    retryMessage,
   };
 }

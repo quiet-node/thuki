@@ -10,6 +10,23 @@ interface ErrorCardProps {
    * recovery), where no button renders.
    */
   onSwitchModel?: () => void;
+  /**
+   * Replays the turn with the pre-load memory gate bypassed (issue #296).
+   * Wired only for `InsufficientMemory`: it renders the "Load anyway"
+   * recovery button beside "Switch model".
+   */
+  onLoadAnyway?: () => void;
+  /**
+   * Machine-readable figures backing the `InsufficientMemory` card copy,
+   * sourced from the `estimate_model_fit` command. When absent (the fetch
+   * has not resolved yet, or failed), the card falls back to the generic
+   * message-based render so nothing crashes.
+   */
+  insufficientMemoryInfo?: {
+    modelName: string;
+    requiredBytes: number;
+    availableBytes: number;
+  };
 }
 
 const barColors: Record<EngineErrorKind, string> = {
@@ -23,8 +40,19 @@ const barColors: Record<EngineErrorKind, string> = {
   // Same accent as ModelNotFound: this is a configuration/setup nudge,
   // not a daemon failure, so the warning hue (amber) is the right read.
   NoModelSelected: '#f59e0b',
+  // Same warning hue: a soft, force-overridable refusal, not a crash
+  // (issue #296).
+  InsufficientMemory: '#f59e0b',
   Other: 'rgba(255,255,255,0.2)',
 };
+
+/** Bytes per gigabyte, matching the Rust gate's `1u64 << 30` GiB divisor. */
+const BYTES_PER_GB = 1024 ** 3;
+
+/** Formats a byte count as a one-decimal GB string, matching Rust's `{:.1}`. */
+function formatGb(bytes: number): string {
+  return (bytes / BYTES_PER_GB).toFixed(1);
+}
 
 /** Fixed title for an engine start failure; the backend detail renders below
  *  it verbatim, so the title stays a stable, human heading regardless of the
@@ -37,11 +65,20 @@ const ENGINE_START_FAILED_TITLE = "Thuki's engine couldn't start this model";
  * For `EngineStartFailed` the card shows a fixed human title and the full
  * backend detail verbatim in a wrapped, scrollable block (no per-error
  * translation or cleanup), plus a "Switch model" recovery action so a failed
- * load is never a dead end. Every other kind splits the message on the first
- * newline into title and subtitle, and the subtitle renders an ollama pull
- * command as an inline code element.
+ * load is never a dead end. For `InsufficientMemory` (issue #296) with
+ * `insufficientMemoryInfo` present, the card shows a dedicated three-line
+ * warning plus "Switch model" and "Load anyway" recovery actions; without
+ * that info it falls back to the generic render below. Every other kind
+ * splits the message on the first newline into title and subtitle, and the
+ * subtitle renders an ollama pull command as an inline code element.
  */
-export function ErrorCard({ kind, message, onSwitchModel }: ErrorCardProps) {
+export function ErrorCard({
+  kind,
+  message,
+  onSwitchModel,
+  onLoadAnyway,
+  insufficientMemoryInfo,
+}: ErrorCardProps) {
   const bar = (
     <div
       data-error-bar
@@ -83,6 +120,50 @@ export function ErrorCard({ kind, message, onSwitchModel }: ErrorCardProps) {
               >
                 Switch model
               </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (kind === 'InsufficientMemory' && insufficientMemoryInfo) {
+    const { modelName, requiredBytes, availableBytes } = insufficientMemoryInfo;
+    return (
+      <div className="flex items-stretch gap-3 px-1 py-2 rounded-md bg-white/[0.025]">
+        {bar}
+        <div className="min-w-0">
+          <p className="text-[12.5px] font-[590] text-white/[0.82] leading-snug tracking-[-0.01em]">
+            {`${modelName} may not fit in memory right now.`}
+          </p>
+          <p className="text-[11.5px] text-white/[0.38] leading-snug mt-0.5">
+            {`Estimated need: ~${formatGb(requiredBytes)} GB. Currently available: ~${formatGb(availableBytes)} GB.`}
+          </p>
+          <p className="text-[11.5px] text-white/[0.38] leading-snug mt-0.5">
+            To fit this model, your Mac may compress memory, which can slow
+            things down or, in extreme cases, freeze the entire machine and
+            require a reboot.
+          </p>
+          {(onSwitchModel || onLoadAnyway) && (
+            <div className="flex items-center gap-2 mt-[11px]">
+              {onSwitchModel && (
+                <button
+                  type="button"
+                  onClick={onSwitchModel}
+                  className="text-[11.5px] font-semibold text-primary bg-transparent border border-primary/45 rounded-lg px-3 py-1.5 cursor-pointer"
+                >
+                  Switch model
+                </button>
+              )}
+              {onLoadAnyway && (
+                <button
+                  type="button"
+                  onClick={onLoadAnyway}
+                  className="text-[11.5px] font-medium text-white/50 bg-transparent border-0 px-1 py-1.5 cursor-pointer"
+                >
+                  Load anyway
+                </button>
+              )}
             </div>
           )}
         </div>

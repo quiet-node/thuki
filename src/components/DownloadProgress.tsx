@@ -44,6 +44,12 @@ export interface DownloadProgressProps {
    * weights+companion downloads, which render unchanged.
    */
   partLabel?: string | null;
+  /**
+   * This item's 1-indexed position among all currently-queued downloads.
+   * Undefined or 1 omits the badge (the first-in-line item reads fine as just
+   * "Waiting for a slot"); #2 and later show the number.
+   */
+  queuePosition?: number;
   onConfirm: () => void;
   onCancelConfirm: () => void;
   onCancel: () => void;
@@ -162,6 +168,7 @@ export function DownloadProgress({
   grandTotalBytes = null,
   speedBytesPerSec = null,
   partLabel = null,
+  queuePosition,
   confirmInfo,
   onConfirm,
   onCancelConfirm,
@@ -170,6 +177,19 @@ export function DownloadProgress({
   onChooseAnother,
 }: DownloadProgressProps) {
   switch (state.phase) {
+    case 'queued':
+      return (
+        <Hairline edge={<Edge indeterminate tone="accent" />}>
+          <StatusText>
+            Waiting for a download slot…
+            {queuePosition !== undefined && queuePosition >= 2 ? (
+              <span style={FIGURES_STYLE}> · #{queuePosition} in queue</span>
+            ) : null}
+          </StatusText>
+          <span style={{ flex: 1 }} />
+          <CancelX onClick={onCancel} />
+        </Hairline>
+      );
     case 'confirming':
       return (
         <Card>
@@ -271,7 +291,7 @@ export function DownloadProgress({
             <span style={{ fontSize: 12.5, fontWeight: 600, color: '#ff7a6e' }}>
               {failureHeadline(state.kind, state.message)}
             </span>
-            {state.kind === 'http' ? (
+            {state.kind === 'http' || state.kind === 'disk_full' ? (
               <span style={FIGURES_STYLE}>{state.message}</span>
             ) : null}
           </span>
@@ -422,15 +442,27 @@ function Edge({
       }}
     >
       <span
-        style={{
-          position: 'absolute',
-          left: 0,
-          top: 0,
-          bottom: 0,
-          width: indeterminate ? '40%' : `${percent}%`,
-          borderRadius: 999,
-          background: fill,
-        }}
+        className={indeterminate ? 'download-indeterminate-fill' : undefined}
+        style={
+          indeterminate
+            ? {
+                position: 'absolute',
+                top: 0,
+                bottom: 0,
+                width: '35%',
+                borderRadius: 999,
+                background: fill,
+              }
+            : {
+                position: 'absolute',
+                left: 0,
+                top: 0,
+                bottom: 0,
+                width: `${percent}%`,
+                borderRadius: 999,
+                background: fill,
+              }
+        }
       />
     </span>
   );

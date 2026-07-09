@@ -127,6 +127,11 @@ export type SearchEvent =
    * `Error { kind: 'NoModelSelected' }`; emitted instead of a generic Error so
    * the hook can keep `isFirstTurnRef` armed across a bail-and-retry. */
   | { type: 'NoModelSelected' }
+  /** The selected model's estimated footprint does not fit the memory
+   * available right now (issue #296). Mirror of the chat path's
+   * `Error { kind: 'InsufficientMemory' }`; emitted instead of a generic
+   * Error so the frontend can render the amber "load anyway" card. */
+  | { type: 'InsufficientMemory' }
   /** Backend confirmed it cleared every pre-`ConversationStart` gate and
    * opened the trace. Hook-only signal: retires `isFirstTurnRef` before
    * any token can arrive, so cancel-before-first-token cannot leave the
