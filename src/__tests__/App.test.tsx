@@ -1042,6 +1042,186 @@ describe('App', () => {
     });
   });
 
+  // Regression coverage for issue #296 (the user-reported flash): switching to
+  // a model that ALSO would not fit must swap the card's attribution in place,
+  // never re-send + unmount/remount the card. The fit decision branches on the
+  // backend's `would_block` (the real gate's decision), not the display verdict.
+  describe('switch to a still-too-big model updates the card in place (issue #296)', () => {
+    it('updates modelName in place and does NOT retry when the picked model would_block', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+        estimate_model_fit: {
+          required_bytes: 8 * 1024 ** 3,
+          available_bytes: 4 * 1024 ** 3,
+          verdict: 'insufficient',
+          would_block: true,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+
+      act(() => {
+        getLastChannel()?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+      // The card starts attributed to the failed model.
+      expect(
+        await screen.findByText(/gemma4:e2b may not fit in memory/),
+      ).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      await act(async () => {});
+
+      invoke.mockClear();
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+
+      // The card swaps its attribution to the newly-picked (still too big)
+      // model IN PLACE: same card, new name and figures.
+      expect(
+        await screen.findByText(/qwen2\.5:7b may not fit in memory/),
+      ).toBeInTheDocument();
+      // The fit decision was made against the newly-picked model.
+      expect(invoke).toHaveBeenCalledWith('estimate_model_fit', {
+        modelId: 'qwen2.5:7b',
+      });
+      // Model still switched, but NO turn was re-sent (no flash, no gate hit).
+      expect(invoke).toHaveBeenCalledWith('set_active_model', {
+        model: 'qwen2.5:7b',
+      });
+      expect(invoke).not.toHaveBeenCalledWith('ask_model', expect.anything());
+    });
+
+    it('retries as before when the picked model does not would_block', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+        estimate_model_fit: {
+          required_bytes: 4 * 1024 ** 3,
+          available_bytes: 24 * 1024 ** 3,
+          verdict: 'comfortable',
+          would_block: false,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+
+      act(() => {
+        getLastChannel()?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+      await screen.findByText(/may not fit in memory/);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      await act(async () => {});
+
+      invoke.mockClear();
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+      await act(async () => {});
+
+      // A fitting model retries the abandoned turn, gate not bypassed.
+      expect(screen.queryByText(/may not fit in memory/)).toBeNull();
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'hi', allowOversized: false }),
+      );
+    });
+
+    it('falls back to a retry when the fit estimate call rejects', async () => {
+      let capturedChannel: { simulateMessage: (data: unknown) => void } | null =
+        null;
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            capturedChannel = args.onEvent as typeof capturedChannel;
+          }
+          if (cmd === 'get_model_picker_state') {
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b', 'qwen2.5:7b'],
+              ollamaReachable: true,
+            };
+          }
+          if (cmd === 'estimate_model_fit') {
+            // The fit-check for the freshly-picked model is the IO boundary
+            // under test: make it reject. The display fetch for the FAILED
+            // model still resolves so the card (and its "Switch model" button)
+            // render at all.
+            if (args?.modelId === 'qwen2.5:7b') {
+              throw new Error('memory reader unavailable');
+            }
+            return {
+              required_bytes: 8 * 1024 ** 3,
+              available_bytes: 4 * 1024 ** 3,
+              verdict: 'insufficient',
+              would_block: true,
+            };
+          }
+          return undefined;
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+
+      act(() => {
+        capturedChannel?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+      await screen.findByText(/may not fit in memory/);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      await act(async () => {});
+
+      invoke.mockClear();
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+      await act(async () => {});
+
+      // Estimate threw: the flow does not stall in a broken state, it replays
+      // the turn (the real backend gate still runs on that send).
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'hi', allowOversized: false }),
+      );
+    });
+  });
+
   it('closes chat-mode model picker when clicking outside the dropdown', async () => {
     enableChannelCaptureWithResponses({
       get_model_picker_state: {

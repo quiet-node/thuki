@@ -282,8 +282,9 @@ pub fn builtin_target(
 
 /// Runs the pre-load memory gate (issue #296) for the built-in model
 /// `model_id` about to be loaded at `target_path`. Assembles the inputs the
-/// pure [`crate::models::memory::evaluate_load_gate`] needs and delegates every
-/// decision to it:
+/// pure [`crate::models::memory::decide_load_gate`] needs and delegates every
+/// decision to it (the single source of the block decision, shared with the
+/// frontend fit affordance so the two can never drift, issue #296):
 /// - the target's weights bytes from the manifest,
 /// - live available memory from the mach VM statistics,
 /// - the currently-resident model's path (so a same-model reload is a no-op and
@@ -306,16 +307,9 @@ pub(crate) fn preflight_memory_gate(
     forced: bool,
 ) -> crate::models::memory::MemoryGate {
     use crate::models::memory;
-    // Read the live engine status once, shared by the in-flight bypass below and
-    // the resident-credit computation further down.
+    // Read the live engine status once: it feeds both the already-loading bypass
+    // and the resident-credit path, both applied inside `decide_load_gate`.
     let status = engine.current_status();
-    // A load already admitted at an earlier gate check (e.g. auto-prime at boot)
-    // may still be streaming this exact target in; the engine dedupes concurrent
-    // ensures for it, so re-judging it here against memory that same load has
-    // already spent would spuriously block a load on track to finish (#296).
-    if memory::is_target_already_loading(&status.state, &status.model_path, target_path) {
-        return memory::MemoryGate::Proceed;
-    }
     // Cannot size the target -> do not block on a database hiccup.
     let target_weights = match crate::models::manifest::get(conn, model_id) {
         Ok(Some(row)) => memory::model_weights_bytes(&row),
@@ -337,7 +331,12 @@ pub(crate) fn preflight_memory_gate(
     // means nothing is resident to credit.
     let resident = (status.state == "loaded" && !status.model_path.is_empty())
         .then(|| std::path::PathBuf::from(&status.model_path));
-    memory::evaluate_load_gate(
+    // Single source of the block decision, shared with `estimate_model_fit`'s
+    // `build_model_fit_estimate` so the gate and the frontend fit affordance can
+    // never diverge (issue #296). It folds in the already-loading bypass.
+    memory::decide_load_gate(
+        &status.state,
+        &status.model_path,
         target_weights,
         memory::available_memory_bytes(),
         resident.as_deref(),

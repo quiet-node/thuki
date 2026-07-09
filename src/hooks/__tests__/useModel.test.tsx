@@ -3189,4 +3189,61 @@ describe('useModel', () => {
       expect(result.current.messages[1].modelName).toBe('active-model');
     });
   });
+
+  describe('updateErroredMessageModel()', () => {
+    it('changes only modelName on the targeted message, preserving errorKind, retrySnapshot, content, and id', async () => {
+      const { result } = renderHook(() => useModel('gemma4:e2b'));
+
+      await act(async () => {
+        await result.current.ask('needs a bigger model');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+
+      const assistantId = result.current.messages[1].id;
+      const originalContent = result.current.messages[1].content;
+      const originalSnapshot = result.current.messages[1].retrySnapshot;
+
+      act(() => {
+        result.current.updateErroredMessageModel(assistantId, 'qwen2.5:7b');
+      });
+
+      expect(result.current.messages).toHaveLength(2);
+      expect(result.current.messages[1].id).toBe(assistantId);
+      expect(result.current.messages[1].modelName).toBe('qwen2.5:7b');
+      expect(result.current.messages[1].errorKind).toBe('InsufficientMemory');
+      expect(result.current.messages[1].retrySnapshot).toBe(originalSnapshot);
+      expect(result.current.messages[1].content).toBe(originalContent);
+    });
+
+    it('is a no-op when no message matches the given id', async () => {
+      const { result } = renderHook(() => useModel('gemma4:e2b'));
+
+      await act(async () => {
+        await result.current.ask('needs a bigger model');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+
+      const before = result.current.messages;
+
+      expect(() => {
+        act(() => {
+          result.current.updateErroredMessageModel('no-such-id', 'qwen2.5:7b');
+        });
+      }).not.toThrow();
+
+      expect(result.current.messages).toEqual(before);
+    });
+  });
 });

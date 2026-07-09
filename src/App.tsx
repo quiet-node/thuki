@@ -699,6 +699,7 @@ function App() {
     addOcrTurn,
     retryMessageWithOversized,
     retryMessage,
+    updateErroredMessageModel,
   } = useModel(activeModel, handleTurnComplete);
 
   /**
@@ -3305,12 +3306,23 @@ function App() {
    * `InsufficientMemory` failure, this pick resolves it too instead of
    * leaving the card sitting there with no way forward.
    *
-   * Either way, the retry is replayed with `model` (this callback's own,
-   * just-confirmed argument) passed explicitly as the override, not left to
-   * fall back to `activeModel`. `setActiveModel`'s state update is not yet
-   * visible to any closure captured before this `.then` fires, so an
-   * implicit `activeModel` read here would still see the pre-switch model
-   * and mislabel the retried turn.
+   * Once a pending turn is identified, the newly-picked model is fit-checked
+   * BEFORE any retry (issue #296): `estimate_model_fit` reports `would_block`,
+   * the SAME block decision the backend admission gate runs (never re-derived
+   * on the frontend, which is the drift class this feature exists to prevent).
+   * - `would_block` true: the picked model would ALSO be refused, so retrying
+   *   would just re-fail and unmount + remount the error card (the flash the
+   *   user reported). Instead re-attribute the existing errored message in
+   *   place, keeping `errorKind`/`retrySnapshot`, so the card swaps only its
+   *   model name and GB figures with no remount. No send.
+   * - `would_block` false (or the estimate call rejects): replay the abandoned
+   *   turn against the new model exactly as before; the real backend gate still
+   *   runs on that send, so a mis-estimate can never force an unsafe load.
+   *
+   * Either branch passes `model` (this callback's own, just-confirmed argument)
+   * explicitly, not `activeModel`: `setActiveModel`'s state update is not yet
+   * visible to any closure captured before this `.then` fires, so an implicit
+   * `activeModel` read here would still see the pre-switch model.
    */
   const handleModelSelect = useCallback(
     (model: string) => {
@@ -3331,14 +3343,34 @@ function App() {
         }
       }
       void setActiveModel(model)
-        .then(() => {
-          if (pendingRetry) retryMessage(pendingRetry, model);
+        .then(async () => {
+          const retry = pendingRetry;
+          if (!retry) return;
+          let wouldBlock: boolean;
+          try {
+            const estimate = await invoke<{ would_block: boolean }>(
+              'estimate_model_fit',
+              { modelId: model },
+            );
+            wouldBlock = estimate.would_block === true;
+          } catch {
+            // Estimate unavailable at this IO boundary: fall back to a normal
+            // retry (the backend gate still runs on the real send), never a
+            // broken in-between state.
+            wouldBlock = false;
+          }
+          if (wouldBlock) {
+            // why: keep the card mounted and swap only its attribution, no send.
+            updateErroredMessageModel(retry.assistantMessageId, model);
+          } else {
+            retryMessage(retry, model);
+          }
         })
         .catch(() => {
           void refreshModels();
         });
     },
-    [setActiveModel, refreshModels, retryMessage],
+    [setActiveModel, refreshModels, retryMessage, updateErroredMessageModel],
   );
 
   /** Closes the model picker panel. Wired to Escape key inside the panel. */

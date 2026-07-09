@@ -267,6 +267,48 @@ pub fn evaluate_load_gate(
     }
 }
 
+/// The single authoritative "would loading this target be blocked?" decision,
+/// shared by [`preflight_memory_gate`] (the real admission gate) and
+/// [`build_model_fit_estimate`] (the frontend's fit affordance) so exactly one
+/// copy of the block logic exists. A duplicated gate that drifted and froze a
+/// Mac is the reason issue #296 exists, so the estimate path and the gate must
+/// never compute this decision separately.
+///
+/// Folds in the already-loading (`"starting"` state naming this exact target)
+/// proceed short-circuit that used to live only in `preflight_memory_gate`,
+/// then delegates the forced / failed-reader / resident-exact / memory-fit
+/// judgement to [`evaluate_load_gate`]. `available_bytes` is the raw live
+/// reading; the resident-eviction credit is applied inside `evaluate_load_gate`.
+///
+/// [`preflight_memory_gate`]: crate::commands::preflight_memory_gate
+#[allow(clippy::too_many_arguments)]
+pub fn decide_load_gate(
+    engine_state: &str,
+    status_model_path: &str,
+    target_weights_bytes: u64,
+    available_bytes: u64,
+    resident_path: Option<&Path>,
+    target_path: &Path,
+    installed: &[(u64, PathBuf)],
+    forced: bool,
+) -> MemoryGate {
+    // why: a load already mid-flight for this exact target was admitted by an
+    // earlier gate check and is still streaming in; re-judging it against the
+    // memory that same load has already spent would spuriously block a load on
+    // track to finish (issue #296 race).
+    if is_target_already_loading(engine_state, status_model_path, target_path) {
+        return MemoryGate::Proceed;
+    }
+    evaluate_load_gate(
+        target_weights_bytes,
+        available_bytes,
+        resident_path,
+        target_path,
+        installed,
+        forced,
+    )
+}
+
 /// Live available system memory in bytes via mach `host_statistics64`
 /// (`HOST_VM_INFO64`): the sum of the free, inactive, speculative, and
 /// purgeable pages, which the kernel can reclaim without swapping. Returns 0
@@ -346,21 +388,74 @@ pub fn available_memory_bytes() -> u64 {
 pub struct ModelFitEstimate {
     /// Estimated resident footprint of the model, in bytes.
     pub required_bytes: u64,
-    /// Live available system memory, in bytes.
+    /// Memory judged available for the load, in bytes (already crediting a
+    /// resident model that would be evicted first, matching the gate).
     pub available_bytes: u64,
     /// The fit verdict for the two figures above.
     pub verdict: MemoryFit,
+    /// Whether the real admission gate would block this load right now. The
+    /// authoritative signal the model-switch flow branches on (issue #296): the
+    /// display `verdict` alone can read `Insufficient` for a target the gate
+    /// would still admit (a resident-exact or already-loading model), so a
+    /// control decision must never be derived from `verdict`.
+    pub would_block: bool,
 }
 
-/// Pure core of [`estimate_model_fit`]: given a model's weights bytes and the
-/// live available memory, assemble the [`ModelFitEstimate`]. Split from the
-/// command so the assembly is unit-tested without a Tauri runtime.
-pub fn build_model_fit_estimate(weights_bytes: u64, available_bytes: u64) -> ModelFitEstimate {
+/// Pure core of [`estimate_model_fit`]: assembles the full [`ModelFitEstimate`]
+/// the frontend renders (footprint, credited available, display verdict) AND
+/// the authoritative `would_block` decision the model-switch flow branches on
+/// (issue #296). Split from the coverage-off command so every field, including
+/// the resident-credit branch and the gate decision, is unit-tested without a
+/// Tauri runtime.
+///
+/// `raw_available_bytes` is the live reading straight from the memory FFI; the
+/// resident-eviction credit is applied here (via the shared
+/// [`effective_available_bytes`]) so the displayed `available_bytes`, the
+/// display `verdict`, and `would_block` all agree with the real admission gate
+/// on identical inputs. `would_block` comes from [`decide_load_gate`], the
+/// single source of the block decision shared with `preflight_memory_gate`, so
+/// no second copy of that logic can drift.
+#[allow(clippy::too_many_arguments)]
+pub fn build_model_fit_estimate(
+    engine_state: &str,
+    status_model_path: &str,
+    weights_bytes: u64,
+    raw_available_bytes: u64,
+    resident_path: Option<&Path>,
+    target_path: &Path,
+    installed: &[(u64, PathBuf)],
+) -> ModelFitEstimate {
     let required_bytes = estimate_required_bytes(weights_bytes);
+    // Fail open on a failed reader (0) before crediting, mirroring the gate:
+    // crediting a resident model onto a 0 read would judge the estimate against
+    // the credit alone, diverging from "we don't know available memory".
+    let effective_available = if raw_available_bytes == 0 {
+        0
+    } else {
+        effective_available_bytes(raw_available_bytes, resident_path, target_path, installed)
+    };
+    // why: single source of the block decision. Never re-derive "would block"
+    // from the display verdict below: the gate's resident-exact and
+    // already-loading proceed short-circuits mean a target can read
+    // `Insufficient` for display yet still be admitted (issue #296 drift).
+    let would_block = matches!(
+        decide_load_gate(
+            engine_state,
+            status_model_path,
+            weights_bytes,
+            raw_available_bytes,
+            resident_path,
+            target_path,
+            installed,
+            false,
+        ),
+        MemoryGate::Block { .. }
+    );
     ModelFitEstimate {
         required_bytes,
-        available_bytes,
-        verdict: assess_fit(required_bytes, available_bytes),
+        available_bytes: effective_available,
+        verdict: assess_fit(required_bytes, effective_available),
+        would_block,
     }
 }
 
@@ -369,16 +464,15 @@ pub fn build_model_fit_estimate(weights_bytes: u64, available_bytes: u64) -> Mod
 /// installed model, or the active provider's model when omitted.
 ///
 /// Thin Tauri wrapper (coverage-off): resolves the model id, reads its weights
-/// size from the manifest, and mirrors [`preflight_memory_gate`]'s inputs so the
-/// displayed figures agree with the admission gate's own math. If a *different*
-/// model is currently resident, it is evicted before this target loads, so its
-/// footprint is credited back via [`effective_available_bytes`] (issue #296:
-/// the gate credited but the display did not, so switching models showed a
-/// pessimistic "available" that never reflected the eviction). Every decision
-/// delegates to the unit-tested [`effective_available_bytes`],
-/// [`build_model_fit_estimate`], and [`available_memory_bytes`]; the inline
-/// resident-detection branch matches `preflight_memory_gate` (also coverage-off)
-/// exactly.
+/// size from the manifest, gathers the same resident/installed/live-memory
+/// inputs [`preflight_memory_gate`] uses, and hands them to the unit-tested
+/// [`build_model_fit_estimate`]. That helper applies the resident-eviction
+/// credit (issue #296: the gate credited but the display did not, so switching
+/// models showed a pessimistic "available") and, via [`decide_load_gate`],
+/// produces `would_block` from the SAME block decision the admission gate runs,
+/// so the frontend's model-switch flow never re-derives it and drifts. The
+/// inline resident-detection branch matches `preflight_memory_gate` (also
+/// coverage-off) exactly.
 ///
 /// [`preflight_memory_gate`]: crate::commands::preflight_memory_gate
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -414,21 +508,21 @@ pub fn estimate_model_fit(
         .map(|r| (model_weights_bytes(&r), store.blob_path(&r.sha256)))
         .collect();
     // A live "loaded" status names the resident model's path; anything else
-    // means nothing is resident to credit.
+    // means nothing is resident to credit. The `"starting"` (already-loading)
+    // bypass is applied inside `build_model_fit_estimate` -> `decide_load_gate`
+    // from this same status, mirroring `preflight_memory_gate`.
     let status = engine.current_status();
     let resident = (status.state == "loaded" && !status.model_path.is_empty())
         .then(|| PathBuf::from(&status.model_path));
-    // Fail open on a failed reader (0) *before* crediting, matching
-    // `evaluate_load_gate`: crediting a resident model onto a 0 read would judge
-    // the estimate against the credit alone, diverging from the gate that
-    // proceeds on an unknown reading.
-    let raw_available = available_memory_bytes();
-    let effective_available = if raw_available == 0 {
-        0
-    } else {
-        effective_available_bytes(raw_available, resident.as_deref(), &target_path, &installed)
-    };
-    Ok(build_model_fit_estimate(weights_bytes, effective_available))
+    Ok(build_model_fit_estimate(
+        &status.state,
+        &status.model_path,
+        weights_bytes,
+        available_memory_bytes(),
+        resident.as_deref(),
+        &target_path,
+        &installed,
+    ))
 }
 
 #[cfg(test)]
@@ -672,14 +766,29 @@ mod tests {
         ];
 
         // Pre-fix: no credit -> the card shows the raw ~1.7 GB and blocks.
-        let without_credit = build_model_fit_estimate(gpt_oss_weights, raw_available);
+        let without_credit = build_model_fit_estimate(
+            "loaded",
+            "",
+            gpt_oss_weights,
+            raw_available,
+            None,
+            &gpt_oss_path,
+            &installed,
+        );
         assert_eq!(without_credit.available_bytes, raw_available);
         assert_eq!(without_credit.verdict, MemoryFit::Insufficient);
 
-        // Post-fix: gemma credited back before gpt-oss loads.
-        let effective =
-            effective_available_bytes(raw_available, Some(&gemma_path), &gpt_oss_path, &installed);
-        let with_credit = build_model_fit_estimate(gpt_oss_weights, effective);
+        // Post-fix: gemma resident and credited back before gpt-oss loads. The
+        // helper now applies the credit internally from the resident path.
+        let with_credit = build_model_fit_estimate(
+            "loaded",
+            &gemma_path.to_string_lossy(),
+            gpt_oss_weights,
+            raw_available,
+            Some(&gemma_path),
+            &gpt_oss_path,
+            &installed,
+        );
         // The displayed "available" now reflects the eviction, up by exactly
         // gemma's weights, matching what the admission gate already computed.
         assert_eq!(with_credit.available_bytes, raw_available + gemma_weights);
@@ -873,12 +982,180 @@ mod tests {
 
     #[test]
     fn build_model_fit_estimate_assembles_fields() {
-        let estimate = build_model_fit_estimate(4 * BYTES_PER_GIB, 24 * BYTES_PER_GIB);
+        // Nothing resident, comfortable fit: fields assemble and the gate would
+        // not block.
+        let target = PathBuf::from("/blobs/target");
+        let estimate = build_model_fit_estimate(
+            "stopped",
+            "",
+            4 * BYTES_PER_GIB,
+            24 * BYTES_PER_GIB,
+            None,
+            &target,
+            &[],
+        );
         assert_eq!(
             estimate.required_bytes,
             estimate_required_bytes(4 * BYTES_PER_GIB)
         );
         assert_eq!(estimate.available_bytes, 24 * BYTES_PER_GIB);
         assert_eq!(estimate.verdict, MemoryFit::Comfortable);
+        assert!(!estimate.would_block);
+    }
+
+    #[test]
+    fn decide_load_gate_bypasses_already_loading_target() {
+        // A "starting" status naming this exact target: an in-flight load
+        // already admitted must not be re-judged, even against no memory and an
+        // oversized model (issue #296 race). This is the short-circuit
+        // `evaluate_load_gate` alone does NOT have.
+        let target = PathBuf::from("/blobs/target");
+        let gate = decide_load_gate(
+            "starting",
+            "/blobs/target",
+            u64::MAX,
+            1,
+            None,
+            &target,
+            &[],
+            false,
+        );
+        assert_eq!(gate, MemoryGate::Proceed);
+    }
+
+    #[test]
+    fn decide_load_gate_matches_evaluate_when_not_already_loading() {
+        // When the already-loading bypass does not fire, the decision must be
+        // byte-for-byte the same as `evaluate_load_gate` on the same inputs, so
+        // the two callers can never diverge (issue #296).
+        let target = PathBuf::from("/blobs/target");
+        let inputs = (20 * BYTES_PER_GIB, 10 * BYTES_PER_GIB);
+        // "loaded" state (not "starting") -> no bypass -> pure delegation.
+        let decided = decide_load_gate(
+            "loaded",
+            "/blobs/other",
+            inputs.0,
+            inputs.1,
+            None,
+            &target,
+            &[],
+            false,
+        );
+        let evaluated = evaluate_load_gate(inputs.0, inputs.1, None, &target, &[], false);
+        assert_eq!(decided, evaluated);
+        assert_eq!(
+            decided,
+            MemoryGate::Block {
+                required_bytes: estimate_required_bytes(20 * BYTES_PER_GIB),
+                available_bytes: 10 * BYTES_PER_GIB,
+            }
+        );
+    }
+
+    #[test]
+    fn estimate_would_block_true_for_oversized_cold_load() {
+        // 20 GiB model, 10 GiB available, nothing resident: the gate blocks and
+        // `would_block` reports it.
+        let target = PathBuf::from("/blobs/target");
+        let estimate = build_model_fit_estimate(
+            "loaded",
+            "/blobs/other",
+            20 * BYTES_PER_GIB,
+            10 * BYTES_PER_GIB,
+            None,
+            &target,
+            &[],
+        );
+        assert_eq!(estimate.verdict, MemoryFit::Insufficient);
+        assert!(estimate.would_block);
+    }
+
+    #[test]
+    fn estimate_would_block_false_for_resident_exact_target() {
+        // THE divergence issue #296 Option B fixes: the user re-picks the model
+        // that is already resident and filling memory (available reads ~0). The
+        // display `verdict` is `Insufficient` (its footprint is not in the free
+        // reading), but the gate proceeds on a same-model reload, so
+        // `would_block` MUST be false. Branching on `verdict` here would refuse
+        // to reload a working model.
+        let target = PathBuf::from("/blobs/target");
+        let estimate = build_model_fit_estimate(
+            "loaded",
+            "/blobs/target",
+            20 * BYTES_PER_GIB,
+            0,
+            Some(&target),
+            &target,
+            &[],
+        );
+        assert!(!estimate.would_block);
+    }
+
+    #[test]
+    fn estimate_would_block_false_for_already_loading_target() {
+        // The exact target is mid-load ("starting"): already admitted, so
+        // `would_block` is false regardless of the (pessimistic) display verdict.
+        let target = PathBuf::from("/blobs/target");
+        let estimate = build_model_fit_estimate(
+            "starting",
+            "/blobs/target",
+            20 * BYTES_PER_GIB,
+            1,
+            None,
+            &target,
+            &[],
+        );
+        assert!(!estimate.would_block);
+    }
+
+    #[test]
+    fn estimate_would_block_false_for_comfortable_fit() {
+        // Plenty of headroom, nothing resident: fits and the gate proceeds.
+        let target = PathBuf::from("/blobs/target");
+        let estimate = build_model_fit_estimate(
+            "loaded",
+            "/blobs/other",
+            4 * BYTES_PER_GIB,
+            24 * BYTES_PER_GIB,
+            None,
+            &target,
+            &[],
+        );
+        assert_eq!(estimate.verdict, MemoryFit::Comfortable);
+        assert!(!estimate.would_block);
+    }
+
+    #[test]
+    fn estimate_would_block_agrees_with_gate_on_switch_to_oversized() {
+        // Switch A(4 GiB, resident) -> B(30 GiB) on a tight machine: the gate
+        // credits A back and still blocks. `would_block` must equal the gate's
+        // own decision on the identical inputs.
+        let a = PathBuf::from("/blobs/a");
+        let b = PathBuf::from("/blobs/b");
+        let installed = vec![(4 * BYTES_PER_GIB, a.clone())];
+        let estimate = build_model_fit_estimate(
+            "loaded",
+            &a.to_string_lossy(),
+            30 * BYTES_PER_GIB,
+            2 * BYTES_PER_GIB,
+            Some(&a),
+            &b,
+            &installed,
+        );
+        let gate = decide_load_gate(
+            "loaded",
+            &a.to_string_lossy(),
+            30 * BYTES_PER_GIB,
+            2 * BYTES_PER_GIB,
+            Some(&a),
+            &b,
+            &installed,
+            false,
+        );
+        assert_eq!(
+            estimate.would_block,
+            matches!(gate, MemoryGate::Block { .. })
+        );
+        assert!(estimate.would_block);
     }
 }

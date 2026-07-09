@@ -1080,6 +1080,37 @@ export function useModel(
     [replaySnapshot],
   );
 
+  /**
+   * Re-attributes an errored assistant message to a different model IN PLACE,
+   * without resetting it or re-sending the turn (issue #296). Used by the
+   * `InsufficientMemory` "switch model" flow when the freshly-picked model would
+   * ALSO be blocked: retrying would just re-fail and unmount + remount the error
+   * card (the flash the user reported), so instead only `modelName` changes.
+   *
+   * Everything else is preserved deliberately: `errorKind` stays
+   * `InsufficientMemory` (so `ErrorCard` never unmounts, which is what kills the
+   * flash) and `retrySnapshot` stays intact (so a later pick of a fitting model
+   * can still replay this exact turn). `ChatBubble`'s `modelName`-keyed effect
+   * then refetches the fit figures for the new model, and `ErrorCard` reads
+   * only those figures, so the card swaps its model name and GB numbers in
+   * place. No-op when no message with `assistantMessageId` exists.
+   *
+   * @param assistantMessageId Id of the errored assistant message to re-attribute.
+   * @param modelName New model slug to attribute the message to.
+   */
+  const updateErroredMessageModel = useCallback(
+    (assistantMessageId: string, modelName: string) => {
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.id === assistantMessageId
+            ? { ...message, modelName }
+            : message,
+        ),
+      );
+    },
+    [],
+  );
+
   /** Cancels the currently active generation. */
   const cancel = useCallback(async () => {
     if (
@@ -1211,5 +1242,6 @@ export function useModel(
     addOcrTurn,
     retryMessageWithOversized,
     retryMessage,
+    updateErroredMessageModel,
   };
 }
