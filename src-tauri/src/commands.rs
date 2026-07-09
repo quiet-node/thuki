@@ -316,7 +316,12 @@ pub(crate) fn preflight_memory_gate(
     let installed: Vec<(u64, std::path::PathBuf)> = crate::models::manifest::list(conn)
         .unwrap_or_default()
         .into_iter()
-        .map(|row| (memory::model_weights_bytes(&row), store.blob_path(&row.sha256)))
+        .map(|row| {
+            (
+                memory::model_weights_bytes(&row),
+                store.blob_path(&row.sha256),
+            )
+        })
         .collect();
     // A live "loaded" status names the resident model's path; anything else
     // means nothing is resident to credit.
@@ -1470,10 +1475,13 @@ pub async fn ask_model(
                 )
             };
             match resolved {
-                Ok((_, crate::models::memory::MemoryGate::Block {
-                    required_bytes,
-                    available_bytes,
-                })) => {
+                Ok((
+                    _,
+                    crate::models::memory::MemoryGate::Block {
+                        required_bytes,
+                        available_bytes,
+                    },
+                )) => {
                     pump(StreamChunk::Error(insufficient_memory_error(
                         required_bytes,
                         available_bytes,

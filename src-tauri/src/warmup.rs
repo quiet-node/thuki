@@ -476,10 +476,13 @@ pub fn warm_up_model(
             match resolved {
                 // Skip an auto-load that would not fit; a user-initiated send can
                 // still force it through the gate in `ask_model`.
-                Ok((_, crate::models::memory::MemoryGate::Block {
-                    required_bytes,
-                    available_bytes,
-                })) => {
+                Ok((
+                    _,
+                    crate::models::memory::MemoryGate::Block {
+                        required_bytes,
+                        available_bytes,
+                    },
+                )) => {
                     eprintln!(
                         "thuki: [memory gate] skipping auto-prime of {model_id}: needs ~{} MB, ~{} MB available",
                         required_bytes / (1024 * 1024),

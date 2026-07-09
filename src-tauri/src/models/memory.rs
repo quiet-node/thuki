@@ -289,13 +289,8 @@ pub fn estimate_model_fit(
     db: tauri::State<'_, crate::history::Database>,
     config: tauri::State<'_, parking_lot::RwLock<crate::config::AppConfig>>,
 ) -> Result<ModelFitEstimate, String> {
-    let model_id = model_id.unwrap_or_else(|| {
-        config
-            .read()
-            .inference
-            .active_provider_model()
-            .to_string()
-    });
+    let model_id =
+        model_id.unwrap_or_else(|| config.read().inference.active_provider_model().to_string());
     if model_id.is_empty() {
         return Err("No model selected.".to_string());
     }
@@ -358,14 +353,20 @@ mod tests {
             available_from_vm_stats(u64::MAX, u64::MAX, 0, 0, 2),
             u64::MAX
         );
-        assert_eq!(available_from_vm_stats(u64::MAX, 0, 0, 0, u64::MAX), u64::MAX);
+        assert_eq!(
+            available_from_vm_stats(u64::MAX, 0, 0, 0, u64::MAX),
+            u64::MAX
+        );
     }
 
     #[test]
     fn estimate_required_bytes_adds_fixed_overhead() {
         let overhead = (RUNTIME_OVERHEAD_GB * BYTES_PER_GIB as f64) as u64;
         assert_eq!(estimate_required_bytes(0), overhead);
-        assert_eq!(estimate_required_bytes(5 * BYTES_PER_GIB), 5 * BYTES_PER_GIB + overhead);
+        assert_eq!(
+            estimate_required_bytes(5 * BYTES_PER_GIB),
+            5 * BYTES_PER_GIB + overhead
+        );
     }
 
     #[test]
@@ -383,19 +384,31 @@ mod tests {
     fn assess_fit_classifies_against_fractions() {
         let available = 10 * BYTES_PER_GIB;
         // Comfortable: at/under the comfort fraction (0.60 -> 6 GiB).
-        assert_eq!(assess_fit(5 * BYTES_PER_GIB, available), MemoryFit::Comfortable);
         assert_eq!(
-            assess_fit((MODEL_FIT_COMFORT_FRACTION * available as f64) as u64, available),
+            assess_fit(5 * BYTES_PER_GIB, available),
+            MemoryFit::Comfortable
+        );
+        assert_eq!(
+            assess_fit(
+                (MODEL_FIT_COMFORT_FRACTION * available as f64) as u64,
+                available
+            ),
             MemoryFit::Comfortable
         );
         // Tight: above comfort, at/under the ceiling (0.80 -> 8 GiB).
         assert_eq!(assess_fit(7 * BYTES_PER_GIB, available), MemoryFit::Tight);
         assert_eq!(
-            assess_fit((MODEL_FIT_CEILING_FRACTION * available as f64) as u64, available),
+            assess_fit(
+                (MODEL_FIT_CEILING_FRACTION * available as f64) as u64,
+                available
+            ),
             MemoryFit::Tight
         );
         // Insufficient: clearly above the ceiling.
-        assert_eq!(assess_fit(9 * BYTES_PER_GIB, available), MemoryFit::Insufficient);
+        assert_eq!(
+            assess_fit(9 * BYTES_PER_GIB, available),
+            MemoryFit::Insufficient
+        );
     }
 
     #[test]
@@ -416,27 +429,26 @@ mod tests {
             (10u64, PathBuf::from("/blobs/a")),
             (20u64, PathBuf::from("/blobs/b")),
         ];
-        assert_eq!(resident_weights_bytes(Path::new("/blobs/b"), &installed), 20);
+        assert_eq!(
+            resident_weights_bytes(Path::new("/blobs/b"), &installed),
+            20
+        );
     }
 
     #[test]
     fn resident_weights_bytes_no_match_is_zero() {
         let installed = vec![(10u64, PathBuf::from("/blobs/a"))];
         // An unknown path (e.g. a split-shim symlink) credits nothing.
-        assert_eq!(resident_weights_bytes(Path::new("/blobs/shim"), &installed), 0);
+        assert_eq!(
+            resident_weights_bytes(Path::new("/blobs/shim"), &installed),
+            0
+        );
     }
 
     #[test]
     fn gate_forced_always_proceeds() {
         // Force bypasses even a clearly-oversized model against no memory.
-        let gate = evaluate_load_gate(
-            u64::MAX,
-            1,
-            None,
-            Path::new("/blobs/target"),
-            &[],
-            true,
-        );
+        let gate = evaluate_load_gate(u64::MAX, 1, None, Path::new("/blobs/target"), &[], true);
         assert_eq!(gate, MemoryGate::Proceed);
     }
 
@@ -479,14 +491,7 @@ mod tests {
         // The exact model is already resident and fills memory (available ~0);
         // it must never be blocked from continuing to serve.
         let target = PathBuf::from("/blobs/target");
-        let gate = evaluate_load_gate(
-            20 * BYTES_PER_GIB,
-            0,
-            Some(&target),
-            &target,
-            &[],
-            false,
-        );
+        let gate = evaluate_load_gate(20 * BYTES_PER_GIB, 0, Some(&target), &target, &[], false);
         assert_eq!(gate, MemoryGate::Proceed);
     }
 
@@ -501,7 +506,14 @@ mod tests {
         let installed = vec![(14 * BYTES_PER_GIB, a.clone())];
         // Without the credit this exact model would be blocked.
         assert_eq!(
-            evaluate_load_gate(8 * BYTES_PER_GIB, BYTES_PER_GIB, None, &b, &installed, false),
+            evaluate_load_gate(
+                8 * BYTES_PER_GIB,
+                BYTES_PER_GIB,
+                None,
+                &b,
+                &installed,
+                false
+            ),
             MemoryGate::Block {
                 required_bytes: estimate_required_bytes(8 * BYTES_PER_GIB),
                 available_bytes: BYTES_PER_GIB,
@@ -547,7 +559,10 @@ mod tests {
     #[test]
     fn build_model_fit_estimate_assembles_fields() {
         let estimate = build_model_fit_estimate(4 * BYTES_PER_GIB, 24 * BYTES_PER_GIB);
-        assert_eq!(estimate.required_bytes, estimate_required_bytes(4 * BYTES_PER_GIB));
+        assert_eq!(
+            estimate.required_bytes,
+            estimate_required_bytes(4 * BYTES_PER_GIB)
+        );
         assert_eq!(estimate.available_bytes, 24 * BYTES_PER_GIB);
         assert_eq!(estimate.verdict, MemoryFit::Comfortable);
     }
