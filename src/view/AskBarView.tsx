@@ -12,6 +12,8 @@ import { Tooltip } from '../components/Tooltip';
 import { CapabilityMismatchStrip } from '../components/CapabilityMismatchStrip';
 import { DownloadStatusStrip } from '../components/DownloadStatusStrip';
 import type { DownloadStripStatus } from '../components/DownloadStatusStrip';
+import { AutoPrimeSkippedStrip } from '../components/AutoPrimeSkippedStrip';
+import type { AutoPrimeSkippedStripProps } from '../components/AutoPrimeSkippedStrip';
 import type { CapabilityMismatchMessage } from '../components/CapabilityMismatchStrip';
 import type { AttachedImage } from '../types/image';
 import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
@@ -214,6 +216,15 @@ interface AskBarViewProps {
    */
   downloadStatus?: DownloadStripStatus | null;
   /**
+   * Ambient warning that the built-in engine's memory gate skipped
+   * auto-priming the active model (issue #296). Rendered in the same slot
+   * as the download strip, but only in ask-bar mode: once a real chat turn
+   * starts, the per-message `InsufficientMemory` error card takes over as
+   * the surface for this same refusal. `null` (or undefined) renders
+   * nothing.
+   */
+  autoPrimeSkipped?: AutoPrimeSkippedStripProps | null;
+  /**
    * Whether a usable model is installed and active. When true, the send
    * affordance stays live even while a built-in model is downloading, so a
    * background download never holds the bar hostage; only when there is no
@@ -263,6 +274,7 @@ export function AskBarView({
   isModelPickerOpen,
   capabilityConflictMessage,
   downloadStatus,
+  autoPrimeSkipped,
   hasUsableModel = false,
   shake = false,
   maxImages,
@@ -559,6 +571,9 @@ export function AskBarView({
       )}
       {downloadStatus ? (
         <DownloadStatusStrip status={downloadStatus} surface="askbar" />
+      ) : null}
+      {!isChatMode && autoPrimeSkipped ? (
+        <AutoPrimeSkippedStrip {...autoPrimeSkipped} />
       ) : null}
       {/* Command suggestion renders above the input row in the normal DOM
           flow. Being inside the morphing container means the ResizeObserver

@@ -10106,4 +10106,180 @@ describe('App', () => {
       });
     });
   });
+
+  // ─── Auto-prime memory-gate skip warning (issue #296) ────────────────────
+  // The backend's auto-prime memory gate (`spawn_gated_builtin_warmup`) skips
+  // loading an oversized model silently on its own (stderr only); this strip
+  // is the proactive frontend surface for that skip, shown ambient on the ask
+  // bar before the user's first message would otherwise hit the same gate via
+  // the `InsufficientMemory` chat error.
+  describe('auto-prime memory-gate skip warning (issue #296)', () => {
+    const SKIPPED_PAYLOAD = {
+      model_id: 'gemma4:e2b',
+      required_bytes: 8 * 1024 ** 3,
+      available_bytes: 4 * 1024 ** 3,
+    };
+
+    it('shows the ambient strip with the friendly model name and GB figures after warmup:builtin-skipped fires', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b'],
+          displayNames: { 'gemma4:e2b': 'Gemma 4 E2B' },
+          ollamaReachable: true,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => emitTauriEvent('warmup:builtin-skipped', SKIPPED_PAYLOAD));
+      await act(async () => {});
+
+      expect(
+        screen.getByText(
+          'Gemma 4 E2B may not fit in memory (~8.0 GB needed, ~4.0 GB available)',
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it('does not show once a real chat turn starts (the InsufficientMemory error card takes over instead)', async () => {
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => emitTauriEvent('warmup:builtin-skipped', SKIPPED_PAYLOAD));
+      await act(async () => {});
+      expect(
+        screen.getByTestId('auto-prime-skipped-strip'),
+      ).toBeInTheDocument();
+
+      const textarea = getAskInput();
+      act(() => setAskValue('hello'));
+      act(() => fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false }));
+      await act(async () => {});
+
+      expect(
+        screen.queryByTestId('auto-prime-skipped-strip'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('opens the model picker from the strip\'s "Switch model" action', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => emitTauriEvent('warmup:builtin-skipped', SKIPPED_PAYLOAD));
+      await act(async () => {});
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      await act(async () => {});
+
+      expect(
+        screen.getByRole('option', { name: 'qwen2.5:7b' }),
+      ).toBeInTheDocument();
+    });
+
+    it('clears when the strip is dismissed', async () => {
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => emitTauriEvent('warmup:builtin-skipped', SKIPPED_PAYLOAD));
+      await act(async () => {});
+      expect(
+        screen.getByTestId('auto-prime-skipped-strip'),
+      ).toBeInTheDocument();
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Dismiss memory warning' }),
+      );
+      await act(async () => {});
+
+      expect(
+        screen.queryByTestId('auto-prime-skipped-strip'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('clears when the active model changes', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => emitTauriEvent('warmup:builtin-skipped', SKIPPED_PAYLOAD));
+      await act(async () => {});
+      expect(
+        screen.getByTestId('auto-prime-skipped-strip'),
+      ).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+
+      expect(
+        screen.queryByTestId('auto-prime-skipped-strip'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('clears once the built-in engine actually reaches loaded', async () => {
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => emitTauriEvent('warmup:builtin-skipped', SKIPPED_PAYLOAD));
+      await act(async () => {});
+      expect(
+        screen.getByTestId('auto-prime-skipped-strip'),
+      ).toBeInTheDocument();
+
+      act(() =>
+        emitTauriEvent('engine:status', {
+          state: 'loaded',
+          model_path: '/models/gemma4-e2b.gguf',
+          port: 8080,
+          error: null,
+        }),
+      );
+      await act(async () => {});
+
+      expect(
+        screen.queryByTestId('auto-prime-skipped-strip'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('suppresses the memory warning while the download strip is showing (one ambient strip at a time)', async () => {
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'downloading' },
+        combinedBytes: 4_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        speedBytesPerSec: 8_000_000,
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => emitTauriEvent('warmup:builtin-skipped', SKIPPED_PAYLOAD));
+      await act(async () => {});
+
+      expect(screen.getByTestId('download-status-strip')).toBeInTheDocument();
+      expect(
+        screen.queryByTestId('auto-prime-skipped-strip'),
+      ).not.toBeInTheDocument();
+    });
+  });
 });

@@ -410,6 +410,17 @@ pub(crate) enum BuiltinWarmupAction {
     Skip,
 }
 
+/// Payload emitted as `warmup:builtin-skipped` when the memory gate blocks an
+/// auto-prime (issue #296): lets the frontend show an ambient warning before
+/// the user's first message hits the same block as an `InsufficientMemory`
+/// chat error.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub(crate) struct BuiltinSkippedPayload {
+    pub model_id: String,
+    pub required_bytes: u64,
+    pub available_bytes: u64,
+}
+
 /// Maps a resolved `(Target, MemoryGate)` - or a resolve error - to the
 /// auto-prime action. Pure: no I/O and no spawn, so both the Block-skips and
 /// Proceed-warms branches are exercised directly in tests. `warm_builtin` is
@@ -515,6 +526,14 @@ pub(crate) fn spawn_gated_builtin_warmup(
                 "thuki: [memory gate] skipping auto-prime of {model_id}: needs ~{} MB, ~{} MB available",
                 required_bytes / (1024 * 1024),
                 available_bytes / (1024 * 1024),
+            );
+            let _ = app.emit(
+                "warmup:builtin-skipped",
+                BuiltinSkippedPayload {
+                    model_id,
+                    required_bytes,
+                    available_bytes,
+                },
             );
         }
         BuiltinWarmupAction::Skip => {}

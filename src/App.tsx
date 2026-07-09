@@ -395,6 +395,23 @@ function App() {
   const safeModeResolvedRef = useRef(false);
 
   /**
+   * Non-null when the built-in engine's pre-load memory gate skipped
+   * auto-priming the active model (issue #296 guardrail): the overlay-show
+   * or first-keystroke warm attempt found the model likely would not fit and
+   * silently backed off. Surfaced as an ambient ask-bar warning so this
+   * refusal is not first discovered via the `InsufficientMemory` chat error
+   * on the user's first message. Set by the `warmup:builtin-skipped`
+   * listener below; cleared on dismiss, when the active model changes (a
+   * stale warning about a model no longer resident), or once the engine
+   * actually reaches `loaded` (a load succeeded since the skip).
+   */
+  const [autoPrimeSkipped, setAutoPrimeSkipped] = useState<{
+    modelId: string;
+    requiredBytes: number;
+    availableBytes: number;
+  } | null>(null);
+
+  /**
    * Whether the ask-bar history panel is currently open.
    * Distinct from the chat-mode history dropdown (controlled by the same toggle
    * but rendered differently based on `isChatMode`).
@@ -553,6 +570,22 @@ function App() {
   // doc comment for why a late-mounting subscriber would risk missing it.
   const { warming: builtinEngineWarming, engineState: builtinEngineState } =
     useEngineWarmupStatus();
+
+  // A stale memory-gate warning about the model just switched away from
+  // must not linger once a different model is resident (issue #296).
+  useEffect(() => {
+    // eslint-disable-next-line @eslint-react/set-state-in-effect -- intended: a stale warning about the model just switched away from must not linger
+    setAutoPrimeSkipped(null);
+  }, [activeModel]);
+
+  // Once the built-in engine actually reaches `loaded`, a real load has
+  // succeeded since the last skip, so the memory-gate warning no longer
+  // applies (issue #296).
+  useEffect(() => {
+    if (builtinEngineState !== 'loaded') return;
+    // eslint-disable-next-line @eslint-react/set-state-in-effect -- intended: a successful load since the last skip means the warning no longer applies
+    setAutoPrimeSkipped(null);
+  }, [builtinEngineState]);
 
   /** Capability flags for the currently active model, or undefined if not loaded yet. */
   const activeModelCapabilities = activeModel
@@ -3336,6 +3369,29 @@ function App() {
   );
 
   /**
+   * Props for the ambient memory-gate warning strip (issue #296), or `null`
+   * when there is nothing to warn about. Suppressed while the download strip
+   * is showing, same one-strip-at-a-time rule `liveCapabilityConflictMessage`
+   * already applies: the two must never stack or contradict each other, and
+   * an in-flight download already re-fires its own warmup once it lands, at
+   * which point this strip would need to re-resolve anyway. "Switch model"
+   * reuses `handleSwitchModelFromError` with no snapshot: this is plain
+   * picker navigation, not a specific failed chat turn to replay.
+   */
+  const autoPrimeSkippedInfo =
+    autoPrimeSkipped && downloadStripStatus === null
+      ? {
+          modelName:
+            modelDisplayNames[autoPrimeSkipped.modelId] ??
+            autoPrimeSkipped.modelId,
+          requiredBytes: autoPrimeSkipped.requiredBytes,
+          availableBytes: autoPrimeSkipped.availableBytes,
+          onSwitchModel: () => handleSwitchModelFromError(),
+          onDismiss: () => setAutoPrimeSkipped(null),
+        }
+      : null;
+
+  /**
    * "Choose a different model" on the safe-mode recovery screen (issue #296
    * Screen A): dismisses the recovery card and opens the model picker via
    * the same never-toggle mechanism as `handleSwitchModelFromError`. This
@@ -3371,6 +3427,7 @@ function App() {
   useEffect(() => {
     let unlistenVisibility: (() => void) | undefined;
     let unlistenOnboarding: (() => void) | undefined;
+    let unlistenAutoPrimeSkipped: (() => void) | undefined;
 
     const attachListeners = async () => {
       unlistenVisibility = await listen<OverlayVisibilityPayload>(
@@ -3398,7 +3455,21 @@ function App() {
           setOnboardingStage(payload.stage);
         },
       );
-      // Both listeners registered - safe to let Rust decide what to show on launch.
+      // Issue #296 guardrail: the built-in engine's memory gate skipped an
+      // auto-prime. Surfaced as an ambient ask-bar warning (see
+      // `autoPrimeSkipped` above) rather than only the backend's stderr log.
+      unlistenAutoPrimeSkipped = await listen<{
+        model_id: string;
+        required_bytes: number;
+        available_bytes: number;
+      }>('warmup:builtin-skipped', ({ payload }) => {
+        setAutoPrimeSkipped({
+          modelId: payload.model_id,
+          requiredBytes: payload.required_bytes,
+          availableBytes: payload.available_bytes,
+        });
+      });
+      // All listeners registered - safe to let Rust decide what to show on launch.
       await invoke('notify_frontend_ready');
     };
 
@@ -3406,6 +3477,7 @@ function App() {
     return () => {
       unlistenVisibility?.();
       unlistenOnboarding?.();
+      unlistenAutoPrimeSkipped?.();
     };
   }, [handleRestore, replayEntranceAnimation, requestHideOverlay]);
 
@@ -3915,6 +3987,7 @@ function App() {
                               liveCapabilityConflictMessage
                             }
                             downloadStatus={downloadStripStatus}
+                            autoPrimeSkipped={autoPrimeSkippedInfo}
                             hasUsableModel={hasUsableModel}
                             shake={shakeAskBar}
                             maxImages={config.window.maxImages}
