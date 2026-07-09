@@ -799,6 +799,7 @@ pub enum TransportError {
 /// load proceeds exactly as before. Non-builtin routes ignore `policy`.
 ///
 /// [`Target`]: crate::engine::state::Target
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_llm_transport(
     route: ChatRoute,
     db: &crate::history::Database,
