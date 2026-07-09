@@ -347,6 +347,24 @@ mod tests {
     }
 
     #[test]
+    fn available_memory_bytes_reads_a_plausible_live_value() {
+        // Exercises the real mach FFI end to end (coverage-off, so the pure
+        // suite never touches it): the syscall must return a live, plausible
+        // figure, not the 0 that a wrong field/count wiring would yield and
+        // that `assess_fit` would silently treat as "always fits". A running
+        // machine always has some reclaimable pages, and available memory can
+        // never exceed total physical RAM. Guards against a libc/struct
+        // regression that would turn the whole gate into a no-op.
+        let available = available_memory_bytes();
+        assert!(available > 0, "expected some available memory, got 0");
+        let total = super::super::system_ram_bytes();
+        assert!(
+            available <= total,
+            "available {available} should not exceed total RAM {total}",
+        );
+    }
+
+    #[test]
     fn available_from_vm_stats_saturates_instead_of_overflowing() {
         // A pathological snapshot must never wrap into a small number.
         assert_eq!(
