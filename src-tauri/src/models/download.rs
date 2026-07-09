@@ -2407,16 +2407,14 @@ mod tests {
         // to release, so it must never have been added.
         let reservation = DiskReservation::new();
         let free = || Some(100u64);
-        match reservation.check_and_reserve(&free, 10_000, 200) {
+        let outcome = reservation.check_and_reserve(&free, 10_000, 200);
+        assert!(matches!(
+            outcome,
             ReserveOutcome::Refused {
-                required_bytes,
-                available_bytes,
-            } => {
-                assert_eq!(required_bytes, 10_200);
-                assert_eq!(available_bytes, 100);
+                required_bytes: 10_200,
+                available_bytes: 100,
             }
-            ReserveOutcome::Reserved(_) => panic!("should have refused"),
-        }
+        ));
         assert_eq!(reservation.reserved(), 0);
     }
 
@@ -2428,11 +2426,10 @@ mod tests {
         // closes the concurrent-admission race, exercised directly.
         let reservation = DiskReservation::new();
         let free = || Some(10_000u64);
-        // A (7_000) admitted, holds its reservation live.
-        let _guard_a = match reservation.check_and_reserve(&free, 7_000, 200) {
-            ReserveOutcome::Reserved(g) => g,
-            ReserveOutcome::Refused { .. } => panic!("A should have been admitted"),
-        };
+        // A (7_000) admitted; keep `outcome_a` alive so the reservation it owns
+        // stays live for B's check (matching a real in-flight download).
+        let outcome_a = reservation.check_and_reserve(&free, 7_000, 200);
+        assert!(matches!(outcome_a, ReserveOutcome::Reserved(_)));
         assert_eq!(reservation.reserved(), 7_000);
         // B (5_000) refused: 10_000 - 7_000 = 3_000 < 5_000 + 200.
         assert!(matches!(
@@ -2444,6 +2441,9 @@ mod tests {
         ));
         // B reserved nothing, so the ledger still holds only A's bytes.
         assert_eq!(reservation.reserved(), 7_000);
+        // Dropping A's reservation returns the ledger to zero (RAII release).
+        drop(outcome_a);
+        assert_eq!(reservation.reserved(), 0);
     }
 
     #[tokio::test]
@@ -2482,7 +2482,11 @@ mod tests {
         .await;
 
         assert_eq!(result, Ok(()));
-        assert_eq!(reservation.reserved(), 0, "reservation leaked after success");
+        assert_eq!(
+            reservation.reserved(),
+            0,
+            "reservation leaked after success"
+        );
     }
 
     #[tokio::test]
@@ -2574,7 +2578,7 @@ mod tests {
         // B never entered its transfer: no partial for it.
         assert!(store.existing_partial_len(&sha_b).is_none());
         // A installed, and both reservations are released afterward.
-        assert_eq!(std::fs::read(store.blob_path(&sha_a).clone()).unwrap(), body_a);
+        assert_eq!(std::fs::read(store.blob_path(&sha_a)).unwrap(), body_a);
         assert_eq!(reservation.reserved(), 0);
     }
 }
