@@ -160,6 +160,56 @@ pub fn resident_weights_bytes(resident_path: &Path, installed: &[(u64, PathBuf)]
         .map_or(0, |(bytes, _)| *bytes)
 }
 
+/// Available memory adjusted for a resident model that would be evicted before
+/// loading a *different* target: credits the resident model's weight bytes back
+/// (the engine frees the current model before allocating the next), so the
+/// admission gate and any fit estimate shown to the user agree on the same
+/// effective figure.
+///
+/// Returns `available_bytes` unchanged when nothing is resident, or when the
+/// resident model *is* the target itself (no eviction happens, so no credit).
+/// Saturating so an adversarial installed-row size can never wrap the sum into
+/// a small (falsely "insufficient") number.
+///
+/// Callers that fail open on `available_bytes == 0` (an unreadable memory
+/// reader) must apply that check *before* calling this: crediting a resident
+/// model onto a 0 read judges the load against the credit alone, which is
+/// incoherent with "we don't know available memory". This helper does no such
+/// guarding, so both the gate and the fit estimate keep that decision explicit
+/// at their own call sites.
+pub fn effective_available_bytes(
+    available_bytes: u64,
+    resident_path: Option<&Path>,
+    target_path: &Path,
+    installed: &[(u64, PathBuf)],
+) -> u64 {
+    let credit = match resident_path {
+        // Already serving the exact model: reused in place, nothing evicted.
+        Some(path) if path == target_path => 0,
+        // A different model is resident and freed before the new load.
+        Some(path) => resident_weights_bytes(path, installed),
+        None => 0,
+    };
+    available_bytes.saturating_add(credit)
+}
+
+/// True when the engine is already mid-load for `target_path`: state
+/// `"starting"` with a model_path that matches exactly. Such a load was
+/// already admitted by an earlier gate check (e.g. auto-prime at boot, when
+/// more memory was free) and is still streaming in; re-running the gate here
+/// would judge that same admitted load against memory the load itself has
+/// already spent, spuriously blocking a load already underway and on track
+/// to finish (issue #296 race). Deliberately exact-match only: a DIFFERENT
+/// model that happens to be `"starting"` is not treated as any kind of
+/// resident/creditable state here, since an incomplete load's actual freed
+/// footprint on eviction is not well-defined the way a fully-loaded model's
+/// is: that stays exactly as conservative as it is today.
+pub fn is_target_already_loading(state: &str, status_model_path: &str, target_path: &Path) -> bool {
+    state == "starting"
+        && !status_model_path.is_empty()
+        && Path::new(status_model_path) == target_path
+}
+
 /// The admission decision for loading the model at `target_path` (weights
 /// `target_weights_bytes`) given the memory available right now.
 ///
@@ -197,16 +247,17 @@ pub fn evaluate_load_gate(
     if available_bytes == 0 {
         return MemoryGate::Proceed;
     }
-    let credit = match resident_path {
-        // Already serving the exact model: reused in place, nothing to admit.
-        Some(path) if path == target_path => return MemoryGate::Proceed,
-        // A different model is resident and will be evicted first; its memory
-        // returns to the pool before the new load allocates.
-        Some(path) => resident_weights_bytes(path, installed),
-        None => 0,
-    };
+    // Already serving the exact model: reused in place, nothing to admit. Kept
+    // as an early return (skipping all arithmetic) so a model that already fills
+    // memory can never be blocked from continuing to serve.
+    if matches!(resident_path, Some(path) if path == target_path) {
+        return MemoryGate::Proceed;
+    }
     let required_bytes = estimate_required_bytes(target_weights_bytes);
-    let effective_available = available_bytes.saturating_add(credit);
+    // A different resident model (or none) is credited back by the shared
+    // helper, so the gate and the frontend fit estimate use identical math.
+    let effective_available =
+        effective_available_bytes(available_bytes, resident_path, target_path, installed);
     match assess_fit(required_bytes, effective_available) {
         MemoryFit::Insufficient => MemoryGate::Block {
             required_bytes,
@@ -318,14 +369,26 @@ pub fn build_model_fit_estimate(weights_bytes: u64, available_bytes: u64) -> Mod
 /// installed model, or the active provider's model when omitted.
 ///
 /// Thin Tauri wrapper (coverage-off): resolves the model id, reads its weights
-/// size from the manifest, and delegates every decision to the unit-tested
-/// [`build_model_fit_estimate`] and [`available_memory_bytes`].
+/// size from the manifest, and mirrors [`preflight_memory_gate`]'s inputs so the
+/// displayed figures agree with the admission gate's own math. If a *different*
+/// model is currently resident, it is evicted before this target loads, so its
+/// footprint is credited back via [`effective_available_bytes`] (issue #296:
+/// the gate credited but the display did not, so switching models showed a
+/// pessimistic "available" that never reflected the eviction). Every decision
+/// delegates to the unit-tested [`effective_available_bytes`],
+/// [`build_model_fit_estimate`], and [`available_memory_bytes`]; the inline
+/// resident-detection branch matches `preflight_memory_gate` (also coverage-off)
+/// exactly.
+///
+/// [`preflight_memory_gate`]: crate::commands::preflight_memory_gate
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub fn estimate_model_fit(
     model_id: Option<String>,
     db: tauri::State<'_, crate::history::Database>,
     config: tauri::State<'_, parking_lot::RwLock<crate::config::AppConfig>>,
+    engine: tauri::State<'_, crate::engine::runner::EngineHandle>,
+    store: tauri::State<'_, crate::models::storage::ModelStore>,
 ) -> Result<ModelFitEstimate, String> {
     let model_id =
         model_id.unwrap_or_else(|| config.read().inference.active_provider_model().to_string());
@@ -337,10 +400,35 @@ pub fn estimate_model_fit(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "The selected model is not installed.".to_string())?;
     let weights_bytes = model_weights_bytes(&row);
-    Ok(build_model_fit_estimate(
-        weights_bytes,
-        available_memory_bytes(),
-    ))
+    // The target's weights blob path; for a single-file model this equals the
+    // resident `model_path` the engine reports, giving exact credit parity with
+    // the gate. Split models load through a shim path that never matches a blob
+    // path here, which only credits nothing (never a false pass).
+    let target_path = store.blob_path(&row.sha256);
+    // Map every installed row to (weights_bytes, weights blob path) so a resident
+    // model can be matched by path and its footprint credited back, mirroring
+    // `preflight_memory_gate`.
+    let installed: Vec<(u64, PathBuf)> = super::manifest::list(&conn)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| (model_weights_bytes(&r), store.blob_path(&r.sha256)))
+        .collect();
+    // A live "loaded" status names the resident model's path; anything else
+    // means nothing is resident to credit.
+    let status = engine.current_status();
+    let resident = (status.state == "loaded" && !status.model_path.is_empty())
+        .then(|| PathBuf::from(&status.model_path));
+    // Fail open on a failed reader (0) *before* crediting, matching
+    // `evaluate_load_gate`: crediting a resident model onto a 0 read would judge
+    // the estimate against the credit alone, diverging from the gate that
+    // proceeds on an unknown reading.
+    let raw_available = available_memory_bytes();
+    let effective_available = if raw_available == 0 {
+        0
+    } else {
+        effective_available_bytes(raw_available, resident.as_deref(), &target_path, &installed)
+    };
+    Ok(build_model_fit_estimate(weights_bytes, effective_available))
 }
 
 #[cfg(test)]
@@ -499,6 +587,163 @@ mod tests {
             resident_weights_bytes(Path::new("/blobs/shim"), &installed),
             0
         );
+    }
+
+    #[test]
+    fn effective_available_same_model_resident_adds_no_credit() {
+        // The resident model IS the target: no eviction happens, so the raw
+        // available figure is returned unchanged.
+        let target = PathBuf::from("/blobs/target");
+        let installed = vec![(9 * BYTES_PER_GIB, target.clone())];
+        assert_eq!(
+            effective_available_bytes(BYTES_PER_GIB, Some(&target), &target, &installed),
+            BYTES_PER_GIB
+        );
+    }
+
+    #[test]
+    fn effective_available_different_resident_is_credited() {
+        // A different resident model matched by blob path credits its weights
+        // back, since the engine evicts it before the new load allocates.
+        let a = PathBuf::from("/blobs/a");
+        let b = PathBuf::from("/blobs/b");
+        let installed = vec![(14 * BYTES_PER_GIB, a.clone())];
+        assert_eq!(
+            effective_available_bytes(BYTES_PER_GIB, Some(&a), &b, &installed),
+            BYTES_PER_GIB + 14 * BYTES_PER_GIB
+        );
+    }
+
+    #[test]
+    fn effective_available_no_resident_is_unchanged() {
+        // Nothing resident: nothing to credit.
+        let target = PathBuf::from("/blobs/target");
+        let installed = vec![(14 * BYTES_PER_GIB, PathBuf::from("/blobs/a"))];
+        assert_eq!(
+            effective_available_bytes(3 * BYTES_PER_GIB, None, &target, &installed),
+            3 * BYTES_PER_GIB
+        );
+    }
+
+    #[test]
+    fn effective_available_saturates_on_adversarial_credit() {
+        // A pathological installed-row size must never wrap the sum small.
+        let a = PathBuf::from("/blobs/a");
+        let b = PathBuf::from("/blobs/b");
+        let installed = vec![(u64::MAX, a.clone())];
+        assert_eq!(
+            effective_available_bytes(u64::MAX, Some(&a), &b, &installed),
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn effective_available_unknown_resident_path_credits_nothing() {
+        // A resident path absent from `installed` (e.g. a split-shim symlink)
+        // credits nothing, matching `resident_weights_bytes`.
+        let shim = PathBuf::from("/blobs/shim");
+        let target = PathBuf::from("/blobs/target");
+        let installed = vec![(14 * BYTES_PER_GIB, PathBuf::from("/blobs/a"))];
+        assert_eq!(
+            effective_available_bytes(2 * BYTES_PER_GIB, Some(&shim), &target, &installed),
+            2 * BYTES_PER_GIB
+        );
+    }
+
+    #[test]
+    fn estimate_reflects_resident_credit_on_switch() {
+        // Reproduces the issue #296 display gap with the user's live numbers:
+        // gemma (~11.28 GiB weights) is resident and had just answered; the user
+        // switches the active model to gpt-oss 20B (12_109_566_560 B weights) and
+        // the memory reader sees only ~1.7 GB free because gemma still fills VRAM.
+        //
+        // gemma is evicted before gpt-oss loads, so the fit estimate the card
+        // shows must credit gemma's footprint back. This asserts the same
+        // `build_model_fit_estimate` core the command feeds, once WITHOUT credit
+        // (the pre-fix display) and once WITH the shared helper's credit.
+        let gpt_oss_weights: u64 = 12_109_566_560;
+        let gemma_weights: u64 = 12_112_665_600; // ~11.28 GiB
+        let raw_available: u64 = 1_825_361_100; // ~1.7 GB, as displayed
+        let gemma_path = PathBuf::from("/blobs/gemma");
+        let gpt_oss_path = PathBuf::from("/blobs/gpt-oss");
+        let installed = vec![
+            (gemma_weights, gemma_path.clone()),
+            (gpt_oss_weights, gpt_oss_path.clone()),
+        ];
+
+        // Pre-fix: no credit -> the card shows the raw ~1.7 GB and blocks.
+        let without_credit = build_model_fit_estimate(gpt_oss_weights, raw_available);
+        assert_eq!(without_credit.available_bytes, raw_available);
+        assert_eq!(without_credit.verdict, MemoryFit::Insufficient);
+
+        // Post-fix: gemma credited back before gpt-oss loads.
+        let effective =
+            effective_available_bytes(raw_available, Some(&gemma_path), &gpt_oss_path, &installed);
+        let with_credit = build_model_fit_estimate(gpt_oss_weights, effective);
+        // The displayed "available" now reflects the eviction, up by exactly
+        // gemma's weights, matching what the admission gate already computed.
+        assert_eq!(with_credit.available_bytes, raw_available + gemma_weights);
+        assert_eq!(
+            with_credit.available_bytes - without_credit.available_bytes,
+            gemma_weights
+        );
+    }
+
+    #[test]
+    fn is_target_already_loading_starting_matching_path_is_true() {
+        // The engine is mid-load for this exact target: an already-admitted
+        // in-flight load must not be re-judged (issue #296 race).
+        assert!(is_target_already_loading(
+            "starting",
+            "/blobs/target",
+            Path::new("/blobs/target")
+        ));
+    }
+
+    #[test]
+    fn is_target_already_loading_starting_different_path_is_false() {
+        // A different model mid-load is not treated as resident/creditable here.
+        assert!(!is_target_already_loading(
+            "starting",
+            "/blobs/other",
+            Path::new("/blobs/target")
+        ));
+    }
+
+    #[test]
+    fn is_target_already_loading_loaded_matching_path_is_false() {
+        // A fully-loaded matching model is the existing resident-credit path's
+        // job (`evaluate_load_gate`), not this in-flight bypass.
+        assert!(!is_target_already_loading(
+            "loaded",
+            "/blobs/target",
+            Path::new("/blobs/target")
+        ));
+    }
+
+    #[test]
+    fn is_target_already_loading_non_starting_states_are_false() {
+        // Nothing loading: neither a stopped nor a failed engine bypasses.
+        assert!(!is_target_already_loading(
+            "stopped",
+            "/blobs/target",
+            Path::new("/blobs/target")
+        ));
+        assert!(!is_target_already_loading(
+            "failed",
+            "/blobs/target",
+            Path::new("/blobs/target")
+        ));
+    }
+
+    #[test]
+    fn is_target_already_loading_empty_path_is_false() {
+        // A "starting" status with no model_path yet cannot match any target.
+        assert!(!is_target_already_loading(
+            "starting",
+            "",
+            Path::new("/blobs/target")
+        ));
     }
 
     #[test]
