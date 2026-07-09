@@ -10518,7 +10518,7 @@ describe('App', () => {
       ).toBeInTheDocument();
     });
 
-    it('force-primes the model on the two-stage "Load anyway" confirm', async () => {
+    it('force-primes and dismisses the strip synchronously on the two-stage "Acknowledge" confirm', async () => {
       render(<App />);
       await act(async () => {});
       await showOverlay();
@@ -10547,14 +10547,21 @@ describe('App', () => {
         expect.anything(),
       );
 
-      // Stage 2: the confirmed click force-primes past the memory gate, and the
-      // rejection above is caught (the strip stays put, no throw escapes).
-      fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
-      await act(async () => {});
-      expect(invoke).toHaveBeenCalledWith('warm_up_model', { force: true });
+      // Stage 2: the confirmed "Acknowledge" click clears the strip
+      // synchronously (asserted WITHOUT awaiting the invoke round trip) and
+      // fires the force-prime.
+      fireEvent.click(screen.getByRole('button', { name: 'Acknowledge' }));
       expect(
-        screen.getByTestId('auto-prime-skipped-strip'),
-      ).toBeInTheDocument();
+        screen.queryByTestId('auto-prime-skipped-strip'),
+      ).not.toBeInTheDocument();
+      expect(invoke).toHaveBeenCalledWith('warm_up_model', { force: true });
+
+      // Settle the rejected invoke's microtask: the `.catch` swallows it, so no
+      // unhandled rejection escapes and the strip stays dismissed.
+      await act(async () => {});
+      expect(
+        screen.queryByTestId('auto-prime-skipped-strip'),
+      ).not.toBeInTheDocument();
     });
 
     it('clears when the active model changes', async () => {

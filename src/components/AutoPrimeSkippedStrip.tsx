@@ -9,7 +9,7 @@
  * Two-stage confirm: stage 1 states the fit warning and offers "Switch model"
  * (primary) or "Load anyway"; clicking "Load anyway" does NOT load yet, it
  * advances to stage 2, which spells out the consequence of forcing an
- * oversized model into memory and swaps the button roles so "Load anyway"
+ * oversized model into memory and swaps the button roles so "Acknowledge"
  * becomes the deliberate, second-click confirmation. Only that stage-2 click
  * force-loads the model past the gate. There is no dismiss affordance: the
  * strip resolves by switching model or loading anyway, and clears on its own
@@ -50,7 +50,7 @@ export interface AutoPrimeSkippedStripProps {
   onSwitchModel: () => void;
   /**
    * Force-loads the oversized model past the memory gate. Called only on the
-   * stage-2 "Load anyway" click, so this fires as a deliberate, confirmed
+   * stage-2 "Acknowledge" click, so this fires as a deliberate, confirmed
    * action, never on the first click.
    */
   onLoadAnyway: () => void;
@@ -73,7 +73,7 @@ const BUTTON_STYLE_BASE = {
  * Renders the two-stage ambient memory warning. Stage 1 shows the model name
  * and need-vs-available GB figures; stage 2 (after the first "Load anyway"
  * click) replaces that message with the consequence copy and swaps the button
- * roles so a second, deliberate "Load anyway" click confirms the force-load.
+ * roles so a second, deliberate "Acknowledge" click confirms the force-load.
  */
 export function AutoPrimeSkippedStrip({
   modelName,
@@ -93,18 +93,22 @@ export function AutoPrimeSkippedStrip({
     ? INSUFFICIENT_MEMORY_CONSEQUENCE
     : `${modelName} may not fit in memory (~${formatGb(requiredBytes)} GB needed, ~${formatGb(availableBytes)} GB available)`;
 
-  // The "Load anyway" button: advances to the confirm stage on the first
-  // click, force-loads on the second. Primary (ACTION color, rendered first)
-  // only in stage 2, where forcing is the deliberate choice being confirmed.
+  // The confirm/force button: stage 1 reads "Load anyway" (muted, rendered
+  // second) and only advances to the consequence stage; stage 2 reads
+  // "Acknowledge" (primary ACTION color, rendered first), the deliberate second
+  // click that force-loads the model past the memory gate. Only the label,
+  // color, and order change between stages; the plain borderless styling is
+  // identical. The aria-label tracks the visible text.
+  const confirmLabel = confirming ? 'Acknowledge' : 'Load anyway';
   const loadAnyway = (
     <button
       type="button"
-      aria-label="Load anyway"
+      aria-label={confirmLabel}
       onClick={confirming ? onLoadAnyway : () => setConfirming(true)}
       className={BUTTON_CLASS}
       style={{ ...BUTTON_STYLE_BASE, color: confirming ? ACTION : MUTED }}
     >
-      Load anyway
+      {confirmLabel}
     </button>
   );
 
@@ -149,7 +153,7 @@ export function AutoPrimeSkippedStrip({
         />
         <span className="flex-1 leading-snug">{message}</span>
         {/* Role swap by stage: stage 1 leads with "Switch model" (the safe
-            recommendation); stage 2 leads with "Load anyway" (the confirmed
+            recommendation); stage 2 leads with "Acknowledge" (the confirmed
             force). Order and color are the only things that change. */}
         {confirming ? (
           <>

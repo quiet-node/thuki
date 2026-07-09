@@ -103,16 +103,20 @@ describe('AutoPrimeSkippedStrip', () => {
       screen.getByText(INSUFFICIENT_MEMORY_CONSEQUENCE),
     ).toBeInTheDocument();
     expect(onLoadAnyway).not.toHaveBeenCalled();
-    // Both actions are still present, just with roles swapped.
+    // Both actions are still present, with roles swapped: the confirm button
+    // is now labelled "Acknowledge", and stage 1's "Load anyway" is gone.
     expect(
-      screen.getByRole('button', { name: 'Load anyway' }),
+      screen.queryByRole('button', { name: 'Load anyway' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Acknowledge' }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: 'Switch model' }),
     ).toBeInTheDocument();
   });
 
-  it('force-loads on the stage-2 "Load anyway" click', () => {
+  it('force-loads on the stage-2 "Acknowledge" click', () => {
     const onLoadAnyway = vi.fn();
     render(
       <AutoPrimeSkippedStrip
@@ -124,7 +128,7 @@ describe('AutoPrimeSkippedStrip', () => {
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Acknowledge' }));
     expect(onLoadAnyway).toHaveBeenCalledTimes(1);
   });
 

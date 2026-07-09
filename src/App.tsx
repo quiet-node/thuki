@@ -3449,13 +3449,19 @@ function App() {
           // "Load anyway" (issue #296): force-prime the model past the memory
           // gate. `force: true` routes through the SAME `preflight_memory_gate`
           // decision the auto-prime runs, admitting the load the user just
-          // consented to. The strip clears on its own when the engine reaches
-          // `loaded` (see the `engine:status` effect), so no manual clear here
-          // - manual clearing would hide a rejected force. `invoke` can reject
-          // (IO boundary), so the rejection is swallowed rather than left
-          // unhandled; a failed force surfaces via the normal engine-error path
-          // on the user's next send.
+          // consented to.
           onLoadAnyway: () => {
+            // why: the user has consented, so the affordance is dismissed
+            // optimistically - clear the ambient warning synchronously BEFORE
+            // firing the IPC so the strip disappears on the click, with no wait
+            // on the `warm_up_model` round trip or the `engine:status` `loaded`
+            // event. The `engine:status` clearing effect stays in place and is
+            // now an idempotent no-op for this path. A load failure surfaces
+            // through the normal engine error paths on the user's next send,
+            // never by resurrecting this strip. `invoke` can reject (IO
+            // boundary), so the rejection is swallowed rather than left
+            // unhandled.
+            setAutoPrimeSkipped(null);
             void invoke('warm_up_model', { force: true }).catch(() => {});
           },
         }
