@@ -1053,6 +1053,43 @@ mod tests {
     }
 
     #[test]
+    fn decide_load_gate_forced_admits_where_unforced_blocks() {
+        // The consented "Load anyway" force (issue #296) must be admitted
+        // through the SAME gate decision the ambient warm-up uses: the exact
+        // oversized inputs that block unforced (`forced=false` -> Block) proceed
+        // when forced (`forced=true` -> Proceed), with no separate bypass path.
+        let target = PathBuf::from("/blobs/target");
+        let unforced = decide_load_gate(
+            "loaded",
+            "/blobs/other",
+            20 * BYTES_PER_GIB,
+            10 * BYTES_PER_GIB,
+            None,
+            &target,
+            &[],
+            false,
+        );
+        assert_eq!(
+            unforced,
+            MemoryGate::Block {
+                required_bytes: estimate_required_bytes(20 * BYTES_PER_GIB),
+                available_bytes: 10 * BYTES_PER_GIB,
+            }
+        );
+        let forced = decide_load_gate(
+            "loaded",
+            "/blobs/other",
+            20 * BYTES_PER_GIB,
+            10 * BYTES_PER_GIB,
+            None,
+            &target,
+            &[],
+            true,
+        );
+        assert_eq!(forced, MemoryGate::Proceed);
+    }
+
+    #[test]
     fn estimate_would_block_true_for_oversized_cold_load() {
         // 20 GiB model, 10 GiB available, nothing resident: the gate blocks and
         // `would_block` reports it.

@@ -46,6 +46,16 @@ const barColors: Record<EngineErrorKind, string> = {
   Other: 'rgba(255,255,255,0.2)',
 };
 
+/**
+ * The consequence copy shown when a model may not fit in available memory
+ * (issue #296): loading it anyway risks memory pressure severe enough to freeze
+ * the machine. Exported so the ambient `AutoPrimeSkippedStrip` confirm step and
+ * this in-chat `InsufficientMemory` card render byte-identical wording from one
+ * source, rather than drifting two copies of a safety warning.
+ */
+export const INSUFFICIENT_MEMORY_CONSEQUENCE =
+  'To fit this model, your Mac may compress memory, which can slow things down or, in extreme cases, freeze the entire machine and require a reboot.';
+
 /** Bytes per gigabyte, matching the Rust gate's `1u64 << 30` GiB divisor. */
 const BYTES_PER_GB = 1024 ** 3;
 
@@ -140,9 +150,7 @@ export function ErrorCard({
             {`Estimated need: ~${formatGb(requiredBytes)} GB. Currently available: ~${formatGb(availableBytes)} GB.`}
           </p>
           <p className="text-[11.5px] text-white/[0.38] leading-snug mt-0.5">
-            To fit this model, your Mac may compress memory, which can slow
-            things down or, in extreme cases, freeze the entire machine and
-            require a reboot.
+            {INSUFFICIENT_MEMORY_CONSEQUENCE}
           </p>
           {(onSwitchModel || onLoadAnyway) && (
             <div className="flex items-center gap-2 mt-[11px]">

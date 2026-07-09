@@ -10518,7 +10518,7 @@ describe('App', () => {
       ).toBeInTheDocument();
     });
 
-    it('clears when the strip is dismissed', async () => {
+    it('force-primes the model on the two-stage "Load anyway" confirm', async () => {
       render(<App />);
       await act(async () => {});
       await showOverlay();
@@ -10529,14 +10529,32 @@ describe('App', () => {
         screen.getByTestId('auto-prime-skipped-strip'),
       ).toBeInTheDocument();
 
-      fireEvent.click(
-        screen.getByRole('button', { name: 'Dismiss memory warning' }),
-      );
-      await act(async () => {});
+      invoke.mockClear();
+      // Reject the force-prime so the IO-boundary `.catch` on the invoke runs:
+      // a rejected warm-up must be swallowed, never an unhandled rejection.
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'warm_up_model') {
+          throw new Error('warm-up rejected');
+        }
+      });
 
+      // Stage 1 -> stage 2: the first click reveals the consequence copy and
+      // must NOT fire the force-prime yet.
+      fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
+      await act(async () => {});
+      expect(invoke).not.toHaveBeenCalledWith(
+        'warm_up_model',
+        expect.anything(),
+      );
+
+      // Stage 2: the confirmed click force-primes past the memory gate, and the
+      // rejection above is caught (the strip stays put, no throw escapes).
+      fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
+      await act(async () => {});
+      expect(invoke).toHaveBeenCalledWith('warm_up_model', { force: true });
       expect(
-        screen.queryByTestId('auto-prime-skipped-strip'),
-      ).not.toBeInTheDocument();
+        screen.getByTestId('auto-prime-skipped-strip'),
+      ).toBeInTheDocument();
     });
 
     it('clears when the active model changes', async () => {

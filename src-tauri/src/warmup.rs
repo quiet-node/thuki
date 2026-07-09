@@ -464,6 +464,12 @@ pub(crate) fn plan_builtin_warmup(
 /// up ungated while this same logic stayed correctly gated in `warm_up_model`,
 /// re-exposing the ungated auto-load that froze the machine.
 ///
+/// `force` bypasses the block via the SAME `preflight_memory_gate` decision the
+/// unforced path runs (it forwards to `decide_load_gate`'s `forced` arm), never
+/// a second parallel bypass: it is the user's consented "Load anyway" from the
+/// ambient warning strip. Automatic triggers (overlay-show) always pass
+/// `false`; only a deliberate user action passes `true`.
+///
 /// Coverage-off: the gate decision is delegated to the pure, tested
 /// [`plan_builtin_warmup`]; everything here is I/O (the DB lock, the
 /// coverage-off `preflight_memory_gate`, and the async `warm_builtin` spawn).
@@ -478,6 +484,7 @@ pub(crate) fn spawn_gated_builtin_warmup(
     num_ctx: u32,
     system_prompt: String,
     client: reqwest::Client,
+    force: bool,
 ) {
     if !builtin_should_warm(&model_id) {
         return;
@@ -492,15 +499,18 @@ pub(crate) fn spawn_gated_builtin_warmup(
             Err(poisoned) => poisoned.into_inner(),
         };
         crate::commands::builtin_target(&conn, store, &model_id, num_ctx).map(|target| {
-            // Never force on an automatic load: an oversized model must never
-            // be shoved into memory without a user action (issue #296).
+            // why: `force` routes straight into the existing gate decision's
+            // `forced` arm. An automatic trigger passes `false` so an oversized
+            // model is never shoved into memory without a user action; the
+            // user's "Load anyway" passes `true` to admit the load it just
+            // consented to (issue #296).
             let gate = crate::commands::preflight_memory_gate(
                 &conn,
                 store,
                 &engine,
                 &model_id,
                 &target.model_path,
-                false,
+                force,
             );
             (target, gate)
         })
@@ -540,6 +550,16 @@ pub(crate) fn spawn_gated_builtin_warmup(
     }
 }
 
+/// Pre-warms the active provider's model so the user's first message skips the
+/// cold prefill. The Ollama arm fires a keep-warm request; the built-in arm
+/// runs the issue #296 memory gate before loading.
+///
+/// `force` is the built-in "Load anyway": `Some(true)` admits an oversized
+/// model past the memory gate (the user's consented override from the ambient
+/// warning strip), while `None`/`Some(false)` keeps the default gated behavior
+/// unchanged. Optional so the fire-and-forget keystroke warm can keep invoking
+/// with no argument object; a missing key deserializes to `None`. The Ollama
+/// arm has no such gate, so it ignores `force` entirely.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::too_many_arguments)]
@@ -552,7 +572,9 @@ pub fn warm_up_model(
     engine: tauri::State<crate::engine::runner::EngineHandle>,
     db: tauri::State<crate::history::Database>,
     store: tauri::State<crate::models::storage::ModelStore>,
+    force: Option<bool>,
 ) {
+    let force = force.unwrap_or(false);
     let kind = config.read().inference.active_provider_kind().to_string();
     match kind.as_str() {
         PROVIDER_KIND_OLLAMA => {
@@ -603,6 +625,7 @@ pub fn warm_up_model(
                 num_ctx,
                 system_prompt,
                 client.inner().clone(),
+                force,
             );
         }
         _ => {}

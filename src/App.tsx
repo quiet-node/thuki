@@ -3446,7 +3446,18 @@ function App() {
           requiredBytes: autoPrimeSkipped.requiredBytes,
           availableBytes: autoPrimeSkipped.availableBytes,
           onSwitchModel: () => handleSwitchModelFromError(),
-          onDismiss: () => setAutoPrimeSkipped(null),
+          // "Load anyway" (issue #296): force-prime the model past the memory
+          // gate. `force: true` routes through the SAME `preflight_memory_gate`
+          // decision the auto-prime runs, admitting the load the user just
+          // consented to. The strip clears on its own when the engine reaches
+          // `loaded` (see the `engine:status` effect), so no manual clear here
+          // - manual clearing would hide a rejected force. `invoke` can reject
+          // (IO boundary), so the rejection is swallowed rather than left
+          // unhandled; a failed force surfaces via the normal engine-error path
+          // on the user's next send.
+          onLoadAnyway: () => {
+            void invoke('warm_up_model', { force: true }).catch(() => {});
+          },
         }
       : null;
 

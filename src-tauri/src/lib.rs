@@ -653,6 +653,10 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
             let client = app_handle.state::<reqwest::Client>().inner().clone();
             let store = app_handle.state::<models::storage::ModelStore>();
             let db = app_handle.state::<history::Database>();
+            // why: `force = false`. Overlay-show is an automatic load with no
+            // user action, so an oversized model must never be shoved into
+            // memory here; only the user's explicit "Load anyway" (through the
+            // `warm_up_model` command) passes `true` (issue #296).
             warmup::spawn_gated_builtin_warmup(
                 app_handle.clone(),
                 engine,
@@ -662,6 +666,7 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
                 num_ctx,
                 system_prompt,
                 client,
+                false,
             );
         }
         _ => {}

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { AutoPrimeSkippedStrip } from '../AutoPrimeSkippedStrip';
+import { INSUFFICIENT_MEMORY_CONSEQUENCE } from '../ErrorCard';
 
 describe('AutoPrimeSkippedStrip', () => {
   it('shows the model name and need-vs-available GB figures', () => {
@@ -10,7 +11,7 @@ describe('AutoPrimeSkippedStrip', () => {
         requiredBytes={8 * 1024 ** 3}
         availableBytes={4 * 1024 ** 3}
         onSwitchModel={vi.fn()}
-        onDismiss={vi.fn()}
+        onLoadAnyway={vi.fn()}
       />,
     );
     expect(
@@ -27,7 +28,7 @@ describe('AutoPrimeSkippedStrip', () => {
         requiredBytes={1}
         availableBytes={1}
         onSwitchModel={vi.fn()}
-        onDismiss={vi.fn()}
+        onLoadAnyway={vi.fn()}
       />,
     );
     expect(screen.getByTestId('auto-prime-skipped-strip')).toHaveAttribute(
@@ -43,7 +44,7 @@ describe('AutoPrimeSkippedStrip', () => {
         requiredBytes={1}
         availableBytes={1}
         onSwitchModel={vi.fn()}
-        onDismiss={vi.fn()}
+        onLoadAnyway={vi.fn()}
       />,
     );
     const edgeFill = container.querySelector(
@@ -52,7 +53,25 @@ describe('AutoPrimeSkippedStrip', () => {
     expect(edgeFill).toHaveStyle({ background: '#f59e0b' });
   });
 
-  it('calls onSwitchModel when "Switch model" is clicked', () => {
+  it('shows both actions in stage 1', () => {
+    render(
+      <AutoPrimeSkippedStrip
+        modelName="Qwen3.5 9B"
+        requiredBytes={1}
+        availableBytes={1}
+        onSwitchModel={vi.fn()}
+        onLoadAnyway={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Switch model' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Load anyway' }),
+    ).toBeInTheDocument();
+  });
+
+  it('calls onSwitchModel when stage-1 "Switch model" is clicked', () => {
     const onSwitchModel = vi.fn();
     render(
       <AutoPrimeSkippedStrip
@@ -60,27 +79,68 @@ describe('AutoPrimeSkippedStrip', () => {
         requiredBytes={1}
         availableBytes={1}
         onSwitchModel={onSwitchModel}
-        onDismiss={vi.fn()}
+        onLoadAnyway={vi.fn()}
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
     expect(onSwitchModel).toHaveBeenCalledTimes(1);
   });
 
-  it('calls onDismiss when "Dismiss" is clicked', () => {
-    const onDismiss = vi.fn();
+  it('advances to the consequence stage on the first "Load anyway" click without loading', () => {
+    const onLoadAnyway = vi.fn();
     render(
       <AutoPrimeSkippedStrip
         modelName="Qwen3.5 9B"
         requiredBytes={1}
         availableBytes={1}
         onSwitchModel={vi.fn()}
-        onDismiss={onDismiss}
+        onLoadAnyway={onLoadAnyway}
       />,
     );
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Dismiss memory warning' }),
+    fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
+    // Stage 2: the consequence copy is shown and the load has NOT fired yet.
+    expect(
+      screen.getByText(INSUFFICIENT_MEMORY_CONSEQUENCE),
+    ).toBeInTheDocument();
+    expect(onLoadAnyway).not.toHaveBeenCalled();
+    // Both actions are still present, just with roles swapped.
+    expect(
+      screen.getByRole('button', { name: 'Load anyway' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Switch model' }),
+    ).toBeInTheDocument();
+  });
+
+  it('force-loads on the stage-2 "Load anyway" click', () => {
+    const onLoadAnyway = vi.fn();
+    render(
+      <AutoPrimeSkippedStrip
+        modelName="Qwen3.5 9B"
+        requiredBytes={1}
+        availableBytes={1}
+        onSwitchModel={vi.fn()}
+        onLoadAnyway={onLoadAnyway}
+      />,
     );
-    expect(onDismiss).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
+    expect(onLoadAnyway).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls onSwitchModel from the stage-2 "Switch model" action', () => {
+    const onSwitchModel = vi.fn();
+    render(
+      <AutoPrimeSkippedStrip
+        modelName="Qwen3.5 9B"
+        requiredBytes={1}
+        availableBytes={1}
+        onSwitchModel={onSwitchModel}
+        onLoadAnyway={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+    expect(onSwitchModel).toHaveBeenCalledTimes(1);
   });
 });
