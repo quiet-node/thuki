@@ -640,37 +640,29 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
                     cfg.prompt.resolved_system.clone(),
                 )
             };
-            if warmup::builtin_should_warm(&model_id) {
-                let store = app_handle.state::<models::storage::ModelStore>();
-                let db = app_handle.state::<history::Database>();
-                // Resolve the manifest row to an engine Target inside a scope so
-                // the connection guard drops before the spawned load. A poisoned
-                // lock is recovered: an unrelated panic does not invalidate it.
-                let target = {
-                    let conn = match db.0.lock() {
-                        Ok(conn) => conn,
-                        Err(poisoned) => poisoned.into_inner(),
-                    };
-                    crate::commands::builtin_target(&conn, &store, &model_id, num_ctx)
-                };
-                // A missing/uninstalled model yields an Err; warmup is
-                // best-effort, so just skip rather than surfacing anything.
-                if let Ok(target) = target {
-                    let engine = app_handle
-                        .state::<engine::runner::EngineHandle>()
-                        .inner()
-                        .clone();
-                    let client = app_handle.state::<reqwest::Client>().inner().clone();
-                    tauri::async_runtime::spawn(warmup::warm_builtin(
-                        app_handle.clone(),
-                        engine,
-                        target,
-                        model_id,
-                        system_prompt,
-                        client,
-                    ));
-                }
-            }
+            // Run the pre-load memory gate (issue #296) before this
+            // no-user-action auto-load: the shared helper resolves the target,
+            // consults `preflight_memory_gate`, and spawns the warmup only when
+            // it clears. This is the same gated path the `warm_up_model`
+            // command uses, so the overlay-show trigger can never again slip
+            // an oversized model into memory ungated.
+            let engine = app_handle
+                .state::<engine::runner::EngineHandle>()
+                .inner()
+                .clone();
+            let client = app_handle.state::<reqwest::Client>().inner().clone();
+            let store = app_handle.state::<models::storage::ModelStore>();
+            let db = app_handle.state::<history::Database>();
+            warmup::spawn_gated_builtin_warmup(
+                app_handle.clone(),
+                engine,
+                &store,
+                &db,
+                model_id,
+                num_ctx,
+                system_prompt,
+                client,
+            );
         }
         _ => {}
     }
