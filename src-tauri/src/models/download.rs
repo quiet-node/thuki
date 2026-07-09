@@ -2328,6 +2328,9 @@ mod tests {
         assert!(!store.blob_path(&sha).exists());
         // The permit was released despite the abort.
         assert_eq!(permits.available_permits(), 1);
+        // The disk reservation (made at preflight, held through the transfer)
+        // was released on this Err exit path too: the ledger is back to zero.
+        assert_eq!(reservation.reserved(), 0);
     }
 
     // ── Reservation-aware admission (concurrent-download TOCTOU) ──────────────
@@ -2486,6 +2489,52 @@ mod tests {
             reservation.reserved(),
             0,
             "reservation leaked after success"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_download_releases_reservation_after_failure() {
+        // A download admitted (reservation made) that then fails mid-run must
+        // still release its reservation: the RAII guard runs on the Err exit
+        // path exactly as on success. An HTTP 500 stands in for the whole
+        // failure class (cancel-after-admission drops through the same
+        // `_reservation` scope). Free space is ample so the failure is the
+        // request, not the disk check.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/w"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let (_dir, store) = make_store();
+        let spec = spec_for(format!("{}/w", server.uri()), "w.gguf", b"never served");
+        let permits = Semaphore::new(1);
+        let reservation = DiskReservation::new();
+        let free = || Some(10_000_000u64);
+        let disk = DiskGuard {
+            free_bytes: &free,
+            headroom_bytes: 1000,
+            recheck_interval_bytes: u64::MAX,
+            reservation: &reservation,
+        };
+        let (_events, emit) = collector();
+
+        let result = run_download(
+            &[spec],
+            &store,
+            &reqwest::Client::new(),
+            CancellationToken::new(),
+            &permits,
+            &disk,
+            emit,
+        )
+        .await;
+
+        assert_eq!(result, Err(()));
+        assert_eq!(
+            reservation.reserved(),
+            0,
+            "reservation leaked after failure"
         );
     }
 
