@@ -347,8 +347,9 @@ describe('StaffPicksPane', () => {
     expect(
       within(gemmaRow).getByText('Waiting for a download slot…'),
     ).toBeInTheDocument();
-    // First in line: no badge (position 1 is implicit).
-    expect(within(gemmaRow).queryByText(/in queue/)).not.toBeInTheDocument();
+    // More than one row is queued, so every row shows its own position,
+    // including the first: a lone queued row is the only case with no badge.
+    expect(within(gemmaRow).getByText(/#1 in queue/)).toBeInTheDocument();
     expect(
       within(rowFor('Qwen3.5 9B')).getByText(/#2 in queue/),
     ).toBeInTheDocument();

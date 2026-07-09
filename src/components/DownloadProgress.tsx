@@ -45,11 +45,18 @@ export interface DownloadProgressProps {
    */
   partLabel?: string | null;
   /**
-   * This item's 1-indexed position among all currently-queued downloads.
-   * Undefined or 1 omits the badge (the first-in-line item reads fine as just
-   * "Waiting for a slot"); #2 and later show the number.
+   * This item's 1-indexed position among all currently-queued downloads. Only
+   * rendered as a badge when {@link queuedTotal} is greater than 1; paired
+   * with `queuedTotal` to decide whether the badge shows at all.
    */
   queuePosition?: number;
+  /**
+   * Count of downloads currently waiting for a slot. The badge renders only
+   * when this is greater than 1: a lone queued item has no other position to
+   * be numbered against, so "Waiting for a download slot…" reads fine on its
+   * own. Two or more queued items number every one of them, starting at #1.
+   */
+  queuedTotal?: number;
   onConfirm: () => void;
   onCancelConfirm: () => void;
   onCancel: () => void;
@@ -169,6 +176,7 @@ export function DownloadProgress({
   speedBytesPerSec = null,
   partLabel = null,
   queuePosition,
+  queuedTotal,
   confirmInfo,
   onConfirm,
   onCancelConfirm,
@@ -182,7 +190,11 @@ export function DownloadProgress({
         <Hairline edge={<Edge indeterminate tone="accent" />}>
           <StatusText>
             Waiting for a download slot…
-            {queuePosition !== undefined && queuePosition >= 2 ? (
+            {/* A lone queued item has nothing to be numbered against; only
+                show the badge once there is an actual ordering to communicate. */}
+            {queuePosition !== undefined &&
+            queuedTotal !== undefined &&
+            queuedTotal > 1 ? (
               <span style={FIGURES_STYLE}> · #{queuePosition} in queue</span>
             ) : null}
           </StatusText>

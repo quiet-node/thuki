@@ -391,6 +391,7 @@ describe('DownloadsContext', () => {
 
     // None is queued yet (all still `downloading`), so none has a position.
     expect(result.current.queuePosition(STAFF_KEY)).toBeUndefined();
+    expect(result.current.queuedTotal).toBe(0);
 
     act(() => staffChannel.simulateMessage({ type: 'Queued' }));
     act(() => repoChannel.simulateMessage({ type: 'Queued' }));
@@ -406,6 +407,8 @@ describe('DownloadsContext', () => {
     expect(
       result.current.queuePosition('staff:does-not-exist'),
     ).toBeUndefined();
+    // Derived from the same source as queuePosition, so the two never disagree.
+    expect(result.current.queuedTotal).toBe(3);
   });
 });
 
@@ -701,5 +704,8 @@ describe('DownloadsContext cross-window', () => {
     expect(
       result.current.queuePosition('staff:does-not-exist'),
     ).toBeUndefined();
+    // The downloading remote entry does not consume a queue slot; the total
+    // counts only the one actually-queued entry.
+    expect(result.current.queuedTotal).toBe(1);
   });
 });

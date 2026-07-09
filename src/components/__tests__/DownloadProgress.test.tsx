@@ -132,19 +132,44 @@ describe('DownloadProgress', () => {
       expect(onCancel).toHaveBeenCalledTimes(1);
     });
 
-    it('omits the queue badge at position 1 (first in line)', () => {
-      renderProgress({ phase: 'queued' }, { queuePosition: 1 });
+    it('omits the badge when exactly one item is queued', () => {
+      renderProgress({ phase: 'queued' }, { queuePosition: 1, queuedTotal: 1 });
+      expect(
+        screen.getByText('Waiting for a download slot…'),
+      ).toBeInTheDocument();
       expect(screen.queryByText(/in queue/)).not.toBeInTheDocument();
     });
 
-    it('shows the queue badge with its own position from position 2 onward', () => {
-      renderProgress({ phase: 'queued' }, { queuePosition: 2 });
+    it('shows badges on every item, including #1, once more than one is queued', () => {
+      renderProgress({ phase: 'queued' }, { queuePosition: 1, queuedTotal: 2 });
+      expect(screen.getByText(/#1 in queue/)).toBeInTheDocument();
+    });
+
+    it('shows the boundary at >1 rather than >=2: two queued items both get badges', () => {
+      renderProgress({ phase: 'queued' }, { queuePosition: 2, queuedTotal: 2 });
       expect(screen.getByText(/#2 in queue/)).toBeInTheDocument();
     });
 
-    it('shows a distinct position for a later row (#3), not a repeated constant', () => {
-      renderProgress({ phase: 'queued' }, { queuePosition: 3 });
-      expect(screen.getByText(/#3 in queue/)).toBeInTheDocument();
+    it('numbers three queued items #1, #2, #3 in FIFO order', () => {
+      const first = renderProgress(
+        { phase: 'queued' },
+        { queuePosition: 1, queuedTotal: 3 },
+      );
+      expect(first.getByText(/#1 in queue/)).toBeInTheDocument();
+      first.unmount();
+
+      const second = renderProgress(
+        { phase: 'queued' },
+        { queuePosition: 2, queuedTotal: 3 },
+      );
+      expect(second.getByText(/#2 in queue/)).toBeInTheDocument();
+      second.unmount();
+
+      const third = renderProgress(
+        { phase: 'queued' },
+        { queuePosition: 3, queuedTotal: 3 },
+      );
+      expect(third.getByText(/#3 in queue/)).toBeInTheDocument();
     });
   });
 

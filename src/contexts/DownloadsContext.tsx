@@ -175,6 +175,14 @@ export interface DownloadsContextValue {
    * queued. Feeds a row's own "#N in queue" badge while it is queued.
    */
   queuePosition: (key: string) => number | undefined;
+  /**
+   * Count of downloads currently in the `queued` phase, across both `remote`
+   * and `entries`. Derived from the same ordering as {@link queuePosition} so
+   * the two can never disagree; a row uses this alongside its own position to
+   * decide whether the "#N in queue" badge is worth showing (a lone queued
+   * item has no other position to be numbered against).
+   */
+  queuedTotal: number;
   /** Cancel the download for `key`; the partial is kept for a later resume. */
   cancel: (key: string) => void;
   /** Retry the failed download for `key` (replays its original command). */
@@ -345,23 +353,31 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
     void invoke('cancel_model_download', { key });
   }, []);
 
+  // Keys currently in the `queued` phase, in FIFO order: `remote` (other
+  // windows) before local `entries`, matching the two maps' natural iteration
+  // order since neither ever reorders an existing key. The single source both
+  // `queuePosition` and `queuedTotal` derive from, so the two can never
+  // disagree.
+  const queuedKeys = useMemo<string[]>(() => {
+    const keys: string[] = [];
+    for (const [k, entry] of remote) {
+      if (entry.acc.state.phase === 'queued') keys.push(k);
+    }
+    for (const [k, entry] of entries) {
+      if (entry.acc.state.phase === 'queued') keys.push(k);
+    }
+    return keys;
+  }, [entries, remote]);
+
   const queuePosition = useCallback(
     (key: string): number | undefined => {
-      let n = 0;
-      for (const [k, entry] of remote) {
-        if (entry.acc.state.phase !== 'queued') continue;
-        n += 1;
-        if (k === key) return n;
-      }
-      for (const [k, entry] of entries) {
-        if (entry.acc.state.phase !== 'queued') continue;
-        n += 1;
-        if (k === key) return n;
-      }
-      return undefined;
+      const index = queuedKeys.indexOf(key);
+      return index === -1 ? undefined : index + 1;
     },
-    [entries, remote],
+    [queuedKeys],
   );
+
+  const queuedTotal = queuedKeys.length;
 
   const retry = useCallback(
     (key: string) => {
@@ -483,6 +499,7 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
       startRepoDownload,
       cancel,
       queuePosition,
+      queuedTotal,
       retry,
       discard,
       clear,
@@ -496,6 +513,7 @@ export function DownloadsProvider({ children }: { children: ReactNode }) {
       startRepoDownload,
       cancel,
       queuePosition,
+      queuedTotal,
       retry,
       discard,
       clear,
