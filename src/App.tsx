@@ -3297,15 +3297,42 @@ function App() {
    * snapshot is consumed unconditionally up front - it is only replayed once
    * the switch genuinely succeeds, so an abandoned `InsufficientMemory` turn
    * gets replayed against the newly-picked model instead of sitting stale.
+   *
+   * When nothing is pending, this also covers picking a model through the
+   * general ask-bar picker (not the error card's own "Switch model" button,
+   * which is the only thing that arms `pendingSwitchRetryRef`): if the
+   * conversation's own last turn is still a stale, unresolved
+   * `InsufficientMemory` failure, this pick resolves it too instead of
+   * leaving the card sitting there with no way forward.
+   *
+   * Either way, the retry is replayed with `model` (this callback's own,
+   * just-confirmed argument) passed explicitly as the override, not left to
+   * fall back to `activeModel`. `setActiveModel`'s state update is not yet
+   * visible to any closure captured before this `.then` fires, so an
+   * implicit `activeModel` read here would still see the pre-switch model
+   * and mislabel the retried turn.
    */
   const handleModelSelect = useCallback(
     (model: string) => {
       setIsModelPickerOpen(false);
-      const pendingRetry = pendingSwitchRetryRef.current;
+      let pendingRetry = pendingSwitchRetryRef.current;
       pendingSwitchRetryRef.current = undefined;
+      if (!pendingRetry) {
+        // why: general picker never arms pendingSwitchRetryRef. Fall back to
+        // the conversation's own last message only, never reach further back
+        // into history for an older, already-abandoned failure. `errorKind`
+        // is only ever set on assistant messages, so no separate role check
+        // is needed; a missing `retrySnapshot` just leaves `pendingRetry`
+        // undefined, which the `if (pendingRetry)` below already guards.
+        const lastMessages = messagesRef.current;
+        const lastMessage = lastMessages[lastMessages.length - 1];
+        if (lastMessage?.errorKind === 'InsufficientMemory') {
+          pendingRetry = lastMessage.retrySnapshot;
+        }
+      }
       void setActiveModel(model)
         .then(() => {
-          if (pendingRetry) retryMessage(pendingRetry);
+          if (pendingRetry) retryMessage(pendingRetry, model);
         })
         .catch(() => {
           void refreshModels();

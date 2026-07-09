@@ -142,9 +142,11 @@ interface ChatRetrySnapshot {
   promptOverride?: string;
   displayImagePaths?: string[];
   replaceCommand?: string;
-  /** Ids of the failed turn's own user/assistant pair, so a retry can
-   *  remove the stale bubble + warning card before appending the fresh
-   *  pair the replay produces (issue #296). */
+  /** Ids of the failed turn's own user/assistant pair, so a retry can reuse
+   *  them: leaving the user bubble untouched and resetting the assistant
+   *  message in place rather than appending a duplicate pair. Reusing the id
+   *  keeps React from remounting the bubble (which would replay its entrance
+   *  animation), issue #296. */
   userMessageId: string;
   assistantMessageId: string;
 }
@@ -155,14 +157,41 @@ interface SearchRetrySnapshot {
   query: string;
   displayContent?: string;
   quotedText?: string;
-  /** Ids of the failed turn's own user/assistant pair, so a retry can
-   *  remove the stale bubble + warning card before appending the fresh
-   *  pair the replay produces (issue #296). */
+  /** Ids of the failed turn's own user/assistant pair, so a retry can reuse
+   *  them: leaving the user bubble untouched and resetting the assistant
+   *  message in place rather than appending a duplicate pair. Reusing the id
+   *  keeps React from remounting the bubble (which would replay its entrance
+   *  animation), issue #296. */
   userMessageId: string;
   assistantMessageId: string;
 }
 
 export type RetrySnapshot = ChatRetrySnapshot | SearchRetrySnapshot;
+
+/**
+ * Controls how {@link runChatTurn} and {@link runSearchTurn} establish the
+ * user/assistant message pair for a turn.
+ *
+ * - `append`: mint fresh ids and append a new pair. The normal, hot path for
+ *   every first-time turn.
+ * - `reuse`: reuse a failed turn's ids and reset its assistant message in
+ *   place (issue #296). Reusing the id keeps React from unmounting +
+ *   remounting the bubble, which would replay ChatBubble's entrance animation
+ *   and flash the whole thread on every retry. The user message is
+ *   byte-identical on a retry, so it is left untouched.
+ */
+type TurnTarget =
+  | { mode: 'append' }
+  | {
+      mode: 'reuse';
+      userMessageId: string;
+      assistantMessageId: string;
+      /** Model name to pin on the reset assistant message. Lets a retry
+       *  triggered by a freshly-picked model attribute the correct name even
+       *  before the `activeModel` closure has observed the new value (a React
+       *  state-update timing race). Falls back to `activeModel` when omitted. */
+      modelOverride?: string;
+    };
 
 interface ActiveGeneration {
   id: number;
@@ -329,23 +358,38 @@ export function useModel(
   }, []);
 
   /**
-   * Submits a message to the Ollama backend and starts the streaming response.
+   * Core chat-turn driver shared by the public {@link ask} wrapper and the
+   * retry path. Establishes the user/assistant pair per `target`, then runs
+   * exactly one copy of the guard-and-streaming logic. The single copy is
+   * deliberate: duplicated safety-critical streaming logic is the class of bug
+   * that produced issue #296.
    *
    * The backend manages conversation history. Only the new user message is sent.
+   *
+   * @param displayContent Text shown in the user bubble.
+   * @param quotedText Selected host-app text shown above the bubble, if any.
+   * @param imagePaths Absolute image paths sent to the model, if any.
+   * @param think When true, runs the turn as a `/think` (reasoning) turn.
+   * @param promptOverride Text sent to the model in place of `displayContent`.
+   * @param displayImagePaths Image paths shown in the bubble when they differ
+   *   from the ones sent to the model.
+   * @param replaceCommand Trigger of the replaceable command (`/rewrite` or
+   *   `/refine`) that produced this turn, if any.
+   * @param allowOversized Bypasses the pre-load memory gate (issue #296).
+   * @param target How to establish the message pair: append a fresh pair or
+   *   reuse a failed turn's ids and reset its assistant message in place.
    */
-  const ask = useCallback(
+  const runChatTurn = useCallback(
     async (
       displayContent: string,
-      quotedText?: string,
-      imagePaths?: string[],
-      think?: boolean,
-      promptOverride?: string,
-      displayImagePaths?: string[],
-      replaceCommand?: string,
-      /** Bypasses the pre-load memory gate (issue #296). Set by
-       *  `retryMessageWithOversized` when the user clicks "Load anyway";
-       *  omitted by every normal caller. */
-      allowOversized?: boolean,
+      quotedText: string | undefined,
+      imagePaths: string[] | undefined,
+      think: boolean | undefined,
+      promptOverride: string | undefined,
+      displayImagePaths: string[] | undefined,
+      replaceCommand: string | undefined,
+      allowOversized: boolean | undefined,
+      target: TurnTarget,
     ) => {
       if (!displayContent.trim() && (!imagePaths || imagePaths.length === 0)) {
         return;
@@ -358,9 +402,23 @@ export function useModel(
       }
       if (activeGenerationRef.current) return;
 
+      // Reuse the failed turn's ids on a retry so React keeps the bubble
+      // mounted; mint fresh ids for a normal turn. Model attribution follows
+      // the override only on the retry path (issue #296).
+      const userMessageId =
+        target.mode === 'reuse' ? target.userMessageId : crypto.randomUUID();
+      const assistantId =
+        target.mode === 'reuse'
+          ? target.assistantMessageId
+          : crypto.randomUUID();
+      const resolvedModel =
+        target.mode === 'reuse'
+          ? (target.modelOverride ?? activeModel)
+          : activeModel;
+
       const bubbleImages = displayImagePaths ?? imagePaths;
       const userMsg: Message = {
-        id: crypto.randomUUID(),
+        id: userMessageId,
         role: 'user',
         content: displayContent,
         quotedText,
@@ -368,14 +426,13 @@ export function useModel(
           bubbleImages && bubbleImages.length > 0 ? bubbleImages : undefined,
       };
 
-      const assistantId = crypto.randomUUID();
       const assistantMsg: Message = {
         id: assistantId,
         role: 'assistant',
         content: '',
         fromThink: think ? true : undefined,
         replaceCommand,
-        modelName: activeModel ?? undefined,
+        modelName: resolvedModel ?? undefined,
         // Captured once, here, so a later turn can never overwrite the
         // retry data this specific message needs (issue #296).
         retrySnapshot: {
@@ -387,12 +444,27 @@ export function useModel(
           promptOverride,
           displayImagePaths,
           replaceCommand,
-          userMessageId: userMsg.id,
+          userMessageId,
           assistantMessageId: assistantId,
         },
       };
 
-      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      if (target.mode === 'reuse') {
+        // Reset the assistant message in place: same id, and the freshly
+        // built object carries none of the prior turn's error or streaming
+        // state (content, errorKind, thinkingContent, etc.), so all of it
+        // clears at once. Same id -> React reuses the element instead of
+        // remounting it, so ChatBubble's entrance animation does not replay
+        // (issue #296 remount flash). The user message is byte-identical on a
+        // retry, so it is left untouched.
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantId ? assistantMsg : message,
+          ),
+        );
+      } else {
+        setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      }
       setIsGenerating(true);
       const generationId = beginGeneration(assistantId);
 
@@ -532,21 +604,60 @@ export function useModel(
   );
 
   /**
-   * Submits a `/search` pipeline turn.
+   * Submits a message to the backend and streams the response, appending a
+   * fresh user/assistant pair. The normal, hot path for a new chat turn.
+   * Public signature unchanged; delegates to {@link runChatTurn}.
    *
-   * @param query Text sent to the backend pipeline, without the `/search` trigger.
-   * @param displayContent Text shown in the user bubble. Defaults to `query`.
-   * @param quotedText Selected host-app text shown above the user bubble, if any.
+   * The backend manages conversation history. Only the new user message is sent.
    */
-  const askSearch = useCallback(
-    async (
-      query: string,
-      displayContent?: string,
+  const ask = useCallback(
+    (
+      displayContent: string,
       quotedText?: string,
+      imagePaths?: string[],
+      think?: boolean,
+      promptOverride?: string,
+      displayImagePaths?: string[],
+      replaceCommand?: string,
       /** Bypasses the pre-load memory gate (issue #296). Set by
        *  `retryMessageWithOversized` when the user clicks "Load anyway";
        *  omitted by every normal caller. */
       allowOversized?: boolean,
+    ) =>
+      runChatTurn(
+        displayContent,
+        quotedText,
+        imagePaths,
+        think,
+        promptOverride,
+        displayImagePaths,
+        replaceCommand,
+        allowOversized,
+        { mode: 'append' },
+      ),
+    [runChatTurn],
+  );
+
+  /**
+   * Core `/search` pipeline driver shared by the public {@link askSearch}
+   * wrapper and the retry path. Mirrors {@link runChatTurn}: establishes the
+   * message pair per `target`, then runs the single copy of the pipeline
+   * streaming logic (issue #296).
+   *
+   * @param query Text sent to the backend pipeline, without the `/search` trigger.
+   * @param displayContent Text shown in the user bubble. Defaults to `query`.
+   * @param quotedText Selected host-app text shown above the user bubble, if any.
+   * @param allowOversized Bypasses the pre-load memory gate (issue #296).
+   * @param target How to establish the message pair: append a fresh pair or
+   *   reuse a failed turn's ids and reset its assistant message in place.
+   */
+  const runSearchTurn = useCallback(
+    async (
+      query: string,
+      displayContent: string | undefined,
+      quotedText: string | undefined,
+      allowOversized: boolean | undefined,
+      target: TurnTarget,
     ): Promise<SearchOutcome> => {
       const trimmed = query.trim();
       if (!trimmed) return { final: true };
@@ -558,19 +669,32 @@ export function useModel(
       }
       if (activeGenerationRef.current) return { final: true };
 
+      // Reuse the failed turn's ids on a retry so React keeps the bubble
+      // mounted; mint fresh ids for a normal turn. Model attribution follows
+      // the override only on the retry path (issue #296).
+      const userMessageId =
+        target.mode === 'reuse' ? target.userMessageId : crypto.randomUUID();
+      const assistantId =
+        target.mode === 'reuse'
+          ? target.assistantMessageId
+          : crypto.randomUUID();
+      const resolvedModel =
+        target.mode === 'reuse'
+          ? (target.modelOverride ?? activeModel)
+          : activeModel;
+
       const userMsg: Message = {
-        id: crypto.randomUUID(),
+        id: userMessageId,
         role: 'user',
         content: displayContent ?? trimmed,
         quotedText,
       };
-      const assistantId = crypto.randomUUID();
       const assistantMsg: Message = {
         id: assistantId,
         role: 'assistant',
         content: '',
         fromSearch: true,
-        modelName: activeModel ?? undefined,
+        modelName: resolvedModel ?? undefined,
         // Captured once, here, so a later turn can never overwrite the
         // retry data this specific message needs (issue #296).
         retrySnapshot: {
@@ -578,12 +702,25 @@ export function useModel(
           query: trimmed,
           displayContent,
           quotedText,
-          userMessageId: userMsg.id,
+          userMessageId,
           assistantMessageId: assistantId,
         },
       };
 
-      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      if (target.mode === 'reuse') {
+        // Reset the assistant message in place (issue #296): same id, and the
+        // freshly built object carries none of the prior turn's search or
+        // error state (searchTraces, searchSources, errorKind, etc.), so it
+        // all clears at once. Same id -> no remount flash. The user message
+        // is byte-identical on a retry, so it is left untouched.
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantId ? assistantMsg : message,
+          ),
+        );
+      } else {
+        setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      }
       setIsGenerating(true);
       setSearchStage(null);
 
@@ -830,28 +967,51 @@ export function useModel(
   );
 
   /**
-   * Shared replay core for both retry entry points below: drops the failed
-   * turn's own bubble + warning card, then redispatches its exact
-   * `RetrySnapshot` (read off the failed message itself, never off shared
-   * hook state) with `allowOversized` controlling whether the pre-load
-   * memory gate is bypassed. Scoped per-message so a later turn superseding
-   * the hook's in-flight state can never cause the wrong turn to be replayed.
+   * Submits a `/search` pipeline turn, appending a fresh user/assistant pair.
+   * The normal, hot path for a new search turn. Public signature unchanged;
+   * delegates to {@link runSearchTurn}.
+   *
+   * @param query Text sent to the backend pipeline, without the `/search` trigger.
+   * @param displayContent Text shown in the user bubble. Defaults to `query`.
+   * @param quotedText Selected host-app text shown above the user bubble, if any.
+   * @param allowOversized Bypasses the pre-load memory gate (issue #296). Set
+   *   by `retryMessageWithOversized`; omitted by every normal caller.
+   */
+  const askSearch = useCallback(
+    (
+      query: string,
+      displayContent?: string,
+      quotedText?: string,
+      allowOversized?: boolean,
+    ): Promise<SearchOutcome> =>
+      runSearchTurn(query, displayContent, quotedText, allowOversized, {
+        mode: 'append',
+      }),
+    [runSearchTurn],
+  );
+
+  /**
+   * Shared replay core for both retry entry points below: redispatches a
+   * failed turn's exact `RetrySnapshot` (read off the failed message itself,
+   * never off shared hook state) through the turn cores in `reuse` mode, which
+   * keeps the failed turn's ids and resets its assistant message in place
+   * rather than appending a duplicate pair (issue #296). Scoped per-message so
+   * a later turn superseding the hook's in-flight state can never cause the
+   * wrong turn to be replayed.
+   *
+   * @param snapshot The failed turn's captured request.
+   * @param allowOversized Whether to bypass the pre-load memory gate on replay.
+   * @param modelOverride Model name to pin on the reset assistant message,
+   *   forwarded to the turn core. See {@link TurnTarget}.
    */
   const replaySnapshot = useCallback(
-    (snapshot: RetrySnapshot, allowOversized: boolean) => {
-      // Drop the failed turn's own bubble + warning card before replaying it,
-      // so the retry replaces the turn in place rather than stacking a
-      // duplicate user message above the one still shown as failed.
-      setMessages((prev) =>
-        prev.filter(
-          (message) =>
-            message.id !== snapshot.userMessageId &&
-            message.id !== snapshot.assistantMessageId,
-        ),
-      );
-
+    (
+      snapshot: RetrySnapshot,
+      allowOversized: boolean,
+      modelOverride?: string,
+    ) => {
       if (snapshot.kind === 'chat') {
-        void ask(
+        void runChatTurn(
           snapshot.displayContent,
           snapshot.quotedText,
           snapshot.imagePaths,
@@ -860,26 +1020,44 @@ export function useModel(
           snapshot.displayImagePaths,
           snapshot.replaceCommand,
           allowOversized,
+          {
+            mode: 'reuse',
+            userMessageId: snapshot.userMessageId,
+            assistantMessageId: snapshot.assistantMessageId,
+            modelOverride,
+          },
         );
       } else {
-        void askSearch(
+        void runSearchTurn(
           snapshot.query,
           snapshot.displayContent,
           snapshot.quotedText,
           allowOversized,
+          {
+            mode: 'reuse',
+            userMessageId: snapshot.userMessageId,
+            assistantMessageId: snapshot.assistantMessageId,
+            modelOverride,
+          },
         );
       }
     },
-    [ask, askSearch],
+    [runChatTurn, runSearchTurn],
   );
 
   /**
    * Replays a specific turn's `ask()` / `askSearch()` call with the pre-load
    * memory gate bypassed (issue #296). Wired to the `InsufficientMemory`
    * error card's "Load anyway" button.
+   *
+   * @param snapshot The failed turn's captured request.
+   * @param modelOverride Optional model name to pin on the reset assistant
+   *   message, for when the caller has just picked a model whose value the
+   *   `activeModel` closure has not yet observed.
    */
   const retryMessageWithOversized = useCallback(
-    (snapshot: RetrySnapshot) => replaySnapshot(snapshot, true),
+    (snapshot: RetrySnapshot, modelOverride?: string) =>
+      replaySnapshot(snapshot, true, modelOverride),
     [replaySnapshot],
   );
 
@@ -889,9 +1067,16 @@ export function useModel(
    * error card's "Switch model" flow: once the user picks a new, presumably-
    * fitting model, the abandoned turn is replayed against it normally rather
    * than left stuck describing the old failed attempt forever.
+   *
+   * @param snapshot The failed turn's captured request.
+   * @param modelOverride Optional model name to pin on the reset assistant
+   *   message. The "Switch model" flow passes the just-picked model here so
+   *   the retried bubble attributes the new model even before the `activeModel`
+   *   closure observes it (a React state-update timing race).
    */
   const retryMessage = useCallback(
-    (snapshot: RetrySnapshot) => replaySnapshot(snapshot, false),
+    (snapshot: RetrySnapshot, modelOverride?: string) =>
+      replaySnapshot(snapshot, false, modelOverride),
     [replaySnapshot],
   );
 

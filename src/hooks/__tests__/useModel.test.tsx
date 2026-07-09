@@ -2870,30 +2870,36 @@ describe('useModel', () => {
         expect.objectContaining({ message: 'turn B content' }),
       );
 
-      // Turn A's stale failed pair is gone; turn B's already-completed pair
-      // is untouched; the retried turn A appends as a fresh pair rather than
-      // stacking a duplicate alongside the old one.
+      // Turn A is retried IN PLACE (issue #296): its own ids are reused rather
+      // than deleted and recreated, so React keeps the bubble mounted and the
+      // entrance animation never replays. Turn B's completed pair is
+      // untouched. No pair is added or removed: the thread stays four
+      // messages with all four original ids.
       const ids = result.current.messages.map((m) => m.id);
-      expect(ids).not.toContain(turnAUserId);
-      expect(ids).not.toContain(turnAAssistantId);
+      expect(ids).toContain(turnAUserId);
+      expect(ids).toContain(turnAAssistantId);
       expect(ids).toContain(turnBUserId);
       expect(ids).toContain(turnBAssistantId);
       expect(result.current.messages).toHaveLength(4);
-      const [replayedUser, replayedAssistant] =
-        result.current.messages.slice(2);
-      expect(replayedUser).toMatchObject({
+      // Turn A's assistant message is reset in place: same id, error state
+      // cleared, ready to stream the replayed response.
+      expect(result.current.messages[0]).toMatchObject({
         role: 'user',
         content: 'turn A content',
       });
-      expect(replayedAssistant).toMatchObject({ role: 'assistant' });
+      expect(result.current.messages[1].id).toBe(turnAAssistantId);
+      expect(result.current.messages[1].role).toBe('assistant');
+      expect(result.current.messages[1].content).toBe('');
+      expect(result.current.messages[1].errorKind).toBeUndefined();
     });
 
     // Regression test for the duplicate-turn bug the user's screenshot
-    // showed (issue #296 follow-up): clicking "Load anyway" used to just
-    // append a brand-new pair via ask()/askSearch(), leaving the old failed
-    // user bubble and amber warning card stacked above the retried turn.
-    // Asserts the old pair is fully replaced, not duplicated alongside it.
-    it('chat retry removes the old failed pair, leaving exactly one retried pair', async () => {
+    // showed (issue #296 follow-up): clicking "Load anyway" must NOT append a
+    // brand-new pair, which would leave the old failed user bubble and amber
+    // warning card stacked above the retried turn. The fix reuses the failed
+    // turn's ids and resets its assistant message in place, so the thread
+    // keeps exactly one pair and React does not remount the bubble.
+    it('chat retry reuses the failed pair ids and resets the assistant in place', async () => {
       const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
@@ -2911,6 +2917,7 @@ describe('useModel', () => {
       const oldUserId = result.current.messages[0].id;
       const oldAssistantId = result.current.messages[1].id;
       const snapshot = result.current.messages[1].retrySnapshot!;
+      expect(result.current.messages[1].errorKind).toBe('InsufficientMemory');
 
       resetChannelCapture();
       enableChannelCapture();
@@ -2918,18 +2925,21 @@ describe('useModel', () => {
         result.current.retryMessageWithOversized(snapshot);
       });
 
+      // Same two ids, no add/remove: the turn is retried in place.
       expect(result.current.messages).toHaveLength(2);
-      const ids = result.current.messages.map((m) => m.id);
-      expect(ids).not.toContain(oldUserId);
-      expect(ids).not.toContain(oldAssistantId);
+      expect(result.current.messages[0].id).toBe(oldUserId);
+      expect(result.current.messages[1].id).toBe(oldAssistantId);
       expect(result.current.messages[0]).toMatchObject({
         role: 'user',
         content: 'oversized content',
       });
-      expect(result.current.messages[1]).toMatchObject({ role: 'assistant' });
+      // Assistant reset in place: error state cleared, content blanked.
+      expect(result.current.messages[1].role).toBe('assistant');
+      expect(result.current.messages[1].content).toBe('');
+      expect(result.current.messages[1].errorKind).toBeUndefined();
     });
 
-    it('search retry removes the old failed pair, leaving exactly one retried pair', async () => {
+    it('search retry reuses the failed pair ids and resets the assistant in place', async () => {
       const { result } = renderHook(() => useModel(''));
 
       let pending!: Promise<{ final: boolean }>;
@@ -2948,6 +2958,7 @@ describe('useModel', () => {
       const oldUserId = result.current.messages[0].id;
       const oldAssistantId = result.current.messages[1].id;
       const snapshot = result.current.messages[1].retrySnapshot!;
+      expect(result.current.messages[1].errorKind).toBe('InsufficientMemory');
 
       resetChannelCapture();
       enableChannelCapture();
@@ -2956,14 +2967,70 @@ describe('useModel', () => {
       });
 
       expect(result.current.messages).toHaveLength(2);
-      const ids = result.current.messages.map((m) => m.id);
-      expect(ids).not.toContain(oldUserId);
-      expect(ids).not.toContain(oldAssistantId);
+      expect(result.current.messages[0].id).toBe(oldUserId);
+      expect(result.current.messages[1].id).toBe(oldAssistantId);
       expect(result.current.messages[0]).toMatchObject({
         role: 'user',
         content: 'rust async',
       });
-      expect(result.current.messages[1]).toMatchObject({ role: 'assistant' });
+      // Reset in place clears the error and re-marks it as a search bubble.
+      expect(result.current.messages[1].role).toBe('assistant');
+      expect(result.current.messages[1].content).toBe('');
+      expect(result.current.messages[1].errorKind).toBeUndefined();
+      expect(result.current.messages[1].fromSearch).toBe(true);
+    });
+
+    it('pins modelOverride on the reset assistant message when provided (chat)', async () => {
+      const { result } = renderHook(() => useModel('old-model'));
+
+      await act(async () => {
+        await result.current.ask('needs a bigger model');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      expect(result.current.messages[1].modelName).toBe('old-model');
+      const snapshot = result.current.messages[1].retrySnapshot!;
+
+      resetChannelCapture();
+      enableChannelCapture();
+      await act(async () => {
+        result.current.retryMessageWithOversized(snapshot, 'freshly-picked');
+      });
+
+      // The override wins over the activeModel closure, which still reads the
+      // stale value at retry time (issue #296 attribution race).
+      expect(result.current.messages[1].modelName).toBe('freshly-picked');
+    });
+
+    it('pins modelOverride on the reset assistant message when provided (search)', async () => {
+      const { result } = renderHook(() => useModel('old-model'));
+
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('rust async');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'InsufficientMemory' });
+      });
+      await act(async () => {
+        await pending;
+      });
+      expect(result.current.messages[1].modelName).toBe('old-model');
+      const snapshot = result.current.messages[1].retrySnapshot!;
+
+      resetChannelCapture();
+      enableChannelCapture();
+      await act(async () => {
+        result.current.retryMessageWithOversized(snapshot, 'freshly-picked');
+      });
+
+      expect(result.current.messages[1].modelName).toBe('freshly-picked');
     });
   });
 
@@ -2972,7 +3039,7 @@ describe('useModel', () => {
   // "Switch model" replays the abandoned turn against the newly-picked model
   // WITHOUT bypassing the pre-load memory gate (unlike "Load anyway"), since
   // the whole point is that the new model is presumed to actually fit. Shares
-  // the same old-pair-removal core as retryMessageWithOversized.
+  // the same reuse-in-place core as retryMessageWithOversized.
   describe('retryMessage()', () => {
     it('replays a chat snapshot with allowOversized: false', async () => {
       const { result } = renderHook(() => useModel(''));
@@ -3023,7 +3090,7 @@ describe('useModel', () => {
       );
     });
 
-    it('chat retry removes the old failed pair, leaving exactly one retried pair', async () => {
+    it('chat retry reuses the failed pair ids and resets the assistant in place', async () => {
       const { result } = renderHook(() => useModel(''));
 
       await act(async () => {
@@ -3049,17 +3116,18 @@ describe('useModel', () => {
       });
 
       expect(result.current.messages).toHaveLength(2);
-      const ids = result.current.messages.map((m) => m.id);
-      expect(ids).not.toContain(oldUserId);
-      expect(ids).not.toContain(oldAssistantId);
+      expect(result.current.messages[0].id).toBe(oldUserId);
+      expect(result.current.messages[1].id).toBe(oldAssistantId);
       expect(result.current.messages[0]).toMatchObject({
         role: 'user',
         content: 'gpt-oss content',
       });
-      expect(result.current.messages[1]).toMatchObject({ role: 'assistant' });
+      expect(result.current.messages[1].role).toBe('assistant');
+      expect(result.current.messages[1].content).toBe('');
+      expect(result.current.messages[1].errorKind).toBeUndefined();
     });
 
-    it('search retry removes the old failed pair, leaving exactly one retried pair', async () => {
+    it('search retry reuses the failed pair ids and resets the assistant in place', async () => {
       const { result } = renderHook(() => useModel(''));
 
       let pending!: Promise<{ final: boolean }>;
@@ -3086,14 +3154,39 @@ describe('useModel', () => {
       });
 
       expect(result.current.messages).toHaveLength(2);
-      const ids = result.current.messages.map((m) => m.id);
-      expect(ids).not.toContain(oldUserId);
-      expect(ids).not.toContain(oldAssistantId);
+      expect(result.current.messages[0].id).toBe(oldUserId);
+      expect(result.current.messages[1].id).toBe(oldAssistantId);
       expect(result.current.messages[0]).toMatchObject({
         role: 'user',
         content: 'rust async',
       });
-      expect(result.current.messages[1]).toMatchObject({ role: 'assistant' });
+      expect(result.current.messages[1].role).toBe('assistant');
+      expect(result.current.messages[1].content).toBe('');
+      expect(result.current.messages[1].errorKind).toBeUndefined();
+    });
+
+    it('falls back to activeModel on the reset assistant when no override is given', async () => {
+      const { result } = renderHook(() => useModel('active-model'));
+
+      await act(async () => {
+        await result.current.ask('needs a bigger model');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      const snapshot = result.current.messages[1].retrySnapshot!;
+
+      resetChannelCapture();
+      enableChannelCapture();
+      await act(async () => {
+        result.current.retryMessage(snapshot);
+      });
+
+      expect(result.current.messages[1].modelName).toBe('active-model');
     });
   });
 });

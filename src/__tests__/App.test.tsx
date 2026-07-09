@@ -889,6 +889,157 @@ describe('App', () => {
         expect.objectContaining({ message: 'hi' }),
       );
     });
+
+    // Regression coverage for issue #296 follow-up (bug B): the retried turn
+    // used to get pinned to whatever `activeModel` the closure still held at
+    // the moment `retryMessage` fired, which is the PRE-switch model -
+    // `setActiveModel`'s React state update is not yet visible to that
+    // closure. The retried turn must display the freshly-picked model.
+    it('pins the retried turn to the freshly-picked model, not the stale pre-switch one', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+        estimate_model_fit: {
+          required_bytes: 8 * 1024 ** 3,
+          available_bytes: 4 * 1024 ** 3,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+
+      act(() => {
+        getLastChannel()?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+      await screen.findByText(/may not fit in memory/);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+
+      // Complete the replayed turn: the model-attribution chip only renders
+      // once streaming finishes.
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'Hello!' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      expect(screen.getByTestId('model-attribution')).toHaveTextContent(
+        'qwen2.5:7b',
+      );
+    });
+  });
+
+  // Regression coverage for issue #296 follow-up (bug C): the pending-retry
+  // ref is armed only by the InsufficientMemory error card's own "Switch
+  // model" button. Picking a model through the general ask-bar picker
+  // instead left a stale, unresolved card sitting on screen forever with no
+  // way to clear it. `handleModelSelect` now falls back to the
+  // conversation's own LAST message when nothing is explicitly pending.
+  describe('general picker fallback resolves a stale InsufficientMemory card (issue #296 follow-up)', () => {
+    it('retries the abandoned turn when the LAST message is a still-unresolved InsufficientMemory failure', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+        estimate_model_fit: {
+          required_bytes: 8 * 1024 ** 3,
+          available_bytes: 4 * 1024 ** 3,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+
+      act(() => {
+        getLastChannel()?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+      await screen.findByText(/may not fit in memory/);
+
+      // Open the general ask-bar picker (the plain header pill), NOT the
+      // error card's own "Switch model" button, so pendingSwitchRetryRef is
+      // never armed for this pick.
+      invoke.mockClear();
+      fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+
+      // The abandoned turn is retried against the freshly-picked model even
+      // though the user never touched the error card's own button.
+      expect(screen.queryByText(/may not fit in memory/)).toBeNull();
+      expect(invoke).toHaveBeenCalledWith('set_active_model', {
+        model: 'qwen2.5:7b',
+      });
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'hi', allowOversized: false }),
+      );
+    });
+
+    it('does nothing extra when the last message is not a stale InsufficientMemory failure', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'Hello!' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      // Last message is a normal, successful assistant turn - the general
+      // picker must behave exactly as before: just a plain model switch.
+      invoke.mockClear();
+      fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith('set_active_model', {
+        model: 'qwen2.5:7b',
+      });
+      expect(invoke).not.toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'hi' }),
+      );
+    });
   });
 
   it('closes chat-mode model picker when clicking outside the dropdown', async () => {
