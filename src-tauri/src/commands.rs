@@ -2782,6 +2782,20 @@ mod tests {
     }
 
     #[test]
+    fn insufficient_memory_error_reports_typed_kind_and_gib_figures() {
+        // The frontend keys off `kind` to raise the "load anyway" affordance;
+        // the message carries approximate GiB so the user sees why. Lock both
+        // down: 6 GiB required, 4 GiB available render as "6.0 GB" / "4.0 GB".
+        let err = insufficient_memory_error(6 * (1 << 30), 4 * (1 << 30));
+        assert_eq!(err.kind, EngineErrorKind::InsufficientMemory);
+        assert!(
+            err.message.contains("6.0 GB") && err.message.contains("4.0 GB"),
+            "message should carry both GiB figures, got: {}",
+            err.message,
+        );
+    }
+
+    #[test]
     fn engine_error_kinds_serialize_as_pascal_case() {
         // Wire format contract: every kind must serialize verbatim in
         // PascalCase so the React side (ErrorCard.barColors, useModel) can match

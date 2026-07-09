@@ -451,16 +451,13 @@ mod tests {
             &[],
             false,
         );
-        match gate {
+        assert_eq!(
+            gate,
             MemoryGate::Block {
-                required_bytes,
-                available_bytes,
-            } => {
-                assert_eq!(required_bytes, estimate_required_bytes(20 * BYTES_PER_GIB));
-                assert_eq!(available_bytes, 10 * BYTES_PER_GIB);
+                required_bytes: estimate_required_bytes(20 * BYTES_PER_GIB),
+                available_bytes: 10 * BYTES_PER_GIB,
             }
-            MemoryGate::Proceed => panic!("expected Block"),
-        }
+        );
     }
 
     #[test]
@@ -503,10 +500,13 @@ mod tests {
         let b = PathBuf::from("/blobs/b");
         let installed = vec![(14 * BYTES_PER_GIB, a.clone())];
         // Without the credit this exact model would be blocked.
-        assert!(matches!(
+        assert_eq!(
             evaluate_load_gate(8 * BYTES_PER_GIB, BYTES_PER_GIB, None, &b, &installed, false),
-            MemoryGate::Block { .. }
-        ));
+            MemoryGate::Block {
+                required_bytes: estimate_required_bytes(8 * BYTES_PER_GIB),
+                available_bytes: BYTES_PER_GIB,
+            }
+        );
         // With A resident and credited back, it proceeds.
         let gate = evaluate_load_gate(
             8 * BYTES_PER_GIB,
@@ -534,13 +534,14 @@ mod tests {
             &installed,
             false,
         );
-        match gate {
-            MemoryGate::Block { available_bytes, .. } => {
-                // Credited: 2 GiB live + 4 GiB resident = 6 GiB.
-                assert_eq!(available_bytes, 6 * BYTES_PER_GIB);
+        // Credited: 2 GiB live + 4 GiB resident = 6 GiB, still far short.
+        assert_eq!(
+            gate,
+            MemoryGate::Block {
+                required_bytes: estimate_required_bytes(30 * BYTES_PER_GIB),
+                available_bytes: 6 * BYTES_PER_GIB,
             }
-            MemoryGate::Proceed => panic!("expected Block"),
-        }
+        );
     }
 
     #[test]
