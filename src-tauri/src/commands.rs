@@ -4888,6 +4888,209 @@ mod tests {
         engine.shutdown().await;
     }
 
+    /// Builds an installed row whose weights are so large the memory gate can
+    /// never fit them: `u64::MAX` saturates `estimate_required_bytes` to
+    /// `u64::MAX`, which exceeds the ceiling for any live available figure > 0
+    /// (guaranteed by `available_memory_bytes_reads_a_plausible_live_value`).
+    /// Keeps the `Block` outcome deterministic regardless of the runner's real
+    /// free memory; do not shrink this size or the block-path tests go flaky.
+    fn oversized_model(id: &str) -> crate::models::manifest::InstalledModel {
+        let mut model = installed_model(id, "sha_big", None);
+        model.size_bytes = u64::MAX;
+        model
+    }
+
+    /// `/search`'s policy (`Block { forced: false }`) on an over-large builtin
+    /// model surfaces the user-facing insufficient-memory error and never
+    /// loads the sidecar.
+    #[tokio::test]
+    async fn resolve_llm_transport_builtin_blocks_oversized_unforced() {
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            crate::models::manifest::insert(&conn, &oversized_model("org/repo:big.gguf")).unwrap();
+        }
+        let (_dir, store) = test_store();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 4444,
+            spawn_error: None,
+            healthy: true,
+        });
+        let secrets = crate::keychain::FakeSecretStore::new();
+        let err = resolve_llm_transport(
+            ChatRoute::Builtin {
+                model_id: "org/repo:big.gguf".to_string(),
+            },
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+            &CancellationToken::new(),
+            OversizePolicy::Block { forced: false },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            TransportError::Engine(e) if e.kind == EngineErrorKind::InsufficientMemory
+        ));
+        // The gate ran before the ensure: the sidecar was never started.
+        assert_eq!(engine.status().borrow().state, "stopped");
+        engine.shutdown().await;
+    }
+
+    /// The user's "load anyway" (`Block { forced: true }`) bypasses the gate on
+    /// the same over-large model and proceeds to load.
+    #[tokio::test]
+    async fn resolve_llm_transport_builtin_forced_loads_oversized() {
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            crate::models::manifest::insert(&conn, &oversized_model("org/repo:big.gguf")).unwrap();
+        }
+        let (_dir, store) = test_store();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 4445,
+            spawn_error: None,
+            healthy: true,
+        });
+        let secrets = crate::keychain::FakeSecretStore::new();
+        let transport = resolve_llm_transport(
+            ChatRoute::Builtin {
+                model_id: "org/repo:big.gguf".to_string(),
+            },
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+            &CancellationToken::new(),
+            OversizePolicy::Block { forced: true },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            transport,
+            LlmTransport::V1 {
+                base_url: "http://127.0.0.1:4445".to_string(),
+                api_key: None,
+                flavor: crate::openai::V1Flavor::Builtin,
+            }
+        );
+        assert_eq!(engine.status().borrow().state, "loaded");
+        engine.shutdown().await;
+    }
+
+    /// History title generation's policy (`SilentSkip`) on an over-large model
+    /// yields the benign `SkippedInsufficientMemory`, not a user-facing error,
+    /// and never loads the sidecar.
+    #[tokio::test]
+    async fn resolve_llm_transport_builtin_silent_skip_oversized() {
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            crate::models::manifest::insert(&conn, &oversized_model("org/repo:big.gguf")).unwrap();
+        }
+        let (_dir, store) = test_store();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 4446,
+            spawn_error: None,
+            healthy: true,
+        });
+        let secrets = crate::keychain::FakeSecretStore::new();
+        let err = resolve_llm_transport(
+            ChatRoute::Builtin {
+                model_id: "org/repo:big.gguf".to_string(),
+            },
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+            &CancellationToken::new(),
+            OversizePolicy::SilentSkip,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, TransportError::SkippedInsufficientMemory);
+        assert_eq!(engine.status().borrow().state, "stopped");
+        engine.shutdown().await;
+    }
+
+    /// When the exact model is already resident, the gate's same-model
+    /// short-circuit proceeds without any memory arithmetic under BOTH
+    /// policies, even for an over-large model that a cold load would block.
+    /// This proves the resident short-circuit is load-bearing: the `u64::MAX`
+    /// weights would otherwise force `Block`.
+    #[tokio::test]
+    async fn resolve_llm_transport_builtin_proceeds_when_already_resident() {
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            crate::models::manifest::insert(&conn, &oversized_model("org/repo:big.gguf")).unwrap();
+        }
+        let (_dir, store) = test_store();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 4447,
+            spawn_error: None,
+            healthy: true,
+        });
+        let secrets = crate::keychain::FakeSecretStore::new();
+        // `ChatRoute` is not `Clone`, so each call rebuilds the same route.
+        let builtin_route = || ChatRoute::Builtin {
+            model_id: "org/repo:big.gguf".to_string(),
+        };
+        // Prime the sidecar with a forced load so the exact model is resident.
+        resolve_llm_transport(
+            builtin_route(),
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+            &CancellationToken::new(),
+            OversizePolicy::Block { forced: true },
+        )
+        .await
+        .unwrap();
+        assert_eq!(engine.status().borrow().state, "loaded");
+        let expected = LlmTransport::V1 {
+            base_url: "http://127.0.0.1:4447".to_string(),
+            api_key: None,
+            flavor: crate::openai::V1Flavor::Builtin,
+        };
+        // Unforced now proceeds because the model is already resident.
+        let unforced = resolve_llm_transport(
+            builtin_route(),
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+            &CancellationToken::new(),
+            OversizePolicy::Block { forced: false },
+        )
+        .await
+        .unwrap();
+        assert_eq!(unforced, expected);
+        // SilentSkip likewise proceeds on the resident model.
+        let skip = resolve_llm_transport(
+            builtin_route(),
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+            &CancellationToken::new(),
+            OversizePolicy::SilentSkip,
+        )
+        .await
+        .unwrap();
+        assert_eq!(skip, expected);
+        engine.shutdown().await;
+    }
+
     /// Only builtin routes pin the engine: a guard for any other kind would
     /// keep a previously loaded sidecar resident while the user chats
     /// through Ollama or a remote `/v1` server.
