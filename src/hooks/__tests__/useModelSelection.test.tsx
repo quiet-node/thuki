@@ -62,6 +62,35 @@ describe('useModelSelection', () => {
     expect(result.current.modelDisplayNames).toEqual({});
   });
 
+  it('exposes per-id size in bytes from the backend payload', async () => {
+    invoke.mockResolvedValueOnce({
+      active: 'org/repo:a.gguf',
+      all: ['org/repo:a.gguf'],
+      ollamaReachable: true,
+      sizesBytes: { 'org/repo:a.gguf': 6_100_000_000 },
+    });
+
+    const { result } = renderHook(() => useModelSelection());
+    await act(async () => {});
+
+    expect(result.current.modelSizesBytes).toEqual({
+      'org/repo:a.gguf': 6_100_000_000,
+    });
+  });
+
+  it('defaults sizes to an empty map when the payload omits them', async () => {
+    invoke.mockResolvedValueOnce({
+      active: 'gemma4:e2b',
+      all: ['gemma4:e2b'],
+      ollamaReachable: true,
+    });
+
+    const { result } = renderHook(() => useModelSelection());
+    await act(async () => {});
+
+    expect(result.current.modelSizesBytes).toEqual({});
+  });
+
   it('starts with a null active model before the first refresh resolves', () => {
     invoke.mockImplementationOnce(() => new Promise<unknown>(() => {}));
     const { result } = renderHook(() => useModelSelection());

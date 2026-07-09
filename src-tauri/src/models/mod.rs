@@ -332,6 +332,7 @@ pub async fn get_model_picker_state(
     };
     let manifest_ids: Vec<String> = manifest_rows.iter().map(|m| m.id.clone()).collect();
     let display_names = manifest_displays_map(&manifest_rows);
+    let sizes_bytes = manifest_sizes_map(&manifest_rows);
     let (installed, reachable) = picker_inventory_for_kind(
         &client,
         &kind,
@@ -358,6 +359,7 @@ pub async fn get_model_picker_state(
         &installed,
         reachable,
         &display_names,
+        &sizes_bytes,
     ))
 }
 
@@ -464,6 +466,7 @@ pub fn build_picker_state_payload(
     installed: &[String],
     ollama_reachable: bool,
     display_names: &HashMap<String, String>,
+    sizes_bytes: &HashMap<String, u64>,
 ) -> serde_json::Value {
     let active_value = match active {
         Some(slug) => serde_json::Value::String(slug.to_string()),
@@ -477,6 +480,10 @@ pub fn build_picker_state_payload(
         // are "repo:file.gguf"), empty for Ollama/OpenAI whose ids already read
         // cleanly. The frontend falls back to the id when an entry is missing.
         "displayNames": display_names,
+        // id -> weights size in bytes; populated for built-in models only (the
+        // manifest is the only source that knows blob size), empty for
+        // Ollama/OpenAI. The frontend omits the size caption when missing.
+        "sizesBytes": sizes_bytes,
     })
 }
 
@@ -486,6 +493,13 @@ fn manifest_displays_map(rows: &[manifest::InstalledModel]) -> HashMap<String, S
     rows.iter()
         .map(|m| (m.id.clone(), m.display_name.clone()))
         .collect()
+}
+
+/// Maps each installed model's id to its recorded weights size in bytes, for
+/// the picker to show "6.1 GB" next to the model name. Mirrors
+/// [`manifest_displays_map`]'s shape and builtin-only scope exactly.
+fn manifest_sizes_map(rows: &[manifest::InstalledModel]) -> HashMap<String, u64> {
+    rows.iter().map(|m| (m.id.clone(), m.size_bytes)).collect()
 }
 
 /// Persists `model` as the active model after validating its shape and
@@ -3268,11 +3282,13 @@ mod tests {
         // S1 mirrors the unreachable case: no model can be resolved, the
         // installed list is empty by definition, and the flag is false so
         // the frontend can pick the right strip copy.
-        let payload = build_picker_state_payload(None, &[], false, &HashMap::new());
+        let payload =
+            build_picker_state_payload(None, &[], false, &HashMap::new(), &HashMap::new());
         assert_eq!(payload["active"], serde_json::Value::Null);
         assert_eq!(payload["all"], serde_json::json!([]));
         assert_eq!(payload["ollamaReachable"], serde_json::Value::Bool(false));
         assert_eq!(payload["displayNames"], serde_json::json!({}));
+        assert_eq!(payload["sizesBytes"], serde_json::json!({}));
     }
 
     #[test]
@@ -3280,11 +3296,12 @@ mod tests {
         // S2: Ollama responded but installed list is empty. Active is null
         // (nothing to resolve to) yet ollamaReachable is true so the strip
         // can tell the user to pull a model rather than start the daemon.
-        let payload = build_picker_state_payload(None, &[], true, &HashMap::new());
+        let payload = build_picker_state_payload(None, &[], true, &HashMap::new(), &HashMap::new());
         assert_eq!(payload["active"], serde_json::Value::Null);
         assert_eq!(payload["all"], serde_json::json!([]));
         assert_eq!(payload["ollamaReachable"], serde_json::Value::Bool(true));
         assert_eq!(payload["displayNames"], serde_json::json!({}));
+        assert_eq!(payload["sizesBytes"], serde_json::json!({}));
     }
 
     #[test]
@@ -3297,8 +3314,14 @@ mod tests {
             ("org/repo:a.gguf".to_string(), "Model A".to_string()),
             ("org/repo:b.gguf".to_string(), "Model B".to_string()),
         ]);
-        let payload =
-            build_picker_state_payload(Some("org/repo:b.gguf"), &installed, true, &displays);
+        let sizes = HashMap::from([("org/repo:a.gguf".to_string(), 6_100_000_000u64)]);
+        let payload = build_picker_state_payload(
+            Some("org/repo:b.gguf"),
+            &installed,
+            true,
+            &displays,
+            &sizes,
+        );
         assert_eq!(payload["active"], serde_json::json!("org/repo:b.gguf"));
         assert_eq!(
             payload["all"],
@@ -3307,6 +3330,10 @@ mod tests {
         assert_eq!(payload["ollamaReachable"], serde_json::Value::Bool(true));
         assert_eq!(payload["displayNames"]["org/repo:a.gguf"], "Model A");
         assert_eq!(payload["displayNames"]["org/repo:b.gguf"], "Model B");
+        assert_eq!(payload["sizesBytes"]["org/repo:a.gguf"], 6_100_000_000u64);
+        // b has no recorded size: the sparse map omits it entirely rather than
+        // carrying a zero placeholder.
+        assert!(payload["sizesBytes"].get("org/repo:b.gguf").is_none());
     }
 
     #[test]
@@ -3324,6 +3351,17 @@ mod tests {
             map.get("org/repo:b.gguf").map(String::as_str),
             Some("Model org/repo:b.gguf")
         );
+    }
+
+    #[test]
+    fn manifest_sizes_map_keys_ids_to_size_bytes() {
+        let rows = vec![
+            manifest_row("org/repo:a.gguf", true, false),
+            manifest_row("org/repo:b.gguf", false, false),
+        ];
+        let map = manifest_sizes_map(&rows);
+        assert_eq!(map.get("org/repo:a.gguf").copied(), Some(1_000_000));
+        assert_eq!(map.get("org/repo:b.gguf").copied(), Some(1_000_000));
     }
 
     // ── picker_inventory_for_kind ────────────────────────────────────────────

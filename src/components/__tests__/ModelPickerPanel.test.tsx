@@ -449,16 +449,63 @@ describe('ModelPickerPanel', () => {
     expect(row).toBeInTheDocument();
   });
 
-  it('renders the "Always reasons" badge only for reasoningAlways models', () => {
+  it('folds "always reasoning" into the caption instead of a separate badge', () => {
     const capabilities: ModelCapabilitiesMap = {
       'gemma4:e2b': { vision: true, thinking: false },
       'qwen2.5:7b': { vision: false, thinking: true, reasoningAlways: true },
       'llama3.2:3b': { vision: false, thinking: false },
     };
     renderPanel({ capabilities });
-    const badges = screen.getAllByTestId('always-reasons-badge');
-    expect(badges).toHaveLength(1);
-    expect(badges[0]).toHaveTextContent('Always reasons');
+    // No separate pill element renders anywhere in the panel.
+    expect(
+      screen.queryByTestId('always-reasons-badge'),
+    ).not.toBeInTheDocument();
+    const row = screen.getByRole('option', {
+      name: 'qwen2.5:7b, text, always reasoning',
+    });
+    expect(row).toHaveTextContent('text · always reasoning');
+  });
+
+  it('shows the size in the caption for models with a known size', () => {
+    renderPanel({
+      models: ['gemma4:e2b'],
+      capabilities: { 'gemma4:e2b': { vision: false, thinking: false } },
+      modelSizesBytes: { 'gemma4:e2b': 6_100_000_000 },
+    });
+    expect(screen.getByTestId('model-capability-label')).toHaveTextContent(
+      'text · 6.1 GB',
+    );
+  });
+
+  it('appends the size after the capability flags when both are known', () => {
+    renderPanel({
+      models: ['gemma4:e2b'],
+      capabilities: {
+        'gemma4:e2b': { vision: false, thinking: true, reasoningAlways: true },
+      },
+      modelSizesBytes: { 'gemma4:e2b': 6_100_000_000 },
+    });
+    expect(screen.getByTestId('model-capability-label')).toHaveTextContent(
+      'text · always reasoning · 6.1 GB',
+    );
+  });
+
+  it('omits the size segment entirely when the model id has no known size', () => {
+    renderPanel({
+      models: ['gemma4:e2b'],
+      capabilities: { 'gemma4:e2b': { vision: false, thinking: false } },
+      modelSizesBytes: {},
+    });
+    expect(screen.getByTestId('model-capability-label')).toHaveTextContent(
+      'text',
+    );
+  });
+
+  it('omits the caption entirely when neither capabilities nor size are known', () => {
+    renderPanel({ models: ['gemma4:e2b'] });
+    expect(
+      screen.queryByTestId('model-capability-label'),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -497,6 +544,27 @@ describe('formatCapabilityLabel', () => {
       x: { vision: false, thinking: true },
     };
     expect(formatCapabilityLabel(map, 'x')).toBe('text · reasoning');
+  });
+
+  it('appends "always reasoning" instead of "reasoning" when reasoningAlways is true', () => {
+    const map: ModelCapabilitiesMap = {
+      x: { vision: false, thinking: true, reasoningAlways: true },
+    };
+    expect(formatCapabilityLabel(map, 'x')).toBe('text · always reasoning');
+  });
+
+  it('appends plain "reasoning" when reasoningAlways is explicitly false', () => {
+    const map: ModelCapabilitiesMap = {
+      x: { vision: false, thinking: true, reasoningAlways: false },
+    };
+    expect(formatCapabilityLabel(map, 'x')).toBe('text · reasoning');
+  });
+
+  it('never appends a reasoning flag when thinking is false, even if reasoningAlways is true', () => {
+    const map: ModelCapabilitiesMap = {
+      x: { vision: false, thinking: false, reasoningAlways: true },
+    };
+    expect(formatCapabilityLabel(map, 'x')).toBe('text');
   });
 });
 

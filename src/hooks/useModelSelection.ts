@@ -54,6 +54,11 @@ export interface UseModelSelectionResult {
    */
   modelDisplayNames: Record<string, string>;
   /**
+   * Weights size in bytes per model id (built-in models only); ids without an
+   * entry render with no size caption in the picker.
+   */
+  modelSizesBytes: Record<string, number>;
+  /**
    * Whether the most recent backend call reached the local Ollama daemon.
    * `true` is the optimistic default before the first fetch resolves so the
    * UI does not flash an "Ollama is down" strip during cold start. Set to
@@ -97,6 +102,9 @@ export function useModelSelection(): UseModelSelectionResult {
   const [modelDisplayNames, setModelDisplayNames] = useState<
     Record<string, string>
   >({});
+  const [modelSizesBytes, setModelSizesBytes] = useState<
+    Record<string, number>
+  >({});
   // Optimistic default: assume reachable until the first fetch tells us
   // otherwise. This prevents a cold-start flash of the "Ollama is down"
   // strip while the IPC call is in flight.
@@ -129,18 +137,21 @@ export function useModelSelection(): UseModelSelectionResult {
         setActiveModelState(null);
         setAvailableModels([]);
         setModelDisplayNames({});
+        setModelSizesBytes({});
         setOllamaReachable(false);
         return;
       }
       setActiveModelState(state.active);
       setAvailableModels(state.all);
       setModelDisplayNames(state.displayNames ?? {});
+      setModelSizesBytes(state.sizesBytes ?? {});
       setOllamaReachable(state.ollamaReachable);
     } catch {
       if (!isLatest(token)) return;
       setActiveModelState(null);
       setAvailableModels([]);
       setModelDisplayNames({});
+      setModelSizesBytes({});
       setOllamaReachable(false);
     }
   }, [isLatest]);
@@ -198,6 +209,7 @@ export function useModelSelection(): UseModelSelectionResult {
     activeModel,
     availableModels,
     modelDisplayNames,
+    modelSizesBytes,
     ollamaReachable,
     refreshModels,
     setActiveModel,

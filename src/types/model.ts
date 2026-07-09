@@ -23,6 +23,12 @@ export interface ModelPickerState {
    */
   displayNames?: Record<string, string>;
   /**
+   * Weights size in bytes per model id, for built-in models whose manifest
+   * row records the downloaded blob size. Sparse: omitted/absent ids (Ollama,
+   * OpenAI, or an unresolvable builtin row) render with no size caption.
+   */
+  sizesBytes?: Record<string, number>;
+  /**
    * Whether the Rust backend successfully reached the local Ollama daemon
    * during the last picker fetch. False when `/api/tags` errored (connection
    * refused, timeout, DNS failure, port closed). The frontend uses this to
