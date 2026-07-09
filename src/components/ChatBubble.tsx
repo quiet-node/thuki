@@ -89,9 +89,6 @@ function resolveMemoryModelName(
   return (modelName && displayNames?.[modelName]) ?? modelName ?? 'This model';
 }
 
-/** Regex matching inline `[N]` citation markers in plain text. Captures the N. */
-const CITATION_RE = /\[(\d+)\]/g;
-
 /**
  * Hoisted static SVG glyph for the model attribution chip. Mirrors the
  * chip icon used by the model picker so the attribution visually couples
@@ -123,69 +120,6 @@ const ATTRIB_CHIP_ICON = (
     />
   </svg>
 );
-
-/**
- * Walks the rendered answer DOM and replaces every plain-text `[N]` occurrence
- * with an anchor element that links to the matching source URL. Called inside
- * a `useEffect` that re-runs whenever the answer content or sources change so
- * streaming tokens stay in sync. Idempotent: already-wrapped `[N]` elements
- * carry a `data-citation` attribute and are skipped on subsequent passes.
- *
- * Security: only creates `<a>` elements with `textContent` - never inserts
- * arbitrary HTML - and caps the URL via the precomputed sources array. There
- * is no path for user input to reach this function other than through the
- * same SearXNG-validated URLs that populate the sources footer.
- */
-function wrapCitations(
-  root: HTMLElement,
-  sources: SearchResultPreview[],
-): void {
-  // Collect text nodes first so we don't mutate the tree while iterating it.
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  const targets: Text[] = [];
-  let node = walker.nextNode() as Text | null;
-  while (node) {
-    const value = node.nodeValue;
-    if (value && CITATION_RE.test(value)) {
-      CITATION_RE.lastIndex = 0;
-      targets.push(node);
-    }
-    node = walker.nextNode() as Text | null;
-  }
-
-  for (const text of targets) {
-    const value = text.nodeValue as string;
-    const parent = text.parentNode as ParentNode;
-    const frag = document.createDocumentFragment();
-    let lastIndex = 0;
-    CITATION_RE.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = CITATION_RE.exec(value)) !== null) {
-      const n = Number.parseInt(match[1], 10);
-      const source = sources[n - 1];
-      if (!source) continue;
-      if (match.index > lastIndex) {
-        frag.appendChild(
-          document.createTextNode(value.slice(lastIndex, match.index)),
-        );
-      }
-      const a = document.createElement('a');
-      a.textContent = match[0];
-      a.className = 'citation-link';
-      a.setAttribute('data-citation', String(n));
-      a.setAttribute('data-url', source.url);
-      a.setAttribute('title', source.title || source.url);
-      a.setAttribute('role', 'button');
-      frag.appendChild(a);
-      lastIndex = match.index + match[0].length;
-    }
-    if (lastIndex === 0) continue; // no valid numbered-source matches
-    if (lastIndex < value.length) {
-      frag.appendChild(document.createTextNode(value.slice(lastIndex)));
-    }
-    parent.replaceChild(frag, text);
-  }
-}
 
 /**
  * Renders user message content with slash commands styled distinctly.
@@ -449,17 +383,6 @@ export function ChatBubble({
       }
     : insufficientMemoryInfo;
 
-  /** Ref on the markdown container so `wrapCitations` can post-process
-   *  the rendered DOM after every token update. */
-  const answerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!searchSources || searchSources.length === 0) return;
-    // Ref attaches synchronously on the JSX below, so `.current` is never
-    // null when the effect fires on mount or any subsequent update.
-    wrapCitations(answerRef.current!, searchSources);
-  }, [content, searchSources]);
-
   /**
    * Two-way hover linking between inline citation anchors and the pill
    * footer: toggles `data-active-citation` on the container so CSS drives
@@ -499,8 +422,8 @@ export function ChatBubble({
     ) as HTMLElement | null;
     if (!target) return;
     e.preventDefault();
-    // `data-url` is always set when we build citation anchors in wrapCitations,
-    // so the non-null assertion is safe.
+    // `data-url` is always set when MarkdownRenderer builds citation
+    // anchors, so the non-null assertion is safe.
     void invoke('open_url', { url: target.getAttribute('data-url')! });
   };
 
@@ -566,10 +489,7 @@ export function ChatBubble({
           onMouseOut={onAnswerMouseOut}
           onClick={onAnswerClick}
         >
-          <div
-            ref={answerRef}
-            className="text-sm leading-relaxed select-text py-1"
-          >
+          <div className="text-sm leading-relaxed select-text py-1">
             {(isSearching || (searchTraces && searchTraces.length > 0)) && (
               <SearchTraceBlock
                 traces={searchTraces ?? []}
@@ -599,6 +519,7 @@ export function ChatBubble({
               <MarkdownRenderer
                 content={displayContent}
                 isStreaming={isStreaming}
+                citationSources={searchSources}
               />
             )}
           </div>

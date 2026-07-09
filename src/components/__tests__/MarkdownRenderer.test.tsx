@@ -7,7 +7,11 @@ import {
 } from '@testing-library/react';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
-import { MarkdownRenderer } from '../MarkdownRenderer';
+import {
+  MarkdownRenderer,
+  childText,
+  linkifyCitations,
+} from '../MarkdownRenderer';
 
 const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
 
@@ -372,6 +376,99 @@ describe('MarkdownRenderer', () => {
       const firstOutput = container.innerHTML;
       rerender(<MarkdownRenderer content="stable" />);
       expect(container.innerHTML).toBe(firstOutput);
+    });
+  });
+
+  describe('childText', () => {
+    it('returns a string child verbatim', () => {
+      expect(childText('[1]')).toBe('[1]');
+    });
+
+    it('joins an array of string children', () => {
+      expect(childText(['[', '1', ']'])).toBe('[1]');
+    });
+
+    it('collapses a non-string, non-array child to empty string', () => {
+      // A link wrapping rich content (e.g. bold) yields an element child,
+      // which is never a citation marker.
+      expect(childText(<strong>bold</strong>)).toBe('');
+      expect(childText(null)).toBe('');
+    });
+  });
+
+  describe('linkifyCitations', () => {
+    const sources = [
+      { title: 'Rust', url: 'https://doc.rust-lang.org' },
+      { title: 'Tokio', url: 'https://tokio.rs' },
+    ];
+
+    it('rewrites a matched marker to an escaped-bracket markdown link', () => {
+      expect(linkifyCitations('Fast [1] here.', sources)).toBe(
+        'Fast [\\[1\\]](https://doc.rust-lang.org) here.',
+      );
+    });
+
+    it('leaves a marker with no matching source untouched', () => {
+      expect(linkifyCitations('Orphan [9] marker.', sources)).toBe(
+        'Orphan [9] marker.',
+      );
+    });
+
+    it('percent-encodes spaces and parentheses in the destination', () => {
+      const withParens = [
+        { title: 'Wiki', url: 'https://en.wikipedia.org/wiki/Rust (game)' },
+      ];
+      expect(linkifyCitations('See [1].', withParens)).toBe(
+        'See [\\[1\\]](https://en.wikipedia.org/wiki/Rust%20%28game%29).',
+      );
+    });
+  });
+
+  describe('citation anchor override', () => {
+    const sources = [{ title: 'Rust', url: 'https://doc.rust-lang.org' }];
+
+    it('renders a [N] marker as a citation chip without an href', () => {
+      const { container } = render(
+        <MarkdownRenderer
+          content="Rust [1] rocks."
+          citationSources={sources}
+        />,
+      );
+      const anchor = container.querySelector('a.citation-link');
+      expect(anchor).not.toBeNull();
+      expect(anchor!.getAttribute('data-citation')).toBe('1');
+      expect(anchor!.getAttribute('data-url')).toBe(
+        'https://doc.rust-lang.org',
+      );
+      expect(anchor!.getAttribute('href')).toBeNull();
+      expect(anchor!.textContent).toBe('[1]');
+    });
+
+    it('falls back to the URL for the chip title when the source has none', () => {
+      const { container } = render(
+        <MarkdownRenderer
+          content="Rust [1] rocks."
+          citationSources={[{ title: '', url: 'https://doc.rust-lang.org' }]}
+        />,
+      );
+      const anchor = container.querySelector('a.citation-link');
+      expect(anchor!.getAttribute('title')).toBe('https://doc.rust-lang.org');
+    });
+
+    it('passes a normal link through unchanged when sources are present', async () => {
+      await act(async () => {
+        render(
+          <MarkdownRenderer
+            content="See [the docs](https://example.com) for more."
+            citationSources={sources}
+          />,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      const link = await screen.findByRole('link', { name: 'the docs' });
+      expect(link.classList.contains('citation-link')).toBe(false);
+      expect(link.getAttribute('href')).toBe('https://example.com/');
     });
   });
 });
