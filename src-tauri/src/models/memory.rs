@@ -164,6 +164,9 @@ pub fn resident_weights_bytes(resident_path: &Path, installed: &[(u64, PathBuf)]
 /// `target_weights_bytes`) given the memory available right now.
 ///
 /// - `forced` (the user's "load anyway") short-circuits to [`MemoryGate::Proceed`].
+/// - `available_bytes == 0` (the reader failed) fails open to
+///   [`MemoryGate::Proceed`] before any credit arithmetic, so a bad read can
+///   never brick a load regardless of what is resident.
 /// - When the engine is already serving this exact path (`resident_path ==
 ///   target_path`), the ensure is a no-op with no new allocation, so it
 ///   proceeds without any arithmetic: a model that already fills memory must
@@ -181,6 +184,17 @@ pub fn evaluate_load_gate(
     forced: bool,
 ) -> MemoryGate {
     if forced {
+        return MemoryGate::Proceed;
+    }
+    // Fail open on a failed reader (0) before any credit arithmetic. `assess_fit`
+    // treats 0 as "unknown, never block", but crediting a resident model adds a
+    // positive figure that would push a raw-0 read off that zero-shortcut and
+    // judge the load against the credit alone, flipping the same "we don't know
+    // available memory" condition from Proceed to Block depending on incidental
+    // residency. Short-circuiting here keeps the fail-open contract coherent
+    // regardless of residency; the launch circuit breaker (`startup_guard`) is
+    // the backstop if a bad-read Proceed ever contributes to a freeze.
+    if available_bytes == 0 {
         return MemoryGate::Proceed;
     }
     let credit = match resident_path {
@@ -217,17 +231,33 @@ pub fn evaluate_load_gate(
 // worth it; the call is confined to this wrapper.
 #[allow(deprecated)]
 pub fn available_memory_bytes() -> u64 {
-    // SAFETY: `mach_host_self` returns the host port. `page_size` and `stats`
-    // are valid, correctly-sized stack buffers; `count` is initialized to the
-    // element count `host_statistics64` expects for `HOST_VM_INFO64` and is
-    // read/written in place. Every non-success return is mapped to 0, so no
+    // `libc` 0.2.186 exports `mach_host_self`/`host_statistics64`/`mach_task_self`
+    // but not `mach_port_deallocate`, so declare it directly. It lives in
+    // libSystem (always linked on macOS), and releases the host send right that
+    // `mach_host_self` hands the caller.
+    unsafe extern "C" {
+        fn mach_port_deallocate(
+            task: libc::mach_port_t,
+            name: libc::mach_port_t,
+        ) -> libc::kern_return_t;
+    }
+
+    // SAFETY: `page_size` is guarded before the host port is acquired, so a
+    // `sysconf` failure never leaks a send right. `mach_host_self` returns a
+    // host port the caller owns; `stats` is a valid, correctly-sized stack
+    // buffer and `count` is initialized to the element count
+    // `host_statistics64` expects for `HOST_VM_INFO64`, read/written in place.
+    // The host port is released via `mach_port_deallocate` on every path once
+    // the read is done (the send right is dead after `host_statistics64`
+    // returns, whatever its status); `mach_task_self` is not caller-owned and is
+    // never deallocated. Every non-success return is mapped to 0, so no
     // uninitialized data is ever consumed.
     unsafe {
-        let host = libc::mach_host_self();
         let page_size = libc::sysconf(libc::_SC_PAGESIZE);
         if page_size <= 0 {
             return 0;
         }
+        let host = libc::mach_host_self();
         let mut stats: libc::vm_statistics64 = std::mem::zeroed();
         let mut count = (std::mem::size_of::<libc::vm_statistics64>()
             / std::mem::size_of::<libc::integer_t>())
@@ -238,6 +268,14 @@ pub fn available_memory_bytes() -> u64 {
             &mut stats as *mut libc::vm_statistics64 as libc::host_info64_t,
             &mut count,
         );
+        // Release the host send right on every path out. A deallocate failure
+        // cannot be recovered from and must not mask the memory read, but it
+        // signals a real port-management problem, so log it rather than swallow
+        // it (mirrors `startup_guard`'s forgiving-boundary eprintln convention).
+        let dr = mach_port_deallocate(libc::mach_task_self(), host);
+        if dr != libc::KERN_SUCCESS {
+            eprintln!("thuki: [memory] mach_port_deallocate(host) failed: {dr}");
+        }
         if kr != libc::KERN_SUCCESS {
             return 0;
         }
@@ -572,6 +610,20 @@ mod tests {
                 available_bytes: 6 * BYTES_PER_GIB,
             }
         );
+    }
+
+    #[test]
+    fn gate_fails_open_on_zero_available_even_with_resident_credit() {
+        // A raw available read of 0 means the FFI read failed; the gate must
+        // fail open regardless of residency. With a different model resident,
+        // the credit would otherwise push the judged figure off `assess_fit`'s
+        // zero-shortcut: pre-fix, 0 live + 14 GiB credit judged a ~22 GiB model
+        // Insufficient -> Block. The front short-circuit keeps it coherent.
+        let a = PathBuf::from("/blobs/a");
+        let b = PathBuf::from("/blobs/b");
+        let installed = vec![(14 * BYTES_PER_GIB, a.clone())];
+        let gate = evaluate_load_gate(20 * BYTES_PER_GIB, 0, Some(&a), &b, &installed, false);
+        assert_eq!(gate, MemoryGate::Proceed);
     }
 
     #[test]
