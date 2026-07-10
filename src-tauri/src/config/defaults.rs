@@ -925,6 +925,18 @@ pub const SPORTS_LEAGUE_MAP: &[(&str, &str, &str)] = &[
     ("formula 1", "racing", "f1"),
 ];
 
+/// Length, in days, of the forward date window the sports vertical requests from
+/// ESPN's scoreboard (`?dates=<today>-<today+N>`). ESPN's default scoreboard
+/// returns only the current day's slate, which cannot answer "when is the next
+/// match" once today's fixtures are all live or finished; requesting a window
+/// forward from today makes the next fixture part of the same one response.
+///
+/// Not user-tunable: a pipeline-shape constant. Wide enough to always contain
+/// the next fixture of an active competition, narrow enough to keep the block
+/// within its source budget (the per-event listing the block renders is capped
+/// independently in the sports module).
+pub const SPORTS_SCHEDULE_WINDOW_DAYS: i64 = 7;
+
 // ─── Web-search engine results ───────────────────────────────────────────────
 
 /// Maximum result rows kept from one keyless search-engine query after dedupe.

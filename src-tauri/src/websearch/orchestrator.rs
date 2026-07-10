@@ -1526,7 +1526,8 @@ mod tests {
             queries: vec!["nba score".into()],
             explicit_search: false,
         }));
-        let espn_url = crate::websearch::sports::scoreboard_request("basketball", "nba").url;
+        let espn_url =
+            crate::websearch::sports::scoreboard_request("basketball", "nba", "2026-07-05").url;
         let transport = FakeHttpTransport::new().with_response(
             &espn_url,
             HttpResponse {
@@ -1570,7 +1571,8 @@ mod tests {
             queries: vec!["nfl scores".into()],
             explicit_search: false,
         }));
-        let espn_url = crate::websearch::sports::scoreboard_request("football", "nfl").url;
+        let espn_url =
+            crate::websearch::sports::scoreboard_request("football", "nfl", "2026-07-05").url;
         let transport = FakeHttpTransport::new().with_response(
             &espn_url,
             HttpResponse {
@@ -1613,7 +1615,8 @@ mod tests {
             queries: vec!["nba score".into()],
             explicit_search: true,
         }));
-        let espn_url = crate::websearch::sports::scoreboard_request("basketball", "nba").url;
+        let espn_url =
+            crate::websearch::sports::scoreboard_request("basketball", "nba", "2026-07-05").url;
         let transport = transport_with_serp_and_page().with_response(
             &espn_url,
             HttpResponse {
@@ -1743,7 +1746,8 @@ mod tests {
             queries: vec!["nba game score".into()],
             explicit_search: false,
         }));
-        let espn_url = crate::websearch::sports::scoreboard_request("basketball", "nba").url;
+        let espn_url =
+            crate::websearch::sports::scoreboard_request("basketball", "nba", "2026-07-05").url;
         let feed_url = crate::websearch::news::news_request("nba game score", false).url;
         let transport = FakeHttpTransport::new()
             .with_response(
@@ -2095,7 +2099,8 @@ mod tests {
             queries: vec!["nba score".into()],
             explicit_search: false,
         }));
-        let espn_url = crate::websearch::sports::scoreboard_request("basketball", "nba").url;
+        let espn_url =
+            crate::websearch::sports::scoreboard_request("basketball", "nba", "2026-07-05").url;
         let transport = FakeHttpTransport::new().with_response(
             &espn_url,
             HttpResponse {

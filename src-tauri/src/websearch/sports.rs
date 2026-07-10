@@ -21,7 +21,7 @@
 //! this turn, so a cheap, predictable miss is preferable to spending a model
 //! call to decide it.
 
-use crate::config::defaults::SPORTS_LEAGUE_MAP;
+use crate::config::defaults::{SPORTS_LEAGUE_MAP, SPORTS_SCHEDULE_WINDOW_DAYS};
 use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
 use crate::websearch::assemble::SourceBlock;
 
@@ -71,11 +71,50 @@ pub(crate) fn is_sports_intent(question: &str) -> bool {
     detect_league(question).is_some()
 }
 
-/// Builds the scoreboard GET request for a resolved `(sport, league)` pair.
-pub(crate) fn scoreboard_request(sport: &str, league: &str) -> HttpRequest {
+/// Builds the `dates=<start>-<end>` query value (both `YYYYMMDD`) spanning
+/// [`SPORTS_SCHEDULE_WINDOW_DAYS`] forward from `today`, an ISO `YYYY-MM-DD`
+/// date string, or `None` when `today` does not parse. ESPN's scoreboard
+/// defaults to only the current day's slate, so without this window the block
+/// cannot answer "when is the next match" once today's fixtures are all live or
+/// finished. `today` is program-generated (see the pipeline's `today`
+/// parameter), so an unparseable value is a defensive fallback, never expected:
+/// the caller then requests the dateless (today-only) URL rather than panicking.
+fn scoreboard_dates_param(today: &str) -> Option<String> {
+    let mut ymd = today.split('-');
+    let year: i32 = ymd.next()?.parse().ok()?;
+    let month: u8 = ymd.next()?.parse().ok()?;
+    let day: u8 = ymd.next()?.parse().ok()?;
+    if ymd.next().is_some() {
+        return None;
+    }
+    let month = time::Month::try_from(month).ok()?;
+    let start = time::Date::from_calendar_date(year, month, day).ok()?;
+    let end = start.checked_add(time::Duration::days(SPORTS_SCHEDULE_WINDOW_DAYS))?;
+    Some(format!(
+        "{:04}{:02}{:02}-{:04}{:02}{:02}",
+        start.year(),
+        u8::from(start.month()),
+        start.day(),
+        end.year(),
+        u8::from(end.month()),
+        end.day(),
+    ))
+}
+
+/// Builds the scoreboard GET request for a resolved `(sport, league)` pair,
+/// scoped to a [`SPORTS_SCHEDULE_WINDOW_DAYS`]-day window forward from `today`
+/// (see [`scoreboard_dates_param`]) so the response spans the next fixtures, not
+/// just today's slate. When `today` does not parse the URL falls back to the
+/// dateless form (today only), ESPN's default.
+pub(crate) fn scoreboard_request(sport: &str, league: &str, today: &str) -> HttpRequest {
+    let base = format!("{ESPN_SCOREBOARD_BASE}/{sport}/{league}/scoreboard");
+    let url = match scoreboard_dates_param(today) {
+        Some(dates) => format!("{base}?dates={dates}"),
+        None => base,
+    };
     HttpRequest {
         method: HttpMethod::Get,
-        url: format!("{ESPN_SCOREBOARD_BASE}/{sport}/{league}/scoreboard"),
+        url,
         headers: Vec::new(),
         form: Vec::new(),
     }
@@ -214,6 +253,19 @@ fn season_year(json: &serde_json::Value) -> Option<i64> {
         .as_i64()
 }
 
+/// Reads an event's ESPN status `state` (`pre` scheduled / `in` live / `post`
+/// final), or `""` when the status shape is missing the field. Shared by
+/// [`format_event`] (to decide whether to localize a kickoff) and
+/// [`parse_scoreboard`] (to compute the in-progress / next-match summaries).
+fn event_state(event: &serde_json::Value) -> &str {
+    event
+        .get("status")
+        .and_then(|s| s.get("type"))
+        .and_then(|t| t.get("state"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+}
+
 /// Formats one scoreboard event into a single display line, or `None` when the
 /// event is missing its name or fewer than two competitors resolve a name (a
 /// malformed or unrecognisable row is skipped rather than shown half-blank).
@@ -243,12 +295,10 @@ fn format_event(
     if lines.len() < 2 {
         return None;
     }
-    let status_type = event.get("status").and_then(|s| s.get("type"));
-    let state = status_type
-        .and_then(|t| t.get("state"))
-        .and_then(|s| s.as_str())
-        .unwrap_or("");
-    let short_detail = status_type
+    let state = event_state(event);
+    let short_detail = event
+        .get("status")
+        .and_then(|s| s.get("type"))
         .and_then(|t| t.get("shortDetail"))
         .and_then(|s| s.as_str())
         .unwrap_or("");
@@ -276,11 +326,25 @@ fn format_event(
 }
 
 /// Parses a scoreboard response body into the league's display label (name,
-/// plus the season year when present) and up to [`MAX_SPORTS_EVENTS`]
-/// formatted event lines. Returns `None` only when the body is not JSON or
-/// carries no `events` field at all; an `events` array that parses to zero
-/// usable lines (e.g. an off-season slate) returns `Some((label, vec![]))`,
-/// which the caller treats as a miss.
+/// plus the season year when present) and the block's formatted lines. Returns
+/// `None` only when the body is not JSON or carries no `events` field at all; an
+/// `events` array that parses to zero usable lines (e.g. an off-season slate)
+/// returns `Some((label, vec![]))`, which the caller treats as a miss.
+///
+/// The returned line list leads with up to two kinds of computed summary line,
+/// then the per-event listing:
+/// - `"Currently in progress: <event line>"` for each event whose state is
+///   `in` (omitted entirely when none are live).
+/// - `"Next scheduled match: <event line>"` for the single earliest-dated event
+///   whose state is `pre` (omitted when none are scheduled or none carry a
+///   parseable date).
+///
+/// The summaries are computed from ALL parsed events, before the listing is
+/// capped at [`MAX_SPORTS_EVENTS`], so a next fixture beyond the cap is still
+/// surfaced. They deliberately duplicate a line that also appears in the
+/// listing below: the summary is the code-computed answer ("which match is
+/// next" is deterministic from ESPN's own event states, no wall clock needed),
+/// the listing is the evidence.
 ///
 /// The round/stage label is read once from the response-level
 /// `leagues[0].season.type.name` ("Quarterfinals", "Regular Season", ...) and
@@ -313,11 +377,46 @@ pub(crate) fn parse_scoreboard(
         .and_then(|t| t.get("name"))
         .and_then(|n| n.as_str());
     let events = json.get("events")?.as_array()?;
-    let lines = events
+    // Format every usable event once, keeping its state and (for `pre` events)
+    // its parsed kickoff instant so the summaries can be computed from the full
+    // slate before the listing cap is applied.
+    let parsed: Vec<(&str, Option<time::OffsetDateTime>, String)> = events
         .iter()
-        .filter_map(|event| format_event(event, round, local_zone))
-        .take(MAX_SPORTS_EVENTS)
+        .filter_map(|event| {
+            let line = format_event(event, round, local_zone)?;
+            let state = event_state(event);
+            let kickoff = event
+                .get("date")
+                .and_then(|d| d.as_str())
+                .and_then(parse_event_utc);
+            Some((state, kickoff, line))
+        })
         .collect();
+    let mut lines: Vec<String> = Vec::new();
+    // Every live match, each as its own summary line.
+    for (state, _, line) in &parsed {
+        if *state == "in" {
+            lines.push(format!("Currently in progress: {line}"));
+        }
+    }
+    // The single earliest-dated scheduled match (min by kickoff instant, not
+    // array position). Scheduled events whose `date` did not parse are excluded
+    // from the selection rather than treated as the earliest.
+    if let Some((_, line)) = parsed
+        .iter()
+        .filter(|(state, _, _)| *state == "pre")
+        .filter_map(|(_, kickoff, line)| kickoff.map(|k| (k, line)))
+        .min_by_key(|(k, _)| *k)
+    {
+        lines.push(format!("Next scheduled match: {line}"));
+    }
+    // The per-event listing (the evidence under the summaries), capped.
+    lines.extend(
+        parsed
+            .iter()
+            .take(MAX_SPORTS_EVENTS)
+            .map(|(_, _, line)| line.clone()),
+    );
     Some((league_label, lines))
 }
 
@@ -377,7 +476,10 @@ pub(crate) async fn fetch_sports(
         eprintln!("[search] vertical=sports no_league_match -> next tier");
         return None;
     };
-    let response = match transport.send(&scoreboard_request(sport, league)).await {
+    let response = match transport
+        .send(&scoreboard_request(sport, league, today))
+        .await
+    {
         Ok(response) => response,
         Err(e) => {
             eprintln!("[search] vertical=sports transport_error {e}");
@@ -429,6 +531,20 @@ mod tests {
     /// two not-yet-started fixtures, proving the `pre` (scheduled) status path
     /// carries a date/time.
     const NFL_SCHEDULED_FIXTURE: &str = r#"{"leagues": [{"name": "National Football League"}], "events": [{"name": "New England Patriots at Seattle Seahawks", "date": "2026-09-10T00:20Z", "status": {"type": {"state": "pre", "completed": false, "shortDetail": "9/9 - 8:20 PM EDT"}}, "competitions": [{"competitors": [{"homeAway": "home", "score": "0", "team": {"displayName": "Seattle Seahawks"}}, {"homeAway": "away", "score": "0", "team": {"displayName": "New England Patriots"}}]}]}, {"name": "San Francisco 49ers at Los Angeles Rams", "date": "2026-09-11T00:35Z", "status": {"type": {"state": "pre", "completed": false, "shortDetail": "9/10 - 8:35 PM EDT"}}, "competitions": [{"competitors": [{"homeAway": "home", "score": "0", "team": {"displayName": "Los Angeles Rams"}}, {"homeAway": "away", "score": "0", "team": {"displayName": "San Francisco 49ers"}}]}]}]}"#;
+
+    /// Real ESPN scoreboard response shape over a multi-day `?dates=` window,
+    /// trimmed to the fields this module reads (captured live 2026-07-10 via
+    /// `soccer/fifa.world/scoreboard?dates=20260710-20260717`): one live (`in`)
+    /// match and two scheduled (`pre`) matches on different dates. The later
+    /// scheduled match (Switzerland at Argentina, 07-12) is placed FIRST in the
+    /// array and the earlier one (England at Norway, 07-11) LAST, so the
+    /// "next match" summary can only name the right fixture by comparing dates,
+    /// not array position.
+    const WORLD_CUP_RANGE_FIXTURE: &str = r#"{"leagues": [{"name": "FIFA World Cup", "season": {"year": 2026, "type": {"name": "Quarterfinals"}}}], "events": [
+        {"name": "Switzerland at Argentina", "date": "2026-07-12T01:00Z", "status": {"type": {"state": "pre", "shortDetail": "Sat, July 11th at 9:00 PM EDT"}}, "competitions": [{"competitors": [{"homeAway": "home", "score": "0", "team": {"displayName": "Argentina"}}, {"homeAway": "away", "score": "0", "team": {"displayName": "Switzerland"}}]}]},
+        {"name": "Belgium at Spain", "date": "2026-07-10T19:00Z", "status": {"type": {"state": "in", "shortDetail": "32'"}}, "competitions": [{"competitors": [{"homeAway": "home", "score": "1", "team": {"displayName": "Spain"}}, {"homeAway": "away", "score": "0", "team": {"displayName": "Belgium"}}]}]},
+        {"name": "England at Norway", "date": "2026-07-11T21:00Z", "status": {"type": {"state": "pre", "shortDetail": "Sat, July 11th at 5:00 PM EDT"}}, "competitions": [{"competitors": [{"homeAway": "home", "score": "0", "team": {"displayName": "Norway"}}, {"homeAway": "away", "score": "0", "team": {"displayName": "England"}}]}]}
+    ]}"#;
 
     // ── detect_league ─────────────────────────────────────────────────────────
 
@@ -485,13 +601,40 @@ mod tests {
     // ── request builder ──────────────────────────────────────────────────────
 
     #[test]
-    fn scoreboard_request_builds_the_path_from_sport_and_league() {
-        let req = scoreboard_request("soccer", "fifa.world");
+    fn scoreboard_request_builds_the_path_with_a_seven_day_date_window() {
+        // A parseable `today` scopes the request to today..today+7 (both
+        // YYYYMMDD), so the response spans the next fixtures, not just today's
+        // slate: 2026-07-10 -> 20260710-20260717.
+        let req = scoreboard_request("soccer", "fifa.world", "2026-07-10");
         assert_eq!(req.method, HttpMethod::Get);
         assert_eq!(
             req.url,
-            "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard"
+            "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard?dates=20260710-20260717"
         );
+    }
+
+    #[test]
+    fn scoreboard_request_crosses_month_and_year_boundaries() {
+        // The window is real date arithmetic, not string math: a late-month
+        // `today` rolls into the next month, and a year-end one into the next
+        // year.
+        assert_eq!(
+            scoreboard_request("basketball", "nba", "2026-12-28").url,
+            "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=20261228-20270104"
+        );
+    }
+
+    #[test]
+    fn scoreboard_request_falls_back_to_dateless_url_on_unparseable_today() {
+        // `today` is program-generated, so a bad value is a defensive fallback:
+        // no `dates` param, ESPN's default today-only slate. Every unparseable
+        // shape (non-numeric field, too few segments, an extra trailing segment,
+        // and an out-of-range field) degrades the same way rather than panicking.
+        let dateless = "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard";
+        for bad in ["not-a-date", "2026-07", "2026-07-10-1", "2026-13-10", ""] {
+            let req = scoreboard_request("soccer", "fifa.world", bad);
+            assert_eq!(req.url, dateless, "today={bad:?}");
+        }
     }
 
     // ── status_label ──────────────────────────────────────────────────────────
@@ -602,10 +745,14 @@ mod tests {
 
     #[test]
     fn format_event_appends_local_kickoff_only_for_scheduled_events() {
-        // A scheduled (`pre`) event carries its localized kickoff datetime.
+        // A scheduled (`pre`) event's LISTING line carries its localized kickoff
+        // datetime. The NFL fixture is all `pre`, so the returned list leads with
+        // a "Next scheduled match:" summary; the first listing entry (index 1) is
+        // the first fixture, whose kickoff is what we assert here.
         let (_, scheduled) =
             parse_scoreboard(NFL_SCHEDULED_FIXTURE, Some("America/New_York")).unwrap();
-        assert!(scheduled[0].contains("on 2026-09-09 at 20:20 (America/New_York)"));
+        assert!(scheduled[0].starts_with("Next scheduled match:"));
+        assert!(scheduled[1].contains("on 2026-09-09 at 20:20 (America/New_York)"));
         // A final (`post`) event never gets a kickoff datetime even with a zone:
         // it keeps ESPN's own UTC calendar date and no localized time (the zone
         // label appears only in a kickoff suffix, so its absence proves the skip;
@@ -691,10 +838,13 @@ mod tests {
 
     #[test]
     fn parse_scoreboard_omits_round_when_season_type_absent_or_blank() {
-        // No season.type at all -> no round appended (the NFL fixture path).
+        // No season.type at all -> no round appended (the NFL fixture path). The
+        // fixture is all `pre`, so index 0 is the "Next scheduled match:"
+        // summary; the round-omission property is asserted on the first LISTING
+        // line (index 1).
         let (_, nfl) = parse_scoreboard(NFL_SCHEDULED_FIXTURE, None).unwrap();
-        assert!(nfl[0].contains("(scheduled, 9/9 - 8:20 PM EDT)"));
-        assert!(!nfl[0].contains("(scheduled, 9/9 - 8:20 PM EDT,"));
+        assert!(nfl[1].contains("(scheduled, 9/9 - 8:20 PM EDT)"));
+        assert!(!nfl[1].contains("(scheduled, 9/9 - 8:20 PM EDT,"));
         // A present-but-blank season.type.name is treated as absent, not
         // appended as a dangling ", ".
         let blank = r#"{"leagues": [{"name": "X", "season": {"type": {"name": "   "}}}], "events": [{"name": "A at B", "status": {"type": {"state": "post", "shortDetail": "Final"}}, "competitions": [{"competitors": [{"team": {"displayName": "A"}, "score": "1"}, {"team": {"displayName": "B"}, "score": "2"}]}]}]}"#;
@@ -706,14 +856,109 @@ mod tests {
     #[test]
     fn parse_scoreboard_reads_scheduled_events_with_date() {
         // No `season` field in this fixture: the league label falls back to
-        // the plain name, proving the season-year path is optional.
+        // the plain name, proving the season-year path is optional. Both `pre`
+        // fixtures are listed with their date; the list also leads with the
+        // "Next scheduled match:" summary (index 0), so the two listing entries
+        // are at indices 1 and 2.
         let (league, lines) = parse_scoreboard(NFL_SCHEDULED_FIXTURE, None).unwrap();
         assert_eq!(league, "National Football League");
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains("scheduled, 9/9 - 8:20 PM EDT"));
-        assert!(lines[0].contains("on 2026-09-10"));
-        assert!(lines[1].contains("scheduled, 9/10 - 8:35 PM EDT"));
-        assert!(lines[1].contains("on 2026-09-11"));
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].starts_with("Next scheduled match:"));
+        assert!(lines[1].contains("scheduled, 9/9 - 8:20 PM EDT"));
+        assert!(lines[1].contains("on 2026-09-10"));
+        assert!(lines[2].contains("scheduled, 9/10 - 8:35 PM EDT"));
+        assert!(lines[2].contains("on 2026-09-11"));
+    }
+
+    #[test]
+    fn parse_scoreboard_leads_with_in_progress_and_next_match_summaries() {
+        // The range fixture carries one live match and two scheduled matches on
+        // different dates, with the LATER scheduled match placed first in the
+        // array. The returned list leads with the computed summaries: the live
+        // match, then the EARLIEST scheduled match (England at Norway, 07-11),
+        // NOT the array-first scheduled match (Switzerland at Argentina, 07-12).
+        // This is the deterministic answer to "which match is next", computed
+        // from ESPN's own event states with no wall clock.
+        let (league, lines) = parse_scoreboard(WORLD_CUP_RANGE_FIXTURE, None).unwrap();
+        assert_eq!(league, "FIFA World Cup 2026");
+        // Two summaries (in-progress, next) + three listing lines.
+        assert_eq!(lines.len(), 5);
+        assert!(lines[0].starts_with("Currently in progress: "));
+        assert!(lines[0].contains("Belgium at Spain"));
+        assert!(lines[0].contains("(in progress, 32', Quarterfinals)"));
+        assert!(lines[1].starts_with("Next scheduled match: "));
+        // The next match is the earliest-dated `pre` event, not the array-first
+        // one: England at Norway (07-11), never Switzerland at Argentina (07-12).
+        assert!(lines[1].contains("England at Norway"));
+        assert!(!lines[1].contains("Switzerland at Argentina"));
+        assert!(lines[1].contains("on 2026-07-11"));
+        // The listing (evidence) still carries all three events below the
+        // summaries, in the response's original order.
+        assert!(lines[2].contains("Switzerland at Argentina"));
+        assert!(lines[3].contains("Belgium at Spain"));
+        assert!(lines[4].contains("England at Norway"));
+    }
+
+    #[test]
+    fn parse_scoreboard_omits_next_summary_when_no_scheduled_events() {
+        // An all-`post` slate (the final-match fixture) has no scheduled match,
+        // so no "Next scheduled match:" line is emitted at all.
+        let (_, lines) = parse_scoreboard(WORLD_CUP_FIXTURE, None).unwrap();
+        assert!(!lines.iter().any(|l| l.starts_with("Next scheduled match:")));
+        assert!(!lines
+            .iter()
+            .any(|l| l.starts_with("Currently in progress:")));
+    }
+
+    #[test]
+    fn parse_scoreboard_omits_in_progress_summary_when_none_live() {
+        // The NFL fixture is all `pre`: a "Next scheduled match:" summary is
+        // emitted but no "Currently in progress:" line, since nothing is live.
+        let (_, lines) = parse_scoreboard(NFL_SCHEDULED_FIXTURE, None).unwrap();
+        assert!(lines.iter().any(|l| l.starts_with("Next scheduled match:")));
+        assert!(!lines
+            .iter()
+            .any(|l| l.starts_with("Currently in progress:")));
+    }
+
+    #[test]
+    fn parse_scoreboard_computes_next_summary_before_the_listing_cap() {
+        // The next-match summary is computed from ALL parsed events, before the
+        // listing is capped at MAX_SPORTS_EVENTS. Here the only scheduled match
+        // sits past the cap (after MAX_SPORTS_EVENTS + 2 finished games): it is
+        // dropped from the listing, yet the summary still names it.
+        let mut events: Vec<serde_json::Value> = (0..MAX_SPORTS_EVENTS + 2)
+            .map(|i| {
+                serde_json::json!({
+                    "name": format!("Team A{i} at Team B{i}"),
+                    "status": {"type": {"state": "post", "shortDetail": "Final"}},
+                    "competitions": [{"competitors": [
+                        {"score": "1", "team": {"displayName": format!("Team B{i}")}},
+                        {"score": "0", "team": {"displayName": format!("Team A{i}")}}
+                    ]}]
+                })
+            })
+            .collect();
+        events.push(serde_json::json!({
+            "name": "Future Cup Final",
+            "date": "2026-08-01T18:00Z",
+            "status": {"type": {"state": "pre", "shortDetail": "8/1 - 2:00 PM EDT"}},
+            "competitions": [{"competitors": [
+                {"score": "0", "team": {"displayName": "Home Side"}},
+                {"score": "0", "team": {"displayName": "Away Side"}}
+            ]}]
+        }));
+        let body = serde_json::json!({"leagues": [{"name": "Cup"}], "events": events}).to_string();
+        let (_, lines) = parse_scoreboard(&body, None).unwrap();
+        // One summary line + MAX_SPORTS_EVENTS listing lines.
+        assert_eq!(lines.len(), MAX_SPORTS_EVENTS + 1);
+        assert!(lines[0].starts_with("Next scheduled match: "));
+        assert!(lines[0].contains("Future Cup Final"));
+        // The scheduled match was capped OUT of the listing (only summary has it).
+        assert!(
+            !lines[1..].iter().any(|l| l.contains("Future Cup Final")),
+            "the next match sits past the listing cap; only the summary surfaces it"
+        );
     }
 
     #[test]
@@ -854,7 +1099,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_sports_resolves_full_chain_on_league_match() {
-        let url = scoreboard_request("soccer", "fifa.world").url;
+        let url = scoreboard_request("soccer", "fifa.world", "2026-07-09").url;
         let transport = FakeHttpTransport::new().with_response(
             &url,
             HttpResponse {
@@ -900,7 +1145,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_sports_none_on_bad_status() {
-        let url = scoreboard_request("basketball", "nba").url;
+        let url = scoreboard_request("basketball", "nba", "2026-07-09").url;
         let transport = FakeHttpTransport::new().with_response(
             &url,
             HttpResponse {
@@ -918,7 +1163,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_sports_none_on_empty_events() {
-        let url = scoreboard_request("hockey", "nhl").url;
+        let url = scoreboard_request("hockey", "nhl", "2026-07-09").url;
         let transport = FakeHttpTransport::new().with_response(
             &url,
             HttpResponse {
@@ -936,7 +1181,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_sports_none_on_unparseable_body() {
-        let url = scoreboard_request("baseball", "mlb").url;
+        let url = scoreboard_request("baseball", "mlb", "2026-07-09").url;
         let transport = FakeHttpTransport::new().with_response(
             &url,
             HttpResponse {
