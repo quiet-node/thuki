@@ -23,28 +23,41 @@ interface MarkdownRendererProps {
   citationSources?: SearchResultPreview[];
 }
 
-/** Matches a bare numbered citation marker the search writer emits. */
-const CITATION_MARKER_RE = /\[(\d+)\]/g;
+/**
+ * Matches a numbered citation marker, including a comma-grouped form the
+ * writer is instructed not to emit but small local models sometimes do
+ * anyway (`[1, 7]`, `[1,7]`, `[1 , 7]`): defense in depth alongside the
+ * writer's own single-bracket-per-index contract (see `writer.rs`).
+ */
+const CITATION_MARKER_RE = /\[\s*\d+(?:\s*,\s*\d+)*\s*\]/g;
 
 /**
  * Rewrites plain-text `[N]` markers into markdown links targeting the
  * matching source URL so the citation renders through the normal markdown
- * pipeline. Markers with no matching source are left untouched. Spaces and
- * parentheses in the URL are percent-encoded so they cannot terminate the
- * `(destination)` and break the surrounding markdown.
+ * pipeline. A comma-grouped marker (`[1, 7]`) is split into one link per
+ * index, each resolving against its own source. Any index with no matching
+ * source is left as a literal `[N]` (unlinked), exactly as a lone unmatched
+ * marker already was. Spaces and parentheses in the URL are percent-encoded
+ * so they cannot terminate the `(destination)` and break the surrounding
+ * markdown.
  */
 export function linkifyCitations(
   content: string,
   sources: SearchResultPreview[],
 ): string {
-  return content.replace(CITATION_MARKER_RE, (marker, digits: string) => {
-    const source = sources[Number.parseInt(digits, 10) - 1];
-    if (!source) return marker;
-    const url = source.url
-      .replace(/ /g, '%20')
-      .replace(/\(/g, '%28')
-      .replace(/\)/g, '%29');
-    return `[\\[${digits}\\]](${url})`;
+  return content.replace(CITATION_MARKER_RE, (marker) => {
+    const digitsList = Array.from(marker.matchAll(/\d+/g), (m) => m[0]);
+    return digitsList
+      .map((digits) => {
+        const source = sources[Number.parseInt(digits, 10) - 1];
+        if (!source) return `[${digits}]`;
+        const url = source.url
+          .replace(/ /g, '%20')
+          .replace(/\(/g, '%28')
+          .replace(/\)/g, '%29');
+        return `[\\[${digits}\\]](${url})`;
+      })
+      .join('');
   });
 }
 

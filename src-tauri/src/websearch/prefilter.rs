@@ -228,6 +228,46 @@ const MATH_FILLER_WORDS: &[&str] = &[
 /// classifier.
 const MAX_GREETING_TOKENS: usize = 6;
 
+/// Words that only ever appear as the subject of a pure local-clock/date
+/// question. Presence of at least one, combined with only
+/// [`CLOCK_FILLER_WORDS`], marks the message a clock/date question (see
+/// [`is_clock_question`]).
+const CLOCK_CONTENT_WORDS: &[&str] = &["time", "date", "day", "today", "clock"];
+
+/// Connective filler tokens permitted inside a pure clock/date question,
+/// alongside at least one of [`CLOCK_CONTENT_WORDS`]. Deliberately its own
+/// small list (not shared with [`GREETING_ACK_WORDS`]/[`MATH_FILLER_WORDS`])
+/// so the rule stays high-precision: any word outside both lists disqualifies
+/// the message, so "what time is the SpaceX launch today" (a real freshness
+/// question, not a clock question) correctly falls through, since "spacex"
+/// and "launch" are in neither list.
+const CLOCK_FILLER_WORDS: &[&str] = &[
+    "what",
+    "whats",
+    "s",
+    "is",
+    "it",
+    "the",
+    "again",
+    "please",
+    "tell",
+    "me",
+    "know",
+    "current",
+    "currently",
+    "right",
+    "now",
+    "and",
+    "there",
+    "here",
+    "in",
+];
+
+/// Maximum token count (after a trailing "in <place>" timezone suffix is
+/// stripped) for a message to still qualify as a pure clock/date question.
+/// Mirrors [`MAX_GREETING_TOKENS`]'s bound.
+const MAX_CLOCK_QUESTION_TOKENS: usize = 10;
+
 /// Resolves the deterministic verdict for `message`. `today` is the `YYYY-MM-DD`
 /// date string used to recognise current-or-future year tokens as a freshness
 /// signal. Pure and total: any input yields a verdict.
@@ -249,6 +289,18 @@ pub fn prefilter(message: &str, today: &str) -> PreFilterVerdict {
         return PreFilterVerdict::ForceNo;
     }
 
+    // Pure local-clock/date questions ("what time is it", "today's date")
+    // are ForceNo even though they reuse freshness words ("today", "current")
+    // in the clock sense rather than the freshness sense: checked BEFORE the
+    // freshness scan below so those tokens are never mistaken for a
+    // freshness signal. The model answers them from its own injected
+    // local-datetime context (see `commands::system_prompt_with_datetime`),
+    // never the web. See `is_clock_question` for why this stays high-
+    // precision against mixed-signal turns.
+    if is_clock_question(&normalised) {
+        return PreFilterVerdict::ForceNo;
+    }
+
     // Force-search signals win over every skip rule.
     if has_force_web_signal(&bounded, &normalised, &tokens, today) {
         return PreFilterVerdict::ForceWeb;
@@ -260,6 +312,32 @@ pub fn prefilter(message: &str, today: &str) -> PreFilterVerdict {
     }
 
     PreFilterVerdict::Ambiguous
+}
+
+/// Whether `normalised` (already lowercased and punctuation-stripped) is a
+/// pure local-clock or local-date question: "what time is it", "current
+/// time", "today's date", "what day is it", "what's today", including a
+/// trailing "in <place>" timezone-conversion suffix ("what time is it in
+/// Tokyo"), which is stripped before matching since the model converts the
+/// injected local time itself. High-precision by construction: every token
+/// remaining after the suffix strip must be either a
+/// [`CLOCK_CONTENT_WORDS`] subject or a [`CLOCK_FILLER_WORDS`] connective, so
+/// any turn mixing in unrelated content ("what time is the SpaceX launch
+/// today") falls through untouched.
+fn is_clock_question(normalised: &str) -> bool {
+    let stripped = match normalised.rfind(" in ") {
+        Some(idx) => &normalised[..idx],
+        None => normalised,
+    };
+    let tokens: Vec<&str> = stripped.split_whitespace().collect();
+    if tokens.is_empty() || tokens.len() > MAX_CLOCK_QUESTION_TOKENS {
+        return false;
+    }
+    let has_content = tokens.iter().any(|t| CLOCK_CONTENT_WORDS.contains(t));
+    let all_known = tokens
+        .iter()
+        .all(|t| CLOCK_CONTENT_WORDS.contains(t) || CLOCK_FILLER_WORDS.contains(t));
+    has_content && all_known
 }
 
 /// Lowercases-and-normalises `bounded` (already lowercased and length-capped) by
@@ -518,6 +596,66 @@ mod tests {
             prefilter("tokyo weather", "not-a-date"),
             PreFilterVerdict::ForceWeb
         );
+    }
+
+    // ── local-clock/date questions force no ──────────────────────────────────
+
+    #[test]
+    fn pure_clock_and_date_questions_force_no() {
+        for m in [
+            "what time is it",
+            "current time",
+            "the current time",
+            "today's date",
+            "what's today's date",
+            "what day is it",
+            "what's today",
+            "whats today",
+            "what's the date",
+            "tell me the time please",
+        ] {
+            assert_eq!(verdict(m), PreFilterVerdict::ForceNo, "{m}");
+        }
+    }
+
+    #[test]
+    fn clock_question_with_timezone_suffix_still_forces_no() {
+        // A trailing "in <place>" timezone-conversion suffix is stripped
+        // before matching: the model converts the injected local time
+        // itself, so this still needs no search.
+        for m in [
+            "what time is it in Tokyo",
+            "current time in London",
+            "what's the time in New York right now",
+        ] {
+            assert_eq!(verdict(m), PreFilterVerdict::ForceNo, "{m}");
+        }
+    }
+
+    #[test]
+    fn clock_question_mixed_with_other_signal_is_not_forced_no() {
+        // Conservative stance: a turn that also asks about something else
+        // must not be swallowed by the clock rule. Both fall through to
+        // ForceWeb via their own freshness word ("spacex"/"launch" are in
+        // neither clock list, so `is_clock_question` correctly declines and
+        // the ordinary freshness scan catches "today").
+        assert_eq!(
+            verdict("what time is the SpaceX launch today"),
+            PreFilterVerdict::ForceWeb
+        );
+        assert_eq!(
+            verdict("what's the score and what time is it"),
+            PreFilterVerdict::ForceWeb
+        );
+    }
+
+    #[test]
+    fn clock_question_over_token_cap_is_not_forced_no() {
+        // More filler tokens than MAX_CLOCK_QUESTION_TOKENS: the rule declines
+        // (stays bounded) and the turn falls through to the classifier rather
+        // than being force-skipped.
+        let long = "what ".repeat(MAX_CLOCK_QUESTION_TOKENS + 1) + "time";
+        assert_eq!(verdict(&long), PreFilterVerdict::Ambiguous);
     }
 
     // ── force-no signals ──────────────────────────────────────────────────────

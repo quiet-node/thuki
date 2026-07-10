@@ -588,12 +588,19 @@ enum BuiltinSearchResult {
     Cancelled,
 }
 
-/// Today's date as `YYYY-MM-DD` (UTC) for the writer's date context. UTC keeps
-/// the clock wrapper thread-safe; near-midnight zone skew is immaterial to the
-/// model's freshness reasoning. Coverage-excluded: a thin clock wrapper.
+/// Today's date as `YYYY-MM-DD`, in the device's local timezone when it can
+/// be determined, else UTC. Kept at day granularity (not the fuller
+/// [`local_datetime_context`] line): this exact string also feeds
+/// [`crate::websearch::prefilter::prefilter`]'s current-or-future-year check
+/// and the sports vertical's as-of line, both of which parse a bare
+/// `YYYY-MM-DD`. Coverage-excluded: a thin clock wrapper.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn today_string() -> String {
-    time::OffsetDateTime::now_utc().date().to_string()
+    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+    time::OffsetDateTime::now_utc()
+        .to_offset(offset)
+        .date()
+        .to_string()
 }
 
 /// Best-effort user locale from `$LANG` (e.g. `en_US`), falling back to
@@ -606,6 +613,96 @@ fn user_locale() -> String {
         .and_then(|lang| lang.split('.').next().map(str::to_string))
         .filter(|locale| !locale.is_empty())
         .unwrap_or_else(|| "en-US".to_string())
+}
+
+/// Best-effort IANA timezone name, read from the `/etc/localtime` symlink
+/// target (macOS's canonical timezone pointer, e.g.
+/// `/usr/share/zoneinfo/America/Chicago` -> `"America/Chicago"`). `None` when
+/// the symlink is missing, unreadable, or does not resolve under a
+/// `zoneinfo/` prefix (falls back to a numeric UTC-offset label; see
+/// [`format_datetime_context`]). Coverage-excluded: a thin filesystem
+/// wrapper.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn zone_label() -> Option<String> {
+    let target = std::fs::read_link("/etc/localtime").ok()?;
+    let target = target.to_str()?;
+    target.split("zoneinfo/").nth(1).map(str::to_string)
+}
+
+/// Formats `offset` as `UTC+HH:MM` / `UTC-HH:MM`: the zone label used when the
+/// IANA name in [`zone_label`] could not be resolved.
+fn offset_label(offset: time::UtcOffset) -> String {
+    let total_seconds = offset.whole_seconds();
+    let sign = if total_seconds < 0 { '-' } else { '+' };
+    let total_minutes = total_seconds.unsigned_abs() / 60;
+    format!(
+        "UTC{sign}{:02}:{:02}",
+        total_minutes / 60,
+        total_minutes % 60
+    )
+}
+
+/// Formats the current local-datetime context line injected into the persona
+/// system prompt (see [`system_prompt_with_datetime`]): weekday, ISO date,
+/// 24-hour time, and a timezone label, e.g. `"Friday, 2026-07-10, 01:15
+/// (America/Chicago)"`. `now_utc` and `offset` are injected so both branches
+/// are unit-tested without depending on process/thread state:
+/// - `offset` is `None` when the local offset could not be soundly determined
+///   (see `local_datetime_context`), in which case the line reports the UTC
+///   time labelled `"UTC"` rather than guessing;
+/// - `zone` is the best-effort IANA name; `None` falls back to a numeric
+///   `UTC±HH:MM` label ([`offset_label`]) so the line always carries a zone
+///   marker.
+fn format_datetime_context(
+    now_utc: time::OffsetDateTime,
+    offset: Option<time::UtcOffset>,
+    zone: Option<&str>,
+) -> String {
+    let (local, label) = match offset {
+        Some(offset) => (
+            now_utc.to_offset(offset),
+            zone.map(str::to_string)
+                .unwrap_or_else(|| offset_label(offset)),
+        ),
+        None => (now_utc, "UTC".to_string()),
+    };
+    format!(
+        "{}, {:04}-{:02}-{:02}, {:02}:{:02} ({label})",
+        local.weekday(),
+        local.year(),
+        u8::from(local.month()),
+        local.day(),
+        local.hour(),
+        local.minute(),
+    )
+}
+
+/// Captures the real clock/offset/zone and formats the current local-datetime
+/// context line (see [`format_datetime_context`]). Coverage-excluded: a thin
+/// wrapper over the tested pure formatter; the only untested behaviour is
+/// reading the real clock and `/etc/localtime`.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn local_datetime_context() -> String {
+    let offset = time::UtcOffset::current_local_offset().ok();
+    let zone = zone_label();
+    format_datetime_context(time::OffsetDateTime::now_utc(), offset, zone.as_deref())
+}
+
+/// Appends the current local-datetime context line to the persona system
+/// prompt. This is composed once, before the route/search branch, so both
+/// the plain chat stream and the search writer/unreachable prompts (which
+/// reuse this same system message; see `run_builtin_search`'s
+/// `system_prompt` argument) can answer date/time questions directly from
+/// context instead of guessing or, worse, searching the web for the clock.
+///
+/// This is deliberately the ONLY place the local datetime is threaded into:
+/// the persona-free search classifier (`websearch::prepass`) builds its own
+/// short system prompt and never sees the persona, so the datetime line
+/// cannot leak into its standalone-question rewrite or outbound search
+/// queries. The writer's own `today` (`YYYY-MM-DD`) date context is separate
+/// and unaffected (see `today_string`).
+pub(crate) fn system_prompt_with_datetime(persona: &str, datetime_context: &str) -> String {
+    format!("{persona}\n\nCurrent local date and time: {datetime_context}.")
 }
 
 /// Runs the built-in search pre-pass and, if it fires, the retrieval pipeline
@@ -1600,13 +1697,19 @@ pub async fn ask_model(
     // Snapshot the current epoch and build the messages array for Ollama.
     // The user message is NOT yet committed to history - it is only added
     // after a response (including partial/cancelled) to prevent orphaned
-    // messages on errors.
+    // messages on errors. The system message carries the current
+    // local-datetime context (see `system_prompt_with_datetime`), captured
+    // once here so every downstream call this turn (plain stream, search
+    // writer, unreachable disclosure) sees byte-identical text.
     let (epoch_at_start, mut messages) = {
         let conv = history.messages.lock().unwrap();
         let epoch = history.epoch.load(Ordering::SeqCst);
         let mut msgs = vec![ChatMessage {
             role: "system".to_string(),
-            content: config.prompt.resolved_system.clone(),
+            content: system_prompt_with_datetime(
+                &config.prompt.resolved_system,
+                &local_datetime_context(),
+            ),
             images: None,
         }];
         msgs.extend(conv.clone());
@@ -1936,6 +2039,61 @@ mod tests {
     use super::*;
     use crate::config::defaults::DEFAULT_NUM_CTX;
     use std::sync::{Arc, Mutex as StdMutex};
+
+    // ── local-datetime context ────────────────────────────────────────────
+
+    /// 2026-07-10 01:15:30 UTC (a Friday), the fixed instant every
+    /// `format_datetime_context` test formats.
+    fn fixed_utc() -> time::OffsetDateTime {
+        time::macros::datetime!(2026-07-10 01:15:30 UTC)
+    }
+
+    #[test]
+    fn offset_label_formats_positive_and_negative_offsets() {
+        assert_eq!(
+            offset_label(time::UtcOffset::from_hms(5, 30, 0).unwrap()),
+            "UTC+05:30"
+        );
+        assert_eq!(
+            offset_label(time::UtcOffset::from_hms(-5, 0, 0).unwrap()),
+            "UTC-05:00"
+        );
+        assert_eq!(offset_label(time::UtcOffset::UTC), "UTC+00:00");
+    }
+
+    #[test]
+    fn format_datetime_context_uses_iana_zone_when_known() {
+        let offset = time::UtcOffset::from_hms(-5, 0, 0).unwrap();
+        let got = format_datetime_context(fixed_utc(), Some(offset), Some("America/Chicago"));
+        // 01:15 UTC-5 = the previous day, 20:15.
+        assert_eq!(got, "Thursday, 2026-07-09, 20:15 (America/Chicago)");
+    }
+
+    #[test]
+    fn format_datetime_context_falls_back_to_numeric_offset_label_when_zone_unknown() {
+        let offset = time::UtcOffset::from_hms(9, 0, 0).unwrap();
+        let got = format_datetime_context(fixed_utc(), Some(offset), None);
+        assert_eq!(got, "Friday, 2026-07-10, 10:15 (UTC+09:00)");
+    }
+
+    #[test]
+    fn format_datetime_context_falls_back_to_utc_when_offset_unavailable() {
+        // The soundness-restricted path: no local offset could be determined,
+        // so the line reports UTC time labelled "UTC" rather than guessing.
+        // A zone name (even if somehow present) is irrelevant here: with no
+        // offset, `now_utc` is used verbatim and the label is always "UTC".
+        let got = format_datetime_context(fixed_utc(), None, Some("America/Chicago"));
+        assert_eq!(got, "Friday, 2026-07-10, 01:15 (UTC)");
+    }
+
+    #[test]
+    fn system_prompt_with_datetime_appends_context_line() {
+        let got = system_prompt_with_datetime("You are Thuki.", "Friday, 2026-07-10, 01:15 (UTC)");
+        assert_eq!(
+            got,
+            "You are Thuki.\n\nCurrent local date and time: Friday, 2026-07-10, 01:15 (UTC)."
+        );
+    }
 
     #[test]
     fn source_metas_projects_index_url_title() {

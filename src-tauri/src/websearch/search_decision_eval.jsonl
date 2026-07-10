@@ -64,3 +64,9 @@
 {"message": "summarize the plot of Romeo and Juliet", "label": "no", "category": "creative", "route": "web"}
 {"message": "and its population?", "label": "no", "category": "followup_stable", "route": "wiki"}
 {"message": "what is the population of France", "label": "no", "category": "stable_fact", "route": "wiki"}
+{"message": "what time is it", "label": "no", "category": "clock", "route": "web"}
+{"message": "what's today's date", "label": "no", "category": "clock", "route": "web"}
+{"message": "what day is it", "label": "no", "category": "clock", "route": "web"}
+{"message": "current time", "label": "no", "category": "clock", "route": "web"}
+{"message": "what's today", "label": "no", "category": "clock", "route": "web"}
+{"message": "what time is it in Tokyo", "label": "no", "category": "clock", "route": "web"}

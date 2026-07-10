@@ -534,7 +534,8 @@ fn grounded_answer(
             })
             .collect(),
     });
-    if tier != "cache" {
+    let is_cache_tier = tier == "cache";
+    if !is_cache_tier {
         deps.cache.store(
             deps.cache_scope,
             CachedSearch {
@@ -550,6 +551,7 @@ fn grounded_answer(
         &sources,
         today,
         locale,
+        is_cache_tier,
     );
     SearchOutcome::Answer { messages, sources }
 }
@@ -2127,6 +2129,11 @@ mod tests {
             transport.calls().is_empty(),
             "a cache hit must not retrieve"
         );
+        // A `cached`-tier answer carries the cache-brevity directive: the user
+        // is re-asking about the answer just given.
+        assert!(matches!(&outcome, SearchOutcome::Answer { messages, .. }
+            if messages.last().is_some_and(|m| m.content
+                .contains("asking again about the answer you just gave"))));
         let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
         assert!(events.iter().any(|e| matches!(
             e,
@@ -2136,6 +2143,31 @@ mod tests {
                 title: "Rust 1.90.0".into(),
             }]
         )));
+    }
+
+    #[tokio::test]
+    async fn web_tier_answer_omits_the_cache_brevity_directive() {
+        // A fresh `web`-tier retrieval (not served from the cache) must never
+        // carry the cache-tier brevity directive: only a `cached`-decision
+        // answer is a repeat of an earlier reply.
+        let prepass = FakePrePass::returning(Ok(web_decision(vec!["treaty versailles paris"])));
+        let transport = transport_with_serp_and_page();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { messages, .. }
+            if messages.last().is_some_and(|m| !m.content
+                .contains("asking again about the answer you just gave"))));
     }
 
     #[tokio::test]

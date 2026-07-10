@@ -422,6 +422,42 @@ describe('MarkdownRenderer', () => {
         'See [\\[1\\]](https://en.wikipedia.org/wiki/Rust%20%28game%29).',
       );
     });
+
+    it('splits a comma-grouped marker into one link per index', () => {
+      expect(linkifyCitations('Claim [1, 2] here.', sources)).toBe(
+        'Claim [\\[1\\]](https://doc.rust-lang.org)[\\[2\\]](https://tokio.rs) here.',
+      );
+    });
+
+    it('splits grouped markers regardless of comma spacing', () => {
+      for (const marker of ['[1,2]', '[1, 2]', '[1 , 2]', '[1 ,2]']) {
+        expect(linkifyCitations(`Claim ${marker} here.`, sources)).toBe(
+          'Claim [\\[1\\]](https://doc.rust-lang.org)[\\[2\\]](https://tokio.rs) here.',
+        );
+      }
+    });
+
+    it('leaves an index with no matching source literal inside a group', () => {
+      expect(linkifyCitations('Claim [1, 9] here.', sources)).toBe(
+        'Claim [\\[1\\]](https://doc.rust-lang.org)[9] here.',
+      );
+    });
+
+    it('leaves every index literal when a group has no matching sources', () => {
+      expect(linkifyCitations('Orphan [8, 9] group.', sources)).toBe(
+        'Orphan [8][9] group.',
+      );
+    });
+
+    it('splits a three-index group', () => {
+      const threeSources = [
+        ...sources,
+        { title: 'Serde', url: 'https://serde.rs' },
+      ];
+      expect(linkifyCitations('Claim [1, 2, 3] here.', threeSources)).toBe(
+        'Claim [\\[1\\]](https://doc.rust-lang.org)[\\[2\\]](https://tokio.rs)[\\[3\\]](https://serde.rs) here.',
+      );
+    });
   });
 
   describe('citation anchor override', () => {
