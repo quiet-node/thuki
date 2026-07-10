@@ -475,18 +475,6 @@ function App() {
   } = useModelSelection();
 
   /**
-   * Unconditional "we reached a responsive state" signal for the launch
-   * circuit breaker (issue #296). Must fire on every mount regardless of
-   * onboarding stage, safe mode, or user interaction: React successfully
-   * mounting and running this effect IS the health proof, decoupled from
-   * whatever `safe_mode` already decided for THIS launch on the Rust side
-   * (that was resolved synchronously before the frontend even loaded).
-   */
-  useEffect(() => {
-    void invoke('mark_startup_healthy');
-  }, []);
-
-  /**
    * Reads this launch's circuit-breaker verdict once on mount. A missing or
    * malformed response (untested commands resolve to `undefined` in the test
    * double, or a resolver failure in production) degrades to "not in safe

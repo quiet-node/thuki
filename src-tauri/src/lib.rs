@@ -410,6 +410,23 @@ fn should_warn_on_quit(app: &tauri::AppHandle) -> bool {
         || DOWNLOAD_PAUSED.load(Ordering::SeqCst)
 }
 
+/// Durably marks this session's launch record as a clean exit (issue #296).
+///
+/// The only place the launch circuit breaker's `clean_exit` marker is set to
+/// true. Best-effort and idempotent: no-op when this process does not own the
+/// session (another instance held the advisory lock), and any write failure is
+/// logged rather than blocking shutdown.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn mark_session_clean_exit(app: &tauri::AppHandle) {
+    if let Some(guard) = app.try_state::<startup_guard::SessionGuard>() {
+        if let Some(writer) = guard.writer() {
+            if let Err(e) = writer.mark_clean_exit() {
+                eprintln!("thuki: [startup_guard] failed to mark clean exit: {e}");
+            }
+        }
+    }
+}
+
 /// Handles a quit request from the app menu or the tray: warn when a download
 /// would be lost, otherwise quit immediately.
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -2554,21 +2571,28 @@ pub fn run() {
             app.manage(parking_lot::RwLock::new(app_config));
 
             // ── Launch circuit breaker (issue #296) ───────────────────
-            // Detect a previous launch that never reached a healthy state:
-            // the crash-loop signature where Thuki froze the machine while
-            // auto-loading a large model, macOS reopened the app after the
-            // forced power-off, and it re-froze before the user could act.
-            // Runs BEFORE any dangerous auto-op so this launch's dirty
-            // sentinel is already on disk if it freezes too. The reset is the
-            // `mark_startup_healthy` command (called from the frontend once
-            // past startup), NOT a clean-exit signal: Thuki quits only from
-            // the tray, so `RunEvent::Exit` almost never fires.
-            app.manage(startup_guard::run_startup_guard(
+            // Detect a previous session that died abnormally: the crash-loop
+            // signature where Thuki froze the machine while auto-loading a
+            // large model, macOS reopened the app after the forced power-off,
+            // and it re-froze before the user could act. Runs BEFORE any
+            // dangerous auto-op: it takes a process-lifetime advisory lock and
+            // durably writes this launch's `clean_exit: false` record up front,
+            // so a freeze anywhere in the dangerous window leaves the abnormal
+            // marker on disk. The ONLY clear point is a genuine exit (see the
+            // `mark_session_clean_exit` calls in the run loop below); the
+            // renderer starting proves nothing about surviving that window.
+            let startup = startup_guard::run_startup_guard(
                 app.handle(),
                 crate::config::defaults::DEFAULT_STARTUP_SAFE_MODE_THRESHOLD,
-            ));
+            );
+            // This launch's immutable verdict (read by the auto-prime gate and
+            // the `startup_safety` command) and the process-lifetime session
+            // handle (holds the advisory lock open and owns the record writer)
+            // are two separate managed values by design; never conflated.
+            app.manage(startup.safety);
+            app.manage(startup.guard);
 
-            // Defense-in-depth on top of the sentinel: ask macOS not to
+            // Defense-in-depth on top of the session record: ask macOS not to
             // auto-reopen our overlay after an unclean shutdown, reducing the
             // chance the dangerous auto-startup path is re-entered with no
             // user action in the first place.
@@ -2982,7 +3006,6 @@ pub fn run() {
             #[cfg(not(coverage))]
             warmup::get_builtin_warm_state,
             startup_guard::startup_safety,
-            startup_guard::mark_startup_healthy,
             updater::commands::get_updater_state,
             #[cfg(not(coverage))]
             updater::commands::check_for_update,
@@ -3060,9 +3083,23 @@ pub fn run() {
                 if !QUIT_CONFIRMED.load(Ordering::SeqCst) && should_warn_on_quit(app_handle) {
                     api.prevent_exit();
                     show_quit_dialog(app_handle);
+                } else {
+                    // why: this is the ONLY place the session record is flipped
+                    // to `clean_exit: true`, because the renderer starting
+                    // proves nothing about surviving the dangerous startup
+                    // window (issue #296). The exit is proceeding (not held for
+                    // a download warning), so mark it clean here. `Exit` below
+                    // marks it too, since on the macOS restart/shutdown
+                    // termination path `ExitRequested` may not fire; the write
+                    // is idempotent, so marking on both paths is safe.
+                    mark_session_clean_exit(app_handle);
                 }
             }
             RunEvent::Exit => {
+                // why: also mark the clean exit here (idempotent) so the macOS
+                // restart/shutdown termination path, which may skip
+                // `ExitRequested`, still lands the clean marker durably.
+                mark_session_clean_exit(app_handle);
                 // Kill the built-in engine sidecar and confirm its exit so
                 // no orphan llama-server survives quit. The actor runs on
                 // the tokio runtime, so block_on here cannot deadlock.

@@ -2,22 +2,30 @@
 //!
 //! On a memory-constrained Mac, Thuki froze the whole machine while
 //! auto-loading a large model at startup. After a forced power-off macOS
-//! relaunched the app (its reopen-after-unclean-shutdown behavior) and the
-//! same no-user-action auto-startup work re-ran and re-froze the machine
-//! before the user could intervene: a deadloop.
+//! relaunched the app (its reopen-after-unclean-shutdown behavior) and the same
+//! no-user-action auto-startup work re-ran and re-froze the machine before the
+//! user could intervene: a deadloop.
 //!
-//! Thuki hides on window close and quits only from the tray, so
-//! `RunEvent::Exit` almost never fires during a healthy session. Any
-//! crash-loop detection therefore MUST NOT depend on a clean-exit signal.
-//! Instead this module uses a "dirty on launch, cleared when healthy"
-//! sentinel: every launch writes a dirty marker before any dangerous
-//! auto-op runs, and the app clears it (via `mark_startup_healthy`) only
-//! once it has reached a responsive state. A launch that finds the previous
-//! marker still dirty therefore knows the previous launch never became
-//! healthy: the crash-loop signature.
+//! Thuki hides on window close and quits only from the tray, so a clean-exit
+//! signal almost never fires during a healthy session. Crash-loop detection
+//! therefore MUST NOT depend on one. This module proves liveness two ways that
+//! survive process death by ANY cause:
 //!
-//! The module is split into pure decision logic (fully unit-tested, no I/O)
-//! and thin `coverage(off)` I/O wrappers that mirror the forgiving,
+//! - a process-lifetime advisory lock (`flock`) the kernel releases on death by
+//!   any cause (clean exit, panic, SIGKILL, OS OOM-kill, power loss), and
+//! - a write-ahead session record that is durably `clean_exit: false` on disk
+//!   BEFORE any dangerous auto-op runs. A launch that finds the previous
+//!   record still `clean_exit: false` knows the previous process died
+//!   abnormally.
+//!
+//! Modeled on Firefox `nsAppStartup`'s profile lock and Sentry's
+//! crashed-vs-abnormal session distinction. Safe mode engages purely on
+//! `clean_exit == false` plus the consecutive-abnormal streak reaching the
+//! threshold; `boot_time_secs` and `activity` classify the CAUSE for the
+//! recovery message only and never gate safety.
+//!
+//! The module is split into pure decision logic (fully unit-tested, no I/O) and
+//! thin `coverage(off)` I/O/FFI wrappers that mirror the forgiving,
 //! never-panic-on-bad-input contract of `config::loader`/`config::writer`.
 
 use std::fs::{File, OpenOptions};
@@ -27,120 +35,53 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// The sentinel state persisted to disk between launches.
-///
-/// `launch_dirty` is set true at the start of every launch and cleared only
-/// when the app reports it reached a healthy/responsive state.
-/// `consecutive_unclean` counts how many launches in a row failed to reach
-/// that healthy state, so a threshold can distinguish a one-off from a loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PersistedGuardState {
-    /// True while a launch is in progress and not yet confirmed healthy.
-    /// A launch that reads this as true was preceded by a launch that never
-    /// reached a responsive state.
-    pub launch_dirty: bool,
-    /// Number of consecutive launches that were dirty on start (previous
-    /// launch never became healthy). Reset to zero on any clean launch and
-    /// by an explicit healthy signal.
-    pub consecutive_unclean: u32,
-}
+/// The session-record schema version this build reads and writes. A record
+/// whose schema is not this value is treated as clean (fails open), so an
+/// older on-disk format can never by itself trip safe mode.
+const SESSION_SCHEMA: u32 = 1;
 
-impl Default for PersistedGuardState {
-    /// The first-run / clean default: no launch in progress, no unclean
-    /// streak. Also the value substituted for a missing or unparseable
-    /// sentinel file, so a corrupt file can never by itself trip safe mode.
-    fn default() -> Self {
-        Self {
-            launch_dirty: false,
-            consecutive_unclean: 0,
-        }
-    }
-}
-
-/// The outcome of the pure startup decision: what this launch should do and
-/// what to persist for the next launch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StartupDecision {
-    /// Whether this launch should enter safe mode (skip dangerous auto-ops).
-    pub safe_mode: bool,
-    /// The consecutive-unclean count computed for this launch. Mirrored into
-    /// the managed state so the UI can show why safe mode engaged.
-    pub unclean_count: u32,
-    /// The sentinel to persist for THIS launch: always dirty, carrying the
-    /// updated count. It is cleared later by the healthy signal.
-    pub next_state: PersistedGuardState,
-}
-
-/// Pure decision logic: given the sentinel the previous launch left behind and
-/// the safe-mode threshold, compute this launch's decision. No I/O.
-///
-/// Semantics (per issue #296):
-/// - If `prior.launch_dirty` is true, the previous launch never reached a
-///   healthy state, so this is another unclean launch and the streak grows by
-///   one. Otherwise the streak resets to zero.
-/// - Safe mode engages once the streak reaches `threshold`.
-/// - The state to persist for this launch is always dirty, carrying the new
-///   streak count; it is cleared only by [`healthy_state`].
-pub fn decide(prior: PersistedGuardState, threshold: u32) -> StartupDecision {
-    let unclean_count = if prior.launch_dirty {
-        // Previous launch wrote dirty and never cleared it: it did not reach
-        // a healthy state before this launch began.
-        prior.consecutive_unclean.saturating_add(1)
-    } else {
-        0
-    };
-    let safe_mode = unclean_count >= threshold;
-    StartupDecision {
-        safe_mode,
-        unclean_count,
-        next_state: PersistedGuardState {
-            launch_dirty: true,
-            consecutive_unclean: unclean_count,
-        },
-    }
-}
-
-/// The sentinel written when the app confirms it reached a healthy state:
-/// not dirty, streak cleared. Pure; the persistence is done by the caller.
-pub fn healthy_state() -> PersistedGuardState {
-    PersistedGuardState {
-        launch_dirty: false,
-        consecutive_unclean: 0,
-    }
-}
+// ---------------------------------------------------------------------------
+// This launch's verdict (immutable managed state) and its wire shape.
+// ---------------------------------------------------------------------------
 
 /// Immutable managed state holding this launch's circuit-breaker verdict.
 ///
 /// Read from multiple subsystems and threads (the auto-prime gate in
-/// `show_overlay`, the download gates in `models`, the `startup_safety`
-/// command). Both fields are set once at construction by [`from_decision`] and
-/// are never mutated for the lifetime of the process, so the struct is a plain
-/// pair of primitives. Immutable primitives are `Sync`, so it satisfies Tauri's
+/// `show_overlay`, the `startup_safety` command). Every field is set once at
+/// construction by [`from_decision`] and is never mutated for the lifetime of
+/// the process, so the struct is a plain bundle of primitives plus one small
+/// enum/struct. Immutable values are `Sync`, so it satisfies Tauri's
 /// managed-state `Send + Sync` requirement with no atomics or locks.
 ///
 /// Invariant: the verdict is a FACT about THIS launch and must stay fixed for
-/// the whole session. It is deliberately NOT reset by the healthy signal. The
-/// dangerous auto-op this breaker exists to stop (the overlay-show auto-prime
-/// in `lib.rs`) runs AFTER the frontend has mounted and fired
-/// `mark_startup_healthy`; clearing the verdict on that mount signal would
-/// erase the gate before the op it guards ever runs. The healthy signal instead
-/// governs only the NEXT launch, by clearing the on-disk sentinel.
+/// the whole session. The on-disk session record mutates (activity, clean
+/// exit) through [`SessionWriter`], which is a SEPARATE managed value; the two
+/// must never be conflated. Clearing the verdict mid-launch would erase the
+/// auto-prime gate before the dangerous op it guards ever runs.
 ///
 /// [`from_decision`]: StartupSafety::from_decision
 #[derive(Debug)]
 pub struct StartupSafety {
     safe_mode: bool,
     unclean_count: u32,
+    cause: Option<AbnormalCause>,
+    activity: SessionActivity,
 }
 
 impl StartupSafety {
-    /// Builds the managed state from a [`StartupDecision`]. Used once at startup
-    /// after the sentinel has been read and the decision computed; the resulting
-    /// verdict is then immutable for the process lifetime.
-    pub fn from_decision(decision: &StartupDecision) -> Self {
+    /// Builds the managed verdict from a [`SessionDecision`] plus the activity
+    /// the previous session was performing at its last write (context for the
+    /// recovery message). Used once at startup; the result is then immutable
+    /// for the process lifetime.
+    pub(crate) fn from_decision(
+        decision: &SessionDecision,
+        prev_activity: SessionActivity,
+    ) -> Self {
         Self {
             safe_mode: decision.safe_mode,
-            unclean_count: decision.unclean_count,
+            unclean_count: decision.streak,
+            cause: decision.cause,
+            activity: prev_activity,
         }
     }
 
@@ -150,7 +91,7 @@ impl StartupSafety {
         self.safe_mode
     }
 
-    /// The consecutive-unclean count that produced the current verdict.
+    /// The consecutive-abnormal streak that produced the current verdict.
     pub fn unclean_count(&self) -> u32 {
         self.unclean_count
     }
@@ -158,137 +99,32 @@ impl StartupSafety {
     /// A serializable view of the current verdict for the frontend.
     pub fn snapshot(&self) -> StartupSafetySnapshot {
         StartupSafetySnapshot {
-            safe_mode: self.safe_mode(),
-            unclean_count: self.unclean_count(),
+            safe_mode: self.safe_mode,
+            unclean_count: self.unclean_count,
+            cause: self.cause.map(AbnormalCause::as_wire_str),
+            activity: self.activity.clone(),
         }
     }
 }
 
 /// The wire shape returned by the `startup_safety` command. The frontend
-/// renders a recovery screen from this after an unclean-launch streak.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// renders a recovery screen from this after an abnormal-launch streak.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StartupSafetySnapshot {
     /// Whether this launch skipped the dangerous auto-startup operations.
     pub safe_mode: bool,
-    /// How many consecutive launches failed to reach a healthy state.
+    /// How many consecutive launches failed to reach a clean exit.
     pub unclean_count: u32,
-}
-
-/// Reads the persisted sentinel from `path`, forgivingly.
-///
-/// Missing file (first run) or unparseable JSON both map to the clean
-/// [`PersistedGuardState::default`], never an error and never a panic, so a
-/// corrupt sentinel can never by itself trip safe mode. Mirrors the forgiving
-/// contract of `config::loader`.
-#[cfg_attr(coverage_nightly, coverage(off))]
-fn read_state(path: &Path) -> PersistedGuardState {
-    match std::fs::read_to_string(path) {
-        Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => PersistedGuardState::default(),
-        Err(source) => {
-            eprintln!(
-                "thuki: [startup_guard] cannot read {}: {source}. treating as clean",
-                path.display()
-            );
-            PersistedGuardState::default()
-        }
-    }
-}
-
-/// Atomically writes the sentinel to `path`, reusing the config writer's
-/// temp-file-plus-rename guarantee so a crash mid-write can never leave a torn
-/// sentinel. Failures are logged, never propagated: the guard is best-effort
-/// and must never block or crash startup.
-#[cfg_attr(coverage_nightly, coverage(off))]
-fn write_state(path: &Path, state: &PersistedGuardState) {
-    // The struct holds a bool and a u32, so serialization is infallible.
-    let bytes = serde_json::to_vec(state).expect("PersistedGuardState serializes");
-    if let Err(e) = crate::config::writer::atomic_write_bytes(path, &bytes) {
-        eprintln!(
-            "thuki: [startup_guard] failed to persist sentinel to {}: {e}",
-            path.display()
-        );
-    }
-}
-
-/// Runs the circuit breaker once at startup: resolve the sentinel path, read
-/// the prior sentinel, compute the decision, persist this launch's dirty
-/// sentinel, and return the managed state to install. Best-effort throughout:
-/// any I/O failure is logged and the in-memory decision still stands, so the
-/// guard degrades to "no safe mode" rather than blocking the app.
-///
-/// Coverage-off thin wrapper: the decision logic is [`decide`], the I/O is
-/// [`read_state`]/[`write_state`], all covered or explicitly exempt.
-#[cfg_attr(coverage_nightly, coverage(off))]
-pub fn run_startup_guard(app: &tauri::AppHandle, threshold: u32) -> StartupSafety {
-    let Some(path) = guard_path(app) else {
-        // The per-user config dir could not be resolved. Config load already
-        // ran fatally if the dir were truly unusable, so this is only the
-        // theoretical resolver-failure path: degrade to no safe mode rather
-        // than block startup.
-        return StartupSafety::from_decision(&decide(PersistedGuardState::default(), threshold));
-    };
-    let prior = read_state(&path);
-    let decision = decide(prior, threshold);
-    // Persist BEFORE any dangerous auto-op runs so a freeze during this launch
-    // leaves the dirty marker behind for the next launch to detect.
-    write_state(&path, &decision.next_state);
-    StartupSafety::from_decision(&decision)
-}
-
-/// Persists the healthy sentinel to `path`. Coverage-off thin wrapper over
-/// [`healthy_state`] + [`write_state`]; called by `mark_startup_healthy`.
-#[cfg_attr(coverage_nightly, coverage(off))]
-pub fn mark_healthy(path: &Path) {
-    write_state(path, &healthy_state());
-}
-
-/// Sets Thuki's own `NSQuitAlwaysKeepsWindows` user default to false.
-///
-/// Defense-in-depth layered on top of the sentinel, not a replacement for it:
-/// this asks macOS not to reopen the overlay window automatically after an
-/// unclean shutdown, reducing the chance the dangerous auto-startup path is
-/// re-entered without user action in the first place. If macOS reopens anyway,
-/// the sentinel still catches the loop.
-///
-/// Coverage-off: pure objc2 FFI against `NSUserDefaults`, consistent with the
-/// NSPanel objc usage elsewhere in `lib.rs`.
-#[cfg(target_os = "macos")]
-#[cfg_attr(coverage_nightly, coverage(off))]
-pub fn disable_quit_keeps_windows() {
-    use objc2::rc::autoreleasepool;
-    use objc2::runtime::AnyObject;
-    use objc2::{class, msg_send};
-    use objc2_foundation::NSString;
-
-    // Safety: standard AppKit main-thread calls against NSUserDefaults with
-    // valid selectors and argument types. Wrapped in an autorelease pool so
-    // the transient NSString key is released promptly.
-    autoreleasepool(|_| unsafe {
-        let defaults: *mut AnyObject = msg_send![class!(NSUserDefaults), standardUserDefaults];
-        if defaults.is_null() {
-            return;
-        }
-        let key = NSString::from_str("NSQuitAlwaysKeepsWindows");
-        let _: () = msg_send![defaults, setBool: false, forKey: &*key];
-    });
-}
-
-/// Resolves the sentinel file path next to `config.toml` in the per-user app
-/// config dir. Returns `None` only if macOS cannot yield the directory, in
-/// which case the guard silently degrades to no-op. Coverage-off: requires a
-/// real `AppHandle` and the macOS filesystem.
-#[cfg_attr(coverage_nightly, coverage(off))]
-pub fn guard_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
-    use tauri::Manager;
-    app.path()
-        .app_config_dir()
-        .ok()
-        .map(|dir| dir.join(crate::config::defaults::DEFAULT_STARTUP_GUARD_FILENAME))
+    /// The classified cause of the abnormal streak, or `None` on a clean
+    /// launch. One of `"crashed"`, `"machine_restart"`, `"process_died"`.
+    pub cause: Option<&'static str>,
+    /// What the previous session was doing at its last write. Recovery-UI
+    /// context only; never gates safety.
+    pub activity: SessionActivity,
 }
 
 /// Command: returns the current circuit-breaker verdict so the frontend can
-/// render a recovery screen after an unclean-launch streak. Thin coverage-off
+/// render a recovery screen after an abnormal-launch streak. Thin coverage-off
 /// wrapper over the managed [`StartupSafety`] state.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -296,66 +132,159 @@ pub fn startup_safety(state: tauri::State<'_, StartupSafety>) -> StartupSafetySn
     state.snapshot()
 }
 
-/// Command: the "we reached a responsive state" signal, replacing clean-exit
-/// as the circuit breaker's reset mechanism. Persists the healthy sentinel and
-/// does NOTHING else.
+// ---------------------------------------------------------------------------
+// The single launch routine and the process-lifetime session handle.
+// ---------------------------------------------------------------------------
+
+/// Process-lifetime managed state that keeps the advisory lock held and owns
+/// the live session record's writer.
 ///
-/// It deliberately does not touch this launch's in-memory [`StartupSafety`]
-/// verdict. The dangerous auto-op the breaker guards (the overlay-show
-/// auto-prime in `lib.rs`) runs on summon, AFTER the frontend mounts and fires
-/// this command, so clearing the verdict here would defeat the very gate the
-/// breaker exists to enforce. The health signal only proves the app became
-/// responsive: it governs the NEXT launch by clearing the on-disk sentinel, not
-/// this launch's verdict. Thin coverage-off wrapper over [`mark_healthy`].
-#[tauri::command]
-#[cfg_attr(coverage_nightly, coverage(off))]
-pub fn mark_startup_healthy(app: tauri::AppHandle) {
-    if let Some(path) = guard_path(&app) {
-        mark_healthy(&path);
+/// The lock `File` is stored here so its fd stays open for the whole process:
+/// dropping it releases the lock, so it MUST live as long as the app. The
+/// `writer` mutates the on-disk record (activity, clean exit) under its own
+/// mutex; it is `None` only when this process does not own the session (another
+/// instance already held the lock, or the config dir could not be resolved).
+pub struct SessionGuard {
+    /// Held for the whole process; dropping releases the kernel advisory lock.
+    /// Never read: its sole job is to keep the fd alive.
+    _lock: Option<File>,
+    /// Writer for the live record, or `None` when this process does not own the
+    /// session and therefore must not write it.
+    writer: Option<SessionWriter>,
+}
+
+impl SessionGuard {
+    /// Borrows the session-record writer, when this process owns the session.
+    /// Callers (clean-exit marking, and the follow-up activity wiring) get
+    /// `None` when another instance owns the lock and must not write.
+    pub(crate) fn writer(&self) -> Option<&SessionWriter> {
+        self.writer.as_ref()
     }
 }
 
+/// The pieces `lib.rs` installs as managed state after the launch routine runs:
+/// this launch's immutable verdict and the process-lifetime session handle.
+pub struct StartupInit {
+    /// This launch's immutable safe-mode verdict.
+    pub safety: StartupSafety,
+    /// The advisory lock + record writer, kept alive for the process lifetime.
+    pub guard: SessionGuard,
+}
+
+/// Runs the launch circuit breaker once at startup, BEFORE any dangerous
+/// auto-op can run, and returns the state `lib.rs` installs.
+///
+/// Sequence:
+/// 1. Take the process-lifetime advisory lock. If another instance already
+///    holds it, this is a legitimate second instance, NOT a crash: proceed with
+///    a clean, non-safe-mode verdict and do not touch the record.
+/// 2. Install the panic hook so a Rust panic durably records `state: crashed`.
+/// 3. Read the previous record, classify it with [`decide_session`].
+/// 4. Durably write THIS launch's record (`clean_exit: false`) so a freeze
+///    during the dangerous window leaves the abnormal marker behind.
+///
+/// Best-effort throughout: any I/O failure is logged and the in-memory decision
+/// still stands, so the guard degrades to "no safe mode" rather than blocking
+/// the app.
+///
+/// Coverage-off thin wrapper: the safety decision is [`decide_session`] and the
+/// I/O is the covered/exempt helpers below.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn run_startup_guard(app: &tauri::AppHandle, threshold: u32) -> StartupInit {
+    let (Some(record_path), Some(lock_path)) = (session_record_path(app), session_lock_path(app))
+    else {
+        // The per-user config dir could not be resolved. Config load already
+        // ran fatally if the dir were truly unusable, so this is only the
+        // theoretical resolver-failure path: degrade to no safe mode, no lock,
+        // no writer, rather than block startup.
+        return clean_init(threshold);
+    };
+
+    match acquire_session_lock(&lock_path) {
+        Ok(SessionLock::Acquired(file)) => {
+            // We own the session. Refine the CAUSE to `crashed` if a panic
+            // unwinds before exit.
+            install_panic_hook(record_path.clone());
+
+            let boot = boot_time_secs();
+            let prev = read_record(&record_path);
+            // The previous session's activity is context for the recovery
+            // message; captured before `prev` is consumed by `decide_session`.
+            let prev_activity = prev
+                .as_ref()
+                .map(|p| p.activity.clone())
+                .unwrap_or_else(SessionActivity::idle);
+            let decision = decide_session(prev, boot, threshold);
+
+            let record = SessionRecord::launch(boot, now_secs(), decision.streak);
+            // why: WRITE-AHEAD durability. The launch record must be on disk
+            // with `clean_exit: false` BEFORE this function returns, because it
+            // returns before any dangerous auto-op (engine spawn, overlay
+            // auto-prime, downloads) can run. A freeze anywhere in that window
+            // then leaves `clean_exit: false` behind for the next launch to
+            // detect. This is a write-ahead guarantee, not merely atomicity.
+            if let Err(e) = durable_write_record(&record_path, &record) {
+                eprintln!(
+                    "thuki: [startup_guard] failed to write launch record to {}: {e}",
+                    record_path.display()
+                );
+            }
+            let writer = SessionWriter::new(record_path, record);
+
+            StartupInit {
+                safety: StartupSafety::from_decision(&decision, prev_activity),
+                guard: SessionGuard {
+                    _lock: Some(file),
+                    writer: Some(writer),
+                },
+            }
+        }
+        Ok(SessionLock::AlreadyRunning) => {
+            // Another live instance owns the session. Do NOT infer a crash,
+            // rewrite the record, install the panic hook, or enter safe mode:
+            // proceed clean and leave the live instance's record untouched.
+            clean_init(threshold)
+        }
+        Err(e) => {
+            eprintln!("thuki: [startup_guard] could not take session lock: {e}. treating as clean");
+            clean_init(threshold)
+        }
+    }
+}
+
+/// Builds a clean, non-safe-mode [`StartupInit`] that owns no lock and no
+/// writer. Used on the resolver-failure, lock-error, and already-running paths.
+///
+/// Coverage-off: constructed only from real-startup paths; the pure decision it
+/// wraps ([`decide_session`] with `None`) is covered directly.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn clean_init(threshold: u32) -> StartupInit {
+    let decision = decide_session(None, boot_time_secs(), threshold);
+    StartupInit {
+        safety: StartupSafety::from_decision(&decision, SessionActivity::idle()),
+        guard: SessionGuard {
+            _lock: None,
+            writer: None,
+        },
+    }
+}
+
+/// Unix seconds now, saturating to 0 on the (impossible) pre-epoch clock.
+///
+/// Coverage-off: reads the system clock; carries no branch logic to test.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 // ---------------------------------------------------------------------------
-// Session-liveness circuit breaker (issue #296, phase 1: additive).
-//
-// The sentinel above clears from the FRONTEND about a second into launch, so
-// every dangerous auto-op (overlay auto-prime, downloads, first-message model
-// load) runs AFTER the "healthy" clear and escapes the gate. The reported
-// incident froze during a model DOWNLOAD while a model was already loaded,
-// which operation-bracketing also misses.
-//
-// This mechanism instead proves liveness with a process-lifetime advisory lock
-// (kernel releases it on death by ANY cause) plus a write-ahead session record
-// that is durably `clean_exit: false` on disk BEFORE any dangerous op begins. A
-// launch that finds the previous record still `clean_exit: false` knows the
-// previous process died abnormally. Modeled on Firefox nsAppStartup's profile
-// lock + last_success and Sentry's crashed-vs-abnormal session distinction.
-//
-// Phase 1 builds this alongside the old mechanism; phase 2 wires it into
-// `lib.rs`/`App.tsx` and deletes the old one. Unwired items carry
-// `#[allow(dead_code)]`.
+// Session record schema + pure decision logic (no I/O).
 // ---------------------------------------------------------------------------
-
-/// The session-record schema version this build reads and writes.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
-const SESSION_SCHEMA: u32 = 1;
-
-/// Filename of the JSON session record, next to `config.toml`.
-// why: phase 2 relocates this to `config::defaults` and migrates the legacy
-// `startup_guard.json`; kept local so phase 1 stays additive and never touches
-// `config/defaults.rs` (owned by another change in flight).
-#[allow(dead_code)]
-const SESSION_RECORD_FILENAME: &str = "session.json";
-
-/// Filename of the empty advisory-lock file, next to `config.toml`.
-// why: phase 2 relocates this to `config::defaults`.
-#[allow(dead_code)]
-const SESSION_LOCK_FILENAME: &str = "session.lock";
 
 /// Liveness state of a session, as recorded on disk.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum SessionState {
@@ -367,8 +296,6 @@ pub(crate) enum SessionState {
 
 /// What the app was doing when the record was last written. Context for the
 /// recovery UI only; it never influences the safe-mode decision.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ActivityKind {
@@ -380,24 +307,30 @@ pub(crate) enum ActivityKind {
     Downloading,
 }
 
-/// The activity in flight when the record was last written.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
+/// The activity in flight when the record was last written. Part of the
+/// `startup_safety` command's wire shape (see [`StartupSafetySnapshot`]), so it
+/// is `pub`; its fields stay crate-internal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SessionActivity {
+pub struct SessionActivity {
     /// The class of work in flight.
     pub(crate) kind: ActivityKind,
     /// The model involved, when the activity concerns a specific model.
     pub(crate) model_id: Option<String>,
 }
 
+impl SessionActivity {
+    /// The no-activity value: nothing dangerous in flight, no model involved.
+    pub(crate) fn idle() -> Self {
+        Self {
+            kind: ActivityKind::Idle,
+            model_id: None,
+        }
+    }
+}
+
 /// The persisted session record. Written durably at launch with
 /// `clean_exit: false`, updated as activity changes, and flipped to
 /// `clean_exit: true` only on a real exit.
-// why: wired in the follow-up pass (`schema`, `boot_time_secs`, `state`,
-// `clean_exit`, `consecutive_abnormal` are read by `decide_session`;
-// `started_at_secs`, `activity`, and `model_id` are read only by phase 2's UI).
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SessionRecord {
     /// Schema version; a record whose schema is not [`SESSION_SCHEMA`] is
@@ -420,8 +353,6 @@ pub(crate) struct SessionRecord {
 impl SessionRecord {
     /// Builds the launch record: `clean_exit: false`, `state: Ok`, idle
     /// activity, carrying the abnormal streak this launch computed.
-    // why: wired in the follow-up pass
-    #[allow(dead_code)]
     pub(crate) fn launch(
         boot_time_secs: i64,
         started_at_secs: i64,
@@ -433,18 +364,13 @@ impl SessionRecord {
             started_at_secs,
             clean_exit: false,
             state: SessionState::Ok,
-            activity: SessionActivity {
-                kind: ActivityKind::Idle,
-                model_id: None,
-            },
+            activity: SessionActivity::idle(),
             consecutive_abnormal,
         }
     }
 }
 
 /// Whether the previous session ended cleanly or abnormally.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SessionOutcome {
     /// Previous session exited cleanly (or there was none / it was unreadable).
@@ -455,8 +381,6 @@ pub(crate) enum SessionOutcome {
 
 /// The classified cause of an abnormal previous session. Drives only the
 /// recovery message, never the safe-mode decision.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AbnormalCause {
     /// The panic hook recorded a Rust panic.
@@ -467,9 +391,18 @@ pub(crate) enum AbnormalCause {
     ProcessDied,
 }
 
+impl AbnormalCause {
+    /// The stable snake_case wire string the frontend switches on.
+    pub(crate) fn as_wire_str(self) -> &'static str {
+        match self {
+            AbnormalCause::Crashed => "crashed",
+            AbnormalCause::MachineRestart => "machine_restart",
+            AbnormalCause::ProcessDied => "process_died",
+        }
+    }
+}
+
 /// The pure verdict computed from the previous session record.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SessionDecision {
     /// Whether the previous session ended cleanly or abnormally.
@@ -491,11 +424,6 @@ pub(crate) struct SessionDecision {
 ///   breaker fails open: a bad file can never by itself trip safe mode.
 /// - Otherwise the launch is abnormal: the streak grows by one (saturating) and
 ///   safe mode engages once the streak reaches `threshold`.
-///
-/// `threshold` is a parameter, not read from config here: phase 2 passes the
-/// compiled constant.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
 pub(crate) fn decide_session(
     prev: Option<SessionRecord>,
     current_boot_secs: i64,
@@ -537,6 +465,10 @@ pub(crate) fn decide_session(
     }
 }
 
+// ---------------------------------------------------------------------------
+// I/O and FFI wrappers (coverage-off, exercised live by the tests below).
+// ---------------------------------------------------------------------------
+
 /// Reads `kern.boottime` (seconds) via `sysctlbyname`. Stable for a boot,
 /// changes only on reboot, so it distinguishes a machine restart from a
 /// same-boot process death. On failure it returns 0, which can never differ
@@ -544,8 +476,6 @@ pub(crate) fn decide_session(
 /// (which never reads boot time) is unaffected.
 ///
 /// Coverage-off: pure `libc` FFI. It performs no arithmetic to delegate.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn boot_time_secs() -> i64 {
     let mut tv = libc::timeval {
@@ -572,12 +502,10 @@ pub(crate) fn boot_time_secs() -> i64 {
 }
 
 /// The outcome of trying to take the process-lifetime session lock.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
 pub(crate) enum SessionLock {
     /// The lock was acquired. The caller MUST keep this `File` alive for the
-    /// whole process: dropping it releases the lock. Phase 2 stores it in Tauri
-    /// managed state.
+    /// whole process: dropping it releases the lock. It is stored in
+    /// [`SessionGuard`] managed state.
     Acquired(File),
     /// The lock is already held: another Thuki instance is alive. NOT a crash.
     AlreadyRunning,
@@ -592,7 +520,6 @@ pub(crate) enum SessionLock {
 // that starts the sidecar. If it leaked, the sidecar would hold the lock after
 // Thuki dies and the next launch would read "still alive" and never detect the
 // crash: a SILENT failure in the unsafe direction, hence the explicit test.
-#[allow(dead_code)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn open_lock_file(path: &Path) -> std::io::Result<File> {
     OpenOptions::new()
@@ -613,8 +540,6 @@ fn open_lock_file(path: &Path) -> std::io::Result<File> {
 ///
 /// Coverage-off: `libc::flock` FFI. The `Acquired` and `AlreadyRunning` arms
 /// are exercised live by `session_lock_twice_reports_already_running`.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn acquire_session_lock(path: &Path) -> std::io::Result<SessionLock> {
     let file = open_lock_file(path)?;
@@ -636,8 +561,6 @@ pub(crate) fn acquire_session_lock(path: &Path) -> std::io::Result<SessionLock> 
 ///
 /// Coverage-off: time-dependent filesystem helper, exercised live by the
 /// durable-write test.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn tmp_path_for(target: &Path) -> PathBuf {
     let nanos = std::time::SystemTime::now()
@@ -657,7 +580,6 @@ fn tmp_path_for(target: &Path) -> PathBuf {
 // force the drive to flush its onboard write cache; only `F_FULLFSYNC` does.
 // Without it a power loss right after a "successful" write can still lose the
 // launch record, defeating the write-ahead durability guarantee.
-#[allow(dead_code)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn full_fsync(file: &File) -> std::io::Result<()> {
     // Safety: `file` owns a valid fd; `F_FULLFSYNC` takes no argument.
@@ -671,8 +593,6 @@ fn full_fsync(file: &File) -> std::io::Result<()> {
 /// Fsyncs a directory so a rename inside it is durable across power loss.
 ///
 /// Coverage-off: filesystem I/O, exercised live by the durable-write test.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn fsync_dir(dir: &Path) -> std::io::Result<()> {
     File::open(dir)?.sync_all()
@@ -686,8 +606,6 @@ fn fsync_dir(dir: &Path) -> std::io::Result<()> {
 /// existing callers of `atomic_write_bytes` are left unchanged.
 ///
 /// Coverage-off: filesystem I/O, exercised live by the durable-write test.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn durable_write_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
@@ -724,12 +642,10 @@ fn durable_write_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// Reads the session record at `path`, forgivingly.
 ///
 /// Missing, unreadable, or unparseable all map to `None` (the clean default),
-/// never an error and never a panic, mirroring `read_state` and the config
-/// loader. A corrupt record can therefore never by itself trip safe mode.
+/// never an error and never a panic, mirroring the config loader. A corrupt or
+/// old-format record can therefore never by itself trip safe mode.
 ///
 /// Coverage-off: filesystem I/O, exercised live by the read-forgiveness tests.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn read_record(path: &Path) -> Option<SessionRecord> {
     match std::fs::read_to_string(path) {
@@ -758,8 +674,6 @@ pub(crate) fn read_record(path: &Path) -> Option<SessionRecord> {
 ///
 /// Coverage-off: thin wrapper over `serde_json` + [`durable_write_bytes`],
 /// exercised live by the durable-write test.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn durable_write_record(path: &Path, record: &SessionRecord) -> std::io::Result<()> {
     // SessionRecord is scalars, strings, and enums: serialization is infallible.
@@ -774,8 +688,6 @@ pub(crate) fn durable_write_record(path: &Path, record: &SessionRecord) -> std::
 /// never propagated, so it is safe from a panic hook.
 ///
 /// Coverage-off: filesystem I/O, exercised live by `mark_crashed_sets_state`.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn mark_crashed(path: &Path) {
     // Read-modify-write from disk rather than through the shared writer: a panic
@@ -801,8 +713,6 @@ pub(crate) fn mark_crashed(path: &Path) {
 ///
 /// Coverage-off: installs a global process hook; its effect is exercised live
 /// through [`mark_crashed`].
-// why: wired in the follow-up pass
-#[allow(dead_code)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn install_panic_hook(path: PathBuf) {
     let previous = std::panic::take_hook();
@@ -818,9 +728,7 @@ pub(crate) fn install_panic_hook(path: PathBuf) {
 /// the durable write, so the on-disk file has exactly one writer at a time even
 /// when called concurrently from spawned threads and async tasks. `PathBuf` and
 /// `Mutex<SessionRecord>` are both `Send + Sync`, so the writer satisfies Tauri
-/// managed-state bounds.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
+/// managed-state bounds (it lives inside [`SessionGuard`]).
 pub(crate) struct SessionWriter {
     /// Path of the session record this writer owns.
     path: PathBuf,
@@ -831,8 +739,6 @@ pub(crate) struct SessionWriter {
 impl SessionWriter {
     /// Wraps the launch `record`, which the caller has already durably written,
     /// so subsequent mutations start from the on-disk state.
-    // why: wired in the follow-up pass
-    #[allow(dead_code)]
     pub(crate) fn new(path: PathBuf, record: SessionRecord) -> Self {
         Self {
             path,
@@ -845,7 +751,10 @@ impl SessionWriter {
     ///
     /// Coverage-off: durable filesystem I/O, exercised live by
     /// `set_activity_persists`.
-    // why: wired in the follow-up pass
+    // why: dead in this pass only. This is the writer API the follow-up
+    // activity-tracking job wires at the model-load and download call sites;
+    // per the task, THIS pass deliberately adds no call site, so the method has
+    // no non-test caller yet. Its behavior is locked by `set_activity_persists`.
     #[allow(dead_code)]
     #[cfg_attr(coverage_nightly, coverage(off))]
     pub(crate) fn set_activity(&self, activity: SessionActivity) -> std::io::Result<()> {
@@ -857,12 +766,10 @@ impl SessionWriter {
     }
 
     /// Flips the record to `clean_exit: true` and durably persists it: the ONLY
-    /// place a clean exit is recorded. Phase 2 calls this on `RunEvent::Exit`.
+    /// place a clean exit is recorded. Called from `lib.rs` on a genuine exit.
     ///
     /// Coverage-off: durable filesystem I/O, exercised live by
     /// `mark_clean_exit_persists`.
-    // why: wired in the follow-up pass
-    #[allow(dead_code)]
     #[cfg_attr(coverage_nightly, coverage(off))]
     pub(crate) fn mark_clean_exit(&self) -> std::io::Result<()> {
         let mut record = self.record.lock().expect("session record mutex poisoned");
@@ -873,28 +780,55 @@ impl SessionWriter {
 
 /// Resolves the session-record path beside `config.toml`. Coverage-off:
 /// requires a real `AppHandle` and the macOS filesystem.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn session_record_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     use tauri::Manager;
     app.path()
         .app_config_dir()
         .ok()
-        .map(|dir| dir.join(SESSION_RECORD_FILENAME))
+        .map(|dir| dir.join(crate::config::defaults::DEFAULT_SESSION_RECORD_FILENAME))
 }
 
 /// Resolves the session-lock path beside `config.toml`. Coverage-off: requires
 /// a real `AppHandle` and the macOS filesystem.
-// why: wired in the follow-up pass
-#[allow(dead_code)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn session_lock_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     use tauri::Manager;
     app.path()
         .app_config_dir()
         .ok()
-        .map(|dir| dir.join(SESSION_LOCK_FILENAME))
+        .map(|dir| dir.join(crate::config::defaults::DEFAULT_SESSION_LOCK_FILENAME))
+}
+
+/// Sets Thuki's own `NSQuitAlwaysKeepsWindows` user default to false.
+///
+/// Defense-in-depth layered on top of the session record, not a replacement for
+/// it: this asks macOS not to reopen the overlay window automatically after an
+/// unclean shutdown, reducing the chance the dangerous auto-startup path is
+/// re-entered without user action in the first place. If macOS reopens anyway,
+/// the session record still catches the loop.
+///
+/// Coverage-off: pure objc2 FFI against `NSUserDefaults`, consistent with the
+/// NSPanel objc usage elsewhere in `lib.rs`.
+#[cfg(target_os = "macos")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn disable_quit_keeps_windows() {
+    use objc2::rc::autoreleasepool;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::NSString;
+
+    // Safety: standard AppKit main-thread calls against NSUserDefaults with
+    // valid selectors and argument types. Wrapped in an autorelease pool so
+    // the transient NSString key is released promptly.
+    autoreleasepool(|_| unsafe {
+        let defaults: *mut AnyObject = msg_send![class!(NSUserDefaults), standardUserDefaults];
+        if defaults.is_null() {
+            return;
+        }
+        let key = NSString::from_str("NSQuitAlwaysKeepsWindows");
+        let _: () = msg_send![defaults, setBool: false, forKey: &*key];
+    });
 }
 
 #[cfg(test)]

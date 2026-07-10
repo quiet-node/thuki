@@ -1,187 +1,99 @@
-//! Unit tests for the pure launch-circuit-breaker logic.
+//! Unit tests for the launch circuit breaker.
 //!
-//! Only the pure decision surface is exercised here: `decide`, `healthy_state`,
-//! and the `StartupSafety` managed state. The `coverage(off)` I/O and FFI
-//! wrappers (`read_state`, `write_state`, `run_startup_guard`, `mark_healthy`,
-//! `disable_quit_keeps_windows`) are thin and exempt by contract.
+//! Only the pure surface is exercised here: `decide_session`, the
+//! `StartupSafety` verdict and its snapshot, and the durable record helpers.
+//! The `coverage(off)` I/O and FFI wrappers (`run_startup_guard`, `clean_init`,
+//! `boot_time_secs`, the lock/fsync helpers, path resolvers,
+//! `disable_quit_keeps_windows`) are thin and exempt by contract; several are
+//! still driven live below to assert their real behavior.
 
 use super::*;
 
-/// A clean prior sentinel produces no safe mode and a dirty-count-zero next
-/// state: the normal first-run / healthy-restart path.
+use std::os::unix::io::AsRawFd;
+
+// ---------------------------------------------------------------------------
+// StartupSafety verdict + wire snapshot.
+// ---------------------------------------------------------------------------
+
+/// A clean decision produces a non-safe-mode verdict with a null cause and idle
+/// activity: the normal first-run / clean-restart path.
 #[test]
-fn clean_prior_does_not_trip_safe_mode() {
-    let prior = PersistedGuardState {
-        launch_dirty: false,
-        consecutive_unclean: 0,
-    };
-    let decision = decide(prior, 1);
-    assert!(!decision.safe_mode);
-    assert_eq!(decision.unclean_count, 0);
+fn startup_safety_from_clean_decision() {
+    let decision = decide_session(None, 0, 2);
+    let safety = StartupSafety::from_decision(&decision, SessionActivity::idle());
+    assert!(!safety.safe_mode());
+    assert_eq!(safety.unclean_count(), 0);
     assert_eq!(
-        decision.next_state,
-        PersistedGuardState {
-            launch_dirty: true,
-            consecutive_unclean: 0,
+        safety.snapshot(),
+        StartupSafetySnapshot {
+            safe_mode: false,
+            unclean_count: 0,
+            cause: None,
+            activity: SessionActivity::idle(),
         }
     );
 }
 
-/// A dirty prior sentinel at threshold 1 trips safe mode on the very next
-/// launch: the previous launch never became healthy.
+/// An abnormal decision at threshold engages safe mode, mirrors the streak into
+/// `unclean_count`, carries the classified cause string, and preserves the
+/// previous session's activity as recovery-UI context.
 #[test]
-fn dirty_prior_trips_safe_mode_at_threshold_one() {
-    let prior = PersistedGuardState {
-        launch_dirty: true,
-        consecutive_unclean: 0,
+fn startup_safety_from_abnormal_decision() {
+    let decision = decide_session(Some(abnormal_prev(1, 5, SessionState::Ok)), 5, 2);
+    let activity = SessionActivity {
+        kind: ActivityKind::LoadingModel,
+        model_id: Some("llama".into()),
     };
-    let decision = decide(prior, 1);
-    assert!(decision.safe_mode);
-    assert_eq!(decision.unclean_count, 1);
-    assert_eq!(
-        decision.next_state,
-        PersistedGuardState {
-            launch_dirty: true,
-            consecutive_unclean: 1,
-        }
-    );
-}
-
-/// The unclean streak increments across repeated dirty launches.
-#[test]
-fn dirty_prior_increments_streak() {
-    let prior = PersistedGuardState {
-        launch_dirty: true,
-        consecutive_unclean: 7,
-    };
-    let decision = decide(prior, 1);
-    assert!(decision.safe_mode);
-    assert_eq!(decision.unclean_count, 8);
-    assert_eq!(decision.next_state.consecutive_unclean, 8);
-}
-
-/// With threshold 2, a single dirty launch (count 1) is below threshold, so
-/// safe mode stays off. Exercises the `>=`-false-while-dirty branch that
-/// threshold 1 can never hit.
-#[test]
-fn below_threshold_does_not_trip_safe_mode() {
-    let prior = PersistedGuardState {
-        launch_dirty: true,
-        consecutive_unclean: 0,
-    };
-    let decision = decide(prior, 2);
-    assert!(!decision.safe_mode);
-    assert_eq!(decision.unclean_count, 1);
-}
-
-/// `consecutive_unclean` saturates rather than overflowing on a pathological
-/// streak, so the guard can never panic in release-overflow-checked builds.
-#[test]
-fn streak_saturates_at_u32_max() {
-    let prior = PersistedGuardState {
-        launch_dirty: true,
-        consecutive_unclean: u32::MAX,
-    };
-    let decision = decide(prior, 1);
-    assert_eq!(decision.unclean_count, u32::MAX);
-}
-
-/// The default sentinel is the clean first-run value.
-#[test]
-fn default_state_is_clean() {
-    assert_eq!(
-        PersistedGuardState::default(),
-        PersistedGuardState {
-            launch_dirty: false,
-            consecutive_unclean: 0,
-        }
-    );
-}
-
-/// The healthy sentinel clears both dirty flag and streak.
-#[test]
-fn healthy_state_is_clean() {
-    assert_eq!(
-        healthy_state(),
-        PersistedGuardState {
-            launch_dirty: false,
-            consecutive_unclean: 0,
-        }
-    );
-}
-
-/// `StartupSafety` mirrors the decision it was built from.
-#[test]
-fn startup_safety_reflects_decision() {
-    let decision = StartupDecision {
-        safe_mode: true,
-        unclean_count: 3,
-        next_state: PersistedGuardState {
-            launch_dirty: true,
-            consecutive_unclean: 3,
-        },
-    };
-    let safety = StartupSafety::from_decision(&decision);
+    let safety = StartupSafety::from_decision(&decision, activity.clone());
     assert!(safety.safe_mode());
-    assert_eq!(safety.unclean_count(), 3);
-}
-
-/// The in-memory verdict is immutable for the launch: persisting the healthy
-/// sentinel (the mount health signal) writes the clean state to disk yet leaves
-/// this launch's safe-mode verdict standing, so the auto-op gates and the
-/// recovery UI keep seeing safe mode for the whole session. This is the root of
-/// issue #296's re-freeze: clearing the verdict on the mount signal defeated the
-/// gate, because the dangerous auto-op runs after the frontend mounts.
-#[test]
-fn healthy_sentinel_does_not_reset_the_launch_verdict() {
-    let decision = StartupDecision {
-        safe_mode: true,
-        unclean_count: 5,
-        next_state: PersistedGuardState {
-            launch_dirty: true,
-            consecutive_unclean: 5,
-        },
-    };
-    let safety = StartupSafety::from_decision(&decision);
-
-    let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("startup_guard.json");
-    mark_healthy(&path);
-
-    // Disk sentinel is now the clean/healthy state, governing the NEXT launch.
-    assert_eq!(read_state(&path), healthy_state());
-    // This launch's verdict is untouched: safe mode still engaged.
-    assert!(safety.safe_mode());
-    assert_eq!(safety.unclean_count(), 5);
-}
-
-/// `snapshot` exposes the current verdict for the frontend.
-#[test]
-fn startup_safety_snapshot_matches_state() {
-    let decision = StartupDecision {
-        safe_mode: true,
-        unclean_count: 2,
-        next_state: PersistedGuardState {
-            launch_dirty: true,
-            consecutive_unclean: 2,
-        },
-    };
-    let safety = StartupSafety::from_decision(&decision);
-    let snap = safety.snapshot();
+    assert_eq!(safety.unclean_count(), 2);
     assert_eq!(
-        snap,
+        safety.snapshot(),
         StartupSafetySnapshot {
             safe_mode: true,
             unclean_count: 2,
+            cause: Some("process_died"),
+            activity,
         }
     );
 }
 
-// ---------------------------------------------------------------------------
-// Session-liveness circuit breaker (issue #296, phase 1).
-// ---------------------------------------------------------------------------
+/// Each abnormal cause maps to its stable snake_case wire string, and a clean
+/// verdict maps to a null cause.
+#[test]
+fn snapshot_maps_every_cause_string() {
+    let cases = [
+        (AbnormalCause::Crashed, "crashed"),
+        (AbnormalCause::MachineRestart, "machine_restart"),
+        (AbnormalCause::ProcessDied, "process_died"),
+    ];
+    for (cause, wire) in cases {
+        let decision = SessionDecision {
+            outcome: SessionOutcome::Abnormal,
+            streak: 2,
+            safe_mode: true,
+            cause: Some(cause),
+        };
+        let snap = StartupSafety::from_decision(&decision, SessionActivity::idle()).snapshot();
+        assert_eq!(snap.cause, Some(wire));
+    }
+    let clean = SessionDecision {
+        outcome: SessionOutcome::Clean,
+        streak: 0,
+        safe_mode: false,
+        cause: None,
+    };
+    assert_eq!(
+        StartupSafety::from_decision(&clean, SessionActivity::idle())
+            .snapshot()
+            .cause,
+        None
+    );
+}
 
-use std::os::unix::io::AsRawFd;
+// ---------------------------------------------------------------------------
+// Pure decision logic.
+// ---------------------------------------------------------------------------
 
 /// Builds an abnormal previous record (`clean_exit: false`) with the given
 /// streak, boot time, and liveness state; other fields are fixed defaults.
@@ -252,6 +164,28 @@ fn decide_session_reaches_threshold_engages_safe_mode() {
     assert_eq!(d.streak, 2);
 }
 
+/// The default threshold semantics (2): a single abnormal launch stays out of
+/// safe mode, and only a second consecutive abnormal launch engages it. This is
+/// the "one hard reboot / `kill -9` does not nag" behavior the threshold bump
+/// exists to give.
+#[test]
+fn threshold_two_requires_two_consecutive() {
+    // First abnormal launch: prior streak 0 -> this streak 1, still below 2.
+    let first = decide_session(Some(abnormal_prev(0, 5, SessionState::Ok)), 5, 2);
+    assert_eq!(first.streak, 1);
+    assert!(
+        !first.safe_mode,
+        "one abnormal launch must not enter safe mode"
+    );
+    // Second consecutive abnormal launch: prior streak 1 -> this streak 2.
+    let second = decide_session(Some(abnormal_prev(1, 5, SessionState::Ok)), 5, 2);
+    assert_eq!(second.streak, 2);
+    assert!(
+        second.safe_mode,
+        "two consecutive abnormal launches enter safe mode"
+    );
+}
+
 /// The streak saturates at u32::MAX rather than overflowing.
 #[test]
 fn decide_session_streak_saturates() {
@@ -319,6 +253,10 @@ fn safe_mode_ignores_activity() {
     assert!(verdicts.all(|v| v == first));
 }
 
+// ---------------------------------------------------------------------------
+// Durable record I/O (driven live).
+// ---------------------------------------------------------------------------
+
 /// A record written through the durable helper reads back identical.
 #[test]
 fn session_record_round_trips_through_durable_write() {
@@ -346,6 +284,24 @@ fn read_record_corrupt_is_none() {
     let path = dir.path().join("session.json");
     std::fs::write(&path, b"{ not valid json").unwrap();
     assert_eq!(read_record(&path), None);
+}
+
+/// A well-formed but OLD-FORMAT file (the pre-rework `startup_guard.json`
+/// shape, which has none of the session-record fields) reads as None and
+/// therefore decides clean. This is the upgrade migration path: the stale file
+/// cannot deserialize into a `SessionRecord`, so it fails open and never trips
+/// safe mode.
+#[test]
+fn old_format_record_reads_as_clean() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("session.json");
+    std::fs::write(&path, br#"{"launch_dirty":true,"consecutive_unclean":5}"#).unwrap();
+    let prev = read_record(&path);
+    assert_eq!(prev, None);
+    let d = decide_session(prev, 42, 2);
+    assert_eq!(d.outcome, SessionOutcome::Clean);
+    assert!(!d.safe_mode);
+    assert_eq!(d.cause, None);
 }
 
 /// `mark_crashed` durably flips state to Crashed without marking a clean exit.
@@ -407,6 +363,25 @@ fn set_activity_persists() {
     };
     writer.set_activity(activity.clone()).unwrap();
     assert_eq!(read_record(&path).unwrap().activity, activity);
+}
+
+/// `SessionGuard::writer` exposes the record writer when this process owns the
+/// session and `None` when it does not (another instance held the lock).
+#[test]
+fn session_guard_writer_reflects_ownership() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("session.json");
+    let writer = SessionWriter::new(path, SessionRecord::launch(1, 2, 0));
+    let owned = SessionGuard {
+        _lock: None,
+        writer: Some(writer),
+    };
+    assert!(owned.writer().is_some());
+    let not_owned = SessionGuard {
+        _lock: None,
+        writer: None,
+    };
+    assert!(not_owned.writer().is_none());
 }
 
 /// Marking a clean exit durably sets `clean_exit: true`.

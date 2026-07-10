@@ -72,18 +72,6 @@ describe('App - safe-mode recovery (issue #296)', () => {
     downloadHolder.value = makeDownloadCtx();
   });
 
-  it('fires mark_startup_healthy exactly once on mount, unconditionally', async () => {
-    enableChannelCaptureWithResponses({
-      startup_safety: { safe_mode: false, unclean_count: 0 },
-    });
-
-    render(<App />);
-    await act(async () => {});
-
-    expect(callCount('mark_startup_healthy')).toBe(1);
-    expect(invoke).toHaveBeenCalledWith('mark_startup_healthy');
-  });
-
   it('does not show the recovery screen when safe mode is false', async () => {
     enableChannelCaptureWithResponses({
       startup_safety: { safe_mode: false, unclean_count: 0 },
@@ -127,8 +115,6 @@ describe('App - safe-mode recovery (issue #296)', () => {
 
     expect(screen.getByText("Let's get Thuki set up")).toBeInTheDocument();
     expect(screen.queryByText(RECOVERY_HEADLINE)).not.toBeInTheDocument();
-    // Still fires unconditionally even though onboarding is gating render.
-    expect(callCount('mark_startup_healthy')).toBe(1);
   });
 
   it('does not show the recovery screen when no active model resolves', async () => {
@@ -218,14 +204,13 @@ describe('App - safe-mode recovery (issue #296)', () => {
     expect(callCount('estimate_model_fit')).toBe(1);
   });
 
-  // The recovery card renders purely from the `startup_safety` snapshot, and
-  // `mark_startup_healthy` fires in an earlier mount effect (App.tsx). This
-  // documents that ordering-independence: the earlier health signal does NOT
-  // suppress the card. Backend-side, the fix that makes this hold is the
-  // now-immutable in-memory verdict (the health signal no longer clears it);
-  // this FE test double cannot reproduce that race, so it stands as the
+  // The recovery card renders purely from the `startup_safety` snapshot. The
+  // backend verdict is immutable for the launch and is cleared only by a
+  // genuine clean exit (there is no frontend health signal any more), so the
+  // card cannot be suppressed by anything the renderer does after mount. This
+  // FE test double cannot reproduce that backend race, so it stands as the
   // contract, with `startup_guard::tests` guarding the real behavior.
-  it('renders the recovery card even though mark_startup_healthy fired first on mount', async () => {
+  it('renders the recovery card from the startup_safety snapshot', async () => {
     enableChannelCaptureWithResponses({
       startup_safety: { safe_mode: true, unclean_count: 3 },
       get_model_picker_state: {
@@ -244,7 +229,6 @@ describe('App - safe-mode recovery (issue #296)', () => {
     render(<App />);
     await act(async () => {});
 
-    expect(callCount('mark_startup_healthy')).toBe(1);
     expect(screen.getByText(RECOVERY_HEADLINE)).toBeInTheDocument();
   });
 
