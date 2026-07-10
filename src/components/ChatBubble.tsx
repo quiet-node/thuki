@@ -75,6 +75,20 @@ function avatarColor(domain: string): string {
   return AVATAR_PALETTE[domainHue(domain) % AVATAR_PALETTE.length];
 }
 
+/**
+ * Friendly model name for the `InsufficientMemory` card title (issue #296):
+ * the display-name mapping when known (built-in ids are raw slugs), else the
+ * raw id, else a neutral fallback for a message with no attribution. Shared by
+ * both the initial-failure fetch path and the carried-figures render path so
+ * the three-way fallback has a single set of branches to cover.
+ */
+function resolveMemoryModelName(
+  modelName: string | undefined,
+  displayNames: Record<string, string> | undefined,
+): string {
+  return (modelName && displayNames?.[modelName]) ?? modelName ?? 'This model';
+}
+
 /** Regex matching inline `[N]` citation markers in plain text. Captures the N. */
 const CITATION_RE = /\[(\d+)\]/g;
 
@@ -289,6 +303,14 @@ interface ChatBubbleProps {
    * with the model picker and the titlebar pill.
    */
   displayNames?: Record<string, string>;
+  /**
+   * Pre-fetched memory-fit figures for an `InsufficientMemory` re-attribution
+   * (issue #296). When present, the card renders these carried numbers together
+   * with `modelName` and the per-message async `estimate_model_fit` fetch is
+   * skipped, so the model name and GB figures never disagree during a "Switch
+   * model" swap. Absent on the initial failure, where the fetch supplies them.
+   */
+  memoryFit?: { requiredBytes: number; availableBytes: number };
 }
 
 /**
@@ -344,6 +366,7 @@ export function ChatBubble({
   isSearching = false,
   modelName,
   displayNames,
+  memoryFit,
 }: ChatBubbleProps) {
   const isUser = role === 'user';
   const [sourcesOpen, setSourcesOpen] = useState(false);
@@ -367,17 +390,16 @@ export function ChatBubble({
 
   /**
    * Machine-readable figures for the `InsufficientMemory` error card
-   * (issue #296), fetched lazily once the card actually needs them rather
-   * than threaded down as a prop from every ancestor. `undefined` while the
-   * fetch is in flight or if it fails; the ErrorCard falls back to its
-   * generic message render in that case, so a failed fetch never crashes
-   * the bubble. Not reset when `errorKind` moves away from
-   * `InsufficientMemory`: `ErrorCard` only reads this value for that kind,
-   * so a stale estimate lingering in state is inert until the next fetch
-   * overwrites it. The fetch is pinned to this message's own `modelName`
-   * (the model this specific turn failed on), not whatever provider model
-   * is active now, so the returned `requiredBytes` always agrees with the
-   * model named in the card's title even after the user switches models.
+   * (issue #296) on the INITIAL failure, fetched lazily once the card actually
+   * needs them rather than threaded down as a prop from every ancestor.
+   * `undefined` while the fetch is in flight or if it fails; the ErrorCard falls
+   * back to its generic message render in that case, so a failed fetch never
+   * crashes the bubble. Not reset when `errorKind` moves away from
+   * `InsufficientMemory`: `ErrorCard` only reads figures for that kind, so a
+   * stale estimate lingering in state is inert until the next fetch overwrites
+   * it. Overridden entirely by `memoryFit` when the message carries pre-fetched
+   * figures (the "Switch model" re-attribution path), so the fetch is skipped
+   * there and this stale value can never leak onto a re-attributed card.
    */
   const [insufficientMemoryInfo, setInsufficientMemoryInfo] = useState<
     | { modelName: string; requiredBytes: number; availableBytes: number }
@@ -386,6 +408,10 @@ export function ChatBubble({
 
   useEffect(() => {
     if (errorKind !== 'InsufficientMemory') return;
+    // Carried figures win: the re-attribution path (issue #296) hands the card
+    // the newly-picked model's numbers directly, so skip the redundant fetch
+    // whose async resolution is exactly the stale window we are eliminating.
+    if (memoryFit) return;
     let cancelled = false;
     invoke<{
       required_bytes: number;
@@ -395,10 +421,7 @@ export function ChatBubble({
       .then((estimate) => {
         if (cancelled) return;
         setInsufficientMemoryInfo({
-          modelName:
-            (modelName && displayNames?.[modelName]) ??
-            modelName ??
-            'This model',
+          modelName: resolveMemoryModelName(modelName, displayNames),
           requiredBytes: estimate.required_bytes,
           availableBytes: estimate.available_bytes,
         });
@@ -409,7 +432,22 @@ export function ChatBubble({
     return () => {
       cancelled = true;
     };
-  }, [errorKind, modelName, displayNames]);
+  }, [errorKind, modelName, displayNames, memoryFit]);
+
+  /**
+   * Figures actually rendered by the `InsufficientMemory` card. Carried
+   * `memoryFit` (set atomically with `modelName` on a "Switch model" swap) takes
+   * precedence over the initial-failure fetch state, so the name and GB numbers
+   * always describe the same model and never render the previous model's data
+   * (issue #296). Falls back to the fetched state on the initial failure.
+   */
+  const resolvedMemoryInfo = memoryFit
+    ? {
+        modelName: resolveMemoryModelName(modelName, displayNames),
+        requiredBytes: memoryFit.requiredBytes,
+        availableBytes: memoryFit.availableBytes,
+      }
+    : insufficientMemoryInfo;
 
   /** Ref on the markdown container so `wrapCitations` can post-process
    *  the rendered DOM after every token update. */
@@ -555,7 +593,7 @@ export function ChatBubble({
                 message={content}
                 onSwitchModel={onSwitchModel}
                 onLoadAnyway={onLoadAnyway}
-                insufficientMemoryInfo={insufficientMemoryInfo}
+                insufficientMemoryInfo={resolvedMemoryInfo}
               />
             ) : (
               <MarkdownRenderer

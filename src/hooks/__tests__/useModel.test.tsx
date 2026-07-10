@@ -3191,7 +3191,7 @@ describe('useModel', () => {
   });
 
   describe('updateErroredMessageModel()', () => {
-    it('changes only modelName on the targeted message, preserving errorKind, retrySnapshot, content, and id', async () => {
+    it('changes modelName and carries the memory-fit figures on the targeted message, preserving errorKind, retrySnapshot, content, and id', async () => {
       const { result } = renderHook(() => useModel('gemma4:e2b'));
 
       await act(async () => {
@@ -3210,12 +3210,19 @@ describe('useModel', () => {
       const originalSnapshot = result.current.messages[1].retrySnapshot;
 
       act(() => {
-        result.current.updateErroredMessageModel(assistantId, 'qwen2.5:7b');
+        result.current.updateErroredMessageModel(assistantId, 'qwen2.5:7b', {
+          requiredBytes: 8 * 1024 ** 3,
+          availableBytes: 4 * 1024 ** 3,
+        });
       });
 
       expect(result.current.messages).toHaveLength(2);
       expect(result.current.messages[1].id).toBe(assistantId);
       expect(result.current.messages[1].modelName).toBe('qwen2.5:7b');
+      expect(result.current.messages[1].memoryFit).toEqual({
+        requiredBytes: 8 * 1024 ** 3,
+        availableBytes: 4 * 1024 ** 3,
+      });
       expect(result.current.messages[1].errorKind).toBe('InsufficientMemory');
       expect(result.current.messages[1].retrySnapshot).toBe(originalSnapshot);
       expect(result.current.messages[1].content).toBe(originalContent);
@@ -3239,7 +3246,10 @@ describe('useModel', () => {
 
       expect(() => {
         act(() => {
-          result.current.updateErroredMessageModel('no-such-id', 'qwen2.5:7b');
+          result.current.updateErroredMessageModel('no-such-id', 'qwen2.5:7b', {
+            requiredBytes: 8 * 1024 ** 3,
+            availableBytes: 4 * 1024 ** 3,
+          });
         });
       }).not.toThrow();
 

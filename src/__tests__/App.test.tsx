@@ -905,6 +905,83 @@ describe('App', () => {
       );
     });
 
+    it('disarms the pending switch-retry when the picker is dismissed without a pick: a later pick replays the last message, not the abandoned turn (issue #296)', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+        estimate_model_fit: {
+          required_bytes: 4 * 1024 ** 3,
+          available_bytes: 24 * 1024 ** 3,
+          verdict: 'comfortable',
+          would_block: false,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Turn 1 ("first") fails with InsufficientMemory.
+      setAskValue('first');
+      fireEvent.keyDown(getAskInput(), { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+
+      // Turn 2 ("second") also fails with InsufficientMemory.
+      setAskValue('second');
+      fireEvent.keyDown(getAskInput(), { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+
+      // Arm the pending retry from the OLDER card (turn 1's snapshot) via its
+      // "Switch model" button, then dismiss the picker by clicking outside it -
+      // without picking a model.
+      const switchButtons = screen.getAllByRole('button', {
+        name: 'Switch model',
+      });
+      fireEvent.click(switchButtons[0]);
+      await act(async () => {});
+      act(() => {
+        fireEvent.mouseDown(document.body);
+      });
+      await act(async () => {});
+
+      // Reopen the picker via the plain header pill (which arms nothing) and
+      // pick a fitting model.
+      invoke.mockClear();
+      fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+      await act(async () => {});
+
+      // The abandoned turn-1 retry was disarmed on dismiss, so the pick falls
+      // through to the last-message fallback and replays turn 2 ("second"),
+      // never the older, abandoned turn 1 ("first").
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'second' }),
+      );
+      expect(invoke).not.toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'first' }),
+      );
+    });
+
     // Regression coverage for issue #296 follow-up (bug B): the retried turn
     // used to get pinned to whatever `activeModel` the closure still held at
     // the moment `retryMessage` fired, which is the PRE-switch model -

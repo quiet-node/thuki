@@ -562,6 +562,73 @@ describe('ChatBubble', () => {
       });
     });
 
+    it('re-attributes to model B atomically from carried figures on an in-place switch, without refetching (issue #296)', async () => {
+      // Initial failure on model A: the effect fetches and populates A's
+      // figures into the bubble's local state.
+      invoke.mockImplementationOnce(async () => ({
+        required_bytes: 13.3 * 1024 ** 3,
+        available_bytes: 4 * 1024 ** 3,
+        verdict: 'insufficient',
+      }));
+      const displayNames = {
+        'model-a-slug': 'Model A',
+        'model-b-slug': 'Model B',
+      };
+      const { rerender } = render(
+        <ChatBubble
+          role="assistant"
+          content={FALLBACK_MESSAGE}
+          index={0}
+          errorKind="InsufficientMemory"
+          modelName="model-a-slug"
+          displayNames={displayNames}
+        />,
+      );
+      expect(
+        await screen.findByText('Model A may not fit in memory right now.'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          'Estimated need: ~13.3 GB. Currently available: ~4.0 GB.',
+        ),
+      ).toBeInTheDocument();
+
+      // The user picks model B, which the gate ALSO blocks: the app swaps
+      // modelName to B and carries B's figures in the same commit (memoryFit).
+      invoke.mockClear();
+      rerender(
+        <ChatBubble
+          role="assistant"
+          content={FALLBACK_MESSAGE}
+          index={0}
+          errorKind="InsufficientMemory"
+          modelName="model-b-slug"
+          displayNames={displayNames}
+          memoryFit={{
+            requiredBytes: 6 * 1024 ** 3,
+            availableBytes: 4 * 1024 ** 3,
+          }}
+        />,
+      );
+
+      // B's name and figures render immediately - never A's stale local state.
+      expect(
+        screen.getByText('Model B may not fit in memory right now.'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          'Estimated need: ~6.0 GB. Currently available: ~4.0 GB.',
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/Model A may not fit/)).toBeNull();
+      // No async refetch fires on the switch, so there is no window in which a
+      // stale (or a rejected) estimate could ever render A's data.
+      expect(invoke).not.toHaveBeenCalledWith(
+        'estimate_model_fit',
+        expect.anything(),
+      );
+    });
+
     it('falls back to the raw model id when displayNames has no entry', async () => {
       invoke.mockImplementationOnce(async () => ({
         required_bytes: 1,

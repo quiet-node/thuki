@@ -66,6 +66,17 @@ export interface Message {
    * `InsufficientMemory`.
    */
   retrySnapshot?: RetrySnapshot;
+  /**
+   * Memory-fit figures for an `InsufficientMemory` re-attribution (issue #296).
+   * Set only by `updateErroredMessageModel` when a "Switch model" pick lands on
+   * a model the gate ALSO blocks: it carries the newly-picked model's required/
+   * available bytes so the error card swaps its GB figures ATOMICALLY with
+   * `modelName`, instead of `ChatBubble` kicking a fresh async
+   * `estimate_model_fit` and briefly rendering the previous model's numbers (or
+   * rendering them forever if that refetch rejects). Absent on the initial
+   * failure, where `ChatBubble` fetches the figures itself.
+   */
+  memoryFit?: { requiredBytes: number; availableBytes: number };
 }
 
 /** Raw streaming chunk payload emitted from the Rust chat backend. */
@@ -1090,20 +1101,28 @@ export function useModel(
    * Everything else is preserved deliberately: `errorKind` stays
    * `InsufficientMemory` (so `ErrorCard` never unmounts, which is what kills the
    * flash) and `retrySnapshot` stays intact (so a later pick of a fitting model
-   * can still replay this exact turn). `ChatBubble`'s `modelName`-keyed effect
-   * then refetches the fit figures for the new model, and `ErrorCard` reads
-   * only those figures, so the card swaps its model name and GB numbers in
-   * place. No-op when no message with `assistantMessageId` exists.
+   * can still replay this exact turn). The caller (`handleModelSelect`) already
+   * fetched the new model's fit figures to make the `would_block` decision, so
+   * they are threaded straight onto the message as `memoryFit`; `ChatBubble`
+   * renders the card from those carried numbers, swapping the model name and GB
+   * figures together in the same commit with no async refetch window. No-op
+   * when no message with `assistantMessageId` exists.
    *
    * @param assistantMessageId Id of the errored assistant message to re-attribute.
    * @param modelName New model slug to attribute the message to.
+   * @param memoryFit Fit figures for `modelName`, carried onto the message so the
+   *   card renders them atomically with the name swap (issue #296).
    */
   const updateErroredMessageModel = useCallback(
-    (assistantMessageId: string, modelName: string) => {
+    (
+      assistantMessageId: string,
+      modelName: string,
+      memoryFit: { requiredBytes: number; availableBytes: number },
+    ) => {
       setMessages((prev) =>
         prev.map((message) =>
           message.id === assistantMessageId
-            ? { ...message, modelName }
+            ? { ...message, modelName, memoryFit }
             : message,
         ),
       );

@@ -380,6 +380,7 @@ export function ConversationView({
               searchTraces={msg.searchTraces}
               modelName={msg.modelName}
               displayNames={modelDisplayNames}
+              memoryFit={msg.memoryFit}
               isSearching={
                 isGenerating &&
                 msg.fromSearch === true &&

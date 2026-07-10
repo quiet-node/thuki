@@ -3371,6 +3371,21 @@ function App() {
   const pendingSwitchRetryRef = useRef<RetrySnapshot | undefined>(undefined);
 
   /**
+   * Disarms a pending "Switch model" retry whenever the picker closes without a
+   * pick (issue #296). `handleSwitchModelFromError` is the only site that arms
+   * the ref, and it always opens the picker, so every armed state ends either in
+   * a pick (`handleModelSelect` consumes the ref synchronously before this
+   * effect can fire) or a dismissal that lands here. Clearing at this single
+   * close boundary covers all seven dismiss paths (Escape, click-outside, the
+   * history/export toggles) at once, so an abandoned turn can never be replayed
+   * by a later, unrelated model pick.
+   */
+  useEffect(() => {
+    if (isModelPickerOpen) return;
+    pendingSwitchRetryRef.current = undefined;
+  }, [isModelPickerOpen]);
+
+  /**
    * Persists the user's model choice via the backend and closes the picker panel.
    * On rejection (e.g. the chosen model was uninstalled between render and click),
    * triggers a refresh so the picker list and the active chip resync with the
@@ -3428,22 +3443,30 @@ function App() {
         .then(async () => {
           const retry = pendingRetry;
           if (!retry) return;
-          let wouldBlock: boolean;
+          let estimate:
+            | {
+                would_block: boolean;
+                required_bytes: number;
+                available_bytes: number;
+              }
+            | undefined;
           try {
-            const estimate = await invoke<{ would_block: boolean }>(
-              'estimate_model_fit',
-              { modelId: model },
-            );
-            wouldBlock = estimate.would_block === true;
+            estimate = await invoke('estimate_model_fit', { modelId: model });
           } catch {
             // Estimate unavailable at this IO boundary: fall back to a normal
             // retry (the backend gate still runs on the real send), never a
             // broken in-between state.
-            wouldBlock = false;
+            estimate = undefined;
           }
-          if (wouldBlock) {
+          if (estimate?.would_block === true) {
             // why: keep the card mounted and swap only its attribution, no send.
-            updateErroredMessageModel(retry.assistantMessageId, model);
+            // The fit figures just fetched are carried onto the message so the
+            // card's model name and GB numbers update together (issue #296),
+            // with no second async fetch that could briefly show the old model.
+            updateErroredMessageModel(retry.assistantMessageId, model, {
+              requiredBytes: estimate.required_bytes,
+              availableBytes: estimate.available_bytes,
+            });
           } else {
             retryMessage(retry, model);
           }
