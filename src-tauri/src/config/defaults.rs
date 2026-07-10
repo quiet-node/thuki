@@ -838,24 +838,33 @@ pub const PREPASS_TIMEOUT_S: u64 = 35;
 pub const SEARCH_CACHE_TTL_S: u64 = 600;
 
 /// Token cap for the grammar-constrained sufficiency-judge response. The judge
-/// decides whether a retrieved vertical/cache block actually answers the
-/// specific question before the pipeline commits to it, so an insufficient
-/// fast-path result escalates to the scraped engines instead of dead-ending on
-/// a "the sources do not contain that" refusal. Its JSON (`{sufficient,
-/// missing}`) is tiny, but the same reasoning-family caveat as
-/// [`PREPASS_MAX_TOKENS`] applies: a model that reasons before emitting JSON
-/// must have headroom or the body truncates to empty (which degrades to
-/// "sufficient", i.e. commit the block, the safe default that never burns
-/// engine volume). Sized below the classifier budget because the judge's task
-/// is a bounded yes/no over one small block, not a few-shot classification.
+/// decides whether a retrieved vertical block actually answers the specific
+/// question before the pipeline commits to it, so an insufficient fast-path
+/// result escalates to the scraped engines instead of dead-ending on a "the
+/// sources do not contain that" refusal.
+///
+/// Matched to [`PREPASS_MAX_TOKENS`], NOT sized down on the theory that a yes/no
+/// is a lighter task than the classifier's three-way route. Reasoning-family
+/// models (gpt-oss) spend internal tokens on chain-of-thought before the JSON
+/// and IGNORE the `enable_thinking:false` hint, and their reasoning volume
+/// tracks the model's effort on the task, not the prompt's length: "do these
+/// sources contain X" is not obviously less reasoning than a route decision.
+/// This budget went the same 768 -> 1536 route the classifier's did after a
+/// truncating body was observed live degrading to an empty parse. Here that same
+/// truncation is MORE dangerous, not less: an empty judge body degrades to
+/// "sufficient" (commit the block), silently restoring the exact dead-end this
+/// stage exists to remove, and it only surfaces on gpt-oss (gemma emits JSON
+/// with no reasoning tokens and never truncates, so a gemma smoke would show a
+/// false green). The cap only bites on truncation; the real wall-clock guard is
+/// [`SUFFICIENCY_JUDGE_TIMEOUT_S`], so erring high costs nothing on normal turns.
 ///
 /// Not user-tunable: part of the judge prompt/parse contract, same rationale as
 /// [`PREPASS_MAX_TOKENS`].
-pub const SUFFICIENCY_JUDGE_MAX_TOKENS: i32 = 1024;
+pub const SUFFICIENCY_JUDGE_MAX_TOKENS: i32 = 1536;
 
-/// Per-call wall-clock timeout for the sufficiency-judge call (seconds). Sized
-/// to fit [`SUFFICIENCY_JUDGE_MAX_TOKENS`] with prefill headroom, the same
-/// reasoning as [`PREPASS_TIMEOUT_S`]: a timeout tighter than the token budget
+/// Per-call wall-clock timeout for the sufficiency-judge call (seconds). Matched
+/// to [`PREPASS_TIMEOUT_S`] to fit [`SUFFICIENCY_JUDGE_MAX_TOKENS`] at the
+/// observed decode rate plus prefill: a timeout tighter than the token budget
 /// silently converts a reasoning-heavy judge call into a failure. A judge
 /// failure degrades to "sufficient" (commit the fast-path block), so an
 /// over-tight timeout would only ever suppress an escalation, never wall the
@@ -863,7 +872,7 @@ pub const SUFFICIENCY_JUDGE_MAX_TOKENS: i32 = 1024;
 /// well under this.
 ///
 /// Not user-tunable: an internal robustness bound.
-pub const SUFFICIENCY_JUDGE_TIMEOUT_S: u64 = 30;
+pub const SUFFICIENCY_JUDGE_TIMEOUT_S: u64 = 35;
 
 /// Freshness markers that disqualify a question from the Wikipedia vertical even
 /// when the classifier routed it there. Wikipedia's lead summary describes the
