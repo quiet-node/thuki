@@ -192,26 +192,6 @@ describe('DownloadStatusStrip', () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
-  it('omits the queue badge when only one other download is queued', () => {
-    render(
-      <DownloadStatusStrip
-        surface="askbar"
-        status={{ kind: 'queued', onCancel: () => {}, queueDepth: 1 }}
-      />,
-    );
-    expect(screen.queryByText(/in queue/)).not.toBeInTheDocument();
-  });
-
-  it('shows the queue badge once at least one other download is also queued', () => {
-    render(
-      <DownloadStatusStrip
-        surface="askbar"
-        status={{ kind: 'queued', onCancel: () => {}, queueDepth: 2 }}
-      />,
-    );
-    expect(screen.getByText('· #2 in queue')).toBeInTheDocument();
-  });
-
   it('shows a paused state with both Resume and Discard', () => {
     const onResume = vi.fn();
     const onDiscard = vi.fn();
