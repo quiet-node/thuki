@@ -1,7 +1,10 @@
 import { motion } from 'framer-motion';
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import thukiLogo from '../../src-tauri/icons/128x128.png';
 import { useFitOnboardingWindow } from '../hooks/useFitOnboardingWindow';
+
+/** Stable id for the headline, referenced by the dialog's `aria-labelledby`. */
+const HEADING_ID = 'safe-mode-recovery-heading';
 
 interface SafeModeRecoveryCardProps {
   /** Display name of the model that was loading when the previous launch never reached a healthy state. */
@@ -35,6 +38,17 @@ export function SafeModeRecoveryCard({
   // key a re-fit on.
   useFitOnboardingWindow(cardRef, null);
 
+  // Thuki is summoned by a keyboard hotkey, so WebKit's :focus-visible
+  // heuristic treats the interaction as keyboard-originated: whichever
+  // element receives focus at mount paints a UA focus ring. Focusing the
+  // dialog container (a tabindex="-1" programmatic target, not a tab stop)
+  // instead of the primary button keeps that ring off the button while
+  // still moving focus into the dialog for screen readers and keyboard
+  // traversal.
+  useEffect(() => {
+    cardRef.current?.focus();
+  }, []);
+
   return (
     <div
       style={{
@@ -48,6 +62,10 @@ export function SafeModeRecoveryCard({
     >
       <motion.div
         ref={cardRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={HEADING_ID}
+        tabIndex={-1}
         initial={{ opacity: 0, scale: 0.97, y: 8 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         transition={{ type: 'spring', stiffness: 300, damping: 28 }}
@@ -64,6 +82,9 @@ export function SafeModeRecoveryCard({
           padding: '32px 26px 26px',
           boxShadow: '0 0 40px rgba(255,100,40,0.07)',
           position: 'relative',
+          // This is a programmatic focus target (tabIndex={-1}), not a
+          // control the user tabs to, so its own UA focus ring is noise.
+          outline: 'none',
         }}
       >
         {/* Logo doubles as the window drag handle, matching the other
@@ -89,6 +110,7 @@ export function SafeModeRecoveryCard({
         {/* Headline + body */}
         <div style={{ textAlign: 'center', marginBottom: 22 }}>
           <h1
+            id={HEADING_ID}
             style={{
               fontSize: 21,
               fontWeight: 700,

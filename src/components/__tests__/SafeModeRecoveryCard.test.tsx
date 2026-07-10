@@ -79,4 +79,37 @@ describe('SafeModeRecoveryCard', () => {
     );
     expect(onLoadAnyway).toHaveBeenCalledOnce();
   });
+
+  it('focuses the dialog container on mount, not either button, so no unprompted focus ring paints on a button', () => {
+    render(
+      <SafeModeRecoveryCard
+        modelName="Qwen3.5 9B"
+        sizeGb="8.4"
+        onChooseDifferentModel={vi.fn()}
+        onLoadAnyway={vi.fn()}
+      />,
+    );
+    expect(document.activeElement).toBe(screen.getByRole('dialog'));
+    expect(document.activeElement).not.toBe(
+      screen.getByRole('button', { name: 'Choose a different model' }),
+    );
+    expect(document.activeElement).not.toBe(
+      screen.getByRole('button', { name: 'Load last model anyway' }),
+    );
+  });
+
+  it('exposes aria-modal and labels the dialog by its heading', () => {
+    render(
+      <SafeModeRecoveryCard
+        modelName="Qwen3.5 9B"
+        sizeGb="8.4"
+        onChooseDifferentModel={vi.fn()}
+        onLoadAnyway={vi.fn()}
+      />,
+    );
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    const heading = screen.getByText('Recovered in Safe Mode');
+    expect(dialog.getAttribute('aria-labelledby')).toBe(heading.id);
+  });
 });
