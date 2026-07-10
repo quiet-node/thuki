@@ -136,6 +136,20 @@ async function showOverlay(selectedText: string | null = null) {
   });
 }
 
+/**
+ * Flushes the double `requestAnimationFrame` paint yield the borrowing-surface
+ * -> ask-bar hand-back effect uses before it resizes and repositions the native
+ * window (issue #296). Mirrors the app's own double-rAF yield so the deferred
+ * `setSize` + `position_overlay_ask_bar` run before the assertions read them.
+ */
+async function flushPaintYield() {
+  await act(async () => {
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+  });
+}
+
 describe('App', () => {
   beforeEach(() => {
     invoke.mockClear();
@@ -2500,10 +2514,12 @@ describe('App', () => {
       fireEvent.click(
         screen.getByRole('button', { name: 'Load last model anyway' }),
       );
-      await act(async () => {});
+      // The resize is deferred behind the hand-back paint yield (issue #296),
+      // so flush the double rAF before asserting the native setSize.
+      await flushPaintYield();
 
-      // The ask bar is now the mounted surface, so the config-sync effect
-      // must re-fire against its real container (48 = CONTAINER_VERTICAL_PADDING
+      // The ask bar is now the mounted surface, so the hand-back effect
+      // must size against its real container (48 = CONTAINER_VERTICAL_PADDING
       // in App.tsx; jsdom reports 0 layout height), not leave the window at
       // the card's old size or the collapsed fallback (80).
       expect(document.querySelector('.morphing-container')).not.toBeNull();
@@ -2560,11 +2576,69 @@ describe('App', () => {
       fireEvent.click(
         screen.getByRole('button', { name: 'Load last model anyway' }),
       );
-      await act(async () => {});
+      // The reposition is deferred behind the hand-back paint yield (issue
+      // #296), so flush the double rAF before asserting it.
+      await flushPaintYield();
 
       // The card centered the shared window; dismissing it back to the ask bar
       // must restore the ask bar's default position (issue #296).
       expect(invoke).toHaveBeenCalledWith('position_overlay_ask_bar');
+    });
+
+    it('defers both the native resize and the reposition until after a paint yield', async () => {
+      enableChannelCaptureWithResponses({
+        startup_safety: { safe_mode: true, unclean_count: 2 },
+        estimate_model_fit: { required_bytes: 4 * 1024 ** 3 },
+      });
+
+      render(<App />);
+      await screen.findByText('Recovered in Safe Mode');
+      await showOverlay();
+
+      // Take manual control of the animation-frame clock so the hand-back paint
+      // yield can be observed as still-pending: happy-dom otherwise runs rAF
+      // callbacks eagerly, which would hide the very deferral this test asserts.
+      const frameQueue: FrameRequestCallback[] = [];
+      const rafSpy = vi
+        .spyOn(globalThis, 'requestAnimationFrame')
+        .mockImplementation((cb: FrameRequestCallback) => {
+          frameQueue.push(cb);
+          return frameQueue.length;
+        });
+      const runQueuedFrames = () => {
+        const pending = frameQueue.splice(0);
+        for (const cb of pending) cb(performance.now());
+      };
+
+      try {
+        invoke.mockClear();
+        __mockWindow.setSize.mockClear();
+
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Load last model anyway' }),
+        );
+
+        // The forced load fires synchronously, but the native geometry (resize
+        // + reposition) is queued behind the double rAF, not run yet (issue
+        // #296): otherwise the outgoing card is clipped into the smaller
+        // ask-bar window for one paint.
+        expect(invoke).toHaveBeenCalledWith('warm_up_model', { force: true });
+        expect(__mockWindow.setSize).not.toHaveBeenCalled();
+        expect(invoke).not.toHaveBeenCalledWith('position_overlay_ask_bar');
+
+        // Drain the outer frame (which schedules the inner), then the inner
+        // frame that performs the native window calls.
+        await act(async () => {
+          runQueuedFrames();
+          runQueuedFrames();
+        });
+
+        // Only after the paint yield do both native window calls fire.
+        expect(__mockWindow.setSize).toHaveBeenCalled();
+        expect(invoke).toHaveBeenCalledWith('position_overlay_ask_bar');
+      } finally {
+        rafSpy.mockRestore();
+      }
     });
 
     it('swallows a rejected ask-bar reposition on recovery-card dismissal', async () => {
@@ -2590,12 +2664,15 @@ describe('App', () => {
       fireEvent.click(
         screen.getByRole('button', { name: 'Load last model anyway' }),
       );
+      // The reposition is deferred behind the hand-back paint yield (issue
+      // #296); flushing the double rAF runs it and settles the rejected
+      // invoke's microtask so the `.catch` swallows it.
+      await flushPaintYield();
 
       // The reposition fired and its rejection is swallowed.
       expect(invoke).toHaveBeenCalledWith('position_overlay_ask_bar');
 
-      // Settle the rejected invoke's microtask: the `.catch` swallows it, so no
-      // unhandled rejection escapes and the card stays dismissed.
+      // No unhandled rejection escapes and the card stays dismissed.
       await act(async () => {});
       expect(
         screen.queryByText('Recovered in Safe Mode'),
@@ -2616,7 +2693,9 @@ describe('App', () => {
       fireEvent.click(
         screen.getByRole('button', { name: 'Choose a different model' }),
       );
-      await act(async () => {});
+      // The reposition is deferred behind the hand-back paint yield (issue
+      // #296), so flush the double rAF before asserting it.
+      await flushPaintYield();
 
       expect(invoke).toHaveBeenCalledWith('position_overlay_ask_bar');
     });

@@ -942,6 +942,22 @@ function App() {
    */
   const overlayWidthRef = useRef(config.window.overlayWidth);
   const maxChatHeightRef = useRef(config.window.maxChatHeight);
+
+  /**
+   * True on any render where a borrowing surface (onboarding or the safe-mode
+   * recovery card, issue #296) currently owns the shared overlay window.
+   */
+  const borrowingSurfaceActive =
+    onboardingStage !== null || safeModeRecovery !== null;
+  /**
+   * Previous render's `borrowingSurfaceActive`. Lets both the size-sync effect
+   * and the hand-back effect below detect the borrowing-surface -> ask-bar
+   * edge. It is updated exactly once per commit, by the hand-back effect (the
+   * later of the two to run), so the size-sync effect (the earlier) always
+   * observes the pre-edge value on the hand-back render.
+   */
+  const wasBorrowingSurfaceRef = useRef(borrowingSurfaceActive);
+
   useEffect(() => {
     overlayWidthRef.current = config.window.overlayWidth;
     maxChatHeightRef.current = config.window.maxChatHeight;
@@ -953,10 +969,17 @@ function App() {
     // after Escape/Cmd+W) finds `morphingContainerNodeRef` unmounted and
     // falls back to `COLLAPSED_WINDOW_HEIGHT`, clobbering the size that
     // surface already fit itself to and clipping its content.
+    //
+    // The extra `!wasBorrowingSurfaceRef.current` guard suppresses this sync on
+    // the borrowing-surface -> ask-bar hand-back edge: shrinking the window
+    // there before WebKit repaints would clip the outgoing card into the
+    // smaller frame for one paint, so the hand-back effect below owns the
+    // deferred setSize on that one transition instead (issue #296 flash fix).
     if (
       overlayState === 'visible' &&
       onboardingStage === null &&
-      !safeModeRecovery
+      !safeModeRecovery &&
+      !wasBorrowingSurfaceRef.current
     ) {
       const node = morphingContainerNodeRef.current;
       const currentHeight = node
@@ -977,31 +1000,57 @@ function App() {
   ]);
 
   /**
-   * Restores the overlay window to the ask bar's canonical default position
-   * when a borrowing surface (onboarding or the safe-mode recovery card, issue
-   * #296) is dismissed back to the ask bar.
-   *
-   * why: those surfaces re-center and resize the shared overlay window for
-   * themselves (via `useFitOnboardingWindow`), and nothing re-runs the native
-   * `show_overlay` positioning when they are dismissed, so without this the ask
-   * bar would render wherever the previous surface left the window. This effect
-   * is the single owner of the ask-bar POSITION on that hand-back edge; SIZE
-   * stays owned by the ResizeObserver / config-sync effect above. It fires ONLY
-   * on the borrowing-surface -> ask-bar transition (tracked via
-   * `wasBorrowingSurfaceRef`), never on a normal show, so `show_overlay`'s
-   * selection-anchored placement is never clobbered. The gate is also why
+   * Hands the shared overlay window back to the ask bar when a borrowing
+   * surface (onboarding or the safe-mode recovery card, issue #296) is
+   * dismissed. It is the single owner of BOTH the ask bar's SIZE and POSITION
+   * on that hand-back edge, and it fires ONLY on the borrowing-surface ->
+   * ask-bar transition (tracked via `wasBorrowingSurfaceRef`), never on a
+   * normal show, so `show_overlay`'s selection-anchored placement is never
+   * clobbered. The `overlayState === 'visible'` gate is also why
    * onboarding-complete (which leaves `overlayState` non-'visible' and re-shows
    * natively) does not reach this path.
+   *
+   * why: the borrowing surface sized and centered the shared window for itself
+   * (via `useFitOnboardingWindow`), so on dismissal the ask bar has to be
+   * resized and repositioned. Doing that synchronously with the render-tree
+   * swap shrinks and moves the native window while WebKit's last painted frame
+   * is still the outgoing card, so that stale card frame is displaced into the
+   * smaller top-center window for ~1 frame (the "clipped card" flash the user
+   * reported). To avoid it we yield for a paint (double `requestAnimationFrame`)
+   * so WebKit paints the ask bar first, and only then run the native setSize +
+   * `position_overlay_ask_bar`. This mirrors the collapse/expand morph path's
+   * "Flicker-free ordering" discipline (see the block in `handleExpand`): make
+   * the next surface paint before moving the native window. Both scheduled
+   * frames are cancelled on unmount / re-run so none leak.
    */
-  const borrowingSurfaceActive =
-    onboardingStage !== null || safeModeRecovery !== null;
-  const wasBorrowingSurfaceRef = useRef(borrowingSurfaceActive);
   useEffect(() => {
     const wasBorrowing = wasBorrowingSurfaceRef.current;
     wasBorrowingSurfaceRef.current = borrowingSurfaceActive;
-    if (wasBorrowing && !borrowingSurfaceActive && overlayState === 'visible') {
-      void invoke('position_overlay_ask_bar').catch(() => {});
+    if (
+      !(wasBorrowing && !borrowingSurfaceActive && overlayState === 'visible')
+    ) {
+      return;
     }
+    let innerFrame = 0;
+    const outerFrame = requestAnimationFrame(() => {
+      innerFrame = requestAnimationFrame(() => {
+        /* v8 ignore start -- requires real Tauri webview to setSize */
+        const node = morphingContainerNodeRef.current;
+        const currentHeight = node
+          ? Math.ceil(node.getBoundingClientRect().height) +
+            CONTAINER_VERTICAL_PADDING
+          : COLLAPSED_WINDOW_HEIGHT;
+        void getCurrentWindow().setSize(
+          new LogicalSize(overlayWidthRef.current, currentHeight),
+        );
+        /* v8 ignore stop */
+        void invoke('position_overlay_ask_bar').catch(() => {});
+      });
+    });
+    return () => {
+      cancelAnimationFrame(outerFrame);
+      cancelAnimationFrame(innerFrame);
+    };
   }, [borrowingSurfaceActive, overlayState]);
 
   /**
