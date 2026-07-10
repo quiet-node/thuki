@@ -21,7 +21,6 @@
 //! never-panic-on-bad-input contract of `config::loader`/`config::writer`.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -107,53 +106,50 @@ pub fn healthy_state() -> PersistedGuardState {
     }
 }
 
-/// Thread-safe managed state holding this launch's circuit-breaker verdict.
+/// Immutable managed state holding this launch's circuit-breaker verdict.
 ///
 /// Read from multiple subsystems and threads (the auto-prime gate in
-/// `show_overlay`, a future download gate, the `startup_safety` command), so
-/// it uses lock-free atomics. The two fields are set once at init and only
-/// ever cleared together by [`StartupSafety::clear`]. Most consumers read a
-/// single field, for which `Relaxed` is trivially sufficient. [`snapshot`]
-/// does read both, via two independent `Relaxed` loads, so a `clear()` racing
-/// concurrently can leave it observing a torn pair (new value of one field,
-/// old value of the other) for an instant. That is benign here: `clear()` is a
-/// one-shot reset off any hot path, and a momentarily-inconsistent recovery
-/// snapshot only ever resolves toward "healthy". So `Relaxed` stays sufficient
-/// and a `Mutex` would be overkill.
+/// `show_overlay`, the download gates in `models`, the `startup_safety`
+/// command). Both fields are set once at construction by [`from_decision`] and
+/// are never mutated for the lifetime of the process, so the struct is a plain
+/// pair of primitives. Immutable primitives are `Sync`, so it satisfies Tauri's
+/// managed-state `Send + Sync` requirement with no atomics or locks.
 ///
-/// [`snapshot`]: StartupSafety::snapshot
+/// Invariant: the verdict is a FACT about THIS launch and must stay fixed for
+/// the whole session. It is deliberately NOT reset by the healthy signal. The
+/// dangerous auto-op this breaker exists to stop (the overlay-show auto-prime
+/// in `lib.rs`) runs AFTER the frontend has mounted and fired
+/// `mark_startup_healthy`; clearing the verdict on that mount signal would
+/// erase the gate before the op it guards ever runs. The healthy signal instead
+/// governs only the NEXT launch, by clearing the on-disk sentinel.
+///
+/// [`from_decision`]: StartupSafety::from_decision
 #[derive(Debug)]
 pub struct StartupSafety {
-    safe_mode: AtomicBool,
-    unclean_count: AtomicU32,
+    safe_mode: bool,
+    unclean_count: u32,
 }
 
 impl StartupSafety {
-    /// Builds the managed state from a [`StartupDecision`]. Used at startup
-    /// after the sentinel has been read and the decision computed.
+    /// Builds the managed state from a [`StartupDecision`]. Used once at startup
+    /// after the sentinel has been read and the decision computed; the resulting
+    /// verdict is then immutable for the process lifetime.
     pub fn from_decision(decision: &StartupDecision) -> Self {
         Self {
-            safe_mode: AtomicBool::new(decision.safe_mode),
-            unclean_count: AtomicU32::new(decision.unclean_count),
+            safe_mode: decision.safe_mode,
+            unclean_count: decision.unclean_count,
         }
     }
 
-    /// Whether this launch is in safe mode. Cheap, lock-free; safe to call
-    /// from any thread on any auto-op path.
+    /// Whether this launch is in safe mode. Cheap field read; safe to call from
+    /// any thread on any auto-op path.
     pub fn safe_mode(&self) -> bool {
-        self.safe_mode.load(Ordering::Relaxed)
+        self.safe_mode
     }
 
     /// The consecutive-unclean count that produced the current verdict.
     pub fn unclean_count(&self) -> u32 {
-        self.unclean_count.load(Ordering::Relaxed)
-    }
-
-    /// Clears the verdict back to healthy (safe mode off, count zero). Called
-    /// by the healthy signal once the app is past the dangerous startup work.
-    pub fn clear(&self) {
-        self.safe_mode.store(false, Ordering::Relaxed);
-        self.unclean_count.store(0, Ordering::Relaxed);
+        self.unclean_count
     }
 
     /// A serializable view of the current verdict for the frontend.
@@ -299,16 +295,21 @@ pub fn startup_safety(state: tauri::State<'_, StartupSafety>) -> StartupSafetySn
 
 /// Command: the "we reached a responsive state" signal, replacing clean-exit
 /// as the circuit breaker's reset mechanism. Persists the healthy sentinel and
-/// clears the managed state. Thin coverage-off wrapper.
+/// does NOTHING else.
+///
+/// It deliberately does not touch this launch's in-memory [`StartupSafety`]
+/// verdict. The dangerous auto-op the breaker guards (the overlay-show
+/// auto-prime in `lib.rs`) runs on summon, AFTER the frontend mounts and fires
+/// this command, so clearing the verdict here would defeat the very gate the
+/// breaker exists to enforce. The health signal only proves the app became
+/// responsive: it governs the NEXT launch by clearing the on-disk sentinel, not
+/// this launch's verdict. Thin coverage-off wrapper over [`mark_healthy`].
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub fn mark_startup_healthy(app: tauri::AppHandle, state: tauri::State<'_, StartupSafety>) {
-    // Persist healthy FIRST so a crash between the disk write and the in-memory
-    // clear leaves disk in the healthy state rather than a memory-only reset.
+pub fn mark_startup_healthy(app: tauri::AppHandle) {
     if let Some(path) = guard_path(&app) {
         mark_healthy(&path);
     }
-    state.clear();
 }
 
 #[cfg(test)]

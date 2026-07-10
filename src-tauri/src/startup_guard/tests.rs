@@ -126,9 +126,14 @@ fn startup_safety_reflects_decision() {
     assert_eq!(safety.unclean_count(), 3);
 }
 
-/// `clear` resets the managed state to healthy.
+/// The in-memory verdict is immutable for the launch: persisting the healthy
+/// sentinel (the mount health signal) writes the clean state to disk yet leaves
+/// this launch's safe-mode verdict standing, so the auto-op gates and the
+/// recovery UI keep seeing safe mode for the whole session. This is the root of
+/// issue #296's re-freeze: clearing the verdict on the mount signal defeated the
+/// gate, because the dangerous auto-op runs after the frontend mounts.
 #[test]
-fn startup_safety_clear_resets() {
+fn healthy_sentinel_does_not_reset_the_launch_verdict() {
     let decision = StartupDecision {
         safe_mode: true,
         unclean_count: 5,
@@ -138,9 +143,16 @@ fn startup_safety_clear_resets() {
         },
     };
     let safety = StartupSafety::from_decision(&decision);
-    safety.clear();
-    assert!(!safety.safe_mode());
-    assert_eq!(safety.unclean_count(), 0);
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("startup_guard.json");
+    mark_healthy(&path);
+
+    // Disk sentinel is now the clean/healthy state, governing the NEXT launch.
+    assert_eq!(read_state(&path), healthy_state());
+    // This launch's verdict is untouched: safe mode still engaged.
+    assert!(safety.safe_mode());
+    assert_eq!(safety.unclean_count(), 5);
 }
 
 /// `snapshot` exposes the current verdict for the frontend.

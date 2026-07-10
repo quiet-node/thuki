@@ -218,6 +218,36 @@ describe('App - safe-mode recovery (issue #296)', () => {
     expect(callCount('estimate_model_fit')).toBe(1);
   });
 
+  // The recovery card renders purely from the `startup_safety` snapshot, and
+  // `mark_startup_healthy` fires in an earlier mount effect (App.tsx). This
+  // documents that ordering-independence: the earlier health signal does NOT
+  // suppress the card. Backend-side, the fix that makes this hold is the
+  // now-immutable in-memory verdict (the health signal no longer clears it);
+  // this FE test double cannot reproduce that race, so it stands as the
+  // contract, with `startup_guard::tests` guarding the real behavior.
+  it('renders the recovery card even though mark_startup_healthy fired first on mount', async () => {
+    enableChannelCaptureWithResponses({
+      startup_safety: { safe_mode: true, unclean_count: 3 },
+      get_model_picker_state: {
+        active: 'llama-3.2-3b',
+        all: ['llama-3.2-3b'],
+        ollamaReachable: true,
+        displayNames: { 'llama-3.2-3b': 'Llama 3.2 3B' },
+      },
+      estimate_model_fit: {
+        required_bytes: 8 * 1024 ** 3,
+        available_bytes: 4 * 1024 ** 3,
+        verdict: 'Tight',
+      },
+    });
+
+    render(<App />);
+    await act(async () => {});
+
+    expect(callCount('mark_startup_healthy')).toBe(1);
+    expect(screen.getByText(RECOVERY_HEADLINE)).toBeInTheDocument();
+  });
+
   it('"Choose a different model" dismisses the screen and re-opens the model picker', async () => {
     enableChannelCaptureWithResponses({
       startup_safety: { safe_mode: true, unclean_count: 3 },
