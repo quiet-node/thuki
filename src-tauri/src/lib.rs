@@ -2684,6 +2684,21 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             startup_guard::disable_quit_keeps_windows();
 
+            // ── Orphaned sidecar reaper (issue #296) ──────────────────
+            // SIGKILL, a kernel panic, or a machine freeze kills Thuki without
+            // running any shutdown path, so a sidecar it spawned can reparent to
+            // launchd (ppid 1) and linger holding ~2 GB. The next launch is the
+            // only place to reap it. Runs on a detached thread so the (rare)
+            // SIGTERM grace on an actual orphan never delays startup; it can
+            // never touch a live Thuki's sidecar because that child's ppid is its
+            // own Thuki's pid, not 1 (the load-bearing clause in the predicate).
+            {
+                let our_sidecar = engine_sidecar_path();
+                std::thread::spawn(move || {
+                    engine::orphan::reap_orphaned_sidecars(&our_sidecar);
+                });
+            }
+
             // ── Updater state + optional background poller ────────────
             {
                 let updater_state = updater::UpdaterState::default();

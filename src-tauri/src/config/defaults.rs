@@ -133,6 +133,14 @@ pub const ENGINE_IDLE_CHECK_INTERVAL_SECS: u64 = 30;
 /// near-instant (the child dies on an unblockable SIGKILL).
 pub const SHUTDOWN_SIGNAL_ENGINE_KILL_TIMEOUT_SECS: u64 = 3;
 
+/// Grace period (milliseconds) between the polite `SIGTERM` and the escalating
+/// `SIGKILL` the startup reaper sends an orphaned `llama-server` left behind by
+/// a previous Thuki (issue #296). `llama-server` exits promptly on `SIGTERM`, so
+/// this is only the window a survivor gets before it is force-killed; the full
+/// orphan predicate is re-checked after the wait so a recycled pid is never
+/// killed. Not user-tunable: an internal shutdown-hygiene timing constant.
+pub const ORPHAN_REAP_SIGTERM_GRACE_MS: u64 = 2000;
+
 /// Capacity of the engine runner command queue. Not user-tunable: bounds
 /// memory under command bursts; 64 slots is ample for all UI-driven traffic
 /// (Ensure, Touch, SetIdleMinutes, Shutdown) with no back-pressure under

@@ -6,6 +6,7 @@
 //! a confirmed exit before spawning the new one. This module hosts the pieces
 //! of that lifecycle; the pure residency state machine lives in [`state`].
 
+pub mod orphan;
 pub mod process;
 pub mod runner;
 pub mod state;
