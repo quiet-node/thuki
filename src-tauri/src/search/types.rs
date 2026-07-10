@@ -170,6 +170,13 @@ pub enum SearchEvent {
     /// `is_first_turn` flag pristine when the backend bails before
     /// `ConversationStart` fires.
     NoModelSelected,
+    /// The selected model's estimated footprint does not fit the memory
+    /// available right now (issue #296). Mirrors the chat-side
+    /// `EngineErrorKind::InsufficientMemory` bail so the frontend can render
+    /// the same amber "load anyway" card for a `/search` turn as it does for
+    /// a normal chat turn, sourcing the exact figures from the
+    /// `estimate_model_fit` command.
+    InsufficientMemory,
     /// Emitted exactly once per turn, after the search backend has cleared
     /// every pre-`ConversationStart` gate (no-model bail, sandbox probe)
     /// and committed to opening the trace. Frontend uses it to retire
@@ -533,6 +540,12 @@ mod tests {
     fn search_event_sandbox_unavailable_serialises_correct_tag() {
         let v = serde_json::to_value(SearchEvent::SandboxUnavailable).unwrap();
         assert_eq!(v["type"], "SandboxUnavailable");
+    }
+
+    #[test]
+    fn search_event_insufficient_memory_serialises_correct_tag() {
+        let v = serde_json::to_value(SearchEvent::InsufficientMemory).unwrap();
+        assert_eq!(v["type"], "InsufficientMemory");
     }
 
     #[test]

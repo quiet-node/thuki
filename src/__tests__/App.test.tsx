@@ -26,6 +26,7 @@ import {
   __mockWindow,
   __setWindowGeometry,
   __setAvailableMonitors,
+  LogicalSize,
 } from '../testUtils/mocks/tauri-window';
 import { useTips } from '../hooks/useTips';
 import { flushSync } from 'react-dom';
@@ -131,6 +132,20 @@ async function showOverlay(selectedText: string | null = null) {
       window_x: null,
       window_y: null,
       screen_bottom_y: null,
+    });
+  });
+}
+
+/**
+ * Flushes the double `requestAnimationFrame` paint yield the borrowing-surface
+ * -> ask-bar hand-back effect uses before it resizes and repositions the native
+ * window (issue #296). Mirrors the app's own double-rAF yield so the deferred
+ * `setSize` + `position_overlay_ask_bar` run before the assertions read them.
+ */
+async function flushPaintYield() {
+  await act(async () => {
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
     });
   });
 }
@@ -708,6 +723,595 @@ describe('App', () => {
     expect(
       screen.getByRole('option', { name: 'qwen2.5:7b' }),
     ).toBeInTheDocument();
+  });
+
+  // Regression coverage for issue #296 follow-up (bug 2): "Switch model" used
+  // to just open the picker and leave the abandoned InsufficientMemory turn
+  // stuck on screen forever, unlike "Load anyway" which already replays it.
+  // Picking a new, presumably-fitting model must also replay the turn.
+  describe('onSwitchModel retry wiring (issue #296 follow-up)', () => {
+    it('replays the abandoned InsufficientMemory turn against the newly-picked model, gate not bypassed', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+        estimate_model_fit: {
+          required_bytes: 8 * 1024 ** 3,
+          available_bytes: 4 * 1024 ** 3,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+
+      act(() => {
+        getLastChannel()?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+      expect(
+        await screen.findByText(/may not fit in memory/),
+      ).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      await act(async () => {});
+      expect(
+        screen.getByRole('option', { name: 'qwen2.5:7b' }),
+      ).toBeInTheDocument();
+
+      invoke.mockClear();
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+
+      // The old failed pair is gone (replaced, not stuck forever), and the
+      // replayed turn goes out with the gate NOT bypassed - unlike "Load
+      // anyway", the new model is presumed to actually fit.
+      expect(screen.queryByText(/may not fit in memory/)).toBeNull();
+      expect(invoke).toHaveBeenCalledWith('set_active_model', {
+        model: 'qwen2.5:7b',
+      });
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'hi', allowOversized: false }),
+      );
+    });
+
+    it('does not replay the abandoned turn when the model switch itself fails', async () => {
+      let capturedChannel: { simulateMessage: (data: unknown) => void } | null =
+        null;
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            capturedChannel = args.onEvent as typeof capturedChannel;
+          }
+          if (cmd === 'get_model_picker_state') {
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b', 'qwen2.5:7b'],
+              ollamaReachable: true,
+            };
+          }
+          if (cmd === 'estimate_model_fit') {
+            return {
+              required_bytes: 8 * 1024 ** 3,
+              available_bytes: 4 * 1024 ** 3,
+            };
+          }
+          if (cmd === 'set_active_model') {
+            throw new Error('Model is not installed: qwen2.5:7b');
+          }
+          return undefined;
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+
+      act(() => {
+        capturedChannel?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+      expect(
+        await screen.findByText(/may not fit in memory/),
+      ).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      await act(async () => {});
+
+      invoke.mockClear();
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+
+      // The switch failed: no retry should have fired, and the old failed
+      // card (still describing the abandoned attempt) stays put.
+      expect(invoke).not.toHaveBeenCalledWith('ask_model', expect.anything());
+      expect(screen.getByText(/may not fit in memory/)).toBeInTheDocument();
+    });
+
+    it('consumes the pending retry exactly once: a later unrelated model-select does not re-trigger it', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b', 'llama3.2:3b'],
+          ollamaReachable: true,
+        },
+        estimate_model_fit: {
+          required_bytes: 8 * 1024 ** 3,
+          available_bytes: 4 * 1024 ** 3,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+
+      act(() => {
+        getLastChannel()?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+      await screen.findByText(/may not fit in memory/);
+
+      // First selection consumes the pending retry and replays "hi".
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'hi', allowOversized: false }),
+      );
+
+      // A second, wholly unrelated model switch (via the plain header pill
+      // toggle, not "Switch model") must not re-fire the already-consumed
+      // retry - the pending ref was cleared by the first select above.
+      invoke.mockClear();
+      const pill = screen.getByRole('button', { name: 'Choose model' });
+      fireEvent.click(pill);
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('option', { name: 'llama3.2:3b' }));
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith('set_active_model', {
+        model: 'llama3.2:3b',
+      });
+      expect(invoke).not.toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'hi' }),
+      );
+    });
+
+    it('disarms the pending switch-retry when the picker is dismissed without a pick: a later pick replays the last message, not the abandoned turn (issue #296)', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+        estimate_model_fit: {
+          required_bytes: 4 * 1024 ** 3,
+          available_bytes: 24 * 1024 ** 3,
+          verdict: 'comfortable',
+          would_block: false,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      // Turn 1 ("first") fails with InsufficientMemory.
+      setAskValue('first');
+      fireEvent.keyDown(getAskInput(), { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+
+      // Turn 2 ("second") also fails with InsufficientMemory.
+      setAskValue('second');
+      fireEvent.keyDown(getAskInput(), { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+
+      // Arm the pending retry from the OLDER card (turn 1's snapshot) via its
+      // "Switch model" button, then dismiss the picker by clicking outside it -
+      // without picking a model.
+      const switchButtons = screen.getAllByRole('button', {
+        name: 'Switch model',
+      });
+      fireEvent.click(switchButtons[0]);
+      await act(async () => {});
+      act(() => {
+        fireEvent.mouseDown(document.body);
+      });
+      await act(async () => {});
+
+      // Reopen the picker via the plain header pill (which arms nothing) and
+      // pick a fitting model.
+      invoke.mockClear();
+      fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+      await act(async () => {});
+
+      // The abandoned turn-1 retry was disarmed on dismiss, so the pick falls
+      // through to the last-message fallback and replays turn 2 ("second"),
+      // never the older, abandoned turn 1 ("first").
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'second' }),
+      );
+      expect(invoke).not.toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'first' }),
+      );
+    });
+
+    // Regression coverage for issue #296 follow-up (bug B): the retried turn
+    // used to get pinned to whatever `activeModel` the closure still held at
+    // the moment `retryMessage` fired, which is the PRE-switch model -
+    // `setActiveModel`'s React state update is not yet visible to that
+    // closure. The retried turn must display the freshly-picked model.
+    it('pins the retried turn to the freshly-picked model, not the stale pre-switch one', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+        estimate_model_fit: {
+          required_bytes: 8 * 1024 ** 3,
+          available_bytes: 4 * 1024 ** 3,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+
+      act(() => {
+        getLastChannel()?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+      await screen.findByText(/may not fit in memory/);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+
+      // Complete the replayed turn: the model-attribution chip only renders
+      // once streaming finishes.
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'Hello!' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      expect(screen.getByTestId('model-attribution')).toHaveTextContent(
+        'qwen2.5:7b',
+      );
+    });
+  });
+
+  // Regression coverage for issue #296 follow-up (bug C): the pending-retry
+  // ref is armed only by the InsufficientMemory error card's own "Switch
+  // model" button. Picking a model through the general ask-bar picker
+  // instead left a stale, unresolved card sitting on screen forever with no
+  // way to clear it. `handleModelSelect` now falls back to the
+  // conversation's own LAST message when nothing is explicitly pending.
+  describe('general picker fallback resolves a stale InsufficientMemory card (issue #296 follow-up)', () => {
+    it('retries the abandoned turn when the LAST message is a still-unresolved InsufficientMemory failure', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+        estimate_model_fit: {
+          required_bytes: 8 * 1024 ** 3,
+          available_bytes: 4 * 1024 ** 3,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+
+      act(() => {
+        getLastChannel()?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+      await screen.findByText(/may not fit in memory/);
+
+      // Open the general ask-bar picker (the plain header pill), NOT the
+      // error card's own "Switch model" button, so pendingSwitchRetryRef is
+      // never armed for this pick.
+      invoke.mockClear();
+      fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+
+      // The abandoned turn is retried against the freshly-picked model even
+      // though the user never touched the error card's own button.
+      expect(screen.queryByText(/may not fit in memory/)).toBeNull();
+      expect(invoke).toHaveBeenCalledWith('set_active_model', {
+        model: 'qwen2.5:7b',
+      });
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'hi', allowOversized: false }),
+      );
+    });
+
+    it('does nothing extra when the last message is not a stale InsufficientMemory failure', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'Hello!' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      // Last message is a normal, successful assistant turn - the general
+      // picker must behave exactly as before: just a plain model switch.
+      invoke.mockClear();
+      fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith('set_active_model', {
+        model: 'qwen2.5:7b',
+      });
+      expect(invoke).not.toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'hi' }),
+      );
+    });
+  });
+
+  // Regression coverage for issue #296 (the user-reported flash): switching to
+  // a model that ALSO would not fit must swap the card's attribution in place,
+  // never re-send + unmount/remount the card. The fit decision branches on the
+  // backend's `would_block` (the real gate's decision), not the display verdict.
+  describe('switch to a still-too-big model updates the card in place (issue #296)', () => {
+    it('updates modelName in place and does NOT retry when the picked model would_block', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+        estimate_model_fit: {
+          required_bytes: 8 * 1024 ** 3,
+          available_bytes: 4 * 1024 ** 3,
+          verdict: 'insufficient',
+          would_block: true,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+
+      act(() => {
+        getLastChannel()?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+      // The card starts attributed to the failed model.
+      expect(
+        await screen.findByText(/gemma4:e2b may not fit in memory/),
+      ).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      await act(async () => {});
+
+      invoke.mockClear();
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+
+      // The card swaps its attribution to the newly-picked (still too big)
+      // model IN PLACE: same card, new name and figures.
+      expect(
+        await screen.findByText(/qwen2\.5:7b may not fit in memory/),
+      ).toBeInTheDocument();
+      // The fit decision was made against the newly-picked model.
+      expect(invoke).toHaveBeenCalledWith('estimate_model_fit', {
+        modelId: 'qwen2.5:7b',
+      });
+      // Model still switched, but NO turn was re-sent (no flash, no gate hit).
+      expect(invoke).toHaveBeenCalledWith('set_active_model', {
+        model: 'qwen2.5:7b',
+      });
+      expect(invoke).not.toHaveBeenCalledWith('ask_model', expect.anything());
+    });
+
+    it('retries as before when the picked model does not would_block', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+        estimate_model_fit: {
+          required_bytes: 4 * 1024 ** 3,
+          available_bytes: 24 * 1024 ** 3,
+          verdict: 'comfortable',
+          would_block: false,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+
+      act(() => {
+        getLastChannel()?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+      await screen.findByText(/may not fit in memory/);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      await act(async () => {});
+
+      invoke.mockClear();
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+      await act(async () => {});
+
+      // A fitting model retries the abandoned turn, gate not bypassed.
+      expect(screen.queryByText(/may not fit in memory/)).toBeNull();
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'hi', allowOversized: false }),
+      );
+    });
+
+    it('falls back to a retry when the fit estimate call rejects', async () => {
+      let capturedChannel: { simulateMessage: (data: unknown) => void } | null =
+        null;
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (args && 'onEvent' in args) {
+            capturedChannel = args.onEvent as typeof capturedChannel;
+          }
+          if (cmd === 'get_model_picker_state') {
+            return {
+              active: 'gemma4:e2b',
+              all: ['gemma4:e2b', 'qwen2.5:7b'],
+              ollamaReachable: true,
+            };
+          }
+          if (cmd === 'estimate_model_fit') {
+            // The fit-check for the freshly-picked model is the IO boundary
+            // under test: make it reject. The display fetch for the FAILED
+            // model still resolves so the card (and its "Switch model" button)
+            // render at all.
+            if (args?.modelId === 'qwen2.5:7b') {
+              throw new Error('memory reader unavailable');
+            }
+            return {
+              required_bytes: 8 * 1024 ** 3,
+              available_bytes: 4 * 1024 ** 3,
+              verdict: 'insufficient',
+              would_block: true,
+            };
+          }
+          return undefined;
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+
+      act(() => {
+        capturedChannel?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+      await screen.findByText(/may not fit in memory/);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      await act(async () => {});
+
+      invoke.mockClear();
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+      await act(async () => {});
+
+      // Estimate threw: the flow does not stall in a broken state, it replays
+      // the turn (the real backend gate still runs on that send).
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'hi', allowOversized: false }),
+      );
+    });
   });
 
   it('closes chat-mode model picker when clicking outside the dropdown', async () => {
@@ -1933,6 +2537,279 @@ describe('App', () => {
 
     // No crash, no change - overlay is already hidden
     expect(document.querySelector('.morphing-container')).toBeNull();
+  });
+
+  // ─── Safe-mode recovery window sizing (issue #296) ─────────────────────────
+  // Regression coverage for the bug where hiding the overlay (Escape/Cmd+W/
+  // double-Control) while the safe-mode recovery card is up and then
+  // resummoning collapsed the native window to the icon-sized fallback,
+  // clipping the card down to just its logo.
+
+  describe('safe-mode recovery card window sizing (issue #296)', () => {
+    it('does not collapse the window on show or on resummon while the recovery card is up', async () => {
+      enableChannelCaptureWithResponses({
+        startup_safety: { safe_mode: true, unclean_count: 2 },
+        estimate_model_fit: { required_bytes: 4 * 1024 ** 3 },
+      });
+
+      render(<App />);
+      await screen.findByText('Recovered in Safe Mode');
+
+      // Initial show: the config-sync effect (App.tsx) must not fall back to
+      // COLLAPSED_WINDOW_HEIGHT just because the ask-bar container isn't the
+      // mounted surface - the card owns its own sizing via
+      // useFitOnboardingWindow.
+      __mockWindow.setSize.mockClear();
+      await showOverlay();
+      expect(__mockWindow.setSize).not.toHaveBeenCalled();
+
+      // Hide (Escape/Cmd+W/double-Control all route through the same
+      // backend hide-request) then resummon. Dismissal is permanent only via
+      // the card's own buttons, so the card is still up - the window must
+      // stay at whatever size the card already fit itself to, not collapse.
+      await act(async () => {
+        emitTauriEvent('thuki://visibility', { state: 'hide-request' });
+      });
+      __mockWindow.setSize.mockClear();
+      await showOverlay();
+
+      expect(__mockWindow.setSize).not.toHaveBeenCalled();
+      expect(screen.getByText('Recovered in Safe Mode')).toBeInTheDocument();
+    });
+
+    it('resizes the window for the ask bar once the recovery card is dismissed', async () => {
+      enableChannelCaptureWithResponses({
+        startup_safety: { safe_mode: true, unclean_count: 2 },
+        estimate_model_fit: { required_bytes: 4 * 1024 ** 3 },
+      });
+
+      render(<App />);
+      await screen.findByText('Recovered in Safe Mode');
+      await showOverlay();
+      __mockWindow.setSize.mockClear();
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Load last model anyway' }),
+      );
+      // The resize is deferred behind the hand-back paint yield (issue #296),
+      // so flush the double rAF before asserting the native setSize.
+      await flushPaintYield();
+
+      // The ask bar is now the mounted surface, so the hand-back effect
+      // must size against its real container (48 = CONTAINER_VERTICAL_PADDING
+      // in App.tsx; jsdom reports 0 layout height), not leave the window at
+      // the card's old size or the collapsed fallback (80).
+      expect(document.querySelector('.morphing-container')).not.toBeNull();
+      expect(__mockWindow.setSize).toHaveBeenCalledWith(
+        new LogicalSize(DEFAULT_CONFIG.window.overlayWidth, 48),
+      );
+    });
+
+    it('force-loads the deferred model on "Load last model anyway" and swallows a rejected warm-up', async () => {
+      enableChannelCaptureWithResponses({
+        startup_safety: { safe_mode: true, unclean_count: 2 },
+        estimate_model_fit: { required_bytes: 4 * 1024 ** 3 },
+      });
+
+      render(<App />);
+      await screen.findByText('Recovered in Safe Mode');
+      await showOverlay();
+
+      invoke.mockClear();
+      // Reject the forced warm-up so the IO-boundary `.catch` runs: a rejected
+      // load must be swallowed, never an unhandled rejection, and must never
+      // resurrect the card.
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'warm_up_model') throw new Error('warm-up rejected');
+      });
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Load last model anyway' }),
+      );
+
+      // The forced load fires immediately (issue #296): the model must start
+      // loading now, not defer to the user's first message.
+      expect(invoke).toHaveBeenCalledWith('warm_up_model', { force: true });
+
+      // Card is dismissed synchronously and the rejected invoke does not bring
+      // it back.
+      await act(async () => {});
+      expect(
+        screen.queryByText('Recovered in Safe Mode'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('restores the ask-bar canonical position on "Load last model anyway"', async () => {
+      enableChannelCaptureWithResponses({
+        startup_safety: { safe_mode: true, unclean_count: 2 },
+        estimate_model_fit: { required_bytes: 4 * 1024 ** 3 },
+      });
+
+      render(<App />);
+      await screen.findByText('Recovered in Safe Mode');
+      await showOverlay();
+      invoke.mockClear();
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Load last model anyway' }),
+      );
+      // The reposition is deferred behind the hand-back paint yield (issue
+      // #296), so flush the double rAF before asserting it.
+      await flushPaintYield();
+
+      // The card centered the shared window; dismissing it back to the ask bar
+      // must restore the ask bar's default position (issue #296).
+      expect(invoke).toHaveBeenCalledWith('position_overlay_ask_bar');
+    });
+
+    it('defers both the native resize and the reposition until after a paint yield', async () => {
+      enableChannelCaptureWithResponses({
+        startup_safety: { safe_mode: true, unclean_count: 2 },
+        estimate_model_fit: { required_bytes: 4 * 1024 ** 3 },
+      });
+
+      render(<App />);
+      await screen.findByText('Recovered in Safe Mode');
+      await showOverlay();
+
+      // Take manual control of the animation-frame clock so the hand-back paint
+      // yield can be observed as still-pending: happy-dom otherwise runs rAF
+      // callbacks eagerly, which would hide the very deferral this test asserts.
+      const frameQueue: FrameRequestCallback[] = [];
+      const rafSpy = vi
+        .spyOn(globalThis, 'requestAnimationFrame')
+        .mockImplementation((cb: FrameRequestCallback) => {
+          frameQueue.push(cb);
+          return frameQueue.length;
+        });
+      const runQueuedFrames = () => {
+        const pending = frameQueue.splice(0);
+        for (const cb of pending) cb(performance.now());
+      };
+
+      try {
+        invoke.mockClear();
+        __mockWindow.setSize.mockClear();
+
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Load last model anyway' }),
+        );
+
+        // The forced load fires synchronously, but the native geometry (resize
+        // + reposition) is queued behind the double rAF, not run yet (issue
+        // #296): otherwise the outgoing card is clipped into the smaller
+        // ask-bar window for one paint.
+        expect(invoke).toHaveBeenCalledWith('warm_up_model', { force: true });
+        expect(__mockWindow.setSize).not.toHaveBeenCalled();
+        expect(invoke).not.toHaveBeenCalledWith('position_overlay_ask_bar');
+
+        // Drain the outer frame (which schedules the inner), then the inner
+        // frame that performs the native window calls.
+        await act(async () => {
+          runQueuedFrames();
+          runQueuedFrames();
+        });
+
+        // Only after the paint yield do both native window calls fire.
+        expect(__mockWindow.setSize).toHaveBeenCalled();
+        expect(invoke).toHaveBeenCalledWith('position_overlay_ask_bar');
+      } finally {
+        rafSpy.mockRestore();
+      }
+    });
+
+    it('swallows a rejected ask-bar reposition on recovery-card dismissal', async () => {
+      enableChannelCaptureWithResponses({
+        startup_safety: { safe_mode: true, unclean_count: 2 },
+        estimate_model_fit: { required_bytes: 4 * 1024 ** 3 },
+      });
+
+      render(<App />);
+      await screen.findByText('Recovered in Safe Mode');
+      await showOverlay();
+
+      invoke.mockClear();
+      // Reject the reposition so the IO-boundary `.catch` on the dismiss-edge
+      // effect runs: a rejected `position_overlay_ask_bar` must be swallowed,
+      // never an unhandled rejection, and must never resurrect the card.
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'position_overlay_ask_bar') {
+          throw new Error('reposition rejected');
+        }
+      });
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Load last model anyway' }),
+      );
+      // The reposition is deferred behind the hand-back paint yield (issue
+      // #296); flushing the double rAF runs it and settles the rejected
+      // invoke's microtask so the `.catch` swallows it.
+      await flushPaintYield();
+
+      // The reposition fired and its rejection is swallowed.
+      expect(invoke).toHaveBeenCalledWith('position_overlay_ask_bar');
+
+      // No unhandled rejection escapes and the card stays dismissed.
+      await act(async () => {});
+      expect(
+        screen.queryByText('Recovered in Safe Mode'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('restores the ask-bar canonical position on "Choose a different model"', async () => {
+      enableChannelCaptureWithResponses({
+        startup_safety: { safe_mode: true, unclean_count: 2 },
+        estimate_model_fit: { required_bytes: 4 * 1024 ** 3 },
+      });
+
+      render(<App />);
+      await screen.findByText('Recovered in Safe Mode');
+      await showOverlay();
+      invoke.mockClear();
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Choose a different model' }),
+      );
+      // The reposition is deferred behind the hand-back paint yield (issue
+      // #296), so flush the double rAF before asserting it.
+      await flushPaintYield();
+
+      expect(invoke).toHaveBeenCalledWith('position_overlay_ask_bar');
+    });
+
+    it('does not reposition the ask bar on a normal selection-anchored show', async () => {
+      render(<App />);
+      await act(async () => {});
+      invoke.mockClear();
+
+      // show_overlay already positioned the window near the selection; the
+      // frontend must NOT clobber it with the top-center default.
+      await showOverlay('selected passage');
+
+      expect(invoke).not.toHaveBeenCalledWith('position_overlay_ask_bar');
+    });
+
+    it('does not reposition when the recovery card is dismissed while the overlay is not visible', async () => {
+      enableChannelCaptureWithResponses({
+        startup_safety: { safe_mode: true, unclean_count: 2 },
+        estimate_model_fit: { required_bytes: 4 * 1024 ** 3 },
+      });
+
+      render(<App />);
+      // Dismiss the card WITHOUT ever showing the overlay: overlayState is not
+      // 'visible', so the ask bar is not the mounted surface and the next
+      // native show_overlay will position it. Repositioning here would be
+      // premature, so the effect must stay quiet.
+      await screen.findByText('Recovered in Safe Mode');
+      invoke.mockClear();
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Load last model anyway' }),
+      );
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith('position_overlay_ask_bar');
+    });
   });
 
   // ─── History integration ─────────────────────────────────────────────────────
@@ -8212,6 +9089,72 @@ describe('App', () => {
       expect(screen.getByText('Paused · 0%')).toBeInTheDocument();
     });
 
+    it('shows a queued strip with Cancel while waiting for a download slot', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      const cancel = vi.fn(async () => {});
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'queued' },
+        cancel,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(
+        screen.getByText('Waiting for a download slot…'),
+      ).toBeInTheDocument();
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Cancel download' }),
+        );
+      });
+      expect(cancel).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows a paused strip with Resume when a launch-time auto-resume is rejected in safe mode', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: null,
+          all: [],
+          ollamaReachable: true,
+        },
+      });
+      const retry = vi.fn(async () => {});
+      const discardDownload = vi.fn();
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'rejected_safe_mode' },
+        retry,
+        resumeSeedBytes: 5_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        discardDownload,
+      });
+
+      render(builtinTree());
+      await act(async () => {});
+      await showOverlay();
+
+      expect(screen.getByText('Paused · 50%')).toBeInTheDocument();
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Resume download' }),
+        );
+      });
+      expect(retry).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Discard download' }),
+        );
+      });
+      expect(discardDownload).toHaveBeenCalledTimes(1);
+    });
+
     it('soft-blocks submit while the download is paused', async () => {
       enableChannelCaptureWithResponses({
         get_model_picker_state: {
@@ -9857,6 +10800,207 @@ describe('App', () => {
           durationMs: 150,
         });
       });
+    });
+  });
+
+  // ─── Auto-prime memory-gate skip warning (issue #296) ────────────────────
+  // The backend's auto-prime memory gate (`spawn_gated_builtin_warmup`) skips
+  // loading an oversized model silently on its own (stderr only); this strip
+  // is the proactive frontend surface for that skip, shown ambient on the ask
+  // bar before the user's first message would otherwise hit the same gate via
+  // the `InsufficientMemory` chat error.
+  describe('auto-prime memory-gate skip warning (issue #296)', () => {
+    const SKIPPED_PAYLOAD = {
+      model_id: 'gemma4:e2b',
+      required_bytes: 8 * 1024 ** 3,
+      available_bytes: 4 * 1024 ** 3,
+    };
+
+    it('shows the ambient strip with the friendly model name and GB figures after warmup:builtin-skipped fires', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b'],
+          displayNames: { 'gemma4:e2b': 'Gemma 4 E2B' },
+          ollamaReachable: true,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => emitTauriEvent('warmup:builtin-skipped', SKIPPED_PAYLOAD));
+      await act(async () => {});
+
+      expect(
+        screen.getByText(
+          'Gemma 4 E2B may not fit in memory (~8.0 GB needed, ~4.0 GB available)',
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it('does not show once a real chat turn starts (the InsufficientMemory error card takes over instead)', async () => {
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => emitTauriEvent('warmup:builtin-skipped', SKIPPED_PAYLOAD));
+      await act(async () => {});
+      expect(
+        screen.getByTestId('auto-prime-skipped-strip'),
+      ).toBeInTheDocument();
+
+      const textarea = getAskInput();
+      act(() => setAskValue('hello'));
+      act(() => fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false }));
+      await act(async () => {});
+
+      expect(
+        screen.queryByTestId('auto-prime-skipped-strip'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('opens the model picker from the strip\'s "Switch model" action', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => emitTauriEvent('warmup:builtin-skipped', SKIPPED_PAYLOAD));
+      await act(async () => {});
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      await act(async () => {});
+
+      expect(
+        screen.getByRole('option', { name: 'qwen2.5:7b' }),
+      ).toBeInTheDocument();
+    });
+
+    it('force-primes and dismisses the strip synchronously on the two-stage "Acknowledge" confirm', async () => {
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => emitTauriEvent('warmup:builtin-skipped', SKIPPED_PAYLOAD));
+      await act(async () => {});
+      expect(
+        screen.getByTestId('auto-prime-skipped-strip'),
+      ).toBeInTheDocument();
+
+      invoke.mockClear();
+      // Reject the force-prime so the IO-boundary `.catch` on the invoke runs:
+      // a rejected warm-up must be swallowed, never an unhandled rejection.
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'warm_up_model') {
+          throw new Error('warm-up rejected');
+        }
+      });
+
+      // Stage 1 -> stage 2: the first click reveals the consequence copy and
+      // must NOT fire the force-prime yet.
+      fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
+      await act(async () => {});
+      expect(invoke).not.toHaveBeenCalledWith(
+        'warm_up_model',
+        expect.anything(),
+      );
+
+      // Stage 2: the confirmed "Acknowledge" click clears the strip
+      // synchronously (asserted WITHOUT awaiting the invoke round trip) and
+      // fires the force-prime.
+      fireEvent.click(screen.getByRole('button', { name: 'Acknowledge' }));
+      expect(
+        screen.queryByTestId('auto-prime-skipped-strip'),
+      ).not.toBeInTheDocument();
+      expect(invoke).toHaveBeenCalledWith('warm_up_model', { force: true });
+
+      // Settle the rejected invoke's microtask: the `.catch` swallows it, so no
+      // unhandled rejection escapes and the strip stays dismissed.
+      await act(async () => {});
+      expect(
+        screen.queryByTestId('auto-prime-skipped-strip'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('clears when the active model changes', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => emitTauriEvent('warmup:builtin-skipped', SKIPPED_PAYLOAD));
+      await act(async () => {});
+      expect(
+        screen.getByTestId('auto-prime-skipped-strip'),
+      ).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('option', { name: 'qwen2.5:7b' }));
+      await act(async () => {});
+
+      expect(
+        screen.queryByTestId('auto-prime-skipped-strip'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('clears once the built-in engine actually reaches loaded', async () => {
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => emitTauriEvent('warmup:builtin-skipped', SKIPPED_PAYLOAD));
+      await act(async () => {});
+      expect(
+        screen.getByTestId('auto-prime-skipped-strip'),
+      ).toBeInTheDocument();
+
+      act(() =>
+        emitTauriEvent('engine:status', {
+          state: 'loaded',
+          model_path: '/models/gemma4-e2b.gguf',
+          port: 8080,
+          error: null,
+        }),
+      );
+      await act(async () => {});
+
+      expect(
+        screen.queryByTestId('auto-prime-skipped-strip'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('suppresses the memory warning while the download strip is showing (one ambient strip at a time)', async () => {
+      downloadHolder.value = makeDownloadCtx({
+        state: { phase: 'downloading' },
+        combinedBytes: 4_000_000_000,
+        grandTotalBytes: 10_000_000_000,
+        speedBytesPerSec: 8_000_000,
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => emitTauriEvent('warmup:builtin-skipped', SKIPPED_PAYLOAD));
+      await act(async () => {});
+
+      expect(screen.getByTestId('download-status-strip')).toBeInTheDocument();
+      expect(
+        screen.queryByTestId('auto-prime-skipped-strip'),
+      ).not.toBeInTheDocument();
     });
   });
 });

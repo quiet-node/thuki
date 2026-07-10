@@ -284,6 +284,12 @@ function ModelRow({ option, downloads, onSaved, refresh }: ModelRowProps) {
             combinedBytes={entry.combinedBytes}
             grandTotalBytes={totalBytes(option)}
             speedBytesPerSec={entry.speedBytesPerSec}
+            queuePosition={
+              phase === 'queued'
+                ? downloads.queuePosition(activeKey)
+                : undefined
+            }
+            queuedTotal={phase === 'queued' ? downloads.queuedTotal : undefined}
             // The curated path has no pre-flight confirm card, so onConfirm /
             // onCancelConfirm never fire; they share the same covered dismiss
             // handler rather than dead no-op literals.

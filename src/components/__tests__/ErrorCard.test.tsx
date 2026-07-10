@@ -242,4 +242,139 @@ describe('ErrorCard', () => {
       );
     });
   });
+
+  // InsufficientMemory (issue #296): dedicated three-line card with a
+  // "Switch model" / "Load anyway" pair, sourced from the machine-readable
+  // figures the caller fetches via `estimate_model_fit`.
+  describe('InsufficientMemory', () => {
+    const INFO = {
+      modelName: 'Qwen3.5 9B',
+      requiredBytes: 8 * 1024 ** 3,
+      availableBytes: 4 * 1024 ** 3,
+    };
+    const FALLBACK_MESSAGE =
+      'This model may not fit in memory\nClose some apps, pick a smaller model, or load it anyway.';
+
+    it('renders the dynamic title with the model name', () => {
+      render(
+        <ErrorCard
+          kind="InsufficientMemory"
+          message={FALLBACK_MESSAGE}
+          insufficientMemoryInfo={INFO}
+        />,
+      );
+      expect(
+        screen.getByText('Qwen3.5 9B may not fit in memory right now.'),
+      ).toBeInTheDocument();
+    });
+
+    it('renders estimated need and available memory as one-decimal GB', () => {
+      render(
+        <ErrorCard
+          kind="InsufficientMemory"
+          message={FALLBACK_MESSAGE}
+          insufficientMemoryInfo={INFO}
+        />,
+      );
+      expect(
+        screen.getByText(
+          'Estimated need: ~8.0 GB. Currently available: ~4.0 GB.',
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it('renders the fixed reboot warning verbatim', () => {
+      render(
+        <ErrorCard
+          kind="InsufficientMemory"
+          message={FALLBACK_MESSAGE}
+          insufficientMemoryInfo={INFO}
+        />,
+      );
+      expect(
+        screen.getByText(
+          'To fit this model, your Mac may compress memory, which can slow things down or, in extreme cases, freeze the entire machine and require a reboot.',
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it('applies the amber accent bar', () => {
+      const { container } = render(
+        <ErrorCard
+          kind="InsufficientMemory"
+          message={FALLBACK_MESSAGE}
+          insufficientMemoryInfo={INFO}
+        />,
+      );
+      const bar = container.querySelector('[data-error-bar]');
+      expect(bar?.getAttribute('data-kind')).toBe('InsufficientMemory');
+      expect((bar as HTMLElement | null)?.style.background).toBe(
+        'rgb(245, 158, 11)',
+      );
+    });
+
+    it('renders only Switch model when onLoadAnyway is absent, and fires it', () => {
+      const onSwitchModel = vi.fn();
+      render(
+        <ErrorCard
+          kind="InsufficientMemory"
+          message={FALLBACK_MESSAGE}
+          insufficientMemoryInfo={INFO}
+          onSwitchModel={onSwitchModel}
+        />,
+      );
+      expect(
+        screen.getByRole('button', { name: 'Switch model' }),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Load anyway' })).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      expect(onSwitchModel).toHaveBeenCalledTimes(1);
+    });
+
+    it('renders only Load anyway when onSwitchModel is absent, and fires it', () => {
+      const onLoadAnyway = vi.fn();
+      render(
+        <ErrorCard
+          kind="InsufficientMemory"
+          message={FALLBACK_MESSAGE}
+          insufficientMemoryInfo={INFO}
+          onLoadAnyway={onLoadAnyway}
+        />,
+      );
+      expect(
+        screen.getByRole('button', { name: 'Load anyway' }),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Switch model' })).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
+      expect(onLoadAnyway).toHaveBeenCalledTimes(1);
+    });
+
+    it('omits both buttons when neither handler is provided', () => {
+      render(
+        <ErrorCard
+          kind="InsufficientMemory"
+          message={FALLBACK_MESSAGE}
+          insufficientMemoryInfo={INFO}
+        />,
+      );
+      expect(screen.queryByRole('button')).toBeNull();
+    });
+
+    it('falls back to the generic message render when insufficientMemoryInfo is absent', () => {
+      render(
+        <ErrorCard kind="InsufficientMemory" message={FALLBACK_MESSAGE} />,
+      );
+      expect(
+        screen.getByText('This model may not fit in memory'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          'Close some apps, pick a smaller model, or load it anyway.',
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText('Qwen3.5 9B may not fit in memory right now.'),
+      ).toBeNull();
+    });
+  });
 });

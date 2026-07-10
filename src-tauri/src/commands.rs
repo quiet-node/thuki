@@ -101,6 +101,12 @@ pub enum EngineErrorKind {
     /// another model), not a crash: the frontend renders it with the amber
     /// warning accent rather than the red failure accent.
     ModelUnsupported,
+    /// The selected model's estimated footprint does not fit the memory
+    /// available right now (issue #296). A soft, force-overridable refusal
+    /// rather than a crash: the frontend renders it with the amber warning
+    /// accent and offers a "load anyway" retry, sourcing the exact figures
+    /// from the `estimate_model_fit` command.
+    InsufficientMemory,
     /// The requested model has not been pulled yet (HTTP 404).
     ModelNotFound,
     /// No active model has been selected. The user must pick a model from
@@ -120,6 +126,24 @@ pub fn no_model_selected_error() -> EngineError {
     EngineError {
         kind: EngineErrorKind::NoModelSelected,
         message: "No model selected\nPick a model in the picker.".to_string(),
+    }
+}
+
+/// Builds the [`EngineErrorKind::InsufficientMemory`] error returned when the
+/// pre-load memory gate refuses an un-forced load (issue #296). `required` and
+/// `available` are the gate's estimate and the memory it judged available; both
+/// are woven into the copy as approximate GiB so the user sees why. The exact
+/// machine-readable figures for the "load anyway" affordance come from the
+/// `estimate_model_fit` command, keeping one numeric source of truth.
+pub fn insufficient_memory_error(required: u64, available: u64) -> EngineError {
+    let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
+    EngineError {
+        kind: EngineErrorKind::InsufficientMemory,
+        message: format!(
+            "This model may not fit in memory\nIt needs about {:.1} GB but only about {:.1} GB is free. Close some apps, pick a smaller model, or load it anyway.",
+            gib(required),
+            gib(available),
+        ),
     }
 }
 
@@ -254,6 +278,72 @@ pub fn builtin_target(
             .map(|sha| store.blob_path(sha)),
         num_ctx,
     })
+}
+
+/// Runs the pre-load memory gate (issue #296) for the built-in model
+/// `model_id` about to be loaded at `target_path`. Assembles the inputs the
+/// pure [`crate::models::memory::decide_load_gate`] needs and delegates every
+/// decision to it (the single source of the block decision, shared with the
+/// frontend fit affordance so the two can never drift, issue #296):
+/// - the target's weights bytes from the manifest,
+/// - live available memory from the mach VM statistics,
+/// - the currently-resident model's path (so a same-model reload is a no-op and
+///   a different resident model's footprint is credited back, since the engine
+///   evicts before loading), read from the engine status,
+/// - the installed rows mapped to `(weights_bytes, blob_path)` for that credit.
+///
+/// Forgiving on failure: an unreadable manifest returns [`MemoryGate::Proceed`]
+/// rather than blocking a load on a database hiccup. Coverage-off: pure wiring
+/// over tested functions; the gate logic lives in `models::memory`.
+///
+/// [`MemoryGate::Proceed`]: crate::models::memory::MemoryGate::Proceed
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn preflight_memory_gate(
+    conn: &rusqlite::Connection,
+    store: &crate::models::storage::ModelStore,
+    engine: &crate::engine::runner::EngineHandle,
+    model_id: &str,
+    target_path: &std::path::Path,
+    forced: bool,
+) -> crate::models::memory::MemoryGate {
+    use crate::models::memory;
+    // Read the live engine status once: it feeds both the already-loading bypass
+    // and the resident-credit path, both applied inside `decide_load_gate`.
+    let status = engine.current_status();
+    // Cannot size the target -> do not block on a database hiccup.
+    let target_weights = match crate::models::manifest::get(conn, model_id) {
+        Ok(Some(row)) => memory::model_weights_bytes(&row),
+        _ => return memory::MemoryGate::Proceed,
+    };
+    // Map every installed row to (weights_bytes, weights blob path) so a
+    // resident model can be matched by path and its footprint credited back.
+    let installed: Vec<(u64, std::path::PathBuf)> = crate::models::manifest::list(conn)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| {
+            (
+                memory::model_weights_bytes(&row),
+                store.blob_path(&row.sha256),
+            )
+        })
+        .collect();
+    // A live "loaded" status names the resident model's path; anything else
+    // means nothing is resident to credit.
+    let resident = (status.state == "loaded" && !status.model_path.is_empty())
+        .then(|| std::path::PathBuf::from(&status.model_path));
+    // Single source of the block decision, shared with `estimate_model_fit`'s
+    // `build_model_fit_estimate` so the gate and the frontend fit affordance can
+    // never diverge (issue #296). It folds in the already-loading bypass.
+    memory::decide_load_gate(
+        &status.state,
+        &status.model_path,
+        target_weights,
+        memory::available_memory_bytes(),
+        resident.as_deref(),
+        target_path,
+        &installed,
+        forced,
+    )
 }
 
 /// Parses llama-server's `GET /props` response and reports whether the
@@ -645,11 +735,39 @@ pub(crate) fn route_activity_guard(
     matches!(route, ChatRoute::Builtin { .. }).then(|| engine.activity_guard())
 }
 
+/// How [`resolve_llm_transport`] responds when the pre-load memory gate (issue
+/// #296) judges the built-in model too large for the memory available now.
+///
+/// The gate is shared by two builtin callers with opposite needs, so the
+/// response is the caller's to choose:
+/// - `/search` is user-initiated inference, so it must surface the same
+///   user-facing "insufficient memory" error the chat path shows, with a
+///   `forced` escape hatch for the user's explicit "load anyway".
+/// - Background history title generation must never surface an error; an
+///   over-large model simply skips the title.
+///
+/// Only ever consulted on the built-in arm; Ollama and OpenAI-compatible
+/// routes carry no local memory footprint and ignore it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OversizePolicy {
+    /// Refuse an over-large load with the user-facing insufficient-memory
+    /// error. `forced` is the user's "load anyway" and bypasses the gate.
+    Block {
+        /// Whether the user explicitly opted to load the over-large model.
+        forced: bool,
+    },
+    /// Skip an over-large load silently, yielding
+    /// [`TransportError::SkippedInsufficientMemory`] for the caller to treat as
+    /// a benign no-op rather than an error.
+    SilentSkip,
+}
+
 /// Error from [`resolve_llm_transport`]. Splits the engine-ensure outcomes so
 /// each caller can map them into its own vocabulary: `Cancelled` and
 /// `Superseded` are cancellations (the user stopped the turn, or a newer
 /// settings change preempted the request; never failures), `Engine` carries
-/// a typed user-facing error.
+/// a typed user-facing error, and `SkippedInsufficientMemory` is a benign skip
+/// signal (never surfaced to the user).
 #[derive(Debug, PartialEq)]
 pub enum TransportError {
     /// The caller's cancel token fired while the engine ensure was in flight.
@@ -658,6 +776,11 @@ pub enum TransportError {
     Superseded,
     /// A typed engine error (start failure, missing manifest row, ...).
     Engine(EngineError),
+    /// The memory gate blocked an over-large built-in load under
+    /// [`OversizePolicy::SilentSkip`]. Not a failure: a background caller
+    /// (history title generation) treats it as "skip this optional work",
+    /// never as a user-facing error.
+    SkippedInsufficientMemory,
 }
 
 /// Resolves a [`ChatRoute`] into the [`LlmTransport`] a pipeline turn streams
@@ -673,7 +796,18 @@ pub enum TransportError {
 /// continues in the background and the next request reuses it). Callers with
 /// no cancel affordance pass a fresh, never-cancelled token.
 ///
+/// `policy` is the builtin-only pre-load memory gate response (issue #296),
+/// run BEFORE the sidecar loads so an over-large model never cold-loads and
+/// freezes the machine. On the gate's `Block` outcome the response depends on
+/// `policy`: [`OversizePolicy::Block`] (unforced) yields the user-facing
+/// insufficient-memory error, [`OversizePolicy::Block`] with `forced` proceeds
+/// to load anyway, and [`OversizePolicy::SilentSkip`] yields
+/// [`TransportError::SkippedInsufficientMemory`] for a background caller to
+/// swallow. When the model fits, or the exact model is already resident, the
+/// load proceeds exactly as before. Non-builtin routes ignore `policy`.
+///
 /// [`Target`]: crate::engine::state::Target
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_llm_transport(
     route: ChatRoute,
     db: &crate::history::Database,
@@ -682,6 +816,7 @@ pub(crate) async fn resolve_llm_transport(
     secrets: &dyn crate::keychain::SecretStore,
     num_ctx: u32,
     cancel_token: &CancellationToken,
+    policy: OversizePolicy,
 ) -> Result<LlmTransport, TransportError> {
     match route {
         ChatRoute::OllamaNative { endpoint } => Ok(LlmTransport::OllamaNative { endpoint }),
@@ -694,16 +829,44 @@ pub(crate) async fn resolve_llm_transport(
             flavor: crate::openai::V1Flavor::Remote,
         }),
         ChatRoute::Builtin { model_id } => {
-            // Resolve the manifest row inside a scope so the connection guard
-            // drops before the ensure await. A poisoned lock is recovered:
-            // the connection itself is not invalidated by an unrelated panic.
-            let target = {
+            // Resolve the manifest row and run the pre-load memory gate inside a
+            // single scope so the connection guard drops before the ensure
+            // await. `builtin_target` runs first so a missing/unreadable row
+            // still surfaces its typed error before the gate. A poisoned lock is
+            // recovered: the connection itself is not invalidated by an
+            // unrelated panic. Only `Block { forced: true }` is a forced load.
+            let forced = matches!(policy, OversizePolicy::Block { forced: true });
+            let (target, gate) = {
                 let conn = match db.0.lock() {
                     Ok(conn) => conn,
                     Err(poisoned) => poisoned.into_inner(),
                 };
-                builtin_target(&conn, store, &model_id, num_ctx).map_err(TransportError::Engine)?
+                let target = builtin_target(&conn, store, &model_id, num_ctx)
+                    .map_err(TransportError::Engine)?;
+                let gate = preflight_memory_gate(
+                    &conn,
+                    store,
+                    engine,
+                    &model_id,
+                    &target.model_path,
+                    forced,
+                );
+                (target, gate)
             };
+            if let crate::models::memory::MemoryGate::Block {
+                required_bytes,
+                available_bytes,
+            } = gate
+            {
+                // Reached only for `Block { forced: false }` and `SilentSkip`:
+                // a forced load resolves to `Proceed` in the gate above.
+                return match policy {
+                    OversizePolicy::Block { .. } => Err(TransportError::Engine(
+                        insufficient_memory_error(required_bytes, available_bytes),
+                    )),
+                    OversizePolicy::SilentSkip => Err(TransportError::SkippedInsufficientMemory),
+                };
+            }
             engine.touch();
             // Race the ensure against the caller's cancel token, mirroring
             // `stream_builtin_chat`: the load is not aborted, only this
@@ -1164,6 +1327,11 @@ pub async fn ask_model(
     conversation_id: String,
     is_first_turn: bool,
     slash_command: Option<String>,
+    // The user's "load anyway" override for the pre-load memory gate (issue
+    // #296). `Some(true)` bypasses the block; `None`/`Some(false)` (the default,
+    // and what existing frontend invokes that omit the field deserialize to)
+    // leaves the gate active.
+    allow_oversized: Option<bool>,
     on_event: Channel<StreamChunk>,
     client: State<'_, reqwest::Client>,
     generation: State<'_, GenerationState>,
@@ -1366,14 +1534,42 @@ pub async fn ask_model(
             .await
         }
         ChatRoute::Builtin { model_id } => {
-            // Resolve the manifest row to blob-store paths inside a scope so
-            // the connection guard drops before any `.await`.
-            let target = {
+            // Resolve the manifest row to blob-store paths and run the pre-load
+            // memory gate inside a scope so the connection guard drops before
+            // any `.await`. The gate (issue #296) refuses an un-forced load
+            // whose estimated footprint does not fit the memory available now;
+            // `allow_oversized == Some(true)` is the user's "load anyway".
+            let resolved = {
                 let conn = db.0.lock().map_err(|e| e.to_string())?;
-                builtin_target(&conn, &model_store, &model_id, config.inference.num_ctx)
+                builtin_target(&conn, &model_store, &model_id, config.inference.num_ctx).map(
+                    |target| {
+                        let gate = preflight_memory_gate(
+                            &conn,
+                            &model_store,
+                            &engine,
+                            &model_id,
+                            &target.model_path,
+                            allow_oversized == Some(true),
+                        );
+                        (target, gate)
+                    },
+                )
             };
-            match target {
-                Ok(target) => {
+            match resolved {
+                Ok((
+                    _,
+                    crate::models::memory::MemoryGate::Block {
+                        required_bytes,
+                        available_bytes,
+                    },
+                )) => {
+                    pump(StreamChunk::Error(insufficient_memory_error(
+                        required_bytes,
+                        available_bytes,
+                    )));
+                    String::new()
+                }
+                Ok((target, crate::models::memory::MemoryGate::Proceed)) => {
                     // Observe whether reasoning streamed this turn so the
                     // runtime backstop can mark a model that reasons even with
                     // reasoning requested OFF (see `backstop_mark_reasoning_always`).
@@ -2670,6 +2866,20 @@ mod tests {
         assert!(
             err.message.contains("Pick a model"),
             "message should steer the user to the picker, got: {}",
+            err.message,
+        );
+    }
+
+    #[test]
+    fn insufficient_memory_error_reports_typed_kind_and_gib_figures() {
+        // The frontend keys off `kind` to raise the "load anyway" affordance;
+        // the message carries approximate GiB so the user sees why. Lock both
+        // down: 6 GiB required, 4 GiB available render as "6.0 GB" / "4.0 GB".
+        let err = insufficient_memory_error(6 * (1 << 30), 4 * (1 << 30));
+        assert_eq!(err.kind, EngineErrorKind::InsufficientMemory);
+        assert!(
+            err.message.contains("6.0 GB") && err.message.contains("4.0 GB"),
+            "message should carry both GiB figures, got: {}",
             err.message,
         );
     }
@@ -4353,6 +4563,9 @@ mod tests {
             &secrets,
             DEFAULT_NUM_CTX,
             &CancellationToken::new(),
+            // Non-builtin route: the memory gate never runs, so the policy is
+            // irrelevant here.
+            OversizePolicy::Block { forced: false },
         )
         .await
         .unwrap();
@@ -4388,6 +4601,8 @@ mod tests {
             &secrets,
             DEFAULT_NUM_CTX,
             &CancellationToken::new(),
+            // Non-builtin route: the memory gate never runs.
+            OversizePolicy::Block { forced: false },
         )
         .await
         .unwrap();
@@ -4430,6 +4645,9 @@ mod tests {
             &secrets,
             DEFAULT_NUM_CTX,
             &CancellationToken::new(),
+            // Force past the memory gate: this test exercises the ensure path,
+            // orthogonal to the gate (covered separately below).
+            OversizePolicy::Block { forced: true },
         )
         .await
         .unwrap();
@@ -4466,6 +4684,9 @@ mod tests {
             &secrets,
             DEFAULT_NUM_CTX,
             &CancellationToken::new(),
+            // `builtin_target` errors on the missing row before the gate runs,
+            // so the policy is irrelevant.
+            OversizePolicy::Block { forced: false },
         )
         .await
         .unwrap_err();
@@ -4512,6 +4733,8 @@ mod tests {
             &secrets,
             DEFAULT_NUM_CTX,
             &CancellationToken::new(),
+            // Force past the gate: this test exercises poisoned-lock recovery.
+            OversizePolicy::Block { forced: true },
         )
         .await
         .unwrap();
@@ -4555,6 +4778,9 @@ mod tests {
             &secrets,
             DEFAULT_NUM_CTX,
             &CancellationToken::new(),
+            // Force past the gate: this asserts the spawn StartFailed mapping,
+            // which a gate Block would preempt on a low-memory runner.
+            OversizePolicy::Block { forced: true },
         )
         .await
         .unwrap_err();
@@ -4596,6 +4822,9 @@ mod tests {
                     &secrets,
                     DEFAULT_NUM_CTX,
                     &CancellationToken::new(),
+                    // Force past the gate: this asserts the unload-preempt
+                    // Superseded mapping, orthogonal to the memory gate.
+                    OversizePolicy::Block { forced: true },
                 )
                 .await
             })
@@ -4648,6 +4877,9 @@ mod tests {
                     &secrets,
                     DEFAULT_NUM_CTX,
                     &cancel_token,
+                    // Force past the gate: this asserts the cancel-during-ensure
+                    // mapping, orthogonal to the memory gate.
+                    OversizePolicy::Block { forced: true },
                 )
                 .await
             })
@@ -4662,6 +4894,209 @@ mod tests {
         assert_eq!(err, TransportError::Cancelled);
         // The load was not aborted: the engine is still starting.
         assert_eq!(engine.status().borrow().state, "starting");
+        engine.shutdown().await;
+    }
+
+    /// Builds an installed row whose weights are so large the memory gate can
+    /// never fit them: `u64::MAX` saturates `estimate_required_bytes` to
+    /// `u64::MAX`, which exceeds the ceiling for any live available figure > 0
+    /// (guaranteed by `available_memory_bytes_reads_a_plausible_live_value`).
+    /// Keeps the `Block` outcome deterministic regardless of the runner's real
+    /// free memory; do not shrink this size or the block-path tests go flaky.
+    fn oversized_model(id: &str) -> crate::models::manifest::InstalledModel {
+        let mut model = installed_model(id, "sha_big", None);
+        model.size_bytes = u64::MAX;
+        model
+    }
+
+    /// `/search`'s policy (`Block { forced: false }`) on an over-large builtin
+    /// model surfaces the user-facing insufficient-memory error and never
+    /// loads the sidecar.
+    #[tokio::test]
+    async fn resolve_llm_transport_builtin_blocks_oversized_unforced() {
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            crate::models::manifest::insert(&conn, &oversized_model("org/repo:big.gguf")).unwrap();
+        }
+        let (_dir, store) = test_store();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 4444,
+            spawn_error: None,
+            healthy: true,
+        });
+        let secrets = crate::keychain::FakeSecretStore::new();
+        let err = resolve_llm_transport(
+            ChatRoute::Builtin {
+                model_id: "org/repo:big.gguf".to_string(),
+            },
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+            &CancellationToken::new(),
+            OversizePolicy::Block { forced: false },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            TransportError::Engine(e) if e.kind == EngineErrorKind::InsufficientMemory
+        ));
+        // The gate ran before the ensure: the sidecar was never started.
+        assert_eq!(engine.status().borrow().state, "stopped");
+        engine.shutdown().await;
+    }
+
+    /// The user's "load anyway" (`Block { forced: true }`) bypasses the gate on
+    /// the same over-large model and proceeds to load.
+    #[tokio::test]
+    async fn resolve_llm_transport_builtin_forced_loads_oversized() {
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            crate::models::manifest::insert(&conn, &oversized_model("org/repo:big.gguf")).unwrap();
+        }
+        let (_dir, store) = test_store();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 4445,
+            spawn_error: None,
+            healthy: true,
+        });
+        let secrets = crate::keychain::FakeSecretStore::new();
+        let transport = resolve_llm_transport(
+            ChatRoute::Builtin {
+                model_id: "org/repo:big.gguf".to_string(),
+            },
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+            &CancellationToken::new(),
+            OversizePolicy::Block { forced: true },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            transport,
+            LlmTransport::V1 {
+                base_url: "http://127.0.0.1:4445".to_string(),
+                api_key: None,
+                flavor: crate::openai::V1Flavor::Builtin,
+            }
+        );
+        assert_eq!(engine.status().borrow().state, "loaded");
+        engine.shutdown().await;
+    }
+
+    /// History title generation's policy (`SilentSkip`) on an over-large model
+    /// yields the benign `SkippedInsufficientMemory`, not a user-facing error,
+    /// and never loads the sidecar.
+    #[tokio::test]
+    async fn resolve_llm_transport_builtin_silent_skip_oversized() {
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            crate::models::manifest::insert(&conn, &oversized_model("org/repo:big.gguf")).unwrap();
+        }
+        let (_dir, store) = test_store();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 4446,
+            spawn_error: None,
+            healthy: true,
+        });
+        let secrets = crate::keychain::FakeSecretStore::new();
+        let err = resolve_llm_transport(
+            ChatRoute::Builtin {
+                model_id: "org/repo:big.gguf".to_string(),
+            },
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+            &CancellationToken::new(),
+            OversizePolicy::SilentSkip,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, TransportError::SkippedInsufficientMemory);
+        assert_eq!(engine.status().borrow().state, "stopped");
+        engine.shutdown().await;
+    }
+
+    /// When the exact model is already resident, the gate's same-model
+    /// short-circuit proceeds without any memory arithmetic under BOTH
+    /// policies, even for an over-large model that a cold load would block.
+    /// This proves the resident short-circuit is load-bearing: the `u64::MAX`
+    /// weights would otherwise force `Block`.
+    #[tokio::test]
+    async fn resolve_llm_transport_builtin_proceeds_when_already_resident() {
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            crate::models::manifest::insert(&conn, &oversized_model("org/repo:big.gguf")).unwrap();
+        }
+        let (_dir, store) = test_store();
+        let engine = spawn_engine(ScriptedEngineProcess {
+            port: 4447,
+            spawn_error: None,
+            healthy: true,
+        });
+        let secrets = crate::keychain::FakeSecretStore::new();
+        // `ChatRoute` is not `Clone`, so each call rebuilds the same route.
+        let builtin_route = || ChatRoute::Builtin {
+            model_id: "org/repo:big.gguf".to_string(),
+        };
+        // Prime the sidecar with a forced load so the exact model is resident.
+        resolve_llm_transport(
+            builtin_route(),
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+            &CancellationToken::new(),
+            OversizePolicy::Block { forced: true },
+        )
+        .await
+        .unwrap();
+        assert_eq!(engine.status().borrow().state, "loaded");
+        let expected = LlmTransport::V1 {
+            base_url: "http://127.0.0.1:4447".to_string(),
+            api_key: None,
+            flavor: crate::openai::V1Flavor::Builtin,
+        };
+        // Unforced now proceeds because the model is already resident.
+        let unforced = resolve_llm_transport(
+            builtin_route(),
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+            &CancellationToken::new(),
+            OversizePolicy::Block { forced: false },
+        )
+        .await
+        .unwrap();
+        assert_eq!(unforced, expected);
+        // SilentSkip likewise proceeds on the resident model.
+        let skip = resolve_llm_transport(
+            builtin_route(),
+            &db,
+            &store,
+            &engine,
+            &secrets,
+            DEFAULT_NUM_CTX,
+            &CancellationToken::new(),
+            OversizePolicy::SilentSkip,
+        )
+        .await
+        .unwrap();
+        assert_eq!(skip, expected);
         engine.shutdown().await;
     }
 

@@ -64,6 +64,7 @@ describe('useDownloadModel', () => {
     expect(invoke).toHaveBeenCalledWith('download_starter', {
       tier: 'balanced',
       key: 'tier:balanced',
+      userInitiated: true,
       onEvent: expect.anything(),
     });
 
@@ -303,6 +304,75 @@ describe('useDownloadModel', () => {
     expect(result.current.etaSeconds).toBeNull();
   });
 
+  it('parks in queued while waiting for a concurrency slot', async () => {
+    const { result } = renderHook(() => useDownloadModel());
+    await act(() => result.current.start('fast'));
+    act(() => channel().simulateMessage({ type: 'Queued' }));
+    expect(result.current.state).toEqual({ phase: 'queued' });
+
+    // A slot frees: Started moves it into the normal downloading phase.
+    act(() =>
+      channel().simulateMessage({
+        type: 'Started',
+        data: { file: 'w.gguf', total_bytes: 100, resumed_from: 0 },
+      }),
+    );
+    expect(result.current.state).toEqual({ phase: 'downloading' });
+  });
+
+  it('maps InsufficientDisk to failed/disk_full with a formatted detail message', async () => {
+    const { result } = renderHook(() => useDownloadModel());
+    await act(() => result.current.start('fast'));
+    act(() =>
+      channel().simulateMessage({
+        type: 'InsufficientDisk',
+        data: { required_bytes: 5_000_000_000, available_bytes: 1_500_000_000 },
+      }),
+    );
+    expect(result.current.state).toEqual({
+      phase: 'failed',
+      kind: 'disk_full',
+      message: 'Needs ~4.7 GB, ~1.4 GB free on disk.',
+    });
+  });
+
+  it('maps RejectedSafeMode to the rejected_safe_mode phase', async () => {
+    const { result } = renderHook(() => useDownloadModel());
+    await act(() => result.current.start('fast', false));
+    act(() => channel().simulateMessage({ type: 'RejectedSafeMode' }));
+    expect(result.current.state).toEqual({ phase: 'rejected_safe_mode' });
+  });
+
+  it('sends userInitiated: false only when the caller opts out', async () => {
+    const { result } = renderHook(() => useDownloadModel());
+    await act(() => result.current.start('fast', false));
+    expect(invoke).toHaveBeenLastCalledWith('download_starter', {
+      tier: 'fast',
+      key: 'tier:fast',
+      userInitiated: false,
+      onEvent: expect.anything(),
+    });
+  });
+
+  it('retry always replays as userInitiated: true, even for a run originally started with false', async () => {
+    const { result } = renderHook(() => useDownloadModel());
+    await act(() => result.current.start('fast', false));
+    act(() =>
+      channel().simulateMessage({
+        type: 'Failed',
+        data: { kind: 'other', message: 'boom' },
+      }),
+    );
+
+    await act(() => result.current.retry());
+    expect(invoke).toHaveBeenLastCalledWith('download_starter', {
+      tier: 'fast',
+      key: 'tier:fast',
+      userInitiated: true,
+      onEvent: expect.anything(),
+    });
+  });
+
   it('fails with kind other when the start invoke rejects', async () => {
     invoke.mockRejectedValueOnce('a download is already in progress');
     const { result } = renderHook(() => useDownloadModel());
@@ -329,6 +399,7 @@ describe('useDownloadModel', () => {
     expect(invoke).toHaveBeenLastCalledWith('download_starter', {
       tier: 'smartest',
       key: 'tier:smartest',
+      userInitiated: true,
       onEvent: expect.anything(),
     });
   });
@@ -348,6 +419,7 @@ describe('useDownloadModel', () => {
       repo: 'owner/repo',
       file: 'w.gguf',
       key: 'repo:owner/repo\nw.gguf',
+      userInitiated: true,
       onEvent: expect.anything(),
     });
     act(() => channel().simulateMessage({ type: 'AllDone' }));
@@ -370,6 +442,7 @@ describe('useDownloadModel', () => {
       repo: 'owner/repo',
       file: 'w.gguf',
       key: 'repo:owner/repo\nw.gguf',
+      userInitiated: true,
       onEvent: expect.anything(),
     });
   });
@@ -392,6 +465,7 @@ describe('useDownloadModel', () => {
     expect(invoke).toHaveBeenCalledWith('download_staff_pick', {
       id: 'gemma-4-12b',
       key: 'staff:gemma-4-12b',
+      userInitiated: true,
       onEvent: expect.anything(),
     });
     act(() => channel().simulateMessage({ type: 'AllDone' }));
@@ -413,6 +487,7 @@ describe('useDownloadModel', () => {
     expect(invoke).toHaveBeenLastCalledWith('download_staff_pick', {
       id: 'gpt-oss-20b',
       key: 'staff:gpt-oss-20b',
+      userInitiated: true,
       onEvent: expect.anything(),
     });
   });
@@ -469,6 +544,7 @@ describe('useDownloadModel', () => {
     expect(invoke).toHaveBeenCalledWith('download_starter', {
       tier: 'balanced',
       key: 'tier:balanced',
+      userInitiated: true,
       onEvent: expect.anything(),
     });
   });

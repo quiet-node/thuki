@@ -44,6 +44,19 @@ export interface DownloadProgressProps {
    * weights+companion downloads, which render unchanged.
    */
   partLabel?: string | null;
+  /**
+   * This item's 1-indexed position among all currently-queued downloads. Only
+   * rendered as a badge when {@link queuedTotal} is greater than 1; paired
+   * with `queuedTotal` to decide whether the badge shows at all.
+   */
+  queuePosition?: number;
+  /**
+   * Count of downloads currently waiting for a slot. The badge renders only
+   * when this is greater than 1: a lone queued item has no other position to
+   * be numbered against, so "Waiting for a download slot…" reads fine on its
+   * own. Two or more queued items number every one of them, starting at #1.
+   */
+  queuedTotal?: number;
   onConfirm: () => void;
   onCancelConfirm: () => void;
   onCancel: () => void;
@@ -162,6 +175,8 @@ export function DownloadProgress({
   grandTotalBytes = null,
   speedBytesPerSec = null,
   partLabel = null,
+  queuePosition,
+  queuedTotal,
   confirmInfo,
   onConfirm,
   onCancelConfirm,
@@ -170,6 +185,23 @@ export function DownloadProgress({
   onChooseAnother,
 }: DownloadProgressProps) {
   switch (state.phase) {
+    case 'queued':
+      return (
+        <Hairline edge={<Edge indeterminate tone="accent" />}>
+          <StatusText>
+            Waiting for a download slot…
+            {/* A lone queued item has nothing to be numbered against; only
+                show the badge once there is an actual ordering to communicate. */}
+            {queuePosition !== undefined &&
+            queuedTotal !== undefined &&
+            queuedTotal > 1 ? (
+              <span style={FIGURES_STYLE}> · #{queuePosition} in queue</span>
+            ) : null}
+          </StatusText>
+          <span style={{ flex: 1 }} />
+          <CancelX onClick={onCancel} />
+        </Hairline>
+      );
     case 'confirming':
       return (
         <Card>
@@ -271,7 +303,7 @@ export function DownloadProgress({
             <span style={{ fontSize: 12.5, fontWeight: 600, color: '#ff7a6e' }}>
               {failureHeadline(state.kind, state.message)}
             </span>
-            {state.kind === 'http' ? (
+            {state.kind === 'http' || state.kind === 'disk_full' ? (
               <span style={FIGURES_STYLE}>{state.message}</span>
             ) : null}
           </span>
@@ -422,15 +454,27 @@ function Edge({
       }}
     >
       <span
-        style={{
-          position: 'absolute',
-          left: 0,
-          top: 0,
-          bottom: 0,
-          width: indeterminate ? '40%' : `${percent}%`,
-          borderRadius: 999,
-          background: fill,
-        }}
+        className={indeterminate ? 'download-indeterminate-fill' : undefined}
+        style={
+          indeterminate
+            ? {
+                position: 'absolute',
+                top: 0,
+                bottom: 0,
+                width: '35%',
+                borderRadius: 999,
+                background: fill,
+              }
+            : {
+                position: 'absolute',
+                left: 0,
+                top: 0,
+                bottom: 0,
+                width: `${percent}%`,
+                borderRadius: 999,
+                background: fill,
+              }
+        }
       />
     </span>
   );

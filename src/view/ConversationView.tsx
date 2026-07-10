@@ -4,7 +4,7 @@ import { ChatBubble } from '../components/ChatBubble';
 import { LoadingStage } from '../components/LoadingStage';
 import { WindowControls } from '../components/WindowControls';
 import { useEngineLoadingLabel } from '../hooks/useEngineLoadingLabel';
-import type { Message } from '../hooks/useModel';
+import type { Message, RetrySnapshot } from '../hooks/useModel';
 import type { SearchStage } from '../types/search';
 
 /**
@@ -94,9 +94,21 @@ interface ConversationViewProps {
   onModelPickerToggle?: () => void;
   /** Whether the model picker panel is open; drives aria-expanded on the pill. */
   isModelPickerOpen?: boolean;
-  /** Opens the model picker from an `EngineStartFailed` error card so a failed
-   *  model load is never a dead end. Forwarded to each ChatBubble's ErrorCard. */
-  onSwitchModel?: () => void;
+  /**
+   * Opens the model picker from an `EngineStartFailed` or `InsufficientMemory`
+   * error card so a failed model load is never a dead end. Given the
+   * message's own `RetrySnapshot` (`undefined` for `EngineStartFailed`
+   * messages, which never get one assigned), so the App-level handler can
+   * remember which turn to replay once the user picks a new model. Wrapped
+   * per-message below and forwarded to each ChatBubble's ErrorCard, mirroring
+   * `onLoadAnyway`'s existing relationship. */
+  onSwitchModel?: (snapshot?: RetrySnapshot) => void;
+  /** Replays a specific turn with the pre-load memory gate bypassed (issue
+   *  #296), given that turn's immutable `RetrySnapshot`. Wrapped per-message
+   *  below and forwarded to each ChatBubble's ErrorCard as the "Load anyway"
+   *  action, so a later turn superseding an earlier one can never cause the
+   *  wrong turn to be replayed. */
+  onLoadAnyway?: (snapshot: RetrySnapshot) => void;
   /**
    * Called when the user clicks the minimize (yellow) dot.
    * Omit when there is no conversation to park (ask-bar mode).
@@ -157,6 +169,7 @@ export function ConversationView({
   onModelPickerToggle,
   isModelPickerOpen,
   onSwitchModel,
+  onLoadAnyway,
   onMinimize,
   onExportToggle,
   isExportOpen,
@@ -324,6 +337,12 @@ export function ConversationView({
           )
             return null;
 
+          // Bind this specific message's own retained snapshot (issue
+          // #296) rather than forwarding a single shared callback, so
+          // clicking "Load anyway" on an older card can never replay a
+          // more recent turn's request.
+          const retrySnapshot = msg.retrySnapshot;
+
           return (
             <ChatBubble
               key={msg.id}
@@ -336,7 +355,14 @@ export function ConversationView({
               onImagePreview={onImagePreview}
               onReplace={msg.replaceCommand ? onReplace : undefined}
               errorKind={msg.errorKind}
-              onSwitchModel={onSwitchModel}
+              onSwitchModel={
+                onSwitchModel ? () => onSwitchModel(retrySnapshot) : undefined
+              }
+              onLoadAnyway={
+                retrySnapshot && onLoadAnyway
+                  ? () => onLoadAnyway(retrySnapshot)
+                  : undefined
+              }
               thinkingContent={msg.thinkingContent}
               isThinkingPending={isThinkingPending}
               pendingLabel={engineLoadingLabel}
@@ -354,6 +380,7 @@ export function ConversationView({
               searchTraces={msg.searchTraces}
               modelName={msg.modelName}
               displayNames={modelDisplayNames}
+              memoryFit={msg.memoryFit}
               isSearching={
                 isGenerating &&
                 msg.fromSearch === true &&

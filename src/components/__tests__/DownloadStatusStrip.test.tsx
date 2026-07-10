@@ -176,6 +176,22 @@ describe('DownloadStatusStrip', () => {
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
+  it('shows a queued state with only Cancel and no queue badge below the threshold', () => {
+    const onCancel = vi.fn();
+    render(
+      <DownloadStatusStrip
+        surface="askbar"
+        status={{ kind: 'queued', onCancel }}
+      />,
+    );
+    expect(
+      screen.getByText('Waiting for a download slot…'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/in queue/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel download' }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
   it('shows a paused state with both Resume and Discard', () => {
     const onResume = vi.fn();
     const onDiscard = vi.fn();

@@ -123,6 +123,24 @@ pub const ENGINE_HEALTH_PROBE_TIMEOUT_SECS: u64 = 5;
 /// minute-scale setting's precision at negligible cost.
 pub const ENGINE_IDLE_CHECK_INTERVAL_SECS: u64 = 30;
 
+/// Timeout (seconds) bounding the built-in engine shutdown the `sigwait` thread
+/// runs on a polite stop (Ctrl+C or the SIGTERM macOS sends every app at restart,
+/// issue #296). The durable clean-exit write always lands first; this only bounds
+/// the sidecar kill, so a wedged engine can never keep the thread from re-raising
+/// the caught signal and leave the app unresponsive past the macOS restart
+/// deadline. A sidecar that outlives the bound is reaped at the next launch. Not
+/// user-tunable: an internal shutdown-path safety valve, and the kill is normally
+/// near-instant (the child dies on an unblockable SIGKILL).
+pub const SHUTDOWN_SIGNAL_ENGINE_KILL_TIMEOUT_SECS: u64 = 3;
+
+/// Grace period (milliseconds) between the polite `SIGTERM` and the escalating
+/// `SIGKILL` the startup reaper sends an orphaned `llama-server` left behind by
+/// a previous Thuki (issue #296). `llama-server` exits promptly on `SIGTERM`, so
+/// this is only the window a survivor gets before it is force-killed; the full
+/// orphan predicate is re-checked after the wait so a recycled pid is never
+/// killed. Not user-tunable: an internal shutdown-hygiene timing constant.
+pub const ORPHAN_REAP_SIGTERM_GRACE_MS: u64 = 2000;
+
 /// Capacity of the engine runner command queue. Not user-tunable: bounds
 /// memory under command bursts; 64 slots is ample for all UI-driven traffic
 /// (Ensure, Touch, SetIdleMinutes, Shutdown) with no back-pressure under
@@ -161,6 +179,31 @@ pub const DOWNLOAD_PROGRESS_MIN_INTERVAL_MS: u64 = 500;
 /// of thousands. Not user-tunable: an internal I/O buffer whose only effect is
 /// verify speed.
 pub const BLOB_HASH_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+
+/// Maximum number of model downloads allowed to transfer bytes at the same
+/// time. A start beyond this waits (queued) for a slot before opening its HTTP
+/// transfer. Not user-tunable: a defense-in-depth bound against the
+/// resource-exhaustion this closes (issue #296, where unbounded parallel
+/// downloads plus an auto-load froze a memory-constrained Mac). Exposing it
+/// would let a user re-introduce the very failure the cap exists to prevent.
+pub const DEFAULT_MAX_CONCURRENT_DOWNLOADS: usize = 3;
+
+/// Free-space headroom kept above a download's own byte needs, both in the
+/// pre-download preflight and the periodic mid-transfer re-check. 2 GiB leaves
+/// room for the OS, the app, and other writers so filling the volume to the
+/// brim during a multi-GB model pull cannot wedge the machine. Not
+/// user-tunable: a defense-in-depth floor against the disk-fill failure mode of
+/// issue #296, not a preference; lowering it would re-open that failure.
+pub const DEFAULT_DOWNLOAD_DISK_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// How many bytes a transfer writes between successive free-disk re-checks. A
+/// long download can fill the volume long after the preflight passed (other
+/// apps writing, a second model downloading), so free space is re-probed every
+/// this many bytes and the transfer aborts cleanly (keeping its `.partial` for
+/// resume) if it falls below the headroom floor. 256 MiB bounds the statfs call
+/// rate to a handful per GB while still catching a fill within a few hundred MB.
+/// Not user-tunable: internal safety-probe cadence with no user-visible effect.
+pub const DEFAULT_DOWNLOAD_DISK_RECHECK_INTERVAL_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Maximum accepted length of a single Server-Sent-Events line from a /v1
 /// streaming response. Bounds attacker-controlled data from a chat server
@@ -460,6 +503,28 @@ pub const HF_SEARCH_LIMIT_MAX: usize = 120;
 /// estimates live in the model registry.
 pub const RUNTIME_OVERHEAD_GB: f64 = 2.0;
 
+/// Fraction of live available memory a model's estimated footprint may occupy
+/// and still be judged to fit with healthy headroom. At or below this it is
+/// "comfortable"; above it (but at or below the ceiling) it is "tight". Feeds
+/// the pre-load memory gate (issue #296) and the `estimate_model_fit` command.
+///
+/// Not user-tunable: a defense-in-depth threshold against the auto-load freeze
+/// of issue #296, not a preference. The footprint estimate is deliberately
+/// approximate (weights plus a fixed overhead), so the gate is forgiving:
+/// crossing this fraction only softens the verdict to "tight", never blocks.
+pub const MODEL_FIT_COMFORT_FRACTION: f64 = 0.60;
+
+/// Ceiling fraction of live available memory a model's estimated footprint may
+/// occupy before the pre-load gate refuses an un-forced load. Modeled on Jan's
+/// published guidance that a model should stay under ~80% of available memory,
+/// leaving the remaining fifth for the OS and other apps so a load cannot wedge
+/// the machine (issue #296).
+///
+/// Not user-tunable: a defense-in-depth OOM bound, not a preference. Because
+/// the footprint estimate can be off by up to ~2x, this hard block triggers
+/// only clearly above the ceiling and a user `force` always bypasses it.
+pub const MODEL_FIT_CEILING_FRACTION: f64 = 0.80;
+
 /// Maximum accepted byte length for a Hugging Face search query before it is
 /// sent upstream. Defense-in-depth bound on attacker-influenced input: the
 /// query reaches the fixed Hub host (no SSRF) and is percent-encoded by the
@@ -586,6 +651,29 @@ pub const DEFAULT_SUBSCRIBE_TIMEOUT_SECS: u64 = 15;
 /// Lives next to `config.toml` in `app_config_dir`. Single source of truth so
 /// the writer (commands.rs) and the loader (lib.rs) cannot drift.
 pub const DEFAULT_UPDATER_STATE_FILENAME: &str = "updater_state.json";
+/// Filename of the JSON session record the launch circuit breaker durably
+/// writes at startup (with `clean_exit: false`) and flips to `clean_exit: true`
+/// only on a real quit. Lives next to `config.toml` in `app_config_dir`. Single
+/// source of truth so the reader and the writer in `startup_guard` cannot
+/// drift. See `src-tauri/src/startup_guard.rs`.
+pub const DEFAULT_SESSION_RECORD_FILENAME: &str = "session.json";
+/// Filename of the empty advisory-lock file the launch circuit breaker holds
+/// for the whole process lifetime. The kernel releases the lock on process
+/// death by ANY cause, which is how crash detection works without a clean-exit
+/// signal. Lives next to `config.toml` in `app_config_dir`. See
+/// `src-tauri/src/startup_guard.rs`.
+pub const DEFAULT_SESSION_LOCK_FILENAME: &str = "session.lock";
+/// Number of consecutive abnormal launches that trips the startup circuit
+/// breaker into safe mode. A launch is "abnormal" when the previous session's
+/// record was still `clean_exit: false` at this launch, meaning the previous
+/// process died without a clean exit (freeze, SIGKILL, OS OOM-kill, panic, or
+/// power loss): the crash-loop signature from issue #296. Threshold 2 = enter
+/// safe mode only after TWO consecutive abnormal sessions, so a single hard
+/// reboot or `kill -9` does not nag the user, mirroring Firefox's
+/// `toolkit.startup.max_resumed_crashes` pattern. Not user-tunable: it is a
+/// crash-loop safety mechanism, not a preference, and letting a user raise it
+/// would re-arm the freeze this guard exists to break.
+pub const DEFAULT_STARTUP_SAFE_MODE_THRESHOLD: u32 = 2;
 /// Defense-in-depth upper bound on snooze duration accepted from the frontend
 /// IPC boundary (in hours). One year is far longer than any UI-driven snooze
 /// the app exposes today, but small enough that `hours * 3600` cannot overflow

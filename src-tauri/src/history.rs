@@ -377,6 +377,14 @@ pub async fn generate_title(
     // kill the sidecar mid-generation. The cancel token is fresh and never
     // cancelled: background title generation has no Stop affordance.
     let _activity_guard = crate::commands::route_activity_guard(&route, &engine);
+    // `SilentSkip` is the memory gate response for this background caller
+    // (issue #296): an over-large built-in model yields
+    // `TransportError::SkippedInsufficientMemory`, which the `let else` below
+    // swallows into a clean no-title no-op, never a user-facing error. On the
+    // common path this fires fire-and-forget only after a completed chat turn
+    // (save -> generate_title), so the same model is already resident from the
+    // gated `ask_model` load and the gate's same-model-resident accounting
+    // returns `Proceed`; the skip only engages on a keep-warm eviction race.
     let Ok(transport) = crate::commands::resolve_llm_transport(
         route,
         &db,
@@ -385,6 +393,7 @@ pub async fn generate_title(
         secrets.0.as_ref(),
         app_config.inference.num_ctx,
         &tokio_util::sync::CancellationToken::new(),
+        crate::commands::OversizePolicy::SilentSkip,
     )
     .await
     else {

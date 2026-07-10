@@ -28,6 +28,7 @@ export type DownloadUiFailKind = DownloadFailKind | 'engine';
 export type DownloadUiState =
   | { phase: 'idle' }
   | { phase: 'confirming'; tier: StarterTier }
+  | { phase: 'queued' }
   | { phase: 'downloading' }
   | { phase: 'downloading_mmproj' }
   | { phase: 'verifying' }
@@ -35,6 +36,7 @@ export type DownloadUiState =
   | { phase: 'warming_up' }
   | { phase: 'ready' }
   | { phase: 'resume_pending' }
+  | { phase: 'rejected_safe_mode' }
   | { phase: 'failed'; kind: DownloadUiFailKind; message: string };
 
 /** Last reported byte counts for the file currently downloading. */
@@ -168,6 +170,11 @@ export function computeEtaSeconds(
   return Math.max(0, Math.round((totalBytes - bytes) / bytesPerSecond));
 }
 
+/** Bytes rendered as decimal gigabytes with one decimal (e.g. "8.2"). */
+function gb(bytes: number): string {
+  return (bytes / 1024 ** 3).toFixed(1);
+}
+
 /** Appends a sample and drops any that have aged out of the rolling window. */
 function pushSample(
   samples: EtaSample[],
@@ -194,6 +201,23 @@ export function reduceDownloadEvent(
   awaitEngine: boolean,
 ): DownloadAccumulator {
   switch (event.type) {
+    case 'Queued':
+      return { ...acc, state: { phase: 'queued' } };
+    case 'InsufficientDisk':
+      // Reuses the `failed`/`disk_full` phase (same red/Retry UI path a
+      // Failed{kind:'disk_full'} event already drives) instead of a dedicated
+      // phase, with a formatted detail line `failureHeadline` renders as the
+      // second line.
+      return {
+        ...acc,
+        state: {
+          phase: 'failed',
+          kind: 'disk_full',
+          message: `Needs ~${gb(event.data.required_bytes)} GB, ~${gb(event.data.available_bytes)} GB free on disk.`,
+        },
+      };
+    case 'RejectedSafeMode':
+      return { ...acc, state: { phase: 'rejected_safe_mode' } };
     case 'Started': {
       const startedCount = acc.startedCount + 1;
       return {

@@ -482,6 +482,264 @@ describe('ChatBubble', () => {
     });
   });
 
+  // InsufficientMemory (issue #296): ChatBubble fetches the exact figures via
+  // `estimate_model_fit` and forwards them plus `onLoadAnyway` to ErrorCard.
+  describe('InsufficientMemory error card', () => {
+    const FALLBACK_MESSAGE =
+      'This model may not fit in memory\nClose some apps, pick a smaller model, or load it anyway.';
+
+    it('fetches model fit info and renders the displayNames label', async () => {
+      invoke.mockImplementationOnce(async () => ({
+        required_bytes: 8 * 1024 ** 3,
+        available_bytes: 4 * 1024 ** 3,
+        verdict: 'insufficient',
+      }));
+      render(
+        <ChatBubble
+          role="assistant"
+          content={FALLBACK_MESSAGE}
+          index={0}
+          errorKind="InsufficientMemory"
+          modelName="repo:file.gguf"
+          displayNames={{ 'repo:file.gguf': 'Qwen3.5 9B' }}
+        />,
+      );
+      expect(
+        await screen.findByText('Qwen3.5 9B may not fit in memory right now.'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          'Estimated need: ~8.0 GB. Currently available: ~4.0 GB.',
+        ),
+      ).toBeInTheDocument();
+      expect(invoke).toHaveBeenCalledWith('estimate_model_fit', {
+        modelId: 'repo:file.gguf',
+      });
+    });
+
+    it("stays pinned to this message's own model even after the active model changes elsewhere", async () => {
+      invoke.mockImplementation(async () => ({
+        required_bytes: 13.3 * 1024 ** 3,
+        available_bytes: 4 * 1024 ** 3,
+        verdict: 'insufficient',
+      }));
+      const { rerender } = render(
+        <ChatBubble
+          role="assistant"
+          content={FALLBACK_MESSAGE}
+          index={0}
+          errorKind="InsufficientMemory"
+          modelName="gpt-oss-20b-slug"
+          displayNames={{ 'gpt-oss-20b-slug': 'gpt-oss 20B' }}
+        />,
+      );
+      expect(
+        await screen.findByText('gpt-oss 20B may not fit in memory right now.'),
+      ).toBeInTheDocument();
+      expect(invoke).toHaveBeenLastCalledWith('estimate_model_fit', {
+        modelId: 'gpt-oss-20b-slug',
+      });
+
+      // Simulate a model switch elsewhere triggering a `displayNames` refresh
+      // (new object reference) for this same, still-unretried message. The
+      // effect refires, but must still target THIS message's own model, not
+      // whatever the app switched the active model to.
+      rerender(
+        <ChatBubble
+          role="assistant"
+          content={FALLBACK_MESSAGE}
+          index={0}
+          errorKind="InsufficientMemory"
+          modelName="gpt-oss-20b-slug"
+          displayNames={{
+            'gpt-oss-20b-slug': 'gpt-oss 20B',
+            'llama-3.2-3b-slug': 'Llama 3.2 3B',
+          }}
+        />,
+      );
+      expect(invoke).toHaveBeenLastCalledWith('estimate_model_fit', {
+        modelId: 'gpt-oss-20b-slug',
+      });
+    });
+
+    it('re-attributes to model B atomically from carried figures on an in-place switch, without refetching (issue #296)', async () => {
+      // Initial failure on model A: the effect fetches and populates A's
+      // figures into the bubble's local state.
+      invoke.mockImplementationOnce(async () => ({
+        required_bytes: 13.3 * 1024 ** 3,
+        available_bytes: 4 * 1024 ** 3,
+        verdict: 'insufficient',
+      }));
+      const displayNames = {
+        'model-a-slug': 'Model A',
+        'model-b-slug': 'Model B',
+      };
+      const { rerender } = render(
+        <ChatBubble
+          role="assistant"
+          content={FALLBACK_MESSAGE}
+          index={0}
+          errorKind="InsufficientMemory"
+          modelName="model-a-slug"
+          displayNames={displayNames}
+        />,
+      );
+      expect(
+        await screen.findByText('Model A may not fit in memory right now.'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          'Estimated need: ~13.3 GB. Currently available: ~4.0 GB.',
+        ),
+      ).toBeInTheDocument();
+
+      // The user picks model B, which the gate ALSO blocks: the app swaps
+      // modelName to B and carries B's figures in the same commit (memoryFit).
+      invoke.mockClear();
+      rerender(
+        <ChatBubble
+          role="assistant"
+          content={FALLBACK_MESSAGE}
+          index={0}
+          errorKind="InsufficientMemory"
+          modelName="model-b-slug"
+          displayNames={displayNames}
+          memoryFit={{
+            requiredBytes: 6 * 1024 ** 3,
+            availableBytes: 4 * 1024 ** 3,
+          }}
+        />,
+      );
+
+      // B's name and figures render immediately - never A's stale local state.
+      expect(
+        screen.getByText('Model B may not fit in memory right now.'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          'Estimated need: ~6.0 GB. Currently available: ~4.0 GB.',
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/Model A may not fit/)).toBeNull();
+      // No async refetch fires on the switch, so there is no window in which a
+      // stale (or a rejected) estimate could ever render A's data.
+      expect(invoke).not.toHaveBeenCalledWith(
+        'estimate_model_fit',
+        expect.anything(),
+      );
+    });
+
+    it('falls back to the raw model id when displayNames has no entry', async () => {
+      invoke.mockImplementationOnce(async () => ({
+        required_bytes: 1,
+        available_bytes: 1,
+        verdict: 'insufficient',
+      }));
+      render(
+        <ChatBubble
+          role="assistant"
+          content={FALLBACK_MESSAGE}
+          index={0}
+          errorKind="InsufficientMemory"
+          modelName="raw-slug"
+        />,
+      );
+      expect(
+        await screen.findByText('raw-slug may not fit in memory right now.'),
+      ).toBeInTheDocument();
+    });
+
+    it("falls back to 'This model' when modelName is absent", async () => {
+      invoke.mockImplementationOnce(async () => ({
+        required_bytes: 1,
+        available_bytes: 1,
+        verdict: 'insufficient',
+      }));
+      render(
+        <ChatBubble
+          role="assistant"
+          content={FALLBACK_MESSAGE}
+          index={0}
+          errorKind="InsufficientMemory"
+        />,
+      );
+      expect(
+        await screen.findByText('This model may not fit in memory right now.'),
+      ).toBeInTheDocument();
+    });
+
+    it('forwards onLoadAnyway and fires it on click', async () => {
+      invoke.mockImplementationOnce(async () => ({
+        required_bytes: 1,
+        available_bytes: 1,
+        verdict: 'insufficient',
+      }));
+      const onLoadAnyway = vi.fn();
+      render(
+        <ChatBubble
+          role="assistant"
+          content={FALLBACK_MESSAGE}
+          index={0}
+          errorKind="InsufficientMemory"
+          onLoadAnyway={onLoadAnyway}
+        />,
+      );
+      fireEvent.click(
+        await screen.findByRole('button', { name: 'Load anyway' }),
+      );
+      expect(onLoadAnyway).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls back to the generic message render when estimate_model_fit rejects', async () => {
+      invoke.mockImplementationOnce(async () => {
+        throw new Error('boom');
+      });
+      render(
+        <ChatBubble
+          role="assistant"
+          content={FALLBACK_MESSAGE}
+          index={0}
+          errorKind="InsufficientMemory"
+        />,
+      );
+      // The generic fallback (message split on the first newline) is what
+      // renders synchronously; assert it survives the rejection settling.
+      expect(
+        await screen.findByText('This model may not fit in memory'),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(/may not fit in memory right now\./),
+      ).toBeNull();
+    });
+
+    it('ignores a stale estimate_model_fit response after unmount', async () => {
+      let resolveFit!: (value: unknown) => void;
+      invoke.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFit = resolve;
+          }),
+      );
+      const { unmount } = render(
+        <ChatBubble
+          role="assistant"
+          content={FALLBACK_MESSAGE}
+          index={0}
+          errorKind="InsufficientMemory"
+        />,
+      );
+      unmount();
+      resolveFit({
+        required_bytes: 1,
+        available_bytes: 1,
+        verdict: 'insufficient',
+      });
+      // Flush the now-ignored resolution; nothing should throw.
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  });
+
   describe('search sources footer', () => {
     it('does not render the sources list by default; trigger button shows count', () => {
       render(

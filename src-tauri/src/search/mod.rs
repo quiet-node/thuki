@@ -62,6 +62,7 @@ pub async fn search_pipeline(
     conversation_id: String,
     is_first_turn: bool,
     displayed_content: Option<String>,
+    allow_oversized: Option<bool>,
     on_event: Channel<SearchEvent>,
     client: State<'_, reqwest::Client>,
     generation: State<'_, GenerationState>,
@@ -148,7 +149,10 @@ pub async fn search_pipeline(
     // Resolve the wire transport. For the builtin route this marks engine
     // activity and ensures the sidecar serves the selected model before any
     // pipeline stage issues an LLM call; the ensure is raced against the
-    // cancel token so Stop works during a cold load.
+    // cancel token so Stop works during a cold load. `/search` is
+    // user-initiated inference, so an over-large model blocks with the
+    // user-facing insufficient-memory error; `allow_oversized == Some(true)`
+    // is the user's explicit "load anyway".
     let transport = match crate::commands::resolve_llm_transport(
         route,
         &db,
@@ -157,6 +161,9 @@ pub async fn search_pipeline(
         secrets.0.as_ref(),
         app_config.inference.num_ctx,
         &cancel_token,
+        crate::commands::OversizePolicy::Block {
+            forced: allow_oversized == Some(true),
+        },
     )
     .await
     {
@@ -331,12 +338,27 @@ fn route_failure_event(err: crate::commands::EngineError) -> SearchEvent {
 /// Maps a [`crate::commands::resolve_llm_transport`] failure onto the search
 /// event stream. `Cancelled` (the user pressed Stop during the engine
 /// ensure) and `Superseded` (a newer settings change preempted the ensure)
-/// are both cancellations, never errors. Engine failures (start failure,
-/// missing manifest row) carry their user-facing message.
+/// are both cancellations, never errors. `Engine` failures carry their
+/// user-facing message, except `InsufficientMemory` (issue #296), which gets
+/// its own typed event so the frontend can render the amber "load anyway"
+/// card instead of a generic error bubble, mirroring the chat-side
+/// `ask_model` bail.
+///
+/// `SkippedInsufficientMemory` cannot normally arise here: `/search` passes
+/// [`crate::commands::OversizePolicy::Block`], which surfaces an over-large
+/// model as an `Engine` error, not a silent skip. It is mapped for
+/// exhaustiveness to `Cancelled`, the same benign no-render outcome as an
+/// aborted search: a skipped turn produces no answer and no error bubble.
 fn transport_failure_event(err: crate::commands::TransportError) -> SearchEvent {
     match err {
         crate::commands::TransportError::Cancelled
-        | crate::commands::TransportError::Superseded => SearchEvent::Cancelled,
+        | crate::commands::TransportError::Superseded
+        | crate::commands::TransportError::SkippedInsufficientMemory => SearchEvent::Cancelled,
+        crate::commands::TransportError::Engine(e)
+            if e.kind == crate::commands::EngineErrorKind::InsufficientMemory =>
+        {
+            SearchEvent::InsufficientMemory
+        }
         crate::commands::TransportError::Engine(e) => SearchEvent::Error { message: e.message },
     }
 }
@@ -384,6 +406,17 @@ mod tests {
     }
 
     #[test]
+    fn transport_failure_event_maps_skipped_insufficient_memory_to_cancelled() {
+        // Exhaustiveness arm: `/search` never emits this (it uses Block), but
+        // if it ever did, a skipped turn must read as a benign no-render
+        // cancellation, never an error bubble.
+        assert!(matches!(
+            transport_failure_event(TransportError::SkippedInsufficientMemory),
+            SearchEvent::Cancelled
+        ));
+    }
+
+    #[test]
     fn transport_failure_event_maps_engine_error_to_message() {
         let event = transport_failure_event(TransportError::Engine(EngineError {
             kind: EngineErrorKind::EngineStartFailed,
@@ -393,5 +426,17 @@ mod tests {
             event,
             SearchEvent::Error { message } if message.contains("could not start")
         ));
+    }
+
+    #[test]
+    fn transport_failure_event_maps_insufficient_memory_to_typed_event() {
+        // The gate's Engine(InsufficientMemory) error must surface as the
+        // dedicated typed event, not the generic Error bubble, so the
+        // frontend can offer the "load anyway" retry (issue #296).
+        let event = transport_failure_event(TransportError::Engine(EngineError {
+            kind: EngineErrorKind::InsufficientMemory,
+            message: "This model may not fit in memory\nIt needs about 8.0 GB but only about 4.0 GB is free. Close some apps, pick a smaller model, or load it anyway.".to_string(),
+        }));
+        assert!(matches!(event, SearchEvent::InsufficientMemory));
     }
 }

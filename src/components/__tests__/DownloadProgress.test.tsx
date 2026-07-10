@@ -118,6 +118,61 @@ describe('DownloadProgress', () => {
     });
   });
 
+  describe('queued', () => {
+    it('shows Waiting for a slot with a working Cancel, no badge, and the sliding-fill animation class', () => {
+      const { onCancel, container } = renderProgress({ phase: 'queued' });
+      expect(
+        screen.getByText('Waiting for a download slot…'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/in queue/)).not.toBeInTheDocument();
+      expect(
+        container.querySelector('.download-indeterminate-fill'),
+      ).not.toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(onCancel).toHaveBeenCalledTimes(1);
+    });
+
+    it('omits the badge when exactly one item is queued', () => {
+      renderProgress({ phase: 'queued' }, { queuePosition: 1, queuedTotal: 1 });
+      expect(
+        screen.getByText('Waiting for a download slot…'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/in queue/)).not.toBeInTheDocument();
+    });
+
+    it('shows badges on every item, including #1, once more than one is queued', () => {
+      renderProgress({ phase: 'queued' }, { queuePosition: 1, queuedTotal: 2 });
+      expect(screen.getByText(/#1 in queue/)).toBeInTheDocument();
+    });
+
+    it('shows the boundary at >1 rather than >=2: two queued items both get badges', () => {
+      renderProgress({ phase: 'queued' }, { queuePosition: 2, queuedTotal: 2 });
+      expect(screen.getByText(/#2 in queue/)).toBeInTheDocument();
+    });
+
+    it('numbers three queued items #1, #2, #3 in FIFO order', () => {
+      const first = renderProgress(
+        { phase: 'queued' },
+        { queuePosition: 1, queuedTotal: 3 },
+      );
+      expect(first.getByText(/#1 in queue/)).toBeInTheDocument();
+      first.unmount();
+
+      const second = renderProgress(
+        { phase: 'queued' },
+        { queuePosition: 2, queuedTotal: 3 },
+      );
+      expect(second.getByText(/#2 in queue/)).toBeInTheDocument();
+      second.unmount();
+
+      const third = renderProgress(
+        { phase: 'queued' },
+        { queuePosition: 3, queuedTotal: 3 },
+      );
+      expect(third.getByText(/#3 in queue/)).toBeInTheDocument();
+    });
+  });
+
   describe('downloading', () => {
     const progress: DownloadProgressInfo = {
       file: 'weights.gguf',
@@ -194,28 +249,39 @@ describe('DownloadProgress', () => {
     });
   });
 
-  it('renders an indeterminate verifying state', () => {
+  it('renders an indeterminate verifying state with the sliding-fill animation class', () => {
     const { container } = renderProgress({ phase: 'verifying' });
     expect(screen.getByText('Verifying download')).toBeInTheDocument();
     expect(
       container.querySelector('[data-indeterminate="true"]'),
     ).not.toBeNull();
+    expect(
+      container.querySelector('.download-indeterminate-fill'),
+    ).not.toBeNull();
   });
 
-  it('renders the installing state', () => {
-    renderProgress({ phase: 'installing' });
+  it('renders the installing state with the sliding-fill animation class', () => {
+    const { container } = renderProgress({ phase: 'installing' });
     expect(screen.getByText('Installing')).toBeInTheDocument();
+    expect(
+      container.querySelector('.download-indeterminate-fill'),
+    ).not.toBeNull();
   });
 
-  it('renders the warming up state', () => {
-    renderProgress({ phase: 'warming_up' });
+  it('renders the warming up state with the sliding-fill animation class', () => {
+    const { container } = renderProgress({ phase: 'warming_up' });
     expect(screen.getByText('Starting the engine')).toBeInTheDocument();
+    expect(
+      container.querySelector('.download-indeterminate-fill'),
+    ).not.toBeNull();
   });
 
-  it('renders the ready checkmark', () => {
+  it('renders the ready checkmark without the indeterminate animation class', () => {
     const { container } = renderProgress({ phase: 'ready' });
     expect(screen.getByText('Ready')).toBeInTheDocument();
     expect(container.querySelector('svg')).not.toBeNull();
+    // A determinate fill (percent-based) never carries the sliding class.
+    expect(container.querySelector('.download-indeterminate-fill')).toBeNull();
   });
 
   describe('failed', () => {
@@ -267,14 +333,31 @@ describe('DownloadProgress', () => {
       ).toBeInTheDocument();
     });
 
-    it('shows the disk_full copy', () => {
+    it('shows the disk_full copy with the backend detail as a second line', () => {
       renderProgress({
         phase: 'failed',
         kind: 'disk_full',
         message: 'write failed: no space left',
       });
+      // The locked headline never changes shape with the message.
       expect(
         screen.getByText('Not enough disk space. Free up space and retry.'),
+      ).toBeInTheDocument();
+      // The InsufficientDisk-formatted (or raw backend) detail now renders as
+      // a second line, mirroring how the http case already surfaces `message`.
+      expect(
+        screen.getByText('write failed: no space left'),
+      ).toBeInTheDocument();
+    });
+
+    it('shows the InsufficientDisk-formatted GB detail line', () => {
+      renderProgress({
+        phase: 'failed',
+        kind: 'disk_full',
+        message: 'Needs ~4.7 GB, ~1.4 GB free on disk.',
+      });
+      expect(
+        screen.getByText('Needs ~4.7 GB, ~1.4 GB free on disk.'),
       ).toBeInTheDocument();
     });
 

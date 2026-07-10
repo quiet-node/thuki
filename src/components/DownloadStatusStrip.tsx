@@ -31,6 +31,7 @@ export type DownloadStripStatus =
     }
   | { kind: 'pausing'; percent: number }
   | { kind: 'verifying'; percent: number }
+  | { kind: 'queued'; onCancel: () => void }
   | { kind: 'ready'; modelName: string }
   | { kind: 'failed'; message: string; onRetry: () => void };
 
@@ -292,6 +293,24 @@ export function DownloadStatusStrip({
             This can take a minute for large models
           </span>
         </span>
+      </Shell>
+    );
+  }
+
+  if (status.kind === 'queued') {
+    // Admitted but no bytes moving yet: same muted treatment as pausing, with
+    // only Cancel (no Download button, nothing to pause).
+    return (
+      <Shell color={MUTED} fill={MUTED_FILL} percent={0}>
+        <span className="flex-1 leading-snug">
+          Waiting for a download slot…
+        </span>
+        <Action
+          label="Cancel"
+          ariaLabel="Cancel download"
+          color={MUTED}
+          onClick={status.onCancel}
+        />
       </Shell>
     );
   }

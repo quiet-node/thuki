@@ -101,4 +101,9 @@ describe('search types', () => {
     const event: SearchEvent = { type: 'SandboxUnavailable' };
     expect(event.type).toBe('SandboxUnavailable');
   });
+
+  it('SearchEvent still allows InsufficientMemory', () => {
+    const event: SearchEvent = { type: 'InsufficientMemory' };
+    expect(event.type).toBe('InsufficientMemory');
+  });
 });

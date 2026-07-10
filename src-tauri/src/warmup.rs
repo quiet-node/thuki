@@ -5,7 +5,8 @@ use std::sync::{
 use tauri::{Emitter, Manager};
 
 use crate::config::defaults::{
-    PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, VRAM_POLL_INTERVAL_SECS,
+    MODEL_FIT_CEILING_FRACTION, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA,
+    VRAM_POLL_INTERVAL_SECS,
 };
 
 type InFlightSlot = Arc<Mutex<Option<(String, Option<String>, String, u32)>>>;
@@ -392,6 +393,220 @@ impl WarmupState {
     }
 }
 
+/// The action a built-in auto-prime request resolves to, decided by
+/// [`plan_builtin_warmup`]. Split out from the I/O wrapper so the memory-gate
+/// decision - the guard that keeps an oversized model from being auto-loaded
+/// (issue #296) - is unit-tested directly rather than buried inside a
+/// coverage-off Tauri command.
+#[derive(Debug, PartialEq)]
+pub(crate) enum BuiltinWarmupAction {
+    /// The model resolved and cleared the memory gate: warm it.
+    Warm(crate::engine::state::Target),
+    /// The model resolved but the memory gate blocked the load: log and skip.
+    Blocked {
+        required_bytes: u64,
+        available_bytes: u64,
+    },
+    /// The model could not be resolved (missing/uninstalled): skip silently.
+    Skip,
+}
+
+/// Payload emitted as `warmup:builtin-skipped` when the memory gate blocks an
+/// auto-prime (issue #296): lets the frontend show an ambient warning before
+/// the user's first message hits the same block as an `InsufficientMemory`
+/// chat error.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub(crate) struct BuiltinSkippedPayload {
+    pub model_id: String,
+    pub required_bytes: u64,
+    pub available_bytes: u64,
+}
+
+/// Maps a resolved `(Target, MemoryGate)` - or a resolve error - to the
+/// auto-prime action. Pure: no I/O and no spawn, so both the Block-skips and
+/// Proceed-warms branches are exercised directly in tests. `warm_builtin` is
+/// only ever reached through the [`BuiltinWarmupAction::Warm`] arm, so a
+/// `Block` gate can never spawn a load. That is the whole point of issue
+/// #296's admission gate.
+pub(crate) fn plan_builtin_warmup(
+    resolved: Result<
+        (
+            crate::engine::state::Target,
+            crate::models::memory::MemoryGate,
+        ),
+        crate::commands::EngineError,
+    >,
+) -> BuiltinWarmupAction {
+    match resolved {
+        Ok((
+            _,
+            crate::models::memory::MemoryGate::Block {
+                required_bytes,
+                available_bytes,
+            },
+        )) => BuiltinWarmupAction::Blocked {
+            required_bytes,
+            available_bytes,
+        },
+        Ok((target, crate::models::memory::MemoryGate::Proceed)) => {
+            BuiltinWarmupAction::Warm(target)
+        }
+        // A missing/uninstalled model yields an Err; warmup is best-effort, so
+        // just skip rather than surfacing anything.
+        Err(_) => BuiltinWarmupAction::Skip,
+    }
+}
+
+/// Dedupe key for the per-summon auto-prime gate log (issue #296): the model id
+/// plus whether the gate blocked. Byte figures are deliberately excluded
+/// because the live available-memory reading drifts on every poll, which would
+/// defeat the dedupe and re-print the skip line on every overlay-show.
+type GateLogKey = (String, bool);
+
+/// Process-global record of the last auto-prime gate decision reached, so the
+/// skip line prints only when the decision changes rather than once per
+/// overlay-show. A `static` `Mutex` because `spawn_gated_builtin_warmup` runs
+/// on spawned warm-up threads and this state is shared across all of them.
+static LAST_GATE_LOG: Mutex<Option<GateLogKey>> = Mutex::new(None);
+
+/// Whether an auto-prime gate decision should be logged, given the last
+/// decision already recorded. Pure so the dedupe is unit-tested without the
+/// `static` or a spawned thread. Returns `true` when `current` differs from
+/// `last` (the first decision for a model, a model switch, or a flipped
+/// block/proceed decision) and `false` when it repeats. Because the key carries
+/// no byte figures, a changed available-memory reading alone never re-logs.
+fn gate_log_changed(last: &Option<GateLogKey>, current: &GateLogKey) -> bool {
+    last.as_ref() != Some(current)
+}
+
+/// Resolves `model_id` to an engine Target, runs the pre-load memory gate
+/// (issue #296), and spawns `warm_builtin` only when it clears. Shared by
+/// every built-in auto-prime trigger (the overlay-show handler in `lib.rs` and
+/// the `warm_up_model` command) so the gate can never again drift out of sync
+/// between call sites: that drift is exactly how the overlay-show path ended
+/// up ungated while this same logic stayed correctly gated in `warm_up_model`,
+/// re-exposing the ungated auto-load that froze the machine.
+///
+/// `force` bypasses the block via the SAME `preflight_memory_gate` decision the
+/// unforced path runs (it forwards to `decide_load_gate`'s `forced` arm), never
+/// a second parallel bypass: it is the user's consented "Load anyway" from the
+/// ambient warning strip. Automatic triggers (overlay-show) always pass
+/// `false`; only a deliberate user action passes `true`.
+///
+/// Coverage-off: the gate decision is delegated to the pure, tested
+/// [`plan_builtin_warmup`]; everything here is I/O (the DB lock, the
+/// coverage-off `preflight_memory_gate`, and the async `warm_builtin` spawn).
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_gated_builtin_warmup(
+    app: tauri::AppHandle,
+    engine: crate::engine::runner::EngineHandle,
+    store: &crate::models::storage::ModelStore,
+    db: &crate::history::Database,
+    model_id: String,
+    num_ctx: u32,
+    system_prompt: String,
+    client: reqwest::Client,
+    force: bool,
+) {
+    if !builtin_should_warm(&model_id) {
+        return;
+    }
+    // Resolve the manifest row to an engine Target and run the pre-load memory
+    // gate inside one scope so the connection guard drops before the spawned
+    // load. A poisoned lock is recovered: an unrelated panic does not
+    // invalidate the connection.
+    let resolved = {
+        let conn = match db.0.lock() {
+            Ok(conn) => conn,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        crate::commands::builtin_target(&conn, store, &model_id, num_ctx).map(|target| {
+            // why: `force` routes straight into the existing gate decision's
+            // `forced` arm. An automatic trigger passes `false` so an oversized
+            // model is never shoved into memory without a user action; the
+            // user's "Load anyway" passes `true` to admit the load it just
+            // consented to (issue #296).
+            let gate = crate::commands::preflight_memory_gate(
+                &conn,
+                store,
+                &engine,
+                &model_id,
+                &target.model_path,
+                force,
+            );
+            (target, gate)
+        })
+    };
+    match plan_builtin_warmup(resolved) {
+        BuiltinWarmupAction::Warm(target) => {
+            // Record the proceed decision (no log) so a later block for the
+            // same model re-logs after the gate flips open then shut again.
+            *LAST_GATE_LOG.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some((model_id.clone(), false));
+            tauri::async_runtime::spawn(warm_builtin(
+                app,
+                engine,
+                target,
+                model_id,
+                system_prompt,
+                client,
+            ));
+        }
+        // Skip an auto-load that would not fit; a user-initiated send can still
+        // force it through the gate in `ask_model`.
+        BuiltinWarmupAction::Blocked {
+            required_bytes,
+            available_bytes,
+        } => {
+            // why: the auto-prime gate re-runs on every overlay-show, so this
+            // skip line would spam stderr once per summon. Dedupe on
+            // (model_id, blocked) only - the available-memory reading drifts
+            // every poll, so byte figures are excluded from the key - and log
+            // solely when the decision changes for this model.
+            {
+                let current = (model_id.clone(), true);
+                let mut last = LAST_GATE_LOG.lock().unwrap_or_else(|p| p.into_inner());
+                if gate_log_changed(&last, &current) {
+                    // Usable ceiling = MODEL_FIT_CEILING_FRACTION * available,
+                    // the same bound `preflight_memory_gate` blocks against;
+                    // surfaced so the raw available figure no longer reads like
+                    // a false skip.
+                    let ceiling_bytes =
+                        (available_bytes as f64 * MODEL_FIT_CEILING_FRACTION) as u64;
+                    eprintln!(
+                        "thuki: [memory gate] skipping auto-prime of {model_id}: needs ~{} MB, usable ceiling ~{} MB ({:.0}% of ~{} MB available)",
+                        required_bytes / (1024 * 1024),
+                        ceiling_bytes / (1024 * 1024),
+                        MODEL_FIT_CEILING_FRACTION * 100.0,
+                        available_bytes / (1024 * 1024),
+                    );
+                }
+                *last = Some(current);
+            }
+            let _ = app.emit(
+                "warmup:builtin-skipped",
+                BuiltinSkippedPayload {
+                    model_id,
+                    required_bytes,
+                    available_bytes,
+                },
+            );
+        }
+        BuiltinWarmupAction::Skip => {}
+    }
+}
+
+/// Pre-warms the active provider's model so the user's first message skips the
+/// cold prefill. The Ollama arm fires a keep-warm request; the built-in arm
+/// runs the issue #296 memory gate before loading.
+///
+/// `force` is the built-in "Load anyway": `Some(true)` admits an oversized
+/// model past the memory gate (the user's consented override from the ambient
+/// warning strip), while `None`/`Some(false)` keeps the default gated behavior
+/// unchanged. Optional so the fire-and-forget keystroke warm can keep invoking
+/// with no argument object; a missing key deserializes to `None`. The Ollama
+/// arm has no such gate, so it ignores `force` entirely.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::too_many_arguments)]
@@ -404,7 +619,9 @@ pub fn warm_up_model(
     engine: tauri::State<crate::engine::runner::EngineHandle>,
     db: tauri::State<crate::history::Database>,
     store: tauri::State<crate::models::storage::ModelStore>,
+    force: Option<bool>,
 ) {
+    let force = force.unwrap_or(false);
     let kind = config.read().inference.active_provider_kind().to_string();
     match kind.as_str() {
         PROVIDER_KIND_OLLAMA => {
@@ -446,31 +663,17 @@ pub fn warm_up_model(
                     cfg.prompt.resolved_system.clone(),
                 )
             };
-            if !builtin_should_warm(&model_id) {
-                return;
-            }
-            // Resolve the manifest row to an engine Target inside a scope so the
-            // connection guard drops before the spawned load. A poisoned lock is
-            // recovered: an unrelated panic does not invalidate the connection.
-            let target = {
-                let conn = match db.0.lock() {
-                    Ok(conn) => conn,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
-                crate::commands::builtin_target(&conn, &store, &model_id, num_ctx)
-            };
-            // A missing/uninstalled model yields an Err; warmup is best-effort,
-            // so just skip rather than surfacing anything.
-            if let Ok(target) = target {
-                tauri::async_runtime::spawn(warm_builtin(
-                    app,
-                    engine.inner().clone(),
-                    target,
-                    model_id,
-                    system_prompt,
-                    client.inner().clone(),
-                ));
-            }
+            spawn_gated_builtin_warmup(
+                app,
+                engine.inner().clone(),
+                &store,
+                &db,
+                model_id,
+                num_ctx,
+                system_prompt,
+                client.inner().clone(),
+                force,
+            );
         }
         _ => {}
     }
@@ -1692,6 +1895,63 @@ mod tests {
         );
     }
 
+    /// A minimal `Target` naming an arbitrary model path at the default context size.
+    fn sample_target() -> crate::engine::state::Target {
+        crate::engine::state::Target {
+            model_path: std::path::PathBuf::from("/blobs/model.gguf"),
+            mmproj_path: None,
+            num_ctx: DEFAULT_NUM_CTX,
+        }
+    }
+
+    #[test]
+    fn plan_warms_when_the_memory_gate_proceeds() {
+        let target = sample_target();
+        let action = plan_builtin_warmup(Ok((
+            target.clone(),
+            crate::models::memory::MemoryGate::Proceed,
+        )));
+        assert_eq!(
+            action,
+            BuiltinWarmupAction::Warm(target),
+            "a load that clears the gate must warm the resolved target"
+        );
+    }
+
+    #[test]
+    fn plan_skips_the_spawn_when_the_memory_gate_blocks() {
+        // The overlay-show freeze fix (issue #296): a blocking gate must never
+        // reach the `Warm` arm, so the auto-prime spawn cannot fire.
+        let action = plan_builtin_warmup(Ok((
+            sample_target(),
+            crate::models::memory::MemoryGate::Block {
+                required_bytes: 9_000_000_000,
+                available_bytes: 2_000_000_000,
+            },
+        )));
+        assert_eq!(
+            action,
+            BuiltinWarmupAction::Blocked {
+                required_bytes: 9_000_000_000,
+                available_bytes: 2_000_000_000,
+            },
+            "a blocked gate must skip the load, not warm it"
+        );
+    }
+
+    #[test]
+    fn plan_skips_silently_when_the_model_cannot_be_resolved() {
+        let err = crate::commands::EngineError {
+            kind: crate::commands::EngineErrorKind::ModelNotFound,
+            message: "not installed".to_string(),
+        };
+        assert_eq!(
+            plan_builtin_warmup(Err(err)),
+            BuiltinWarmupAction::Skip,
+            "a missing/uninstalled model is a best-effort silent skip"
+        );
+    }
+
     #[tokio::test]
     async fn builtin_prime_request_hits_v1_with_max_tokens_1() {
         let mut server = Server::new_async().await;
@@ -1992,5 +2252,42 @@ mod tests {
 
         assert_eq!(engine.status().borrow().state, "stopped");
         engine.shutdown().await;
+    }
+
+    // ── gate_log_changed (auto-prime skip-log dedupe, issue #296) ────────────
+
+    #[test]
+    fn gate_log_changed_first_decision_logs() {
+        // No prior decision recorded: the first block for a model logs.
+        assert!(gate_log_changed(&None, &("qwen".to_string(), true)));
+    }
+
+    #[test]
+    fn gate_log_changed_same_decision_twice_logs_once() {
+        // Same (model, blocked) pair as last time: the repeat does not re-log.
+        let last = Some(("qwen".to_string(), true));
+        assert!(!gate_log_changed(&last, &("qwen".to_string(), true)));
+    }
+
+    #[test]
+    fn gate_log_changed_model_switch_relogs() {
+        let last = Some(("qwen".to_string(), true));
+        assert!(gate_log_changed(&last, &("llama".to_string(), true)));
+    }
+
+    #[test]
+    fn gate_log_changed_flipped_decision_relogs() {
+        // Same model, decision flipped from proceed to block: re-log.
+        let last = Some(("qwen".to_string(), false));
+        assert!(gate_log_changed(&last, &("qwen".to_string(), true)));
+    }
+
+    #[test]
+    fn gate_log_changed_byte_figures_are_not_in_the_key() {
+        // The key is (model, blocked) only; the available-memory reading that
+        // drifts every poll is not part of it, so two blocks for the same model
+        // never re-log no matter how the byte figures differ between reads.
+        let last = Some(("qwen".to_string(), true));
+        assert!(!gate_log_changed(&last, &("qwen".to_string(), true)));
     }
 }

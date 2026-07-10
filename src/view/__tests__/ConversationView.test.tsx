@@ -1,6 +1,7 @@
 import { render, screen, act, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ConversationView } from '../ConversationView';
+import { invoke } from '../../testUtils/mocks/tauri';
 
 describe('ConversationView', () => {
   it('renders ChatBubble for each message', () => {
@@ -1010,6 +1011,147 @@ describe('ConversationView', () => {
       expect(screen.getByTestId('loading-label').textContent).toBe(
         'Processing your message…',
       );
+    });
+  });
+
+  // Regression coverage for issue #296 follow-up: onLoadAnyway used to be a
+  // single shared callback forwarded verbatim to every ChatBubble, which let
+  // a later turn's data silently hijack an older, still-visible error card's
+  // "Load anyway" click. ConversationView now wraps onLoadAnyway per-message
+  // with that message's own retained retrySnapshot.
+  describe('onLoadAnyway wiring (issue #296 follow-up)', () => {
+    it("invokes onLoadAnyway with the clicked card's own retrySnapshot", async () => {
+      invoke.mockImplementationOnce(async () => ({
+        required_bytes: 1,
+        available_bytes: 1,
+        verdict: 'insufficient',
+      }));
+      const onLoadAnyway = vi.fn();
+      const retrySnapshot = {
+        kind: 'chat' as const,
+        displayContent: 'turn A content',
+        userMessageId: 'stale-user-id',
+        assistantMessageId: 'stale-assistant-id',
+      };
+      render(
+        <ConversationView
+          messages={[
+            {
+              id: '1',
+              role: 'assistant' as const,
+              content: 'may not fit',
+              errorKind: 'InsufficientMemory' as const,
+              retrySnapshot,
+            },
+          ]}
+          isGenerating={false}
+          onClose={vi.fn()}
+          onLoadAnyway={onLoadAnyway}
+        />,
+      );
+
+      fireEvent.click(
+        await screen.findByRole('button', { name: 'Load anyway' }),
+      );
+
+      expect(onLoadAnyway).toHaveBeenCalledTimes(1);
+      expect(onLoadAnyway).toHaveBeenCalledWith(retrySnapshot);
+    });
+
+    it('omits the button instead of crashing when a message has no retrySnapshot', async () => {
+      invoke.mockImplementationOnce(async () => ({
+        required_bytes: 1,
+        available_bytes: 1,
+        verdict: 'insufficient',
+      }));
+      render(
+        <ConversationView
+          messages={[
+            {
+              id: '1',
+              role: 'assistant' as const,
+              content: 'may not fit',
+              errorKind: 'InsufficientMemory' as const,
+            },
+          ]}
+          isGenerating={false}
+          onClose={vi.fn()}
+          onLoadAnyway={vi.fn()}
+        />,
+      );
+
+      await screen.findByText('This model may not fit in memory right now.');
+      expect(
+        screen.queryByRole('button', { name: 'Load anyway' }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  // Regression coverage for issue #296 follow-up (bug 2): picking a new model
+  // from "Switch model" must be able to replay the abandoned turn too, not
+  // just "Load anyway". ConversationView wraps onSwitchModel per-message with
+  // that message's own retained retrySnapshot, mirroring onLoadAnyway.
+  describe('onSwitchModel wiring (issue #296 follow-up)', () => {
+    it("invokes onSwitchModel with the clicked card's own retrySnapshot", async () => {
+      invoke.mockImplementationOnce(async () => ({
+        required_bytes: 1,
+        available_bytes: 1,
+        verdict: 'insufficient',
+      }));
+      const onSwitchModel = vi.fn();
+      const retrySnapshot = {
+        kind: 'chat' as const,
+        displayContent: 'turn A content',
+        userMessageId: 'stale-user-id',
+        assistantMessageId: 'stale-assistant-id',
+      };
+      render(
+        <ConversationView
+          messages={[
+            {
+              id: '1',
+              role: 'assistant' as const,
+              content: 'may not fit',
+              errorKind: 'InsufficientMemory' as const,
+              retrySnapshot,
+            },
+          ]}
+          isGenerating={false}
+          onClose={vi.fn()}
+          onSwitchModel={onSwitchModel}
+        />,
+      );
+
+      fireEvent.click(
+        await screen.findByRole('button', { name: 'Switch model' }),
+      );
+
+      expect(onSwitchModel).toHaveBeenCalledTimes(1);
+      expect(onSwitchModel).toHaveBeenCalledWith(retrySnapshot);
+    });
+
+    it('invokes onSwitchModel with undefined for an EngineStartFailed message (no retrySnapshot)', () => {
+      const onSwitchModel = vi.fn();
+      render(
+        <ConversationView
+          messages={[
+            {
+              id: '1',
+              role: 'assistant' as const,
+              content: 'Could not start the engine',
+              errorKind: 'EngineStartFailed' as const,
+            },
+          ]}
+          isGenerating={false}
+          onClose={vi.fn()}
+          onSwitchModel={onSwitchModel}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+
+      expect(onSwitchModel).toHaveBeenCalledTimes(1);
+      expect(onSwitchModel).toHaveBeenCalledWith(undefined);
     });
   });
 });

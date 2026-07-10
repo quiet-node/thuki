@@ -686,6 +686,23 @@ describe('BrowseAllPane', () => {
     expect(screen.getByText('gemma-q8.gguf')).toBeInTheDocument();
   });
 
+  it('shows Waiting for a download slot while a quant is queued for a concurrency slot', async () => {
+    await renderPane();
+    const row = screen
+      .getByText('google/gemma-4-12b-it-GGUF')
+      .closest('[data-row]') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Show files' }));
+    await flush();
+    confirmDownload(screen.getAllByRole('button', { name: 'Download' })[0]);
+    await flush();
+    act(() => {
+      lastChannel?.simulateMessage({ type: 'Queued' });
+    });
+    expect(
+      screen.getByText('Waiting for a download slot…'),
+    ).toBeInTheDocument();
+  });
+
   it('leaves the lift to a later resync when get_config fails post-download', async () => {
     const onSaved = vi.fn();
     await renderPane(onSaved, {

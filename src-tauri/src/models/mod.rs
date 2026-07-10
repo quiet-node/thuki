@@ -18,6 +18,7 @@
 pub mod download;
 pub mod gguf;
 pub mod manifest;
+pub mod memory;
 pub mod reasoning;
 pub mod registry;
 pub mod storage;
@@ -331,6 +332,7 @@ pub async fn get_model_picker_state(
     };
     let manifest_ids: Vec<String> = manifest_rows.iter().map(|m| m.id.clone()).collect();
     let display_names = manifest_displays_map(&manifest_rows);
+    let sizes_bytes = manifest_sizes_map(&manifest_rows);
     let (installed, reachable) = picker_inventory_for_kind(
         &client,
         &kind,
@@ -357,6 +359,7 @@ pub async fn get_model_picker_state(
         &installed,
         reachable,
         &display_names,
+        &sizes_bytes,
     ))
 }
 
@@ -463,6 +466,7 @@ pub fn build_picker_state_payload(
     installed: &[String],
     ollama_reachable: bool,
     display_names: &HashMap<String, String>,
+    sizes_bytes: &HashMap<String, u64>,
 ) -> serde_json::Value {
     let active_value = match active {
         Some(slug) => serde_json::Value::String(slug.to_string()),
@@ -476,6 +480,10 @@ pub fn build_picker_state_payload(
         // are "repo:file.gguf"), empty for Ollama/OpenAI whose ids already read
         // cleanly. The frontend falls back to the id when an entry is missing.
         "displayNames": display_names,
+        // id -> weights size in bytes; populated for built-in models only (the
+        // manifest is the only source that knows blob size), empty for
+        // Ollama/OpenAI. The frontend omits the size caption when missing.
+        "sizesBytes": sizes_bytes,
     })
 }
 
@@ -485,6 +493,13 @@ fn manifest_displays_map(rows: &[manifest::InstalledModel]) -> HashMap<String, S
     rows.iter()
         .map(|m| (m.id.clone(), m.display_name.clone()))
         .collect()
+}
+
+/// Maps each installed model's id to its recorded weights size in bytes, for
+/// the picker to show "6.1 GB" next to the model name. Mirrors
+/// [`manifest_displays_map`]'s shape and builtin-only scope exactly.
+fn manifest_sizes_map(rows: &[manifest::InstalledModel]) -> HashMap<String, u64> {
+    rows.iter().map(|m| (m.id.clone(), m.size_bytes)).collect()
 }
 
 /// Persists `model` as the active model after validating its shape and
@@ -1164,8 +1179,49 @@ pub struct DownloadSlot {
     last_event: Option<download::DownloadEvent>,
 }
 
-#[derive(Default)]
-pub struct DownloadState(pub std::sync::Mutex<std::collections::HashMap<String, DownloadSlot>>);
+/// In-flight download slots (`.0`, keyed by download key), the shared
+/// concurrency-cap semaphore (`.1`), and the shared disk-reservation ledger
+/// (`.2`). The semaphore bounds simultaneous transfers to
+/// [`crate::config::defaults::DEFAULT_MAX_CONCURRENT_DOWNLOADS`] across every
+/// download regardless of which slot key or window started it; the ledger sums
+/// the bytes every admitted download still expects to write so a disk preflight
+/// can account for its concurrent siblings, not just its own need (issue #296).
+pub struct DownloadState(
+    pub std::sync::Mutex<std::collections::HashMap<String, DownloadSlot>>,
+    tokio::sync::Semaphore,
+    download::DiskReservation,
+);
+
+impl Default for DownloadState {
+    /// Empty slot map, a semaphore seeded with the compile-time concurrency cap,
+    /// and an empty reservation ledger. This is the only place the cap's permit
+    /// count is set.
+    fn default() -> Self {
+        Self(
+            std::sync::Mutex::new(std::collections::HashMap::new()),
+            tokio::sync::Semaphore::new(crate::config::defaults::DEFAULT_MAX_CONCURRENT_DOWNLOADS),
+            download::DiskReservation::new(),
+        )
+    }
+}
+
+impl DownloadState {
+    /// The shared concurrency-cap semaphore. A download acquires one permit
+    /// before it transfers bytes and releases it (via RAII) when the transfer
+    /// ends, so no more than the cap ever transfer at once.
+    pub fn permits(&self) -> &tokio::sync::Semaphore {
+        &self.1
+    }
+
+    /// The shared disk-reservation ledger. A download's preflight reserves its
+    /// remaining bytes here (atomically, accounting for concurrent siblings) and
+    /// releases them (via RAII) when the transfer ends, so two downloads racing
+    /// the same free space cannot both be admitted. Crate-visible because the
+    /// ledger type is internal to the models subsystem.
+    pub(crate) fn reservation(&self) -> &download::DiskReservation {
+        &self.2
+    }
+}
 
 /// Tauri event broadcast to every webview on each download progress update, so a
 /// window that did not start the download (e.g. the Settings panel while
@@ -2780,10 +2836,19 @@ pub fn get_models_dir_free_bytes(store: tauri::State<'_, storage::ModelStore>) -
 pub fn download_starter(
     tier: String,
     key: String,
+    user_initiated: Option<bool>,
     on_event: tauri::ipc::Channel<download::DownloadEvent>,
     app: tauri::AppHandle,
     download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
+    if safe_mode_rejects_start(
+        app.state::<crate::startup_guard::StartupSafety>()
+            .safe_mode(),
+        user_initiated,
+    ) {
+        let _ = on_event.send(download::DownloadEvent::RejectedSafeMode);
+        return Ok(());
+    }
     let starter = starter_for_tier(&tier, system_ram_bytes())?;
     let specs = registry::download_specs(starter);
     let token = claim_download(&download_state, &key, spec_shas(&specs))?;
@@ -2807,10 +2872,19 @@ pub fn download_starter(
 pub fn download_staff_pick(
     id: String,
     key: String,
+    user_initiated: Option<bool>,
     on_event: tauri::ipc::Channel<download::DownloadEvent>,
     app: tauri::AppHandle,
     download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
+    if safe_mode_rejects_start(
+        app.state::<crate::startup_guard::StartupSafety>()
+            .safe_mode(),
+        user_initiated,
+    ) {
+        let _ = on_event.send(download::DownloadEvent::RejectedSafeMode);
+        return Ok(());
+    }
     let starter = starter_for_id(&id)?;
     let specs = registry::download_specs(starter);
     let token = claim_download(&download_state, &key, spec_shas(&specs))?;
@@ -2827,17 +2901,30 @@ pub fn download_staff_pick(
 
 /// Starts downloading a pasted-repo model after resolving its digest, size,
 /// pinned revision, and optional mmproj companion from the Hugging Face API.
+// A Tauri command's arguments are its injected state plus the caller's payload;
+// the safe-mode `user_initiated` flag pushes this one past the lint's default,
+// but every argument is load-bearing and none can be folded away.
+#[allow(clippy::too_many_arguments)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
 pub async fn download_repo_model(
     repo: String,
     file: String,
     key: String,
+    user_initiated: Option<bool>,
     on_event: tauri::ipc::Channel<download::DownloadEvent>,
     app: tauri::AppHandle,
     client: tauri::State<'_, reqwest::Client>,
     download_state: tauri::State<'_, DownloadState>,
 ) -> Result<(), String> {
+    if safe_mode_rejects_start(
+        app.state::<crate::startup_guard::StartupSafety>()
+            .safe_mode(),
+        user_initiated,
+    ) {
+        let _ = on_event.send(download::DownloadEvent::RejectedSafeMode);
+        return Ok(());
+    }
     let resolved = resolve_repo_spec(&client, HF_BASE_URL, &repo, &file).await?;
     let specs = repo_download_specs(HF_BASE_URL, &repo, &file, &resolved);
     let token = claim_download(&download_state, &key, spec_shas(&specs))?;
@@ -3021,6 +3108,19 @@ fn spec_shas(specs: &[download::DownloadSpec]) -> Vec<String> {
     specs.iter().map(|s| s.sha256.clone()).collect()
 }
 
+/// Whether a download start must be refused because the app is in
+/// post-unclean-launch safe mode (issue #296) and the start was not user
+/// initiated. `user_initiated` is `Option` so existing frontend invokes that
+/// omit the argument still deserialize: `None` and `Some(false)` are both
+/// treated as NOT user-initiated. Only `Some(true)` (a genuine user click,
+/// which the frontend will pass) is exempt, so a safe-mode launch's silent
+/// auto-refetch is blocked at the backend before any transfer begins while a
+/// deliberate retry is not. When `safe_mode` is false this is always false, so
+/// normal launches are unaffected.
+pub(crate) fn safe_mode_rejects_start(safe_mode: bool, user_initiated: Option<bool>) -> bool {
+    safe_mode && !matches!(user_initiated, Some(true))
+}
+
 /// Runs the claimed download on the async runtime: streams events to the
 /// channel, records the manifest row + builtin provider model on success
 /// (then emits AllDone, or Failed when recording fails), and releases the
@@ -3042,6 +3142,19 @@ fn spawn_model_download(
         let on_event_finalize = on_event.clone();
         let result = {
             let store = app.state::<storage::ModelStore>();
+            let dl_state = app.state::<DownloadState>();
+            // Probe the models volume's free space through the same store; the
+            // guardrail thresholds are the compile-time defense-in-depth bounds.
+            let free_probe = || store.free_bytes();
+            let disk = download::DiskGuard {
+                free_bytes: &free_probe,
+                headroom_bytes: crate::config::defaults::DEFAULT_DOWNLOAD_DISK_HEADROOM_BYTES,
+                recheck_interval_bytes:
+                    crate::config::defaults::DEFAULT_DOWNLOAD_DISK_RECHECK_INTERVAL_BYTES,
+                // The one shared ledger from managed state, so this download's
+                // preflight accounts for every other in-flight download.
+                reservation: dl_state.reservation(),
+            };
             let emit_app = app.clone();
             let emit_key = key.clone();
             let emit_shas = shas.clone();
@@ -3051,7 +3164,16 @@ fn spawn_model_download(
                 let _ = on_event.send(event.clone());
                 broadcast_download_event(&emit_app, &emit_key, &emit_shas, event);
             };
-            download::run_download(&specs, store.inner(), &client, token, emit).await
+            download::run_download(
+                &specs,
+                store.inner(),
+                &client,
+                token,
+                dl_state.permits(),
+                &disk,
+                emit,
+            )
+            .await
         };
         if result.is_ok() {
             let finalized = finalize_install(&app, &model);
@@ -3160,11 +3282,13 @@ mod tests {
         // S1 mirrors the unreachable case: no model can be resolved, the
         // installed list is empty by definition, and the flag is false so
         // the frontend can pick the right strip copy.
-        let payload = build_picker_state_payload(None, &[], false, &HashMap::new());
+        let payload =
+            build_picker_state_payload(None, &[], false, &HashMap::new(), &HashMap::new());
         assert_eq!(payload["active"], serde_json::Value::Null);
         assert_eq!(payload["all"], serde_json::json!([]));
         assert_eq!(payload["ollamaReachable"], serde_json::Value::Bool(false));
         assert_eq!(payload["displayNames"], serde_json::json!({}));
+        assert_eq!(payload["sizesBytes"], serde_json::json!({}));
     }
 
     #[test]
@@ -3172,11 +3296,12 @@ mod tests {
         // S2: Ollama responded but installed list is empty. Active is null
         // (nothing to resolve to) yet ollamaReachable is true so the strip
         // can tell the user to pull a model rather than start the daemon.
-        let payload = build_picker_state_payload(None, &[], true, &HashMap::new());
+        let payload = build_picker_state_payload(None, &[], true, &HashMap::new(), &HashMap::new());
         assert_eq!(payload["active"], serde_json::Value::Null);
         assert_eq!(payload["all"], serde_json::json!([]));
         assert_eq!(payload["ollamaReachable"], serde_json::Value::Bool(true));
         assert_eq!(payload["displayNames"], serde_json::json!({}));
+        assert_eq!(payload["sizesBytes"], serde_json::json!({}));
     }
 
     #[test]
@@ -3189,8 +3314,14 @@ mod tests {
             ("org/repo:a.gguf".to_string(), "Model A".to_string()),
             ("org/repo:b.gguf".to_string(), "Model B".to_string()),
         ]);
-        let payload =
-            build_picker_state_payload(Some("org/repo:b.gguf"), &installed, true, &displays);
+        let sizes = HashMap::from([("org/repo:a.gguf".to_string(), 6_100_000_000u64)]);
+        let payload = build_picker_state_payload(
+            Some("org/repo:b.gguf"),
+            &installed,
+            true,
+            &displays,
+            &sizes,
+        );
         assert_eq!(payload["active"], serde_json::json!("org/repo:b.gguf"));
         assert_eq!(
             payload["all"],
@@ -3199,6 +3330,10 @@ mod tests {
         assert_eq!(payload["ollamaReachable"], serde_json::Value::Bool(true));
         assert_eq!(payload["displayNames"]["org/repo:a.gguf"], "Model A");
         assert_eq!(payload["displayNames"]["org/repo:b.gguf"], "Model B");
+        assert_eq!(payload["sizesBytes"]["org/repo:a.gguf"], 6_100_000_000u64);
+        // b has no recorded size: the sparse map omits it entirely rather than
+        // carrying a zero placeholder.
+        assert!(payload["sizesBytes"].get("org/repo:b.gguf").is_none());
     }
 
     #[test]
@@ -3216,6 +3351,17 @@ mod tests {
             map.get("org/repo:b.gguf").map(String::as_str),
             Some("Model org/repo:b.gguf")
         );
+    }
+
+    #[test]
+    fn manifest_sizes_map_keys_ids_to_size_bytes() {
+        let rows = vec![
+            manifest_row("org/repo:a.gguf", true, false),
+            manifest_row("org/repo:b.gguf", false, false),
+        ];
+        let map = manifest_sizes_map(&rows);
+        assert_eq!(map.get("org/repo:a.gguf").copied(), Some(1_000_000));
+        assert_eq!(map.get("org/repo:b.gguf").copied(), Some(1_000_000));
     }
 
     // ── picker_inventory_for_kind ────────────────────────────────────────────
@@ -5106,6 +5252,41 @@ mod tests {
         for (sha, spec) in shas.iter().zip(&specs) {
             assert_eq!(sha, &spec.sha256);
         }
+    }
+
+    #[test]
+    fn download_state_seeds_the_concurrency_cap() {
+        // The semaphore is created with exactly the compile-time cap, so the
+        // number of simultaneously-transferring downloads is bounded from the
+        // first launch with no runtime wiring required.
+        let state = DownloadState::default();
+        assert_eq!(
+            state.permits().available_permits(),
+            crate::config::defaults::DEFAULT_MAX_CONCURRENT_DOWNLOADS
+        );
+    }
+
+    #[test]
+    fn download_state_seeds_an_empty_reservation_ledger() {
+        // A fresh state starts with nothing reserved, so the first download's
+        // preflight sees only its own need. The accessor hands back the one
+        // shared ledger every download's DiskGuard borrows.
+        let state = DownloadState::default();
+        assert_eq!(state.reservation().reserved(), 0);
+    }
+
+    #[test]
+    fn safe_mode_rejects_only_non_user_initiated_starts() {
+        // Not in safe mode: every start is allowed regardless of the flag, so a
+        // normal launch behaves exactly as before.
+        assert!(!safe_mode_rejects_start(false, None));
+        assert!(!safe_mode_rejects_start(false, Some(false)));
+        assert!(!safe_mode_rejects_start(false, Some(true)));
+        // In safe mode: a missing flag (legacy invoke) and an explicit false
+        // (auto-refetch) are both rejected; only an explicit user click passes.
+        assert!(safe_mode_rejects_start(true, None));
+        assert!(safe_mode_rejects_start(true, Some(false)));
+        assert!(!safe_mode_rejects_start(true, Some(true)));
     }
 
     #[test]

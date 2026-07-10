@@ -18,7 +18,7 @@ import {
 } from '@tauri-apps/api/window';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { useModel } from './hooks/useModel';
-import type { Message } from './hooks/useModel';
+import type { Message, RetrySnapshot } from './hooks/useModel';
 import { useConversationHistory } from './hooks/useConversationHistory';
 import { useModelSelection } from './hooks/useModelSelection';
 import { useModelCapabilities } from './hooks/useModelCapabilities';
@@ -51,6 +51,7 @@ import type { OnboardingStage } from './view/onboarding/index';
 import { MinimizedIcon } from './components/MinimizedIcon';
 import { HistoryPanel } from './components/HistoryPanel';
 import { ModelPickerPanel } from './components/ModelPickerPanel';
+import { SafeModeRecoveryCard } from './components/SafeModeRecoveryCard';
 import { ImagePreviewModal } from './components/ImagePreviewModal';
 import { TipBar } from './components/TipBar';
 import { UpdateFooterBar } from './components/UpdateFooterBar';
@@ -367,6 +368,50 @@ function App() {
     useState<OnboardingStage | null>(null);
 
   /**
+   * This launch's circuit-breaker verdict (issue #296), read once via
+   * `startup_safety`. `null` until that read resolves. Drives the safe-mode
+   * recovery screen's resolution effect below; does not itself gate render
+   * (that is `safeModeRecovery`, once the model-fit copy is ready).
+   */
+  const [startupSafety, setStartupSafety] = useState<{
+    safeMode: boolean;
+    uncleanCount: number;
+  } | null>(null);
+
+  /**
+   * Non-null exactly when the safe-mode recovery screen (Screen A, issue
+   * #296) should render instead of the normal overlay: the backend reported
+   * safe mode AND a fit estimate resolved for the active model. Carries the
+   * already-formatted copy so the render branch needs no further lookups.
+   * Set once by the resolution effect below and cleared by either
+   * recovery-screen button; never re-set after that, so a dismissal is
+   * permanent for the rest of this launch.
+   */
+  const [safeModeRecovery, setSafeModeRecovery] = useState<{
+    modelName: string;
+    sizeGb: string;
+  } | null>(null);
+  /** Guards the resolution effect below to run its body at most once per launch. */
+  const safeModeResolvedRef = useRef(false);
+
+  /**
+   * Non-null when the built-in engine's pre-load memory gate skipped
+   * auto-priming the active model (issue #296 guardrail): the overlay-show
+   * or first-keystroke warm attempt found the model likely would not fit and
+   * silently backed off. Surfaced as an ambient ask-bar warning so this
+   * refusal is not first discovered via the `InsufficientMemory` chat error
+   * on the user's first message. Set by the `warmup:builtin-skipped`
+   * listener below; cleared on dismiss, when the active model changes (a
+   * stale warning about a model no longer resident), or once the engine
+   * actually reaches `loaded` (a load succeeded since the skip).
+   */
+  const [autoPrimeSkipped, setAutoPrimeSkipped] = useState<{
+    modelId: string;
+    requiredBytes: number;
+    availableBytes: number;
+  } | null>(null);
+
+  /**
    * Whether the ask-bar history panel is currently open.
    * Distinct from the chat-mode history dropdown (controlled by the same toggle
    * but rendered differently based on `isChatMode`).
@@ -423,10 +468,59 @@ function App() {
     activeModel,
     availableModels,
     modelDisplayNames,
+    modelSizesBytes,
     ollamaReachable,
     refreshModels,
     setActiveModel,
   } = useModelSelection();
+
+  /**
+   * Reads this launch's circuit-breaker verdict once on mount. A missing or
+   * malformed response (untested commands resolve to `undefined` in the test
+   * double, or a resolver failure in production) degrades to "not in safe
+   * mode" rather than throwing.
+   */
+  useEffect(() => {
+    void invoke<{ safe_mode: boolean; unclean_count: number } | undefined>(
+      'startup_safety',
+    ).then((snapshot) => {
+      setStartupSafety({
+        safeMode: snapshot?.safe_mode ?? false,
+        uncleanCount: snapshot?.unclean_count ?? 0,
+      });
+    });
+  }, []);
+
+  /**
+   * Resolves the safe-mode recovery screen's copy (issue #296 Screen A) at
+   * most once per launch: only once the circuit breaker reports safe mode
+   * AND the active model has resolved to a real, fit-estimable model. A
+   * fresh/mid-onboarding install has no installed model yet, so this simply
+   * never fires there.
+   *
+   * Guarded by a ref, not just the dependency check, so a later, unrelated
+   * `activeModel` change - e.g. the user picking a new model after
+   * dismissing this screen - can never re-trigger it and bring the screen
+   * back.
+   */
+  useEffect(() => {
+    if (safeModeResolvedRef.current) return;
+    if (!startupSafety?.safeMode) return;
+    if (!activeModel) return;
+    safeModeResolvedRef.current = true;
+    void invoke<{ required_bytes: number } | undefined>('estimate_model_fit')
+      .then((estimate) => {
+        if (!estimate) return;
+        setSafeModeRecovery({
+          modelName: modelDisplayNames[activeModel] ?? activeModel,
+          sizeGb: (estimate.required_bytes / 1024 ** 3).toFixed(1),
+        });
+      })
+      .catch(() => {
+        // No installed/resolvable active model: nothing to recover into, so
+        // Screen A stays hidden and the normal flow proceeds untouched.
+      });
+  }, [startupSafety, activeModel, modelDisplayNames]);
 
   // App-root download machine. A built-in model download started on the
   // onboarding picker keeps running here after the picker unmounts, so the
@@ -447,6 +541,7 @@ function App() {
     pauseDownload,
     resumeFromPause,
     discardDownload,
+    cancel: cancelDownload,
   } = download;
   const downloadState = download.state;
   const downloadPhase = downloadState.phase;
@@ -463,6 +558,22 @@ function App() {
   // doc comment for why a late-mounting subscriber would risk missing it.
   const { warming: builtinEngineWarming, engineState: builtinEngineState } =
     useEngineWarmupStatus();
+
+  // A stale memory-gate warning about the model just switched away from
+  // must not linger once a different model is resident (issue #296).
+  useEffect(() => {
+    // eslint-disable-next-line @eslint-react/set-state-in-effect -- intended: a stale warning about the model just switched away from must not linger
+    setAutoPrimeSkipped(null);
+  }, [activeModel]);
+
+  // Once the built-in engine actually reaches `loaded`, a real load has
+  // succeeded since the last skip, so the memory-gate warning no longer
+  // applies (issue #296).
+  useEffect(() => {
+    if (builtinEngineState !== 'loaded') return;
+    // eslint-disable-next-line @eslint-react/set-state-in-effect -- intended: a successful load since the last skip means the warning no longer applies
+    setAutoPrimeSkipped(null);
+  }, [builtinEngineState]);
 
   /** Capability flags for the currently active model, or undefined if not loaded yet. */
   const activeModelCapabilities = activeModel
@@ -574,6 +685,9 @@ function App() {
     loadMessages,
     getTraceConversationId,
     addOcrTurn,
+    retryMessageWithOversized,
+    retryMessage,
+    updateErroredMessageModel,
   } = useModel(activeModel, handleTurnComplete);
 
   /**
@@ -828,11 +942,45 @@ function App() {
    */
   const overlayWidthRef = useRef(config.window.overlayWidth);
   const maxChatHeightRef = useRef(config.window.maxChatHeight);
+
+  /**
+   * True on any render where a borrowing surface (onboarding or the safe-mode
+   * recovery card, issue #296) currently owns the shared overlay window.
+   */
+  const borrowingSurfaceActive =
+    onboardingStage !== null || safeModeRecovery !== null;
+  /**
+   * Previous render's `borrowingSurfaceActive`. Lets both the size-sync effect
+   * and the hand-back effect below detect the borrowing-surface -> ask-bar
+   * edge. It is updated exactly once per commit, by the hand-back effect (the
+   * later of the two to run), so the size-sync effect (the earlier) always
+   * observes the pre-edge value on the hand-back render.
+   */
+  const wasBorrowingSurfaceRef = useRef(borrowingSurfaceActive);
+
   useEffect(() => {
     overlayWidthRef.current = config.window.overlayWidth;
     maxChatHeightRef.current = config.window.maxChatHeight;
     /* v8 ignore start -- requires real Tauri webview to setSize */
-    if (overlayState === 'visible') {
+    // why: onboarding and the safe-mode recovery card (issue #296) replace
+    // this whole render tree and own their own window sizing via
+    // `useFitOnboardingWindow`. Without this guard, an `overlayState`
+    // transition to 'visible' while either is showing (e.g. resummoning
+    // after Escape/Cmd+W) finds `morphingContainerNodeRef` unmounted and
+    // falls back to `COLLAPSED_WINDOW_HEIGHT`, clobbering the size that
+    // surface already fit itself to and clipping its content.
+    //
+    // The extra `!wasBorrowingSurfaceRef.current` guard suppresses this sync on
+    // the borrowing-surface -> ask-bar hand-back edge: shrinking the window
+    // there before WebKit repaints would clip the outgoing card into the
+    // smaller frame for one paint, so the hand-back effect below owns the
+    // deferred setSize on that one transition instead (issue #296 flash fix).
+    if (
+      overlayState === 'visible' &&
+      onboardingStage === null &&
+      !safeModeRecovery &&
+      !wasBorrowingSurfaceRef.current
+    ) {
       const node = morphingContainerNodeRef.current;
       const currentHeight = node
         ? Math.ceil(node.getBoundingClientRect().height) +
@@ -843,7 +991,67 @@ function App() {
       );
     }
     /* v8 ignore stop */
-  }, [config.window.overlayWidth, config.window.maxChatHeight, overlayState]);
+  }, [
+    config.window.overlayWidth,
+    config.window.maxChatHeight,
+    overlayState,
+    onboardingStage,
+    safeModeRecovery,
+  ]);
+
+  /**
+   * Hands the shared overlay window back to the ask bar when a borrowing
+   * surface (onboarding or the safe-mode recovery card, issue #296) is
+   * dismissed. It is the single owner of BOTH the ask bar's SIZE and POSITION
+   * on that hand-back edge, and it fires ONLY on the borrowing-surface ->
+   * ask-bar transition (tracked via `wasBorrowingSurfaceRef`), never on a
+   * normal show, so `show_overlay`'s selection-anchored placement is never
+   * clobbered. The `overlayState === 'visible'` gate is also why
+   * onboarding-complete (which leaves `overlayState` non-'visible' and re-shows
+   * natively) does not reach this path.
+   *
+   * why: the borrowing surface sized and centered the shared window for itself
+   * (via `useFitOnboardingWindow`), so on dismissal the ask bar has to be
+   * resized and repositioned. Doing that synchronously with the render-tree
+   * swap shrinks and moves the native window while WebKit's last painted frame
+   * is still the outgoing card, so that stale card frame is displaced into the
+   * smaller top-center window for ~1 frame (the "clipped card" flash the user
+   * reported). To avoid it we yield for a paint (double `requestAnimationFrame`)
+   * so WebKit paints the ask bar first, and only then run the native setSize +
+   * `position_overlay_ask_bar`. This mirrors the collapse/expand morph path's
+   * "Flicker-free ordering" discipline (see the block in `handleExpand`): make
+   * the next surface paint before moving the native window. Both scheduled
+   * frames are cancelled on unmount / re-run so none leak.
+   */
+  useEffect(() => {
+    const wasBorrowing = wasBorrowingSurfaceRef.current;
+    wasBorrowingSurfaceRef.current = borrowingSurfaceActive;
+    if (
+      !(wasBorrowing && !borrowingSurfaceActive && overlayState === 'visible')
+    ) {
+      return;
+    }
+    let innerFrame = 0;
+    const outerFrame = requestAnimationFrame(() => {
+      innerFrame = requestAnimationFrame(() => {
+        /* v8 ignore start -- requires real Tauri webview to setSize */
+        const node = morphingContainerNodeRef.current;
+        const currentHeight = node
+          ? Math.ceil(node.getBoundingClientRect().height) +
+            CONTAINER_VERTICAL_PADDING
+          : COLLAPSED_WINDOW_HEIGHT;
+        void getCurrentWindow().setSize(
+          new LogicalSize(overlayWidthRef.current, currentHeight),
+        );
+        /* v8 ignore stop */
+        void invoke('position_overlay_ask_bar').catch(() => {});
+      });
+    });
+    return () => {
+      cancelAnimationFrame(outerFrame);
+      cancelAnimationFrame(innerFrame);
+    };
+  }, [borrowingSurfaceActive, overlayState]);
 
   /**
    * Drives the typography CSS variables on `<html>` from the user-tunable
@@ -2489,6 +2697,23 @@ function App() {
     if (isDownloadPausing) {
       return { kind: 'pausing', percent: percentOf(liveBytes) };
     }
+    // A launch-time auto-resume was refused because the app is in post-crash
+    // safe mode (issue #296): the resume never claimed a slot, so this reuses
+    // the same paused affordance a manual pause shows. Resume re-invokes the
+    // last start with userInitiated forced true (retryDownload always sends
+    // true), unblocking it; Discard abandons the partial exactly as today.
+    if (downloadState.phase === 'rejected_safe_mode') {
+      return {
+        kind: 'paused',
+        percent: percentOf(downloadResumeSeedBytes),
+        onResume: () => void retryDownload(),
+        onDiscard: discardDownload,
+      };
+    }
+    // Admitted but waiting on the concurrency cap; no bytes moving yet.
+    if (downloadState.phase === 'queued') {
+      return { kind: 'queued', onCancel: () => void cancelDownload() };
+    }
     // The ready prompt invites the first message; once acknowledged (the user
     // has sent a message) it never reappears, including on a new conversation
     // or the next summon.
@@ -2545,6 +2770,7 @@ function App() {
     pauseDownload,
     resumeFromPause,
     discardDownload,
+    cancelDownload,
   ]);
 
   /**
@@ -3133,19 +3359,123 @@ function App() {
   }, [isSubmitPending, cancel, setSearchActive, setSelectedContext]);
 
   /**
+   * Turn to replay once the model picker's next selection succeeds (issue
+   * #296 Screen B "Switch model"), or `undefined` when the picker was opened
+   * for some other reason (an `EngineStartFailed` card with no snapshot, or
+   * the unrelated safe-mode recovery screen). Set by
+   * `handleSwitchModelFromError`, explicitly cleared by
+   * `handleChooseDifferentModelFromSafeMode`, and consumed exactly once by
+   * `handleModelSelect` so a stale pending retry can never misfire on a
+   * later, unrelated model switch.
+   */
+  const pendingSwitchRetryRef = useRef<RetrySnapshot | undefined>(undefined);
+
+  /**
+   * Disarms a pending "Switch model" retry whenever the picker closes without a
+   * pick (issue #296). `handleSwitchModelFromError` is the only site that arms
+   * the ref, and it always opens the picker, so every armed state ends either in
+   * a pick (`handleModelSelect` consumes the ref synchronously before this
+   * effect can fire) or a dismissal that lands here. Clearing at this single
+   * close boundary covers all seven dismiss paths (Escape, click-outside, the
+   * history/export toggles) at once, so an abandoned turn can never be replayed
+   * by a later, unrelated model pick.
+   */
+  useEffect(() => {
+    if (isModelPickerOpen) return;
+    pendingSwitchRetryRef.current = undefined;
+  }, [isModelPickerOpen]);
+
+  /**
    * Persists the user's model choice via the backend and closes the picker panel.
    * On rejection (e.g. the chosen model was uninstalled between render and click),
    * triggers a refresh so the picker list and the active chip resync with the
    * actual backend state instead of silently drifting.
+   *
+   * If a "Switch model" retry is pending (issue #296 Screen B), the pending
+   * snapshot is consumed unconditionally up front - it is only replayed once
+   * the switch genuinely succeeds, so an abandoned `InsufficientMemory` turn
+   * gets replayed against the newly-picked model instead of sitting stale.
+   *
+   * When nothing is pending, this also covers picking a model through the
+   * general ask-bar picker (not the error card's own "Switch model" button,
+   * which is the only thing that arms `pendingSwitchRetryRef`): if the
+   * conversation's own last turn is still a stale, unresolved
+   * `InsufficientMemory` failure, this pick resolves it too instead of
+   * leaving the card sitting there with no way forward.
+   *
+   * Once a pending turn is identified, the newly-picked model is fit-checked
+   * BEFORE any retry (issue #296): `estimate_model_fit` reports `would_block`,
+   * the SAME block decision the backend admission gate runs (never re-derived
+   * on the frontend, which is the drift class this feature exists to prevent).
+   * - `would_block` true: the picked model would ALSO be refused, so retrying
+   *   would just re-fail and unmount + remount the error card (the flash the
+   *   user reported). Instead re-attribute the existing errored message in
+   *   place, keeping `errorKind`/`retrySnapshot`, so the card swaps only its
+   *   model name and GB figures with no remount. No send.
+   * - `would_block` false (or the estimate call rejects): replay the abandoned
+   *   turn against the new model exactly as before; the real backend gate still
+   *   runs on that send, so a mis-estimate can never force an unsafe load.
+   *
+   * Either branch passes `model` (this callback's own, just-confirmed argument)
+   * explicitly, not `activeModel`: `setActiveModel`'s state update is not yet
+   * visible to any closure captured before this `.then` fires, so an implicit
+   * `activeModel` read here would still see the pre-switch model.
    */
   const handleModelSelect = useCallback(
     (model: string) => {
       setIsModelPickerOpen(false);
-      void setActiveModel(model).catch(() => {
-        void refreshModels();
-      });
+      let pendingRetry = pendingSwitchRetryRef.current;
+      pendingSwitchRetryRef.current = undefined;
+      if (!pendingRetry) {
+        // why: general picker never arms pendingSwitchRetryRef. Fall back to
+        // the conversation's own last message only, never reach further back
+        // into history for an older, already-abandoned failure. `errorKind`
+        // is only ever set on assistant messages, so no separate role check
+        // is needed; a missing `retrySnapshot` just leaves `pendingRetry`
+        // undefined, which the `if (pendingRetry)` below already guards.
+        const lastMessages = messagesRef.current;
+        const lastMessage = lastMessages[lastMessages.length - 1];
+        if (lastMessage?.errorKind === 'InsufficientMemory') {
+          pendingRetry = lastMessage.retrySnapshot;
+        }
+      }
+      void setActiveModel(model)
+        .then(async () => {
+          const retry = pendingRetry;
+          if (!retry) return;
+          let estimate:
+            | {
+                would_block: boolean;
+                required_bytes: number;
+                available_bytes: number;
+              }
+            | undefined;
+          try {
+            estimate = await invoke('estimate_model_fit', { modelId: model });
+          } catch {
+            // Estimate unavailable at this IO boundary: fall back to a normal
+            // retry (the backend gate still runs on the real send), never a
+            // broken in-between state.
+            estimate = undefined;
+          }
+          if (estimate?.would_block === true) {
+            // why: keep the card mounted and swap only its attribution, no send.
+            // The fit figures just fetched are carried onto the message so the
+            // card's model name and GB numbers update together (issue #296),
+            // with no second async fetch that could briefly show the old model.
+            updateErroredMessageModel(retry.assistantMessageId, model, {
+              requiredBytes: estimate.required_bytes,
+              availableBytes: estimate.available_bytes,
+            });
+          } else {
+            retryMessage(retry, model);
+          }
+        })
+        .catch(() => {
+          void refreshModels();
+        });
     },
-    [setActiveModel, refreshModels],
+    [setActiveModel, refreshModels, retryMessage, updateErroredMessageModel],
   );
 
   /** Closes the model picker panel. Wired to Escape key inside the panel. */
@@ -3177,14 +3507,82 @@ function App() {
   }, [refreshModels, refreshModelCapabilities]);
 
   /**
-   * Opens (never toggles) the model picker from an `EngineStartFailed` error
-   * card so a failed model load is never a dead end. Unlike the toggle, this
-   * always opens: clicking "Switch model" twice must not close the picker. The
-   * builtin provider keeps the chat-mode picker mount reachable (its
-   * `ollamaReachable` flag is manifest-based, true even when the sidecar
-   * failed), so opening here surfaces the picker in place.
+   * Opens (never toggles) the model picker from an `EngineStartFailed` or
+   * `InsufficientMemory` error card so a failed model load is never a dead
+   * end. Unlike the toggle, this always opens: clicking "Switch model" twice
+   * must not close the picker. The builtin provider keeps the chat-mode
+   * picker mount reachable (its `ollamaReachable` flag is manifest-based,
+   * true even when the sidecar failed), so opening here surfaces the picker
+   * in place.
+   *
+   * `snapshot` is the failed turn's own `RetrySnapshot` (`undefined` for
+   * `EngineStartFailed` cards, which never get one assigned). Stashed in
+   * `pendingSwitchRetryRef` so `handleModelSelect` can replay the abandoned
+   * turn once the user actually picks a new model (issue #296 Screen B).
    */
-  const handleSwitchModelFromError = useCallback(() => {
+  const handleSwitchModelFromError = useCallback(
+    (snapshot?: RetrySnapshot) => {
+      pendingSwitchRetryRef.current = snapshot;
+      setIsModelPickerOpen(true);
+      setIsHistoryOpen(false);
+      setIsExportOpen(false);
+      void refreshModels();
+      void refreshModelCapabilities();
+    },
+    [refreshModels, refreshModelCapabilities],
+  );
+
+  /**
+   * Props for the ambient memory-gate warning strip (issue #296), or `null`
+   * when there is nothing to warn about. Suppressed while the download strip
+   * is showing, same one-strip-at-a-time rule `liveCapabilityConflictMessage`
+   * already applies: the two must never stack or contradict each other, and
+   * an in-flight download already re-fires its own warmup once it lands, at
+   * which point this strip would need to re-resolve anyway. "Switch model"
+   * reuses `handleSwitchModelFromError` with no snapshot: this is plain
+   * picker navigation, not a specific failed chat turn to replay.
+   */
+  const autoPrimeSkippedInfo =
+    autoPrimeSkipped && downloadStripStatus === null
+      ? {
+          modelName:
+            modelDisplayNames[autoPrimeSkipped.modelId] ??
+            autoPrimeSkipped.modelId,
+          requiredBytes: autoPrimeSkipped.requiredBytes,
+          availableBytes: autoPrimeSkipped.availableBytes,
+          onSwitchModel: () => handleSwitchModelFromError(),
+          // "Load anyway" (issue #296): force-prime the model past the memory
+          // gate. `force: true` routes through the SAME `preflight_memory_gate`
+          // decision the auto-prime runs, admitting the load the user just
+          // consented to.
+          onLoadAnyway: () => {
+            // why: the user has consented, so the affordance is dismissed
+            // optimistically - clear the ambient warning synchronously BEFORE
+            // firing the IPC so the strip disappears on the click, with no wait
+            // on the `warm_up_model` round trip or the `engine:status` `loaded`
+            // event. The `engine:status` clearing effect stays in place and is
+            // now an idempotent no-op for this path. A load failure surfaces
+            // through the normal engine error paths on the user's next send,
+            // never by resurrecting this strip. `invoke` can reject (IO
+            // boundary), so the rejection is swallowed rather than left
+            // unhandled.
+            setAutoPrimeSkipped(null);
+            void invoke('warm_up_model', { force: true }).catch(() => {});
+          },
+        }
+      : null;
+
+  /**
+   * "Choose a different model" on the safe-mode recovery screen (issue #296
+   * Screen A): dismisses the recovery card and opens the model picker via
+   * the same never-toggle mechanism as `handleSwitchModelFromError`. This
+   * path has no associated chat turn at all, so it explicitly clears any
+   * pending switch-retry rather than risk an unrelated earlier one leaking
+   * in and firing against this screen's model pick.
+   */
+  const handleChooseDifferentModelFromSafeMode = useCallback(() => {
+    pendingSwitchRetryRef.current = undefined;
+    setSafeModeRecovery(null);
     setIsModelPickerOpen(true);
     setIsHistoryOpen(false);
     setIsExportOpen(false);
@@ -3193,12 +3591,34 @@ function App() {
   }, [refreshModels, refreshModelCapabilities]);
 
   /**
+   * "Load last model anyway" on the safe-mode recovery screen (issue #296
+   * Screen A): the user consented to loading the model the circuit breaker
+   * deferred, so force-load it right now instead of waiting for their first
+   * message. Reuses the SAME `warm_up_model { force: true }` path as the
+   * ambient warning strip: `spawn_gated_builtin_warmup` is the single owner of
+   * built-in loads, and `warm_up_model` never consults `safe_mode` (safe mode
+   * gates only the no-user-action auto-prime in `show_overlay`), so this
+   * user-initiated forced load is honored while safe mode is on.
+   *
+   * why: dismiss the card synchronously BEFORE firing the IPC so the screen
+   * disappears on the click, with no wait on the `warm_up_model` round trip. A
+   * load failure surfaces through the normal engine error paths on the user's
+   * next send, never by resurrecting this card. `invoke` can reject at this IO
+   * boundary, so the rejection is swallowed rather than left unhandled.
+   */
+  const handleLoadModelAnywayFromSafeMode = useCallback(() => {
+    setSafeModeRecovery(null);
+    void invoke('warm_up_model', { force: true }).catch(() => {});
+  }, []);
+
+  /**
    * Synchronizes the React animation state with Tauri-driven overlay visibility
    * requests emitted from the Rust backend.
    */
   useEffect(() => {
     let unlistenVisibility: (() => void) | undefined;
     let unlistenOnboarding: (() => void) | undefined;
+    let unlistenAutoPrimeSkipped: (() => void) | undefined;
 
     const attachListeners = async () => {
       unlistenVisibility = await listen<OverlayVisibilityPayload>(
@@ -3226,7 +3646,21 @@ function App() {
           setOnboardingStage(payload.stage);
         },
       );
-      // Both listeners registered - safe to let Rust decide what to show on launch.
+      // Issue #296 guardrail: the built-in engine's memory gate skipped an
+      // auto-prime. Surfaced as an ambient ask-bar warning (see
+      // `autoPrimeSkipped` above) rather than only the backend's stderr log.
+      unlistenAutoPrimeSkipped = await listen<{
+        model_id: string;
+        required_bytes: number;
+        available_bytes: number;
+      }>('warmup:builtin-skipped', ({ payload }) => {
+        setAutoPrimeSkipped({
+          modelId: payload.model_id,
+          requiredBytes: payload.required_bytes,
+          availableBytes: payload.available_bytes,
+        });
+      });
+      // All listeners registered - safe to let Rust decide what to show on launch.
       await invoke('notify_frontend_ready');
     };
 
@@ -3234,6 +3668,7 @@ function App() {
     return () => {
       unlistenVisibility?.();
       unlistenOnboarding?.();
+      unlistenAutoPrimeSkipped?.();
     };
   }, [handleRestore, replayEntranceAnimation, requestHideOverlay]);
 
@@ -3457,6 +3892,21 @@ function App() {
     );
   }
 
+  // Safe-mode recovery (issue #296 Screen A). Only reachable once onboarding
+  // is past the branch above (steady state) and the resolution effect has
+  // resolved both the circuit-breaker verdict and a fit-estimable active
+  // model, so no extra gating is needed here.
+  if (safeModeRecovery) {
+    return (
+      <SafeModeRecoveryCard
+        modelName={safeModeRecovery.modelName}
+        sizeGb={safeModeRecovery.sizeGb}
+        onChooseDifferentModel={handleChooseDifferentModelFromSafeMode}
+        onLoadAnyway={handleLoadModelAnywayFromSafeMode}
+      />
+    );
+  }
+
   return (
     // Minimal padding (pt-2 pb-6) provides just enough physical clearance for the
     // tightened drop shadow to render without clipping at the native window edge.
@@ -3584,6 +4034,7 @@ function App() {
                                 }
                                 isModelPickerOpen={isModelPickerOpen}
                                 onSwitchModel={handleSwitchModelFromError}
+                                onLoadAnyway={retryMessageWithOversized}
                                 onMinimize={handleMinimize}
                                 onExportToggle={
                                   messages.length > 0
@@ -3630,6 +4081,7 @@ function App() {
                                       config.inference.activeProviderKind
                                     }
                                     displayNames={modelDisplayNames}
+                                    modelSizesBytes={modelSizesBytes}
                                     downloadInProgress={isDownloadActive(
                                       downloadStripStatus,
                                     )}
@@ -3726,6 +4178,7 @@ function App() {
                               liveCapabilityConflictMessage
                             }
                             downloadStatus={downloadStripStatus}
+                            autoPrimeSkipped={autoPrimeSkippedInfo}
                             hasUsableModel={hasUsableModel}
                             shake={shakeAskBar}
                             maxImages={config.window.maxImages}
@@ -3852,6 +4305,7 @@ function App() {
                       capabilities={modelCapabilities}
                       providerKind={config.inference.activeProviderKind}
                       displayNames={modelDisplayNames}
+                      modelSizesBytes={modelSizesBytes}
                       downloadInProgress={isDownloadActive(downloadStripStatus)}
                       compact
                     />

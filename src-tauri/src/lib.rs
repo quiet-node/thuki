@@ -29,6 +29,7 @@ pub mod openai;
 pub mod screenshot;
 pub mod search;
 pub mod settings_commands;
+pub mod startup_guard;
 pub mod subscribe;
 pub mod trace;
 pub mod updater;
@@ -409,6 +410,57 @@ fn should_warn_on_quit(app: &tauri::AppHandle) -> bool {
         || DOWNLOAD_PAUSED.load(Ordering::SeqCst)
 }
 
+/// Durably marks this session's launch record as a clean exit (issue #296).
+///
+/// The only place the launch circuit breaker's `clean_exit` marker is set to
+/// true. Best-effort and idempotent: no-op when this process does not own the
+/// session (another instance held the advisory lock), and any write failure is
+/// logged rather than blocking shutdown.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn mark_session_clean_exit(app: &tauri::AppHandle) {
+    if let Some(guard) = app.try_state::<startup_guard::SessionGuard>() {
+        if let Some(writer) = guard.writer() {
+            if let Err(e) = writer.mark_clean_exit() {
+                eprintln!("thuki: [startup_guard] failed to mark clean exit: {e}");
+            }
+        }
+    }
+}
+
+/// Kills the built-in engine sidecar under a bounded timeout (issue #296).
+///
+/// The `sigwait` shutdown thread runs on an ordinary thread and may block, but
+/// it must not block forever: a wedged sidecar would otherwise keep the thread
+/// from re-raising the caught signal, turning a polite `SIGTERM` at macOS
+/// restart into an app that goes unresponsive past the OS kill deadline. Kill
+/// the sidecar under `SHUTDOWN_SIGNAL_ENGINE_KILL_TIMEOUT_SECS`; on timeout the
+/// caller proceeds to re-raise on schedule, and any sidecar that outlived the
+/// bound is reaped at the next launch.
+///
+/// Runs AFTER the durable clean-exit write in the signal thread: that write is
+/// the sole safe-mode input and has no backstop but itself, whereas this
+/// shutdown has the next-launch orphan reaper as its backstop.
+///
+/// Coverage-off: thin runtime/FFI glue (`block_on` + `timeout` over the engine
+/// actor), with no branch logic of its own to test. `block_on` here cannot
+/// deadlock: the actor runs on Tauri's tokio runtime, mirroring `RunEvent::Exit`.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn shutdown_engine_bounded(app: &tauri::AppHandle) {
+    let Some(engine) = app.try_state::<engine::runner::EngineHandle>() else {
+        return;
+    };
+    let engine = engine.inner().clone();
+    tauri::async_runtime::block_on(async move {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(
+                crate::config::defaults::SHUTDOWN_SIGNAL_ENGINE_KILL_TIMEOUT_SECS,
+            ),
+            engine.shutdown(),
+        )
+        .await;
+    });
+}
+
 /// Handles a quit request from the app menu or the tray: warn when a download
 /// would be lost, otherwise quit immediately.
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -564,12 +616,31 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
     // Ollama warms via its native /api/chat, the built-in engine starts
     // (or reuses) its sidecar and primes the KV cache, and openai providers
     // get no warmup (nothing local to warm).
-    let warmup_kind = app_handle
-        .state::<parking_lot::RwLock<crate::config::AppConfig>>()
-        .read()
-        .inference
-        .active_provider_kind()
-        .to_string();
+    //
+    // Launch circuit breaker (issue #296): after an unclean-launch streak we
+    // are in safe mode, and this no-user-action model auto-load is exactly what
+    // froze the machine. In safe mode we resolve an empty provider kind so the
+    // match below falls through to its no-op arm, skipping BOTH the built-in
+    // and Ollama auto-prime. This is broader than the literal "skip
+    // warm_builtin" ask on purpose: both branches are no-user-action model
+    // loads. Safe mode only DEFERS the load to user action, it does not disable
+    // inference: the model still loads on the user's first message via
+    // `ask_model`, which ensures the sidecar on demand. The rest of the
+    // overlay-show path below runs unchanged. When safe_mode is false, behavior
+    // is identical to before.
+    let warmup_kind = if app_handle
+        .state::<startup_guard::StartupSafety>()
+        .safe_mode()
+    {
+        String::new()
+    } else {
+        app_handle
+            .state::<parking_lot::RwLock<crate::config::AppConfig>>()
+            .read()
+            .inference
+            .active_provider_kind()
+            .to_string()
+    };
     match warmup_kind.as_str() {
         crate::config::defaults::PROVIDER_KIND_OLLAMA => {
             let warmup_model = app_handle
@@ -620,37 +691,34 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
                     cfg.prompt.resolved_system.clone(),
                 )
             };
-            if warmup::builtin_should_warm(&model_id) {
-                let store = app_handle.state::<models::storage::ModelStore>();
-                let db = app_handle.state::<history::Database>();
-                // Resolve the manifest row to an engine Target inside a scope so
-                // the connection guard drops before the spawned load. A poisoned
-                // lock is recovered: an unrelated panic does not invalidate it.
-                let target = {
-                    let conn = match db.0.lock() {
-                        Ok(conn) => conn,
-                        Err(poisoned) => poisoned.into_inner(),
-                    };
-                    crate::commands::builtin_target(&conn, &store, &model_id, num_ctx)
-                };
-                // A missing/uninstalled model yields an Err; warmup is
-                // best-effort, so just skip rather than surfacing anything.
-                if let Ok(target) = target {
-                    let engine = app_handle
-                        .state::<engine::runner::EngineHandle>()
-                        .inner()
-                        .clone();
-                    let client = app_handle.state::<reqwest::Client>().inner().clone();
-                    tauri::async_runtime::spawn(warmup::warm_builtin(
-                        app_handle.clone(),
-                        engine,
-                        target,
-                        model_id,
-                        system_prompt,
-                        client,
-                    ));
-                }
-            }
+            // Run the pre-load memory gate (issue #296) before this
+            // no-user-action auto-load: the shared helper resolves the target,
+            // consults `preflight_memory_gate`, and spawns the warmup only when
+            // it clears. This is the same gated path the `warm_up_model`
+            // command uses, so the overlay-show trigger can never again slip
+            // an oversized model into memory ungated.
+            let engine = app_handle
+                .state::<engine::runner::EngineHandle>()
+                .inner()
+                .clone();
+            let client = app_handle.state::<reqwest::Client>().inner().clone();
+            let store = app_handle.state::<models::storage::ModelStore>();
+            let db = app_handle.state::<history::Database>();
+            // why: `force = false`. Overlay-show is an automatic load with no
+            // user action, so an oversized model must never be shoved into
+            // memory here; only the user's explicit "Load anyway" (through the
+            // `warm_up_model` command) passes `true` (issue #296).
+            warmup::spawn_gated_builtin_warmup(
+                app_handle.clone(),
+                engine,
+                &store,
+                &db,
+                model_id,
+                num_ctx,
+                system_prompt,
+                client,
+                false,
+            );
         }
         _ => {}
     }
@@ -1974,10 +2042,24 @@ fn init_update_panel(app_handle: &tauri::AppHandle) {
 
 // ─── Onboarding window ───────────────────────────────────────────────────────
 
+/// Given a monitor's origin and logical size, and the window's requested
+/// logical size, returns the origin that centers the window on that monitor.
+///
+/// Pure arithmetic, no window handle, so it is unit-testable in isolation.
+fn centered_origin(
+    mon_x: f64,
+    mon_y: f64,
+    mon_w: f64,
+    mon_h: f64,
+    win_w: f64,
+    win_h: f64,
+) -> (f64, f64) {
+    (mon_x + (mon_w - win_w) / 2.0, mon_y + (mon_h - win_h) / 2.0)
+}
+
 /// Resizes the onboarding window to the measured content size, and centers it
-/// when `center` is set. The resize and the optional center run atomically on
-/// the macOS main thread via Tauri's `center()` (the same call used at show
-/// time), so the frontend never positions the window itself.
+/// when `center` is set. The resize and the optional reposition run atomically
+/// on the macOS main thread, so the frontend never positions the window itself.
 ///
 /// `useFitOnboardingWindow` passes `center: true` only on the first fit after a
 /// step spawns; later fits (content growing, the ambient strip appearing) pass
@@ -1991,7 +2073,86 @@ fn fit_onboarding_window(app_handle: tauri::AppHandle, width: f64, height: f64, 
         if let Some(window) = handle.get_webview_window("main") {
             let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
             if center {
-                let _ = window.center();
+                // why: window.center() reads outer_size(), which the window server has
+                // not yet updated to reflect the set_size() call above in this same
+                // closure, so it centers against the PREVIOUS size and the window lands
+                // off-center. Compute the origin from the size we just requested instead.
+                let monitor = window
+                    .current_monitor()
+                    .ok()
+                    .flatten()
+                    .or_else(|| window.primary_monitor().ok().flatten());
+                if let Some(mon) = monitor {
+                    let scale = mon.scale_factor();
+                    let pos = mon.position();
+                    let size = mon.size();
+                    let (x, y) = centered_origin(
+                        pos.x as f64 / scale,
+                        pos.y as f64 / scale,
+                        size.width as f64 / scale,
+                        size.height as f64 / scale,
+                        width,
+                        height,
+                    );
+                    let _ = window
+                        .set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
+                }
+            }
+        }
+    });
+}
+
+/// Repositions the overlay ("main") window to the ask bar's canonical default
+/// origin: the same top-center placement `show_overlay` uses when there is no
+/// text selection to anchor to (see `context::calculate_window_position`).
+///
+/// This is the single owner of "return the ask bar to its default position"
+/// for surfaces that borrow the shared overlay window and move it: onboarding
+/// and the safe-mode recovery card both re-center and resize the window for
+/// themselves via `fit_onboarding_window`. When such a surface is dismissed
+/// back to the ask bar there is no fresh native `show_overlay`, so nothing else
+/// restores the ask bar's origin and the bar would render wherever the previous
+/// surface left the window (issue #296).
+///
+/// why: POSITION only. The ask bar's SIZE is content-driven and owned by the
+/// frontend `ResizeObserver`, so this command deliberately never touches size;
+/// it owns just the one axis no other code path restores on a surface
+/// hand-back. The frontend calls it only on the borrowing-surface -> ask-bar
+/// dismiss edge, never on a normal show, so `show_overlay`'s selection-anchored
+/// placement is never clobbered. The default origin is taken from
+/// `calculate_window_position` with an empty context (its no-selection branch),
+/// never re-derived here, keeping `top_center` the single source of the value.
+///
+/// The reposition runs on the macOS main thread so it is atomic with the window
+/// server, mirroring `fit_onboarding_window` (positioning from JS is unreliable).
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn position_overlay_ask_bar(app_handle: tauri::AppHandle) {
+    let handle = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window("main") {
+            let monitor = window
+                .current_monitor()
+                .ok()
+                .flatten()
+                .or_else(|| window.primary_monitor().ok().flatten());
+            if let Some(mon) = monitor {
+                let scale = mon.scale_factor();
+                let pos = mon.position();
+                let size = mon.size();
+                let placement = crate::context::calculate_window_position(
+                    &crate::context::ActivationContext::empty(),
+                    size.width as f64 / scale,
+                    size.height as f64 / scale,
+                    OVERLAY_LOGICAL_WIDTH,
+                    OVERLAY_LOGICAL_HEIGHT_COLLAPSED,
+                );
+                // Placement is monitor-local; shift to global screen coordinates
+                // before setting the position, same conversion as show_overlay.
+                let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+                    placement.x + pos.x as f64 / scale,
+                    placement.y + pos.y as f64 / scale,
+                )));
             }
         }
     });
@@ -2278,6 +2439,16 @@ fn engine_sidecar_path() -> std::path::PathBuf {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // ── Shutdown-signal mask (issue #296) ─────────────────────────────
+    // Block SIGINT/SIGTERM on the main thread FIRST, before Tauri (or
+    // anything else) spawns a single thread: every thread spawned afterward
+    // inherits this block, so the polite-stop signal is delivered to the one
+    // dedicated `sigwait` thread we start later (after the session record
+    // exists) rather than terminating the process on an arbitrary thread.
+    // Marking the clean exit itself happens on that ordinary thread, never in
+    // async-signal context. See `startup_guard::block_shutdown_signals`.
+    startup_guard::block_shutdown_signals();
+
     let mut builder = tauri::Builder::default();
 
     #[cfg(target_os = "macos")]
@@ -2442,6 +2613,91 @@ pub fn run() {
             // `state.read().clone()`. Parking_lot avoids std::sync poisoning
             // on writer panic. See design doc P10.
             app.manage(parking_lot::RwLock::new(app_config));
+
+            // ── Launch circuit breaker (issue #296) ───────────────────
+            // Detect a previous session that died abnormally: the crash-loop
+            // signature where Thuki froze the machine while auto-loading a
+            // large model, macOS reopened the app after the forced power-off,
+            // and it re-froze before the user could act. Runs BEFORE any
+            // dangerous auto-op: it takes a process-lifetime advisory lock and
+            // durably writes this launch's `clean_exit: false` record up front,
+            // so a freeze anywhere in the dangerous window leaves the abnormal
+            // marker on disk. The ONLY clear point is a genuine exit (see the
+            // `mark_session_clean_exit` calls in the run loop below); the
+            // renderer starting proves nothing about surviving that window.
+            let startup = startup_guard::run_startup_guard(
+                app.handle(),
+                crate::config::defaults::DEFAULT_STARTUP_SAFE_MODE_THRESHOLD,
+            );
+            // This launch's immutable verdict (read by the auto-prime gate and
+            // the `startup_safety` command) and the process-lifetime session
+            // handle (holds the advisory lock open and owns the record writer)
+            // are two separate managed values by design; never conflated.
+            app.manage(startup.safety);
+            app.manage(startup.guard);
+
+            // ── Shutdown-signal → clean exit (issue #296) ─────────────
+            // Ctrl+C (SIGINT) in a dev terminal and SIGTERM at macOS
+            // shutdown/restart never run the Tauri RunEvent handlers, so
+            // without this a polite stop would leave `clean_exit: false` and be
+            // miscounted as abnormal: every normal Mac restart would inch the
+            // streak toward a false safe mode. A controlling process asking us
+            // to stop IS a clean exit.
+            //
+            // why HERE in the ordering: the mask was already installed at the
+            // very top of `run()` before any thread was spawned, so this thread
+            // (and all others) inherits the block and only this one consumes the
+            // signal. We spawn it now, AFTER the launch routine durably wrote
+            // this session's `clean_exit: false` record and AFTER `SessionGuard`
+            // is managed, so `mark_session_clean_exit` has a writer to flip.
+            //
+            // why cry-wolf is still prevented: SIGKILL, a kernel panic, a power
+            // cut, and a machine freeze remain uncatchable by construction: they
+            // terminate the process without running this thread, so they still
+            // leave `clean_exit: false` behind and correctly count as abnormal.
+            // Only the polite-stop signals are reclassified as clean, and the
+            // clean-exit write stays the single path in `mark_session_clean_exit`.
+            //
+            // why we ALSO shut the engine down here: a polite stop never runs the
+            // Tauri RunEvent handlers, so without this the sidecar would outlive
+            // Ctrl+C and, far more importantly, every macOS restart, reparenting
+            // to launchd and holding ~2 GB (issue #296). The thread runs on an
+            // ordinary thread, so it may block; the shutdown is bounded so a
+            // wedged sidecar can never keep it from re-raising the signal.
+            //
+            // why THIS order (clean-exit write, then engine shutdown): the
+            // clean-exit write is the sole safe-mode input and has no backstop but
+            // itself, so it lands first and unconditionally. The engine shutdown
+            // that follows can hang and is bounded; a sidecar that outlives the
+            // bound is reaped at the next launch, so it is safe to run second and
+            // behind a timeout.
+            let signal_app = app.handle().clone();
+            startup_guard::spawn_shutdown_signal_thread(move || {
+                mark_session_clean_exit(&signal_app);
+                shutdown_engine_bounded(&signal_app);
+            });
+
+            // Defense-in-depth on top of the session record: ask macOS not to
+            // auto-reopen our overlay after an unclean shutdown, reducing the
+            // chance the dangerous auto-startup path is re-entered with no
+            // user action in the first place.
+            #[cfg(target_os = "macos")]
+            startup_guard::disable_quit_keeps_windows();
+
+            // ── Orphaned sidecar reaper (issue #296) ──────────────────
+            // SIGKILL, a kernel panic, or a machine freeze kills Thuki without
+            // running any shutdown path, so a sidecar it spawned can reparent to
+            // launchd (ppid 1) and linger holding ~2 GB. The next launch is the
+            // only place to reap it. Runs on a detached thread so the (rare)
+            // SIGTERM grace on an actual orphan never delays startup; it can
+            // never touch a live Thuki's sidecar because that child's ppid is its
+            // own Thuki's pid, not 1 (the load-bearing clause in the predicate).
+            {
+                let our_sidecar = engine_sidecar_path();
+                std::thread::spawn(move || {
+                    engine::orphan::reap_orphaned_sidecars(&our_sidecar);
+                });
+            }
 
             // ── Updater state + optional background poller ────────────
             {
@@ -2752,6 +3008,8 @@ pub fn run() {
             #[cfg(not(coverage))]
             models::get_system_ram_bytes,
             #[cfg(not(coverage))]
+            models::memory::estimate_model_fit,
+            #[cfg(not(coverage))]
             models::get_models_dir_free_bytes,
             #[cfg(not(coverage))]
             models::download_starter,
@@ -2831,6 +3089,7 @@ pub fn run() {
             advance_past_model_check,
             advance_past_builtin_announcement,
             fit_onboarding_window,
+            position_overlay_ask_bar,
             onboarding_stage,
             is_builtin_announced,
             open_settings_window,
@@ -2846,6 +3105,7 @@ pub fn run() {
             warmup::get_engine_status,
             #[cfg(not(coverage))]
             warmup::get_builtin_warm_state,
+            startup_guard::startup_safety,
             updater::commands::get_updater_state,
             #[cfg(not(coverage))]
             updater::commands::check_for_update,
@@ -2923,9 +3183,23 @@ pub fn run() {
                 if !QUIT_CONFIRMED.load(Ordering::SeqCst) && should_warn_on_quit(app_handle) {
                     api.prevent_exit();
                     show_quit_dialog(app_handle);
+                } else {
+                    // why: this is the ONLY place the session record is flipped
+                    // to `clean_exit: true`, because the renderer starting
+                    // proves nothing about surviving the dangerous startup
+                    // window (issue #296). The exit is proceeding (not held for
+                    // a download warning), so mark it clean here. `Exit` below
+                    // marks it too, since on the macOS restart/shutdown
+                    // termination path `ExitRequested` may not fire; the write
+                    // is idempotent, so marking on both paths is safe.
+                    mark_session_clean_exit(app_handle);
                 }
             }
             RunEvent::Exit => {
+                // why: also mark the clean exit here (idempotent) so the macOS
+                // restart/shutdown termination path, which may skip
+                // `ExitRequested`, still lands the clean marker durably.
+                mark_session_clean_exit(app_handle);
                 // Kill the built-in engine sidecar and confirm its exit so
                 // no orphan llama-server survives quit. The actor runs on
                 // the tokio runtime, so block_on here cannot deadlock.
@@ -3016,6 +3290,39 @@ mod tests {
         assert_eq!(gh, 648.0);
         assert_eq!(gy + gh, 900.0, "visual top edge must stay fixed on grow");
         assert_eq!(gy, 252.0);
+    }
+
+    #[test]
+    fn centered_origin_smaller_window_centers_exactly() {
+        // 1000x800 monitor at origin (0, 0), a 420x300 window centers with
+        // equal margins on both axes.
+        let (x, y) = centered_origin(0.0, 0.0, 1000.0, 800.0, 420.0, 300.0);
+        assert_eq!(x, 290.0);
+        assert_eq!(y, 250.0);
+    }
+
+    #[test]
+    fn centered_origin_equal_size_yields_monitor_origin() {
+        // Window exactly filling the monitor: origin matches the monitor's.
+        let (x, y) = centered_origin(50.0, 25.0, 1000.0, 800.0, 1000.0, 800.0);
+        assert_eq!(x, 50.0);
+        assert_eq!(y, 25.0);
+    }
+
+    #[test]
+    fn centered_origin_nonzero_monitor_offset_shifts_result() {
+        // Second display sitting to the right of the primary at (1920, 0).
+        let (x, y) = centered_origin(1920.0, 0.0, 1000.0, 800.0, 420.0, 300.0);
+        assert_eq!(x, 2210.0);
+        assert_eq!(y, 250.0);
+    }
+
+    #[test]
+    fn centered_origin_oversized_window_yields_negative_offset() {
+        // Window larger than the monitor: origin goes negative, no panic.
+        let (x, y) = centered_origin(0.0, 0.0, 800.0, 600.0, 1000.0, 800.0);
+        assert_eq!(x, -100.0);
+        assert_eq!(y, -100.0);
     }
 
     #[test]

@@ -860,3 +860,25 @@ body {
     animation: none;
   }
 }
+
+/* ─── Download progress: indeterminate edge ───
+ * The queued / verifying / installing / warming_up states have no real
+ * percent, so the edge fill slides back and forth instead of sitting at a
+ * static width (which reads as a stalled download, not active work). */
+.download-indeterminate-fill {
+  animation: download-indeterminate-slide 1.3s ease-in-out infinite;
+}
+@keyframes download-indeterminate-slide {
+  0% {
+    left: -35%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .download-indeterminate-fill {
+    animation: none;
+    left: 0;
+  }
+}

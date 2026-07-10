@@ -26,14 +26,13 @@ export const OLLAMA_PILL_TOOLTIP =
 export const BUILTIN_BROWSE_TOOLTIP = 'More models in Settings.';
 
 /**
- * Pill shown on models whose reasoning cannot be turned off (capability
- * `reasoningAlways`). Positive, non-alarming framing per industry practice
- * (Anthropic/OpenAI/Gemini never present reasoning as a caveat): the goal is
- * to set expectations, not warn. `/think` is a no-op for these models.
+ * Label for models whose reasoning cannot be turned off (capability
+ * `reasoningAlways`). The picker communicates this inline in the row caption
+ * ("always reasoning" via {@link formatCapabilityLabel}); this export remains
+ * for other reasoningAlways surfaces (see `StarterMatrix.tsx`'s comparison
+ * table cell).
  */
 export const ALWAYS_REASONS_LABEL = 'Always reasons';
-export const ALWAYS_REASONS_TOOLTIP =
-  'This model reasons before every answer, so expect a brief pause. Its reasoning shows in a collapsible block above each reply.';
 
 const CHECK_ICON_PATH = (
   <path
@@ -50,10 +49,12 @@ const LISTBOX_ID = 'thuki-model-picker-listbox';
 /**
  * Builds the capability caption rendered beneath each picker row's model
  * name. Always leads with "text" (every chat-completion model handles
- * text), then appends "vision" and/or "reasoning" when the model supports
- * them. Returns `null` only when capabilities for the model are unknown
- * (not yet loaded), which lets the caller suppress the caption line
- * entirely during cold start.
+ * text), then appends "vision" and/or a reasoning flag when the model
+ * supports them: "reasoning" for opt-in `/think` models, or "always
+ * reasoning" when the model's reasoning cannot be turned off
+ * (`reasoningAlways`). Returns `null` only when capabilities for the model
+ * are unknown (not yet loaded), which lets the caller suppress the caption
+ * line entirely during cold start.
  *
  * Exported for direct unit testing.
  */
@@ -65,8 +66,21 @@ export function formatCapabilityLabel(
   if (!caps) return null;
   const flags: string[] = ['text'];
   if (caps.vision) flags.push('vision');
-  if (caps.thinking) flags.push('reasoning');
+  if (caps.thinking) {
+    flags.push(
+      caps.reasoningAlways === true ? 'always reasoning' : 'reasoning',
+    );
+  }
   return flags.join(' · ');
+}
+
+/**
+ * Formats a weights size in bytes as a compact one-decimal gigabyte string
+ * (e.g. `6100000000` -> `"6.1 GB"`). Mirrors the decimal-GB convention
+ * `DownloadProgress.tsx`'s local `gb()` helper already uses for model sizes.
+ */
+function formatSizeGb(bytes: number): string {
+  return `${(bytes / 1e9).toFixed(1)} GB`;
 }
 
 /** Props for the {@link ModelPickerPanel} content panel. */
@@ -115,6 +129,13 @@ export interface ModelPickerPanelProps {
    */
   displayNames?: Record<string, string>;
   /**
+   * Weights size in bytes per model id. When present for a model, the row
+   * caption appends it (e.g. "text · vision · 6.1 GB"); ids without an entry
+   * (Ollama, OpenAI, or an unresolvable built-in row) render with no size
+   * segment, never a placeholder.
+   */
+  modelSizesBytes?: Record<string, number>;
+  /**
    * True while a built-in model download is in flight (the ambient strip is
    * showing progress right below the list). When the list is empty, the
    * builtin empty state then acknowledges the download in progress instead of
@@ -140,6 +161,7 @@ export function ModelPickerPanel({
   compact = false,
   providerKind = 'ollama',
   displayNames,
+  modelSizesBytes,
   downloadInProgress = false,
 }: ModelPickerPanelProps) {
   const [filter, setFilter] = useState('');
@@ -373,8 +395,12 @@ export function ModelPickerPanel({
             const active = model === activeModel;
             const highlighted = index === safeHighlightedIndex;
             const capLabel = formatCapabilityLabel(capabilities, model);
-            const alwaysThinks =
-              capabilities?.[model]?.reasoningAlways === true;
+            const sizeBytes = modelSizesBytes?.[model];
+            const sizeLabel =
+              sizeBytes !== undefined ? formatSizeGb(sizeBytes) : null;
+            const captionLine = [capLabel, sizeLabel]
+              .filter((part): part is string => part !== null)
+              .join(' · ');
             return (
               <button
                 key={model}
@@ -401,27 +427,15 @@ export function ModelPickerPanel({
                   >
                     {labelFor(model)}
                   </span>
-                  {capLabel && (
+                  {captionLine && (
                     <span
                       className="text-[10.5px] text-text-secondary leading-tight tracking-wide"
                       data-testid="model-capability-label"
                     >
-                      {capLabel}
+                      {captionLine}
                     </span>
                   )}
                 </span>
-                {alwaysThinks && (
-                  // A plain span with a native title: the row is a <button>,
-                  // so the Tooltip component (which wraps children in a <div>)
-                  // cannot be nested here without invalid phrasing content.
-                  <span
-                    data-testid="always-reasons-badge"
-                    title={ALWAYS_REASONS_TOOLTIP}
-                    className="shrink-0 self-center inline-flex items-center text-[10px] font-medium text-text-secondary bg-primary/8 border border-primary/15 rounded-md px-1.5 py-0.5 whitespace-nowrap"
-                  >
-                    {ALWAYS_REASONS_LABEL}
-                  </span>
-                )}
                 <svg
                   className="w-3.5 h-3.5 shrink-0 mt-0.5 text-primary"
                   style={{ opacity: active ? 1 : 0 }}

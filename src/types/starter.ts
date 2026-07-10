@@ -82,6 +82,11 @@ export type DownloadFailKind =
 
 /** Progress events streamed over the `download_starter` channel. */
 export type DownloadEvent =
+  | { type: 'Queued' }
+  | {
+      type: 'InsufficientDisk';
+      data: { required_bytes: number; available_bytes: number };
+    }
   | {
       type: 'Started';
       data: { file: string; total_bytes: number; resumed_from: number };
@@ -94,6 +99,7 @@ export type DownloadEvent =
   | { type: 'FileDone'; data: { file: string } }
   | { type: 'AllDone' }
   | { type: 'Cancelled' }
+  | { type: 'RejectedSafeMode' }
   | { type: 'Failed'; data: { kind: DownloadFailKind; message: string } };
 
 /** One installed-model manifest row (`list_installed_models`). Mirrors the

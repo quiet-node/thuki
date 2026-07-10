@@ -133,6 +133,7 @@ describe('DownloadContext', () => {
     expect(invoke).toHaveBeenCalledWith('download_starter', {
       tier: 'balanced',
       key: 'tier:balanced',
+      userInitiated: true,
       onEvent: expect.anything(),
     });
   });
@@ -157,6 +158,7 @@ describe('DownloadContext', () => {
     expect(invoke).toHaveBeenCalledWith('download_starter', {
       tier: 'fast',
       key: 'tier:fast',
+      userInitiated: true,
       onEvent: expect.anything(),
     });
   });
@@ -242,6 +244,15 @@ describe('DownloadContext', () => {
     expect(
       invoke.mock.calls.filter((c) => c[0] === 'download_starter'),
     ).toHaveLength(2);
+    // Resume is a real click: userInitiated stays true, unlike the
+    // launch-time auto-resume. (Not toHaveBeenLastCalledWith: the pause's
+    // set_download_paused effect can commit after this invoke.)
+    expect(invoke).toHaveBeenCalledWith('download_starter', {
+      tier: 'balanced',
+      key: 'tier:balanced',
+      userInitiated: true,
+      onEvent: expect.anything(),
+    });
   });
 
   it('shows Paused from the on-disk partial when paused from another window', async () => {
@@ -392,9 +403,12 @@ describe('DownloadContext', () => {
       expect(result.current.downloadingTier).toBe('fast');
       expect(result.current.resumeSeedBytes).toBeNull();
       expect(result.current.state).toEqual({ phase: 'downloading' });
+      // Not a user click: the launch-time auto-resume sends
+      // userInitiated: false so a safe-mode session refuses it (issue #296).
       expect(invoke).toHaveBeenCalledWith('download_starter', {
         tier: 'fast',
         key: 'tier:fast',
+        userInitiated: false,
         onEvent: expect.anything(),
       });
     });

@@ -2406,6 +2406,30 @@ describe('useModel', () => {
       );
       expect(onTurnComplete).not.toHaveBeenCalled();
     });
+
+    it('InsufficientMemory event renders the memory-gate error and resolves final', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useModel('', onTurnComplete));
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('q');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'InsufficientMemory' });
+      });
+      let outcome: { final: boolean } | undefined;
+      await act(async () => {
+        outcome = await pending;
+      });
+      expect(outcome).toEqual({ final: true });
+      const last = result.current.messages[result.current.messages.length - 1];
+      expect(last.errorKind).toBe('InsufficientMemory');
+      expect(last.content).toBe(
+        'This model may not fit in memory\nClose some apps, pick a smaller model, or load it anyway.',
+      );
+      expect(onTurnComplete).not.toHaveBeenCalled();
+    });
   });
 
   // ─── is_first_turn flag retention across pre-ConversationStart bails ────────
@@ -2684,6 +2708,552 @@ describe('useModel', () => {
         role: 'assistant',
         content: 'extracted',
       });
+    });
+  });
+
+  // ─── retryMessageWithOversized (issue #296) ─────────────────────────────────
+
+  describe('retryMessageWithOversized()', () => {
+    it('attaches a chat retrySnapshot to the assistant message at creation time', async () => {
+      const { result } = renderHook(() => useModel(''));
+
+      await act(async () => {
+        await result.current.ask('hello world', 'quoted', ['/tmp/img.jpg']);
+      });
+
+      const user = result.current.messages[0];
+      const assistant = result.current.messages[1];
+      expect(assistant.retrySnapshot).toEqual({
+        kind: 'chat',
+        displayContent: 'hello world',
+        quotedText: 'quoted',
+        imagePaths: ['/tmp/img.jpg'],
+        think: undefined,
+        promptOverride: undefined,
+        displayImagePaths: undefined,
+        replaceCommand: undefined,
+        userMessageId: user.id,
+        assistantMessageId: assistant.id,
+      });
+    });
+
+    it('attaches a search retrySnapshot to the assistant message at creation time', async () => {
+      const { result } = renderHook(() => useModel(''));
+
+      await act(async () => {
+        void result.current.askSearch('rust async', 'display text', 'quoted');
+      });
+
+      const user = result.current.messages[0];
+      const assistant = result.current.messages[1];
+      expect(assistant.retrySnapshot).toEqual({
+        kind: 'search',
+        query: 'rust async',
+        displayContent: 'display text',
+        quotedText: 'quoted',
+        userMessageId: user.id,
+        assistantMessageId: assistant.id,
+      });
+    });
+
+    it('replays a chat snapshot with allowOversized: true', async () => {
+      const { result } = renderHook(() => useModel(''));
+
+      await act(async () => {
+        result.current.retryMessageWithOversized({
+          kind: 'chat',
+          displayContent: 'hello world',
+          quotedText: 'quoted',
+          imagePaths: ['/tmp/img.jpg'],
+          userMessageId: 'stale-user-id',
+          assistantMessageId: 'stale-assistant-id',
+        });
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({
+          message: 'hello world',
+          quotedText: 'quoted',
+          imagePaths: ['/tmp/img.jpg'],
+          allowOversized: true,
+        }),
+      );
+    });
+
+    it('replays a search snapshot with allowOversized: true', async () => {
+      const { result } = renderHook(() => useModel(''));
+
+      await act(async () => {
+        result.current.retryMessageWithOversized({
+          kind: 'search',
+          query: 'rust async',
+          displayContent: 'display text',
+          quotedText: 'quoted',
+          userMessageId: 'stale-user-id',
+          assistantMessageId: 'stale-assistant-id',
+        });
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'search_pipeline',
+        expect.objectContaining({
+          message: 'rust async',
+          displayedContent: 'display text',
+          allowOversized: true,
+        }),
+      );
+    });
+
+    // Regression test (issue #296 follow-up review): retry data used to live
+    // in a single shared `lastRequestRef`, overwritten unconditionally by
+    // every dispatched turn. A superseding turn B sent after turn A's
+    // `InsufficientMemory` card was left on screen (nothing blocks sending
+    // after an error card) silently hijacked A's stale "Load anyway" click
+    // and replayed B's content instead of retrying A. The fix moves the
+    // snapshot onto each message itself; this asserts clicking A's card
+    // replays A's original content even after B has since succeeded.
+    it('replays the failed turn A original content, not a later turn B that superseded it', async () => {
+      const { result } = renderHook(() => useModel(''));
+
+      // Turn A: fails with InsufficientMemory. Its error card stays mounted
+      // (errorKind is set once and never cleared).
+      await act(async () => {
+        await result.current.ask('turn A content');
+      });
+      const channelA = getChannel();
+      act(() => {
+        channelA!.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+
+      const turnASnapshot = result.current.messages[1].retrySnapshot;
+      expect(turnASnapshot).toMatchObject({ displayContent: 'turn A content' });
+      const turnAUserId = result.current.messages[0].id;
+      const turnAAssistantId = result.current.messages[1].id;
+
+      // Turn B: sent without touching turn A's still-visible card, and
+      // succeeds normally.
+      resetChannelCapture();
+      enableChannelCapture();
+      await act(async () => {
+        await result.current.ask('turn B content');
+      });
+      const channelB = getChannel();
+      act(() => {
+        channelB!.simulateMessage({ type: 'Token', data: 'B answer' });
+        channelB!.simulateMessage({ type: 'Done' });
+      });
+      const turnBUserId = result.current.messages[2].id;
+      const turnBAssistantId = result.current.messages[3].id;
+
+      invoke.mockClear();
+
+      // User scrolls back and clicks "Load anyway" on turn A's card, using
+      // ONLY turn A's own retained snapshot (as the real UI wiring does via
+      // ConversationView's per-message closure) - never a shared hook ref.
+      await act(async () => {
+        result.current.retryMessageWithOversized(turnASnapshot!);
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({
+          message: 'turn A content',
+          allowOversized: true,
+        }),
+      );
+      expect(invoke).not.toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'turn B content' }),
+      );
+
+      // Turn A is retried IN PLACE (issue #296): its own ids are reused rather
+      // than deleted and recreated, so React keeps the bubble mounted and the
+      // entrance animation never replays. Turn B's completed pair is
+      // untouched. No pair is added or removed: the thread stays four
+      // messages with all four original ids.
+      const ids = result.current.messages.map((m) => m.id);
+      expect(ids).toContain(turnAUserId);
+      expect(ids).toContain(turnAAssistantId);
+      expect(ids).toContain(turnBUserId);
+      expect(ids).toContain(turnBAssistantId);
+      expect(result.current.messages).toHaveLength(4);
+      // Turn A's assistant message is reset in place: same id, error state
+      // cleared, ready to stream the replayed response.
+      expect(result.current.messages[0]).toMatchObject({
+        role: 'user',
+        content: 'turn A content',
+      });
+      expect(result.current.messages[1].id).toBe(turnAAssistantId);
+      expect(result.current.messages[1].role).toBe('assistant');
+      expect(result.current.messages[1].content).toBe('');
+      expect(result.current.messages[1].errorKind).toBeUndefined();
+    });
+
+    // Regression test for the duplicate-turn bug the user's screenshot
+    // showed (issue #296 follow-up): clicking "Load anyway" must NOT append a
+    // brand-new pair, which would leave the old failed user bubble and amber
+    // warning card stacked above the retried turn. The fix reuses the failed
+    // turn's ids and resets its assistant message in place, so the thread
+    // keeps exactly one pair and React does not remount the bubble.
+    it('chat retry reuses the failed pair ids and resets the assistant in place', async () => {
+      const { result } = renderHook(() => useModel(''));
+
+      await act(async () => {
+        await result.current.ask('oversized content');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+
+      expect(result.current.messages).toHaveLength(2);
+      const oldUserId = result.current.messages[0].id;
+      const oldAssistantId = result.current.messages[1].id;
+      const snapshot = result.current.messages[1].retrySnapshot!;
+      expect(result.current.messages[1].errorKind).toBe('InsufficientMemory');
+
+      resetChannelCapture();
+      enableChannelCapture();
+      await act(async () => {
+        result.current.retryMessageWithOversized(snapshot);
+      });
+
+      // Same two ids, no add/remove: the turn is retried in place.
+      expect(result.current.messages).toHaveLength(2);
+      expect(result.current.messages[0].id).toBe(oldUserId);
+      expect(result.current.messages[1].id).toBe(oldAssistantId);
+      expect(result.current.messages[0]).toMatchObject({
+        role: 'user',
+        content: 'oversized content',
+      });
+      // Assistant reset in place: error state cleared, content blanked.
+      expect(result.current.messages[1].role).toBe('assistant');
+      expect(result.current.messages[1].content).toBe('');
+      expect(result.current.messages[1].errorKind).toBeUndefined();
+    });
+
+    it('search retry reuses the failed pair ids and resets the assistant in place', async () => {
+      const { result } = renderHook(() => useModel(''));
+
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('rust async');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'InsufficientMemory' });
+      });
+      await act(async () => {
+        await pending;
+      });
+
+      expect(result.current.messages).toHaveLength(2);
+      const oldUserId = result.current.messages[0].id;
+      const oldAssistantId = result.current.messages[1].id;
+      const snapshot = result.current.messages[1].retrySnapshot!;
+      expect(result.current.messages[1].errorKind).toBe('InsufficientMemory');
+
+      resetChannelCapture();
+      enableChannelCapture();
+      await act(async () => {
+        result.current.retryMessageWithOversized(snapshot);
+      });
+
+      expect(result.current.messages).toHaveLength(2);
+      expect(result.current.messages[0].id).toBe(oldUserId);
+      expect(result.current.messages[1].id).toBe(oldAssistantId);
+      expect(result.current.messages[0]).toMatchObject({
+        role: 'user',
+        content: 'rust async',
+      });
+      // Reset in place clears the error and re-marks it as a search bubble.
+      expect(result.current.messages[1].role).toBe('assistant');
+      expect(result.current.messages[1].content).toBe('');
+      expect(result.current.messages[1].errorKind).toBeUndefined();
+      expect(result.current.messages[1].fromSearch).toBe(true);
+    });
+
+    it('pins modelOverride on the reset assistant message when provided (chat)', async () => {
+      const { result } = renderHook(() => useModel('old-model'));
+
+      await act(async () => {
+        await result.current.ask('needs a bigger model');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      expect(result.current.messages[1].modelName).toBe('old-model');
+      const snapshot = result.current.messages[1].retrySnapshot!;
+
+      resetChannelCapture();
+      enableChannelCapture();
+      await act(async () => {
+        result.current.retryMessageWithOversized(snapshot, 'freshly-picked');
+      });
+
+      // The override wins over the activeModel closure, which still reads the
+      // stale value at retry time (issue #296 attribution race).
+      expect(result.current.messages[1].modelName).toBe('freshly-picked');
+    });
+
+    it('pins modelOverride on the reset assistant message when provided (search)', async () => {
+      const { result } = renderHook(() => useModel('old-model'));
+
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('rust async');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'InsufficientMemory' });
+      });
+      await act(async () => {
+        await pending;
+      });
+      expect(result.current.messages[1].modelName).toBe('old-model');
+      const snapshot = result.current.messages[1].retrySnapshot!;
+
+      resetChannelCapture();
+      enableChannelCapture();
+      await act(async () => {
+        result.current.retryMessageWithOversized(snapshot, 'freshly-picked');
+      });
+
+      expect(result.current.messages[1].modelName).toBe('freshly-picked');
+    });
+  });
+
+  // ─── retryMessage (issue #296 follow-up, bug 2) ─────────────────────────────
+  //
+  // "Switch model" replays the abandoned turn against the newly-picked model
+  // WITHOUT bypassing the pre-load memory gate (unlike "Load anyway"), since
+  // the whole point is that the new model is presumed to actually fit. Shares
+  // the same reuse-in-place core as retryMessageWithOversized.
+  describe('retryMessage()', () => {
+    it('replays a chat snapshot with allowOversized: false', async () => {
+      const { result } = renderHook(() => useModel(''));
+
+      await act(async () => {
+        result.current.retryMessage({
+          kind: 'chat',
+          displayContent: 'hello world',
+          quotedText: 'quoted',
+          imagePaths: ['/tmp/img.jpg'],
+          userMessageId: 'stale-user-id',
+          assistantMessageId: 'stale-assistant-id',
+        });
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({
+          message: 'hello world',
+          quotedText: 'quoted',
+          imagePaths: ['/tmp/img.jpg'],
+          allowOversized: false,
+        }),
+      );
+    });
+
+    it('replays a search snapshot with allowOversized: false', async () => {
+      const { result } = renderHook(() => useModel(''));
+
+      await act(async () => {
+        result.current.retryMessage({
+          kind: 'search',
+          query: 'rust async',
+          displayContent: 'display text',
+          quotedText: 'quoted',
+          userMessageId: 'stale-user-id',
+          assistantMessageId: 'stale-assistant-id',
+        });
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'search_pipeline',
+        expect.objectContaining({
+          message: 'rust async',
+          displayedContent: 'display text',
+          allowOversized: false,
+        }),
+      );
+    });
+
+    it('chat retry reuses the failed pair ids and resets the assistant in place', async () => {
+      const { result } = renderHook(() => useModel(''));
+
+      await act(async () => {
+        await result.current.ask('gpt-oss content');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+
+      expect(result.current.messages).toHaveLength(2);
+      const oldUserId = result.current.messages[0].id;
+      const oldAssistantId = result.current.messages[1].id;
+      const snapshot = result.current.messages[1].retrySnapshot!;
+
+      resetChannelCapture();
+      enableChannelCapture();
+      await act(async () => {
+        result.current.retryMessage(snapshot);
+      });
+
+      expect(result.current.messages).toHaveLength(2);
+      expect(result.current.messages[0].id).toBe(oldUserId);
+      expect(result.current.messages[1].id).toBe(oldAssistantId);
+      expect(result.current.messages[0]).toMatchObject({
+        role: 'user',
+        content: 'gpt-oss content',
+      });
+      expect(result.current.messages[1].role).toBe('assistant');
+      expect(result.current.messages[1].content).toBe('');
+      expect(result.current.messages[1].errorKind).toBeUndefined();
+    });
+
+    it('search retry reuses the failed pair ids and resets the assistant in place', async () => {
+      const { result } = renderHook(() => useModel(''));
+
+      let pending!: Promise<{ final: boolean }>;
+      await act(async () => {
+        pending = result.current.askSearch('rust async');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({ type: 'InsufficientMemory' });
+      });
+      await act(async () => {
+        await pending;
+      });
+
+      expect(result.current.messages).toHaveLength(2);
+      const oldUserId = result.current.messages[0].id;
+      const oldAssistantId = result.current.messages[1].id;
+      const snapshot = result.current.messages[1].retrySnapshot!;
+
+      resetChannelCapture();
+      enableChannelCapture();
+      await act(async () => {
+        result.current.retryMessage(snapshot);
+      });
+
+      expect(result.current.messages).toHaveLength(2);
+      expect(result.current.messages[0].id).toBe(oldUserId);
+      expect(result.current.messages[1].id).toBe(oldAssistantId);
+      expect(result.current.messages[0]).toMatchObject({
+        role: 'user',
+        content: 'rust async',
+      });
+      expect(result.current.messages[1].role).toBe('assistant');
+      expect(result.current.messages[1].content).toBe('');
+      expect(result.current.messages[1].errorKind).toBeUndefined();
+    });
+
+    it('falls back to activeModel on the reset assistant when no override is given', async () => {
+      const { result } = renderHook(() => useModel('active-model'));
+
+      await act(async () => {
+        await result.current.ask('needs a bigger model');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      const snapshot = result.current.messages[1].retrySnapshot!;
+
+      resetChannelCapture();
+      enableChannelCapture();
+      await act(async () => {
+        result.current.retryMessage(snapshot);
+      });
+
+      expect(result.current.messages[1].modelName).toBe('active-model');
+    });
+  });
+
+  describe('updateErroredMessageModel()', () => {
+    it('changes modelName and carries the memory-fit figures on the targeted message, preserving errorKind, retrySnapshot, content, and id', async () => {
+      const { result } = renderHook(() => useModel('gemma4:e2b'));
+
+      await act(async () => {
+        await result.current.ask('needs a bigger model');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+
+      const assistantId = result.current.messages[1].id;
+      const originalContent = result.current.messages[1].content;
+      const originalSnapshot = result.current.messages[1].retrySnapshot;
+
+      act(() => {
+        result.current.updateErroredMessageModel(assistantId, 'qwen2.5:7b', {
+          requiredBytes: 8 * 1024 ** 3,
+          availableBytes: 4 * 1024 ** 3,
+        });
+      });
+
+      expect(result.current.messages).toHaveLength(2);
+      expect(result.current.messages[1].id).toBe(assistantId);
+      expect(result.current.messages[1].modelName).toBe('qwen2.5:7b');
+      expect(result.current.messages[1].memoryFit).toEqual({
+        requiredBytes: 8 * 1024 ** 3,
+        availableBytes: 4 * 1024 ** 3,
+      });
+      expect(result.current.messages[1].errorKind).toBe('InsufficientMemory');
+      expect(result.current.messages[1].retrySnapshot).toBe(originalSnapshot);
+      expect(result.current.messages[1].content).toBe(originalContent);
+    });
+
+    it('is a no-op when no message matches the given id', async () => {
+      const { result } = renderHook(() => useModel('gemma4:e2b'));
+
+      await act(async () => {
+        await result.current.ask('needs a bigger model');
+      });
+      const channel = getChannel();
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+
+      const before = result.current.messages;
+
+      expect(() => {
+        act(() => {
+          result.current.updateErroredMessageModel('no-such-id', 'qwen2.5:7b', {
+            requiredBytes: 8 * 1024 ** 3,
+            availableBytes: 4 * 1024 ** 3,
+          });
+        });
+      }).not.toThrow();
+
+      expect(result.current.messages).toEqual(before);
     });
   });
 });
