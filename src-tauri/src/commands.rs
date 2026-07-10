@@ -689,20 +689,69 @@ fn local_datetime_context() -> String {
 }
 
 /// Appends the current local-datetime context line to the persona system
-/// prompt. This is composed once, before the route/search branch, so both
-/// the plain chat stream and the search writer/unreachable prompts (which
-/// reuse this same system message; see `run_builtin_search`'s
+/// prompt, plus — when a place-qualified clock question resolved this turn
+/// (see [`resolve_clock_place_time`] / `websearch::clock`) — the resolved
+/// place-time line and a standing instruction that timezone arithmetic is
+/// never the model's job. This is composed once, before the route/search
+/// branch, so both the plain chat stream and the search writer/unreachable
+/// prompts (which reuse this same system message; see `run_builtin_search`'s
 /// `system_prompt` argument) can answer date/time questions directly from
 /// context instead of guessing or, worse, searching the web for the clock.
 ///
-/// This is deliberately the ONLY place the local datetime is threaded into:
-/// the persona-free search classifier (`websearch::prepass`) builds its own
-/// short system prompt and never sees the persona, so the datetime line
-/// cannot leak into its standalone-question rewrite or outbound search
-/// queries. The writer's own `today` (`YYYY-MM-DD`) date context is separate
-/// and unaffected (see `today_string`).
-pub(crate) fn system_prompt_with_datetime(persona: &str, datetime_context: &str) -> String {
-    format!("{persona}\n\nCurrent local date and time: {datetime_context}.")
+/// The instruction line is unconditional (present whether or not a place
+/// resolved) so the model has one consistent rule: read a resolved line back
+/// verbatim when one is present, and otherwise share only the local time
+/// above rather than compute a conversion itself. Small local models are
+/// unreliable at arithmetic, so the conversion is never left to them; see
+/// [`crate::websearch::clock`] for where it is actually computed.
+///
+/// This is deliberately the ONLY place the local datetime (and any resolved
+/// place time) is threaded into: the persona-free search classifier
+/// (`websearch::prepass`) builds its own short system prompt and never sees
+/// the persona, so neither line can leak into its standalone-question
+/// rewrite or outbound search queries. The writer's own `today`
+/// (`YYYY-MM-DD`) date context is separate and unaffected (see
+/// `today_string`).
+pub(crate) fn system_prompt_with_datetime(
+    persona: &str,
+    datetime_context: &str,
+    place_time_line: Option<&str>,
+) -> String {
+    let mut out = format!("{persona}\n\nCurrent local date and time: {datetime_context}.");
+    if let Some(line) = place_time_line {
+        out.push('\n');
+        out.push_str(line);
+    }
+    out.push_str(
+        "\nWhen asked what time it is somewhere else, use a resolved time line above \
+         verbatim if one is present and never compute the timezone conversion yourself; \
+         if none is present, you can only share the local time above, so say that rather \
+         than guess.",
+    );
+    out
+}
+
+/// Resolves a place-qualified clock question's current time for this turn
+/// ("what time is it in San Francisco"), or `None` on any miss: not a clock
+/// question, no place named, the place did not geocode (including a bare
+/// abbreviation like "SF", which Open-Meteo does not resolve), a transport
+/// error, or an unresolvable timezone. A miss injects nothing extra; the
+/// model falls back to its own local-time context (see
+/// [`system_prompt_with_datetime`]). Never triggers a web search: this is a
+/// pure geocode-plus-computation, independent of the search decision.
+///
+/// Coverage-excluded: thin async glue delegating every decision to
+/// [`crate::websearch::prefilter::clock_question_place`] (pure, tested) and
+/// [`crate::websearch::clock::resolve_place_time`] (tested against
+/// [`crate::net::transport::FakeHttpTransport`]); the only untested lines
+/// here are wiring the real [`crate::net::transport::ReqwestTransport`] and
+/// the real clock.
+#[cfg_attr(coverage_nightly, coverage(off))]
+async fn resolve_clock_place_time(message: &str) -> Option<String> {
+    let place = crate::websearch::prefilter::clock_question_place(message)?;
+    let transport = crate::net::transport::ReqwestTransport::new().ok()?;
+    crate::websearch::clock::resolve_place_time(&transport, &place, time::OffsetDateTime::now_utc())
+        .await
 }
 
 /// Runs the built-in search pre-pass and, if it fires, the retrieval pipeline
@@ -1656,6 +1705,13 @@ pub async fn ask_model(
     // first-turn attempt was cancelled before any token arrived.
     let _ = on_event.send(StreamChunk::TurnAccepted);
 
+    // Snapshot the raw typed message before it is (possibly) moved into the
+    // quote-wrapped `content` below, for the place-time clock resolution:
+    // that check needs the user's bare turn, never the "[Highlighted
+    // Text]..." wrapper, which would never pass `clock_question_place`'s
+    // high-precision gate anyway.
+    let clock_probe = message.clone();
+
     // Build user message content.  When quoted text is present, label it
     // explicitly so the model knows the highlighted text is the primary
     // subject and any attached images provide surrounding context.
@@ -1694,6 +1750,17 @@ pub async fn ask_model(
         images,
     };
 
+    // Deterministic place-time resolution for a clock question naming a
+    // place ("what time is it in San Francisco"): resolves the place's IANA
+    // timezone via geocoding and computes its current wall-clock time in
+    // code (see `resolve_clock_place_time` / `websearch::clock`), so the
+    // model performs zero timezone arithmetic itself. Runs before the
+    // route/search branch below so every provider (built-in, Ollama,
+    // OpenAI-compatible) sees the same resolved line; it is a pure geocode
+    // + system-tzdata computation, never a model call, and never a reason
+    // to search the web.
+    let place_time_line = resolve_clock_place_time(&clock_probe).await;
+
     // Snapshot the current epoch and build the messages array for Ollama.
     // The user message is NOT yet committed to history - it is only added
     // after a response (including partial/cancelled) to prevent orphaned
@@ -1709,6 +1776,7 @@ pub async fn ask_model(
             content: system_prompt_with_datetime(
                 &config.prompt.resolved_system,
                 &local_datetime_context(),
+                place_time_line.as_deref(),
             ),
             images: None,
         }];
@@ -2088,10 +2156,35 @@ mod tests {
 
     #[test]
     fn system_prompt_with_datetime_appends_context_line() {
-        let got = system_prompt_with_datetime("You are Thuki.", "Friday, 2026-07-10, 01:15 (UTC)");
+        let got =
+            system_prompt_with_datetime("You are Thuki.", "Friday, 2026-07-10, 01:15 (UTC)", None);
         assert_eq!(
             got,
-            "You are Thuki.\n\nCurrent local date and time: Friday, 2026-07-10, 01:15 (UTC)."
+            "You are Thuki.\n\nCurrent local date and time: Friday, 2026-07-10, 01:15 (UTC).\n\
+             When asked what time it is somewhere else, use a resolved time line above \
+             verbatim if one is present and never compute the timezone conversion yourself; \
+             if none is present, you can only share the local time above, so say that rather \
+             than guess."
+        );
+    }
+
+    #[test]
+    fn system_prompt_with_datetime_includes_resolved_place_line_when_present() {
+        let place_line =
+            "Current time in San Francisco (America/Los_Angeles): 06:42, Friday, 2026-07-10.";
+        let got = system_prompt_with_datetime(
+            "You are Thuki.",
+            "Friday, 2026-07-10, 08:42 (America/Chicago)",
+            Some(place_line),
+        );
+        assert_eq!(
+            got,
+            "You are Thuki.\n\nCurrent local date and time: Friday, 2026-07-10, 08:42 (America/Chicago).\n\
+             Current time in San Francisco (America/Los_Angeles): 06:42, Friday, 2026-07-10.\n\
+             When asked what time it is somewhere else, use a resolved time line above \
+             verbatim if one is present and never compute the timezone conversion yourself; \
+             if none is present, you can only share the local time above, so say that rather \
+             than guess."
         );
     }
 

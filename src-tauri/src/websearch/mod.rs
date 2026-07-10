@@ -11,6 +11,10 @@
 //! - [`prefilter`] — the deterministic stage-one search verdict (no model call).
 //! - [`prepass`] — the persona-free classifier for the ambiguous middle: the
 //!   `no｜cached｜web` decision and query rewrite.
+//! - [`clock`] — deterministic place-time resolution for a clock question
+//!   naming a place, injected into the system prompt so the model never
+//!   does its own timezone arithmetic. Not a search decision: it never
+//!   triggers web search.
 //! - [`cache`] — the multi-turn source cache backing a `cached` decision.
 //! - [`engine`] — keyless search-engine scraping with rotation.
 //! - [`weather`], [`sports`], [`news`], [`encyclopedia`] — intent-routed
@@ -23,6 +27,7 @@
 
 pub mod assemble;
 pub mod cache;
+pub mod clock;
 pub mod encyclopedia;
 pub mod engine;
 pub mod fetch;

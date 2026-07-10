@@ -107,13 +107,19 @@ const FORECAST_ENDPOINT: &str = "https://api.open-meteo.com/v1/forecast";
 /// every weather source block.
 const ATTRIBUTION: &str = "Weather data by Open-Meteo.com (CC BY 4.0)";
 
-/// A geocoded place: the display name and the coordinates the forecast needs.
+/// A geocoded place: the display name, the coordinates the forecast needs,
+/// and the IANA timezone name the clock vertical (`websearch::clock`) uses
+/// to resolve a place-qualified clock question deterministically.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct GeoPlace {
     pub(crate) name: String,
     pub(crate) country: String,
     pub(crate) latitude: f64,
     pub(crate) longitude: f64,
+    /// IANA timezone name (e.g. "America/Los_Angeles"), or empty when
+    /// Open-Meteo's response omits the field. The weather vertical never
+    /// reads this; only `websearch::clock` does.
+    pub(crate) timezone: String,
 }
 
 /// Extracts the location text from a weather question, or `None` when the
@@ -174,6 +180,11 @@ pub(crate) fn parse_geocode(body: &str) -> Option<GeoPlace> {
             .to_string(),
         latitude: top.get("latitude")?.as_f64()?,
         longitude: top.get("longitude")?.as_f64()?,
+        timezone: top
+            .get("timezone")
+            .and_then(|t| t.as_str())
+            .unwrap_or_default()
+            .to_string(),
     })
 }
 
@@ -322,6 +333,7 @@ mod tests {
             country: "Japan".into(),
             latitude: 35.6895,
             longitude: 139.69171,
+            timezone: "Asia/Tokyo".into(),
         }
     }
 
@@ -386,6 +398,13 @@ mod tests {
     fn parse_geocode_reads_top_place() {
         let place = parse_geocode(GEOCODE_FIXTURE).unwrap();
         assert_eq!(place, tokyo());
+    }
+
+    #[test]
+    fn parse_geocode_defaults_timezone_when_field_missing() {
+        let body = r#"{"results":[{"name":"Nowhere","latitude":1.0,"longitude":2.0}]}"#;
+        let place = parse_geocode(body).unwrap();
+        assert_eq!(place.timezone, "");
     }
 
     #[test]

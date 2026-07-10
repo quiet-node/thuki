@@ -340,6 +340,55 @@ fn is_clock_question(normalised: &str) -> bool {
     has_content && all_known
 }
 
+/// Extracts the place named by a trailing "in &lt;place&gt;" suffix on a pure
+/// clock/date question ("what time is it in San Francisco"), or `None` when
+/// the message is not a clock question (see [`is_clock_question`]) or
+/// nothing but filler remains once the suffix is trimmed. The extracted text
+/// keeps the ORIGINAL casing ("San Francisco", not "san francisco") so it
+/// geocodes as typed, mirroring how [`crate::websearch::weather::weather_location`]
+/// preserves casing. Trailing connective filler ("right now", "please") is
+/// stripped from the end of the suffix using the same [`CLOCK_FILLER_WORDS`]
+/// vocabulary [`is_clock_question`] validates its prefix against, since none
+/// of those words are ever part of a place name; this is what makes "what
+/// time is it in SF now" extract "SF" rather than "SF now".
+///
+/// This function only extracts text; it does not decide anything. A geocode
+/// miss on the result (including a bare abbreviation like "SF", which
+/// Open-Meteo does not resolve) is a normal, expected outcome the caller
+/// handles by injecting nothing extra, never by falling through to a web
+/// search (see `websearch::clock::resolve_place_time`).
+pub fn clock_question_place(message: &str) -> Option<String> {
+    let bounded: String = message.chars().take(PREFILTER_MAX_SCAN_CHARS).collect();
+    let bounded_lower: String = bounded.chars().flat_map(char::to_lowercase).collect();
+    let normalised = to_normalised(&bounded_lower);
+    if !is_clock_question(&normalised) {
+        return None;
+    }
+    let idx = normalised.rfind(" in ")?;
+    let suffix_tokens: Vec<&str> = normalised[idx + 4..].split_whitespace().collect();
+    let mut place_len = suffix_tokens.len();
+    while place_len > 0 && CLOCK_FILLER_WORDS.contains(&suffix_tokens[place_len - 1]) {
+        place_len -= 1;
+    }
+    if place_len == 0 {
+        return None;
+    }
+    // Re-tokenise the ORIGINAL (case-preserved) bounded text the same way
+    // (split on non-alphanumeric runs): word boundaries never move under
+    // lowercasing, so the last `suffix_tokens.len()` original tokens line up
+    // with `suffix_tokens`, and the first `place_len` of those carry the
+    // place's natural casing. `.get()` keeps this panic-free even if that
+    // alignment assumption is ever violated by unusual Unicode input; it
+    // then simply yields `None` rather than an incorrect place.
+    let original_tokens: Vec<&str> = bounded
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let suffix_start = original_tokens.len().checked_sub(suffix_tokens.len())?;
+    let place_tokens = original_tokens.get(suffix_start..suffix_start + place_len)?;
+    Some(place_tokens.join(" "))
+}
+
 /// Lowercases-and-normalises `bounded` (already lowercased and length-capped) by
 /// replacing every non-alphanumeric character with a space, so tokenisation and
 /// phrase matching see clean word boundaries.
@@ -656,6 +705,67 @@ mod tests {
         // than being force-skipped.
         let long = "what ".repeat(MAX_CLOCK_QUESTION_TOKENS + 1) + "time";
         assert_eq!(verdict(&long), PreFilterVerdict::Ambiguous);
+    }
+
+    // ── clock question place extraction ───────────────────────────────────────
+
+    #[test]
+    fn clock_question_place_extracts_trailing_place() {
+        assert_eq!(
+            clock_question_place("what time is it in Tokyo").as_deref(),
+            Some("Tokyo")
+        );
+        assert_eq!(
+            clock_question_place("current time in San Francisco").as_deref(),
+            Some("San Francisco")
+        );
+    }
+
+    #[test]
+    fn clock_question_place_strips_trailing_filler() {
+        // "right now" trails the place and is filler, not part of it.
+        assert_eq!(
+            clock_question_place("what's the time in New York right now").as_deref(),
+            Some("New York")
+        );
+        // "in SF now" style: the bug-repro shape, "now" trimmed off "SF".
+        assert_eq!(
+            clock_question_place("what's today's date? And what time in SF now?").as_deref(),
+            Some("SF")
+        );
+    }
+
+    #[test]
+    fn clock_question_place_none_without_place_suffix() {
+        assert_eq!(clock_question_place("what time is it"), None);
+        assert_eq!(clock_question_place("today's date"), None);
+        assert_eq!(clock_question_place("what day is it"), None);
+    }
+
+    #[test]
+    fn clock_question_place_none_when_suffix_is_all_filler() {
+        // Nothing but filler after "in": no place to extract.
+        assert_eq!(clock_question_place("what time is it in right now"), None);
+    }
+
+    #[test]
+    fn clock_question_place_none_for_non_clock_questions() {
+        // Has an "in <place>" suffix but "concert" is unrelated content, so
+        // `is_clock_question` correctly declines and no place is extracted.
+        assert_eq!(
+            clock_question_place("what time is the concert in Tokyo"),
+            None
+        );
+        assert_eq!(
+            clock_question_place("what is the population of Tokyo"),
+            None
+        );
+    }
+
+    #[test]
+    fn clock_question_place_none_over_token_cap() {
+        let long = "what ".repeat(MAX_CLOCK_QUESTION_TOKENS + 1) + "time in Tokyo";
+        assert_eq!(clock_question_place(&long), None);
     }
 
     // ── force-no signals ──────────────────────────────────────────────────────
