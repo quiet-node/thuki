@@ -1991,10 +1991,24 @@ fn init_update_panel(app_handle: &tauri::AppHandle) {
 
 // ─── Onboarding window ───────────────────────────────────────────────────────
 
+/// Given a monitor's origin and logical size, and the window's requested
+/// logical size, returns the origin that centers the window on that monitor.
+///
+/// Pure arithmetic, no window handle, so it is unit-testable in isolation.
+fn centered_origin(
+    mon_x: f64,
+    mon_y: f64,
+    mon_w: f64,
+    mon_h: f64,
+    win_w: f64,
+    win_h: f64,
+) -> (f64, f64) {
+    (mon_x + (mon_w - win_w) / 2.0, mon_y + (mon_h - win_h) / 2.0)
+}
+
 /// Resizes the onboarding window to the measured content size, and centers it
-/// when `center` is set. The resize and the optional center run atomically on
-/// the macOS main thread via Tauri's `center()` (the same call used at show
-/// time), so the frontend never positions the window itself.
+/// when `center` is set. The resize and the optional reposition run atomically
+/// on the macOS main thread, so the frontend never positions the window itself.
 ///
 /// `useFitOnboardingWindow` passes `center: true` only on the first fit after a
 /// step spawns; later fits (content growing, the ambient strip appearing) pass
@@ -2008,7 +2022,30 @@ fn fit_onboarding_window(app_handle: tauri::AppHandle, width: f64, height: f64, 
         if let Some(window) = handle.get_webview_window("main") {
             let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
             if center {
-                let _ = window.center();
+                // why: window.center() reads outer_size(), which the window server has
+                // not yet updated to reflect the set_size() call above in this same
+                // closure, so it centers against the PREVIOUS size and the window lands
+                // off-center. Compute the origin from the size we just requested instead.
+                let monitor = window
+                    .current_monitor()
+                    .ok()
+                    .flatten()
+                    .or_else(|| window.primary_monitor().ok().flatten());
+                if let Some(mon) = monitor {
+                    let scale = mon.scale_factor();
+                    let pos = mon.position();
+                    let size = mon.size();
+                    let (x, y) = centered_origin(
+                        pos.x as f64 / scale,
+                        pos.y as f64 / scale,
+                        size.width as f64 / scale,
+                        size.height as f64 / scale,
+                        width,
+                        height,
+                    );
+                    let _ = window
+                        .set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
+                }
             }
         }
     });
@@ -3059,6 +3096,39 @@ mod tests {
         assert_eq!(gh, 648.0);
         assert_eq!(gy + gh, 900.0, "visual top edge must stay fixed on grow");
         assert_eq!(gy, 252.0);
+    }
+
+    #[test]
+    fn centered_origin_smaller_window_centers_exactly() {
+        // 1000x800 monitor at origin (0, 0), a 420x300 window centers with
+        // equal margins on both axes.
+        let (x, y) = centered_origin(0.0, 0.0, 1000.0, 800.0, 420.0, 300.0);
+        assert_eq!(x, 290.0);
+        assert_eq!(y, 250.0);
+    }
+
+    #[test]
+    fn centered_origin_equal_size_yields_monitor_origin() {
+        // Window exactly filling the monitor: origin matches the monitor's.
+        let (x, y) = centered_origin(50.0, 25.0, 1000.0, 800.0, 1000.0, 800.0);
+        assert_eq!(x, 50.0);
+        assert_eq!(y, 25.0);
+    }
+
+    #[test]
+    fn centered_origin_nonzero_monitor_offset_shifts_result() {
+        // Second display sitting to the right of the primary at (1920, 0).
+        let (x, y) = centered_origin(1920.0, 0.0, 1000.0, 800.0, 420.0, 300.0);
+        assert_eq!(x, 2210.0);
+        assert_eq!(y, 250.0);
+    }
+
+    #[test]
+    fn centered_origin_oversized_window_yields_negative_offset() {
+        // Window larger than the monitor: origin goes negative, no panic.
+        let (x, y) = centered_origin(0.0, 0.0, 800.0, 600.0, 1000.0, 800.0);
+        assert_eq!(x, -100.0);
+        assert_eq!(y, -100.0);
     }
 
     #[test]
