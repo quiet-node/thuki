@@ -964,6 +964,17 @@ pub const SERP_MAX_RESULTS_PER_DOMAIN: usize = 2;
 /// Not user-tunable: a rate-limit-survival bound on third-party request volume.
 pub const SERP_EARLY_STOP_HITS: usize = 8;
 
+/// Reciprocal Rank Fusion constant `k`. The keyless engine tier races all live
+/// engines for a query and fuses their ranked lists with RRF: each URL scores
+/// `sum over engines of 1 / (RRF_K + rank)`, where `rank` is its 1-based
+/// position in that engine's list. `k = 60` is the parameter-free value from the
+/// original RRF paper (Cormack et al., 2009) and the same constant SearXNG and
+/// Elasticsearch ship as their default.
+///
+/// Not user-tunable: RRF is famously insensitive to `k`, so it is a fixed
+/// algorithm constant, not a quality knob a user would ever benefit from turning.
+pub const RRF_K: u32 = 60;
+
 // ─── Web-search freshness operators ──────────────────────────────────────────
 
 /// DuckDuckGo `df` (date filter) value applied to the POST form and mirrored as

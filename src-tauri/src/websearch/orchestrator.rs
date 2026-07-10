@@ -581,9 +581,10 @@ enum EngineTierOutcome {
     Ranked(Vec<SourceBlock>),
 }
 
-/// Runs the general scraped-engine tier for `queries`: rotate through the
-/// keyless engines (skipping any inside their cooldown), dedupe hits, stop early
-/// once enough are gathered, then fetch, rank, and budget the pages into source
+/// Runs the general scraped-engine tier for `queries`: for each query race the
+/// keyless engines and rank-fuse their results (skipping any inside their
+/// cooldown), dedupe hits across queries, stop early once enough are gathered,
+/// then fetch, rank, and budget the pages into source
 /// blocks. Shared by the normal `web` path and by [`commit_or_escalate`] when an
 /// insufficient vertical block escalates, so escalation inherits the exact same
 /// cooldown-skip and early-stop volume controls the engines' rate limits

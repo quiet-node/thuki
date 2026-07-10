@@ -1,18 +1,29 @@
-//! Keyless search-engine client with rotation.
+//! Keyless search-engine client with parallel racing + rank fusion.
 //!
 //! General queries that no vertical handles fall through to keyless engine
-//! scraping from the user's device. [`web_search`] tries each engine in
-//! [`ENGINES`] in order and returns the first engine's results that come back
-//! usable: DuckDuckGo's `html` endpoint is primary, and Mojeek is the fallback.
-//! A tripped bot challenge (empirically IP-scoped and multi-hour on DuckDuckGo,
-//! per the T1 spike) classifies as [`SerpOutcome::Blocked`] and rotates to the
-//! next engine rather than yielding nothing, so a single engine's rate-limit is
-//! no longer fatal to the whole turn. When every engine is exhausted the caller
-//! degrades gracefully to a plain answer.
+//! scraping from the user's device. [`web_search`] fires one request to every
+//! live engine in [`ENGINES`] *concurrently* (DuckDuckGo's `html` endpoint and
+//! Mojeek today), then fuses their ranked result lists with Reciprocal Rank
+//! Fusion ([`rrf_fuse`]). Racing makes per-query latency `max()` of the engines
+//! instead of the old sequential `sum()`, and fusion is a quality win in its own
+//! right: a URL that ranks on two independent engines is far likelier to be
+//! relevant and far less likely to be junk (observed live: hoax and
+//! age-calculator pages that surface from a single engine's list get outranked
+//! once a second engine disagrees). Adding a third engine later is one [`ENGINES`]
+//! entry with no control-flow change.
 //!
-//! Each engine attempt logs its outcome to stderr under a `[search]` prefix so
-//! the decision path is visible in the dev console: which engine ran, whether it
-//! was blocked, empty, or returned N hits.
+//! A tripped bot challenge (empirically IP-scoped and multi-hour on DuckDuckGo,
+//! per the T1 spike) classifies as [`SerpOutcome::Blocked`] and marks that
+//! engine cooling for its cooldown window; the other engines' results still fuse
+//! and return, so a single engine's rate-limit is no longer fatal to the turn.
+//! An engine already inside its cooldown is not requested at all. When no engine
+//! returns a usable list the result is empty and the caller degrades gracefully
+//! to a plain answer.
+//!
+//! Each engine's outcome logs to stderr under a `[search]` prefix, followed by a
+//! single fused summary line, so the decision path is visible in the dev
+//! console: which engines ran, whether each was blocked, empty, or returned N
+//! hits, and how many URLs the fusion kept.
 //!
 //! All requests go through the injectable [`HttpTransport`], so the client is
 //! tested against fixture SERP HTML with no network. The parsers are pure and
@@ -33,11 +44,13 @@ pub struct SearchHit {
 /// How a raw SERP response classifies before parsing is trusted.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SerpOutcome {
-    /// A 200 with at least one parsed row.
+    /// A 200 with at least one parsed row; its list joins the fusion.
     Ok,
-    /// A bot challenge or non-200 status; rotate.
+    /// A bot challenge or non-200 status; the engine is marked cooling and
+    /// contributes no list to the fusion.
     Blocked,
-    /// A 200 that parsed to zero rows; rotate.
+    /// A 200 that parsed to zero rows; contributes no list (no cooldown: an
+    /// empty page is a bad query, not a ban).
     Empty,
 }
 
@@ -59,8 +72,9 @@ const DDG_HTML_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
 const MOJEEK_ENDPOINT: &str = "https://www.mojeek.com/search";
 
 /// One keyless search engine: a name for logging and cooldown keying, a request
-/// builder, a pure SERP parser, and how long to skip it after it blocks. The
-/// rotation in [`web_search`] walks these in order.
+/// builder, a pure SERP parser, and how long to skip it after it blocks.
+/// [`web_search`] races every live engine and fuses their lists; this struct is
+/// the per-engine plug-in that makes adding an engine a single [`ENGINES`] entry.
 struct Engine {
     /// Identifier used in the `[search]` stderr log line and as the cooldown key.
     name: &'static str,
@@ -76,10 +90,11 @@ struct Engine {
     cooldown_s: u64,
 }
 
-/// Engines tried in order until one returns usable results. DuckDuckGo is
-/// primary (richest results); Mojeek is the fallback because it is
-/// scraper-tolerant, keyless, and serves lightweight HTML that survives a
-/// DuckDuckGo IP block. Verticals (Wikipedia, weather, news) are a separate
+/// Engines raced concurrently and rank-fused for every query. DuckDuckGo has
+/// the richest results; Mojeek is scraper-tolerant, keyless, and serves
+/// lightweight HTML that survives a DuckDuckGo IP block, so fusing the two
+/// covers each other's blind spots. Verticals (Wikipedia, weather, news) are a
+/// separate
 /// intent-routed layer added later; this is the general-web tier only. Other
 /// candidates were probed live and rejected: Brave/Startpage/Qwant serve
 /// JS-shell pages with no parseable server-side results, Ecosia and Presearch
@@ -184,24 +199,51 @@ pub fn any_engine_available(health: &EngineHealth) -> bool {
     ENGINES.iter().any(|engine| !health.is_cooling(engine.name))
 }
 
-/// Runs a keyless web search for `query`, rotating through [`ENGINES`] until one
-/// returns usable results. Engines inside their block cooldown (see
-/// [`EngineHealth`]) are skipped outright; a bot challenge or rate-limit
-/// response marks the engine blocked for its cooldown window and rotates; an
-/// empty SERP or transport/SSRF error rotates without marking (an empty page is
-/// a bad query, not a ban). When all engines are exhausted the result is an
-/// empty list, so the caller degrades gracefully rather than hanging or
-/// hallucinating. Every attempt logs its outcome to stderr under `[search]` so
-/// the path is visible in the dev console. `freshness` is forwarded to each
-/// engine's request builder to bias results toward recent content when the
-/// turn's standalone question carried a freshness signal.
+/// The per-engine result of one raced request, carried back from the concurrent
+/// tasks to the sequential (ENGINES-order) fusion step. Kept out of the async
+/// tasks: cooldown marking happens after the join so `EngineHealth`'s lock is
+/// never touched across an `await`.
+enum EngineOutcome {
+    /// A usable ranked list to feed into the fusion.
+    Hits(Vec<SearchHit>),
+    /// A bot challenge or non-200: the engine must be marked cooling.
+    Blocked,
+    /// A 200 with zero rows: contributes nothing, no cooldown.
+    Empty,
+    /// The transport/SSRF layer errored: contributes nothing, no cooldown.
+    TransportError,
+}
+
+/// Runs a keyless web search for `query` by racing every live engine in
+/// [`ENGINES`] concurrently and fusing their ranked lists with Reciprocal Rank
+/// Fusion. Engines inside their block cooldown (see [`EngineHealth`]) are not
+/// requested at all; every other engine gets exactly one request. A bot
+/// challenge or rate-limit response marks that engine blocked for its cooldown
+/// window; an empty SERP or transport/SSRF error contributes nothing without
+/// marking (an empty page is a bad query, not a ban). The surviving lists are
+/// fused ([`rrf_fuse`]), then deduped and capped ([`dedupe_and_cap`]) so the
+/// final length still honours [`crate::config::defaults::SERP_MAX_RESULTS_PER_QUERY`].
+/// When no engine returns a usable list the result is empty, so the caller
+/// degrades gracefully rather than hanging or hallucinating. Each engine's
+/// outcome logs to stderr under `[search]`, followed by one fused summary line.
+/// `freshness` is forwarded to each engine's request builder to bias results
+/// toward recent content when the turn's standalone question carried a freshness
+/// signal.
+///
+/// Burst safety: this sends AT MOST ONE request per engine per query, exactly as
+/// the old sequential path did on its failure branch. DuckDuckGo's block is
+/// volume-triggered, and racing does not raise DuckDuckGo volume (still one DDG
+/// request per query); it only issues the Mojeek request concurrently instead of
+/// only-on-DDG-failure. So the change trades latency (`sum` -> `max`) and adds
+/// fusion quality without adding any per-engine request volume.
 ///
 /// Coverage-excluded: thin async glue over the injectable transport that
 /// delegates every decision to the pure, directly-tested helpers (each engine's
-/// request builder and parser, [`classify_serp`], [`dedupe_and_cap`],
-/// [`EngineHealth`]); its rotation behaviour is still exercised against
-/// [`crate::net::transport::FakeHttpTransport`] in the tests below. Excluded
-/// only because parallel async coverage attribution is nondeterministic.
+/// request builder and parser, [`classify_serp`], [`rrf_fuse`],
+/// [`dedupe_and_cap`], [`EngineHealth`]); its racing + fusion behaviour is still
+/// exercised against [`crate::net::transport::FakeHttpTransport`] in the tests
+/// below. Excluded only because parallel async coverage attribution is
+/// nondeterministic.
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn web_search(
     transport: &dyn HttpTransport,
@@ -209,47 +251,119 @@ pub async fn web_search(
     health: &EngineHealth,
     freshness: bool,
 ) -> Vec<SearchHit> {
-    for engine in ENGINES {
-        if health.is_cooling(engine.name) {
-            eprintln!("[search] engine={} cooling -> skipped", engine.name);
-            continue;
-        }
-        let response = match transport.send(&(engine.build)(query, freshness)).await {
-            Ok(response) => response,
-            Err(_) => {
-                eprintln!(
-                    "[search] engine={} transport_error -> rotating",
-                    engine.name
-                );
-                continue;
+    // Build one request per non-cooling engine and race them. `join_all`
+    // preserves input order, so the results come back in ENGINES order and the
+    // whole path is deterministic. `health` is intentionally not captured by the
+    // async tasks: cooldown marking is done sequentially after the join, so the
+    // mutex is never held across an `await`.
+    let tasks: Vec<_> = ENGINES
+        .iter()
+        .filter_map(|engine| {
+            if health.is_cooling(engine.name) {
+                eprintln!("[search] engine={} cooling -> skipped", engine.name);
+                return None;
             }
-        };
-        let body = String::from_utf8_lossy(&response.body);
-        let hits = (engine.parse)(&body);
-        match classify_serp(response.status, hits.len(), &body) {
-            SerpOutcome::Ok => {
-                let capped = dedupe_and_cap(
-                    hits,
-                    crate::config::defaults::SERP_MAX_RESULTS_PER_QUERY,
-                    crate::config::defaults::SERP_MAX_RESULTS_PER_DOMAIN,
-                );
-                eprintln!("[search] engine={} ok hits={}", engine.name, capped.len());
-                return capped;
+            let request = (engine.build)(query, freshness);
+            Some(async move {
+                let outcome = match transport.send(&request).await {
+                    Err(_) => EngineOutcome::TransportError,
+                    Ok(response) => {
+                        let body = String::from_utf8_lossy(&response.body);
+                        let hits = (engine.parse)(&body);
+                        match classify_serp(response.status, hits.len(), &body) {
+                            SerpOutcome::Ok => EngineOutcome::Hits(hits),
+                            SerpOutcome::Blocked => EngineOutcome::Blocked,
+                            SerpOutcome::Empty => EngineOutcome::Empty,
+                        }
+                    }
+                };
+                (engine.name, engine.cooldown_s, outcome)
+            })
+        })
+        .collect();
+
+    let results = futures_util::future::join_all(tasks).await;
+
+    let mut lists: Vec<Vec<SearchHit>> = Vec::new();
+    for (name, cooldown_s, outcome) in results {
+        match outcome {
+            EngineOutcome::Hits(hits) => {
+                eprintln!("[search] engine={name} ok hits={}", hits.len());
+                lists.push(hits);
             }
-            SerpOutcome::Blocked => {
-                health.mark_blocked(engine.name, engine.cooldown_s);
-                eprintln!(
-                    "[search] engine={} blocked -> cooldown {}s",
-                    engine.name, engine.cooldown_s
-                );
+            EngineOutcome::Blocked => {
+                health.mark_blocked(name, cooldown_s);
+                eprintln!("[search] engine={name} blocked -> cooldown {cooldown_s}s");
             }
-            SerpOutcome::Empty => {
-                eprintln!("[search] engine={} empty -> rotating", engine.name)
+            EngineOutcome::Empty => eprintln!("[search] engine={name} empty"),
+            EngineOutcome::TransportError => {
+                eprintln!("[search] engine={name} transport_error")
             }
         }
     }
-    eprintln!("[search] all engines exhausted, no results");
-    Vec::new()
+
+    let fused = rrf_fuse(&lists);
+    let capped = dedupe_and_cap(
+        fused,
+        crate::config::defaults::SERP_MAX_RESULTS_PER_QUERY,
+        crate::config::defaults::SERP_MAX_RESULTS_PER_DOMAIN,
+    );
+    eprintln!(
+        "[search] fused engines={} urls={}",
+        lists.len(),
+        capped.len()
+    );
+    capped
+}
+
+/// Fuses per-engine ranked lists into one ranked list with Reciprocal Rank
+/// Fusion: each URL's score is the sum over engines of `1 / (RRF_K + rank)`,
+/// where `rank` is the URL's 1-based position in that engine's list. A URL that
+/// appears on two engines therefore outscores one that is rank-1 on a single
+/// engine whenever the arithmetic says so (e.g. rank 3 on both engines scores
+/// `2/63 ≈ 0.0317`, beating rank 1 on one engine at `1/61 ≈ 0.0164`), which is
+/// the whole point: cross-engine agreement is a strong relevance signal and a
+/// strong junk filter.
+///
+/// The output is sorted by score descending with ties broken by first-seen order
+/// across the input lists (a stable sort over a first-seen-ordered vector), so
+/// the result is fully deterministic. A URL repeated within a single engine's
+/// list contributes only once, at its best (first) rank, so the "sum over
+/// engines" semantics is not inflated by intra-list duplicates. Fusing a single
+/// list is an identity on order (every score is monotonic in rank), so the
+/// one-live-engine case degrades to that engine's own ordering. Empty input
+/// yields an empty list.
+pub(crate) fn rrf_fuse(lists: &[Vec<SearchHit>]) -> Vec<SearchHit> {
+    let k = crate::config::defaults::RRF_K as f64;
+    // First-seen order of URLs across all lists; the stable sort below breaks
+    // score ties by this order.
+    let mut order: Vec<SearchHit> = Vec::new();
+    let mut scores: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    for list in lists {
+        // A URL may appear at most once per engine, at its first (best) rank.
+        let mut seen_in_list: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for (idx, hit) in list.iter().enumerate() {
+            if !seen_in_list.insert(hit.url.as_str()) {
+                continue;
+            }
+            let contribution = 1.0 / (k + (idx + 1) as f64);
+            match scores.get_mut(&hit.url) {
+                Some(score) => *score += contribution,
+                None => {
+                    scores.insert(hit.url.clone(), contribution);
+                    order.push(hit.clone());
+                }
+            }
+        }
+    }
+    // slice::sort_by is stable, so equal scores keep their first-seen order.
+    // Scores are always finite positives, so partial_cmp never returns None.
+    order.sort_by(|a, b| {
+        scores[&b.url]
+            .partial_cmp(&scores[&a.url])
+            .expect("fusion scores are finite")
+    });
+    order
 }
 
 /// Builds the DuckDuckGo `html` POST request with browser headers and the
@@ -784,7 +898,90 @@ mod tests {
         assert!(req.url.contains("rust") && req.url.contains("version"));
     }
 
-    // ── web_search rotation over the fake transport ─────────────────────────
+    // ── rrf_fuse ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn rrf_fuse_ranks_cross_engine_agreement_over_single_rank1() {
+        // list A: y is rank 1, x is rank 3. list B: x is rank 3.
+        // With RRF_K = 60:
+        //   score(x) = 1/(60+3) + 1/(60+3) = 2/63 ≈ 0.031746
+        //   score(y) = 1/(60+1)           = 1/61 ≈ 0.016393
+        // So x (agreed on by both engines at mid rank) outranks y (rank 1 on one
+        // engine only), which is the whole reason to fuse.
+        let x = hit("https://x.example/");
+        let y = hit("https://y.example/");
+        let a1 = hit("https://a1.example/");
+        let b1 = hit("https://b1.example/");
+        let b2 = hit("https://b2.example/");
+        let list_a = vec![y.clone(), a1, x.clone()];
+        let list_b = vec![b1, b2, x.clone()];
+        let fused = rrf_fuse(&[list_a, list_b]);
+        assert_eq!(fused[0].url, "https://x.example/");
+        // y still appears, just below x.
+        assert!(fused.iter().any(|h| h.url == "https://y.example/"));
+    }
+
+    #[test]
+    fn rrf_fuse_single_list_preserves_order() {
+        // One live engine degrades to that engine's own ordering: score is
+        // strictly monotonic in rank, so the input order is preserved verbatim.
+        let list = vec![
+            hit("https://one.example/"),
+            hit("https://two.example/"),
+            hit("https://three.example/"),
+        ];
+        let fused = rrf_fuse(std::slice::from_ref(&list));
+        assert_eq!(
+            fused.iter().map(|h| h.url.as_str()).collect::<Vec<_>>(),
+            vec![
+                "https://one.example/",
+                "https://two.example/",
+                "https://three.example/",
+            ]
+        );
+    }
+
+    #[test]
+    fn rrf_fuse_counts_intra_list_duplicate_once() {
+        // A URL repeated inside one engine's list contributes only once, at its
+        // first (best) rank, so the "sum over engines" semantics is not inflated
+        // by an engine listing the same URL twice.
+        let list = vec![
+            hit("https://a.example/"),
+            hit("https://b.example/"),
+            hit("https://a.example/"),
+        ];
+        let fused = rrf_fuse(std::slice::from_ref(&list));
+        // Deduped to two URLs, first-seen order (a before b), a scored from
+        // rank 1 only.
+        assert_eq!(
+            fused.iter().map(|h| h.url.as_str()).collect::<Vec<_>>(),
+            vec!["https://a.example/", "https://b.example/"]
+        );
+    }
+
+    #[test]
+    fn rrf_fuse_empty_input_is_empty() {
+        assert!(rrf_fuse(&[]).is_empty());
+        assert!(rrf_fuse(&[Vec::new()]).is_empty());
+    }
+
+    #[test]
+    fn rrf_fuse_is_deterministic() {
+        // Same inputs -> same output order, every time.
+        let list_a = vec![hit("https://p.example/"), hit("https://q.example/")];
+        let list_b = vec![hit("https://q.example/"), hit("https://r.example/")];
+        let first = rrf_fuse(&[list_a.clone(), list_b.clone()]);
+        let second = rrf_fuse(&[list_a, list_b]);
+        assert_eq!(
+            first.iter().map(|h| &h.url).collect::<Vec<_>>(),
+            second.iter().map(|h| &h.url).collect::<Vec<_>>()
+        );
+        // q is on both engines (ranks 2 and 1) -> highest score -> first.
+        assert_eq!(first[0].url, "https://q.example/");
+    }
+
+    // ── web_search racing + fusion over the fake transport ──────────────────
 
     fn ok(url: &str, body: &str) -> HttpResponse {
         HttpResponse {
@@ -814,21 +1011,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn web_search_returns_first_engine_hits_without_rotating() {
-        // DuckDuckGo answers Ok, so Mojeek is never queried.
-        let transport = FakeHttpTransport::new()
-            .with_response(DDG_HTML_ENDPOINT, ok(DDG_HTML_ENDPOINT, DDG_HTML_FIXTURE));
-        let hits = web_search(&transport, "q", &EngineHealth::new(), false).await;
-        assert_eq!(hits.len(), 2);
+    async fn web_search_races_and_fuses_both_engines() {
+        // Both engines answer Ok with disjoint URLs: the fused list carries hits
+        // from both, and each engine got exactly one request (burst-safe).
         let mojeek_url = mojeek_request("q", false).url;
-        assert!(!transport.calls().iter().any(|c| c.url == mojeek_url));
+        let transport = FakeHttpTransport::new()
+            .with_response(DDG_HTML_ENDPOINT, ok(DDG_HTML_ENDPOINT, DDG_HTML_FIXTURE))
+            .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
+        let hits = web_search(&transport, "q", &EngineHealth::new(), false).await;
+        let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
+        // A DuckDuckGo result and a Mojeek result both survive the fusion.
+        assert!(urls.contains(&"https://example.com/a"));
+        assert!(urls.contains(&"https://rust-lang.org/tools/install/"));
+        // Exactly one request per engine.
+        let calls = transport.calls();
+        assert_eq!(
+            calls.iter().filter(|c| c.url == DDG_HTML_ENDPOINT).count(),
+            1
+        );
+        assert_eq!(calls.iter().filter(|c| c.url == mojeek_url).count(), 1);
     }
 
     #[tokio::test]
-    async fn web_search_rotates_to_mojeek_when_ddg_blocked() {
-        // The live failure mode: DuckDuckGo hard-blocks (HTTP 202 challenge), so
-        // the search rotates to Mojeek and returns its results.
+    async fn web_search_cools_blocked_engine_and_still_fuses_the_other() {
+        // The live failure mode: DuckDuckGo hard-blocks (HTTP 202 challenge). It
+        // is marked cooling, and Mojeek's results still come back fused.
         let mojeek_url = mojeek_request("q", false).url;
+        let health = EngineHealth::new();
         let transport = FakeHttpTransport::new()
             .with_response(
                 DDG_HTML_ENDPOINT,
@@ -839,9 +1048,32 @@ mod tests {
                 },
             )
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let hits = web_search(&transport, "q", &EngineHealth::new(), false).await;
+        let hits = web_search(&transport, "q", &health, false).await;
+        // Blocked engine contributes no list; Mojeek's two hits survive.
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].url, "https://rust-lang.org/tools/install/");
+        // And the block was recorded for the next query.
+        assert!(health.is_cooling("duckduckgo"));
+    }
+
+    #[tokio::test]
+    async fn web_search_empty_engine_contributes_nothing_and_other_fuses() {
+        // One engine returns 200 with zero parsed rows (Empty): it adds no list
+        // and is NOT cooled (an empty page is a bad query, not a ban), while the
+        // other engine's results still come back fused.
+        let mojeek_url = mojeek_request("q", false).url;
+        let health = EngineHealth::new();
+        let transport = FakeHttpTransport::new()
+            .with_response(
+                DDG_HTML_ENDPOINT,
+                ok(DDG_HTML_ENDPOINT, "<html><body>no results</body></html>"),
+            )
+            .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
+        let hits = web_search(&transport, "q", &health, false).await;
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].url, "https://rust-lang.org/tools/install/");
+        // Empty is not a block: DuckDuckGo stays available for the next query.
+        assert!(!health.is_cooling("duckduckgo"));
     }
 
     #[tokio::test]
@@ -922,6 +1154,10 @@ mod tests {
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
         let hits = web_search(&transport, "q", &health, false).await;
         assert_eq!(hits.len(), 2);
+        // Single live engine: fusion is an identity on order, so Mojeek's own
+        // ordering is preserved verbatim.
+        assert_eq!(hits[0].url, "https://rust-lang.org/tools/install/");
+        assert_eq!(hits[1].url, "https://blog.rust-lang.org/");
         assert!(!transport.calls().iter().any(|c| c.url == DDG_HTML_ENDPOINT));
     }
 
