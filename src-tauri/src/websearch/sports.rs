@@ -124,9 +124,42 @@ fn status_label(state: &str, short_detail: &str) -> String {
     }
 }
 
+/// Extracts the calendar-date portion of an ESPN event's ISO 8601 `date`
+/// field (e.g. `"2026-07-09T20:00Z"` -> `"2026-07-09"`), or `None` when the
+/// field is missing or not a string. No date-parsing dependency needed: the
+/// field is always ISO 8601 with a literal `T` separator, so a byte split
+/// suffices; a value with no `T` (a shape drift) degrades to the raw string
+/// rather than dropping the date entirely.
+///
+/// This is the direct fix for the bug this vertical exists to avoid: a
+/// `post` (final) event's own status text is just `"Final"`/`"FT"`, with no
+/// date at all, so a small model reading an undated "France 2-0 Morocco"
+/// score line pattern-matches it onto a superficially similar past
+/// tournament instead of trusting it as the live scoreboard it is.
+fn event_date(event: &serde_json::Value) -> Option<String> {
+    let raw = event.get("date")?.as_str()?;
+    let date = raw.split_once('T').map(|(d, _)| d).unwrap_or(raw);
+    Some(date.to_string())
+}
+
+/// Reads the scoreboard's season year from `leagues[0].season.year`, when
+/// ESPN's response includes it, so the block's league label can disambiguate
+/// "the 2026 World Cup" from any other year's tournament of the same name.
+/// `None` on any missing or wrong-typed link in the chain (a shape drift
+/// degrades to no season label, never a panic).
+fn season_year(json: &serde_json::Value) -> Option<i64> {
+    json.get("leagues")?
+        .get(0)?
+        .get("season")?
+        .get("year")?
+        .as_i64()
+}
+
 /// Formats one scoreboard event into a single display line, or `None` when the
 /// event is missing its name or fewer than two competitors resolve a name (a
 /// malformed or unrecognisable row is skipped rather than shown half-blank).
+/// The line always carries the event's date when ESPN provides one, whatever
+/// its status: a `post` (final) event's own status text has no date at all.
 fn format_event(event: &serde_json::Value) -> Option<String> {
     let name = event.get("name")?.as_str()?.to_string();
     let competitors = event
@@ -150,18 +183,20 @@ fn format_event(event: &serde_json::Value) -> Option<String> {
         .and_then(|t| t.get("shortDetail"))
         .and_then(|s| s.as_str())
         .unwrap_or("");
-    Some(format!(
-        "{name}: {} ({})",
-        lines.join(" vs "),
-        status_label(state, short_detail)
-    ))
+    let status = status_label(state, short_detail);
+    let scoreline = lines.join(" vs ");
+    match event_date(event) {
+        Some(date) => Some(format!("{name}: {scoreline} ({status}) on {date}")),
+        None => Some(format!("{name}: {scoreline} ({status})")),
+    }
 }
 
-/// Parses a scoreboard response body into the league's display name and up to
-/// [`MAX_SPORTS_EVENTS`] formatted event lines. Returns `None` only when the
-/// body is not JSON or carries no `events` field at all; an `events` array
-/// that parses to zero usable lines (e.g. an off-season slate) returns
-/// `Some((name, vec![]))`, which the caller treats as a miss.
+/// Parses a scoreboard response body into the league's display label (name,
+/// plus the season year when present) and up to [`MAX_SPORTS_EVENTS`]
+/// formatted event lines. Returns `None` only when the body is not JSON or
+/// carries no `events` field at all; an `events` array that parses to zero
+/// usable lines (e.g. an off-season slate) returns `Some((label, vec![]))`,
+/// which the caller treats as a miss.
 pub(crate) fn parse_scoreboard(body: &str) -> Option<(String, Vec<String>)> {
     let json: serde_json::Value = serde_json::from_str(body).ok()?;
     let league_name = json
@@ -171,20 +206,34 @@ pub(crate) fn parse_scoreboard(body: &str) -> Option<(String, Vec<String>)> {
         .and_then(|n| n.as_str())
         .unwrap_or("the league")
         .to_string();
+    let league_label = match season_year(&json) {
+        Some(year) => format!("{league_name} {year}"),
+        None => league_name,
+    };
     let events = json.get("events")?.as_array()?;
     let lines = events
         .iter()
         .filter_map(format_event)
         .take(MAX_SPORTS_EVENTS)
         .collect();
-    Some((league_name, lines))
+    Some((league_label, lines))
 }
 
 /// Wraps formatted event lines into the single `[1]` source block the writer
-/// cites, naming the league in the title and citing ESPN's homepage (the
-/// scoreboard API has no public page of its own).
-pub(crate) fn sports_source_block(league_name: &str, lines: &[String]) -> SourceBlock {
-    let mut text = format!("Live scores and schedule for {league_name} (via ESPN):");
+/// cites, naming the league (with its season year, when known) in the title
+/// and citing ESPN's homepage (the scoreboard API has no public page of its
+/// own). The block is prefixed with an explicit as-of line: the writer's own
+/// training data cannot date this response, so it must be told in-band that
+/// this scoreboard reflects `today`, not whatever year a similarly-scored
+/// past match happens to be memorised as.
+pub(crate) fn sports_source_block(
+    league_label: &str,
+    lines: &[String],
+    today: &str,
+) -> SourceBlock {
+    let mut text = format!(
+        "{league_label}, as of {today}.\nLive scores and schedule for {league_label} (via ESPN):"
+    );
     for line in lines {
         text.push_str("\n- ");
         text.push_str(line);
@@ -192,7 +241,7 @@ pub(crate) fn sports_source_block(league_name: &str, lines: &[String]) -> Source
     SourceBlock {
         index: 1,
         url: ESPN_PAGE_URL.to_string(),
-        title: format!("ESPN scores: {league_name}"),
+        title: format!("ESPN scores: {league_label}"),
         text,
     }
 }
@@ -200,7 +249,8 @@ pub(crate) fn sports_source_block(league_name: &str, lines: &[String]) -> Source
 /// Runs the full sports vertical for `standalone_question`: league detection,
 /// scoreboard fetch, parse. Returns `None` on any miss (no league match,
 /// transport error, non-200, unparseable body, or zero usable events) so the
-/// caller falls through to the news / engine tiers.
+/// caller falls through to the news / engine tiers. `today` becomes the
+/// source block's as-of line (see [`sports_source_block`]).
 ///
 /// Coverage-excluded: thin async glue over the injectable transport
 /// delegating every decision to the pure helpers above, which are all tested
@@ -210,6 +260,7 @@ pub(crate) fn sports_source_block(league_name: &str, lines: &[String]) -> Source
 pub(crate) async fn fetch_sports(
     transport: &dyn HttpTransport,
     standalone_question: &str,
+    today: &str,
 ) -> Option<SourceBlock> {
     let (sport, league) = detect_league(standalone_question)?;
     let response = match transport.send(&scoreboard_request(sport, league)).await {
@@ -226,7 +277,7 @@ pub(crate) async fn fetch_sports(
         );
         return None;
     }
-    let Some((league_name, lines)) = parse_scoreboard(&String::from_utf8_lossy(&response.body))
+    let Some((league_label, lines)) = parse_scoreboard(&String::from_utf8_lossy(&response.body))
     else {
         eprintln!("[search] vertical=sports unparseable -> engines");
         return None;
@@ -236,10 +287,10 @@ pub(crate) async fn fetch_sports(
         return None;
     }
     eprintln!(
-        "[search] vertical=sports league={league_name} events={}",
+        "[search] vertical=sports league={league_label} events={}",
         lines.len()
     );
-    Some(sports_source_block(&league_name, &lines))
+    Some(sports_source_block(&league_label, &lines, today))
 }
 
 #[cfg(test)]
@@ -249,8 +300,12 @@ mod tests {
 
     /// Real ESPN scoreboard response shape, trimmed to the fields this module
     /// reads (captured live via curl 2026-07-09, `soccer/fifa.world/scoreboard`):
-    /// one completed match.
-    const WORLD_CUP_FIXTURE: &str = r#"{"leagues": [{"name": "FIFA World Cup"}], "events": [{"name": "Morocco at France", "date": "2026-07-09T20:00Z", "status": {"type": {"state": "post", "completed": true, "shortDetail": "FT"}}, "competitions": [{"competitors": [{"homeAway": "home", "score": "2", "team": {"displayName": "France"}}, {"homeAway": "away", "score": "0", "team": {"displayName": "Morocco"}}]}]}]}"#;
+    /// one completed match. Carries `leagues[0].season.year`, proving the
+    /// season-year path: this is the exact shape of the bug this module
+    /// exists to fix (a `post`/final match whose own status text ["FT"] has
+    /// no date, previously letting a small model mistake a live 2026 result
+    /// for the famous 2022 semifinal).
+    const WORLD_CUP_FIXTURE: &str = r#"{"leagues": [{"name": "FIFA World Cup", "season": {"year": 2026}}], "events": [{"name": "Morocco at France", "date": "2026-07-09T20:00Z", "status": {"type": {"state": "post", "completed": true, "shortDetail": "FT"}}, "competitions": [{"competitors": [{"homeAway": "home", "score": "2", "team": {"displayName": "France"}}, {"homeAway": "away", "score": "0", "team": {"displayName": "Morocco"}}]}]}]}"#;
 
     /// Real ESPN scoreboard response shape, trimmed to the fields this module
     /// reads (captured live via curl 2026-07-09, `football/nfl/scoreboard`):
@@ -341,26 +396,91 @@ mod tests {
         assert_eq!(status_label("", ""), "status unknown");
     }
 
+    // ── event_date ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn event_date_extracts_date_portion_before_t_separator() {
+        let event = serde_json::json!({"date": "2026-07-09T20:00Z"});
+        assert_eq!(event_date(&event), Some("2026-07-09".to_string()));
+    }
+
+    #[test]
+    fn event_date_returns_raw_value_when_no_t_separator() {
+        // A shape drift (no literal "T"): the raw value is kept rather than
+        // dropped, so the line still carries a date, just unformatted.
+        let event = serde_json::json!({"date": "2026-07-09"});
+        assert_eq!(event_date(&event), Some("2026-07-09".to_string()));
+    }
+
+    #[test]
+    fn event_date_none_when_missing_or_wrong_type() {
+        assert_eq!(event_date(&serde_json::json!({})), None);
+        assert_eq!(event_date(&serde_json::json!({"date": 20260709})), None);
+    }
+
+    // ── season_year ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn season_year_reads_leagues_zero_season_year() {
+        let json = serde_json::json!({"leagues": [{"name": "X", "season": {"year": 2026}}]});
+        assert_eq!(season_year(&json), Some(2026));
+    }
+
+    #[test]
+    fn season_year_none_on_any_missing_or_wrong_typed_link() {
+        assert_eq!(season_year(&serde_json::json!({})), None, "no leagues key");
+        assert_eq!(
+            season_year(&serde_json::json!({"leagues": []})),
+            None,
+            "empty leagues array"
+        );
+        assert_eq!(
+            season_year(&serde_json::json!({"leagues": [{"name": "X"}]})),
+            None,
+            "no season key"
+        );
+        assert_eq!(
+            season_year(&serde_json::json!({"leagues": [{"season": {}}]})),
+            None,
+            "no year key"
+        );
+        assert_eq!(
+            season_year(&serde_json::json!({"leagues": [{"season": {"year": "2026"}}]})),
+            None,
+            "year is not an integer"
+        );
+    }
+
     // ── parse_scoreboard ──────────────────────────────────────────────────────
 
     #[test]
     fn parse_scoreboard_reads_real_final_match_fixture() {
+        // The league label carries the season year (present in this fixture),
+        // and the event line carries its own date even though it is a `post`
+        // (final) event whose status text alone ("FT" -> "final") has none:
+        // this is the concrete fix for the bug where an undated final score
+        // reads as a past tournament rather than the live one it is.
         let (league, lines) = parse_scoreboard(WORLD_CUP_FIXTURE).unwrap();
-        assert_eq!(league, "FIFA World Cup");
+        assert_eq!(league, "FIFA World Cup 2026");
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("Morocco at France"));
         assert!(lines[0].contains("France 2"));
         assert!(lines[0].contains("Morocco 0"));
         assert!(lines[0].contains("(final)"));
+        assert!(lines[0].contains("on 2026-07-09"));
     }
 
     #[test]
     fn parse_scoreboard_reads_scheduled_events_with_date() {
+        // No `season` field in this fixture: the league label falls back to
+        // the plain name, proving the season-year path is optional.
         let (league, lines) = parse_scoreboard(NFL_SCHEDULED_FIXTURE).unwrap();
         assert_eq!(league, "National Football League");
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("scheduled, 9/9 - 8:20 PM EDT"));
+        assert!(lines[0].contains("on 2026-09-10"));
         assert!(lines[1].contains("scheduled, 9/10 - 8:35 PM EDT"));
+        assert!(lines[1].contains("on 2026-09-11"));
     }
 
     #[test]
@@ -471,16 +591,28 @@ mod tests {
     #[test]
     fn source_block_names_league_and_cites_espn_homepage() {
         let block = sports_source_block(
-            "FIFA World Cup",
-            &["Morocco at France: France 2 vs Morocco 0 (final)".to_string()],
+            "FIFA World Cup 2026",
+            &["Morocco at France: France 2 vs Morocco 0 (final) on 2026-07-09".to_string()],
+            "2026-07-09",
         );
         assert_eq!(block.index, 1);
         assert_eq!(block.url, "https://www.espn.com/");
-        assert_eq!(block.title, "ESPN scores: FIFA World Cup");
+        assert_eq!(block.title, "ESPN scores: FIFA World Cup 2026");
         assert!(block
             .text
-            .contains("Live scores and schedule for FIFA World Cup"));
+            .contains("Live scores and schedule for FIFA World Cup 2026"));
         assert!(block.text.contains("Morocco at France"));
+    }
+
+    #[test]
+    fn source_block_is_prefixed_with_an_as_of_line() {
+        // The as-of line is the fix for the writer misdating a scoreboard
+        // it has no other way to date: it must lead the block, naming both
+        // the competition and today's date.
+        let block = sports_source_block("FIFA World Cup 2026", &["line".to_string()], "2026-07-09");
+        assert!(block
+            .text
+            .starts_with("FIFA World Cup 2026, as of 2026-07-09."));
     }
 
     // ── fetch_sports over the fake transport ─────────────────────────────────
@@ -496,19 +628,26 @@ mod tests {
                 body: WORLD_CUP_FIXTURE.as_bytes().to_vec(),
             },
         );
-        let block = fetch_sports(&transport, "what's the latest status of the World Cup 2026")
-            .await
-            .unwrap();
-        assert_eq!(block.title, "ESPN scores: FIFA World Cup");
+        let block = fetch_sports(
+            &transport,
+            "what's the latest status of the World Cup 2026",
+            "2026-07-09",
+        )
+        .await
+        .unwrap();
+        assert_eq!(block.title, "ESPN scores: FIFA World Cup 2026");
         assert!(block.text.contains("France 2"));
+        assert!(block.text.contains("as of 2026-07-09"));
     }
 
     #[tokio::test]
     async fn fetch_sports_none_when_no_league_matches() {
         let transport = FakeHttpTransport::new();
-        assert!(fetch_sports(&transport, "what is photosynthesis")
-            .await
-            .is_none());
+        assert!(
+            fetch_sports(&transport, "what is photosynthesis", "2026-07-09")
+                .await
+                .is_none()
+        );
         assert!(transport.calls().is_empty(), "no request sent on a miss");
     }
 
@@ -516,7 +655,7 @@ mod tests {
     async fn fetch_sports_none_on_transport_error() {
         // No canned response -> transport error -> None.
         let transport = FakeHttpTransport::new();
-        assert!(fetch_sports(&transport, "nba scores tonight")
+        assert!(fetch_sports(&transport, "nba scores tonight", "2026-07-09")
             .await
             .is_none());
     }
@@ -532,7 +671,7 @@ mod tests {
                 body: Vec::new(),
             },
         );
-        assert!(fetch_sports(&transport, "nba scores tonight")
+        assert!(fetch_sports(&transport, "nba scores tonight", "2026-07-09")
             .await
             .is_none());
     }
@@ -548,7 +687,7 @@ mod tests {
                 body: br#"{"leagues": [{"name": "NHL"}], "events": []}"#.to_vec(),
             },
         );
-        assert!(fetch_sports(&transport, "nhl scores tonight")
+        assert!(fetch_sports(&transport, "nhl scores tonight", "2026-07-09")
             .await
             .is_none());
     }
@@ -564,7 +703,7 @@ mod tests {
                 body: b"<html>not json</html>".to_vec(),
             },
         );
-        assert!(fetch_sports(&transport, "mlb scores tonight")
+        assert!(fetch_sports(&transport, "mlb scores tonight", "2026-07-09")
             .await
             .is_none());
     }

@@ -11,6 +11,7 @@
 //! - [`prefilter`] — the deterministic stage-one search verdict (no model call).
 //! - [`prepass`] — the persona-free classifier for the ambiguous middle: the
 //!   `no｜cached｜web` decision and query rewrite.
+//! - [`cache`] — the multi-turn source cache backing a `cached` decision.
 //! - [`engine`] — keyless search-engine scraping with rotation.
 //! - [`weather`], [`sports`], [`news`], [`encyclopedia`] — intent-routed
 //!   keyless verticals tried ahead of the scraped engines.
@@ -21,6 +22,7 @@
 //! - [`orchestrator`] — the fixed pipeline tying the stages together.
 
 pub mod assemble;
+pub mod cache;
 pub mod encyclopedia;
 pub mod engine;
 pub mod fetch;

@@ -16,6 +16,7 @@
 use thuki_agent_lib::commands::ChatMessage;
 use thuki_agent_lib::net::transport::ReqwestTransport;
 use thuki_agent_lib::trace::{BoundRecorder, ConversationId};
+use thuki_agent_lib::websearch::cache::TtlSourceCache;
 use thuki_agent_lib::websearch::engine::EngineHealth;
 use thuki_agent_lib::websearch::orchestrator::{run_search, SearchDeps, SearchOutcome};
 use thuki_agent_lib::websearch::prepass::{
@@ -67,12 +68,15 @@ async fn live_turn(
     };
     let health = EngineHealth::new();
     let recorder = BoundRecorder::noop_for(ConversationId::new("smoke"));
+    let cache = TtlSourceCache::new(std::time::Duration::from_secs(600));
     let deps = SearchDeps {
         prepass: &prepass,
         transport: &transport,
         scorer: &Bm25Scorer,
         health: &health,
         recorder: &recorder,
+        cache: &cache,
+        cache_scope: 1,
     };
     run_search(
         &deps,

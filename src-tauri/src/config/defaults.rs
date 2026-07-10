@@ -811,6 +811,19 @@ pub const PREPASS_MAX_TOKENS: i32 = 1536;
 /// Not user-tunable: an internal robustness bound.
 pub const PREPASS_TIMEOUT_S: u64 = 35;
 
+/// TTL (seconds) for the multi-turn source cache: how long the sources of the
+/// most recent successful search stay reusable for a `cached` classifier
+/// decision (a follow-up that repeats or rephrases the question just
+/// answered) before a later turn falls back to a fresh search. 10 minutes
+/// covers the realistic follow-up window without risking a stale answer on a
+/// slow-moving conversation. The cache holds at most one entry (the most
+/// recent search only, replaced whole by every new one), so this TTL is its
+/// only expiry mechanism.
+///
+/// Not user-tunable: an internal robustness bound, the same rationale as
+/// [`PREPASS_TIMEOUT_S`].
+pub const SEARCH_CACHE_TTL_S: u64 = 600;
+
 /// Freshness markers that disqualify a question from the Wikipedia vertical even
 /// when the classifier routed it there. Wikipedia's lead summary describes the
 /// stable subject, not its live state, so a question carrying any of these words

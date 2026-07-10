@@ -612,7 +612,9 @@ fn user_locale() -> String {
 /// on the warm engine, emitting progress through `on_chunk`. The prompt inputs
 /// MUST be the same strings the plain chat path streams (system prompt, filtered
 /// history, quote-wrapped user turn) so the pre-pass and writer reuse
-/// llama-server's warm KV prefix.
+/// llama-server's warm KV prefix. `cache_scope` is the conversation epoch
+/// snapshotted at the start of this turn, scoping reads/writes of the
+/// multi-turn source cache to this conversation (see `websearch::cache`).
 ///
 /// Coverage-excluded: glue that wires the real engine port, HTTP transport, and
 /// BM25 scorer into the fully-tested [`crate::websearch::orchestrator::run_search`]
@@ -631,6 +633,7 @@ async fn run_builtin_search(
     cancel: &CancellationToken,
     recorder: &std::sync::Arc<crate::trace::BoundRecorder>,
     on_chunk: &(impl Fn(StreamChunk) + Send + Sync),
+    cache_scope: u64,
 ) -> BuiltinSearchResult {
     // The engine is already warm (the caller holds an activity guard); this
     // re-ensure just reads back the live port for the pre-pass and writer.
@@ -653,6 +656,12 @@ async fn run_builtin_search(
         scorer: &scorer,
         health: crate::websearch::engine::global_engine_health(),
         recorder: recorder.as_ref(),
+        // Scoped to the conversation epoch at the start of this turn: the
+        // same epoch `reset_conversation`/`load_conversation` bump on every
+        // conversation boundary, so a cache entry from one conversation is
+        // never served to another (see `websearch::cache` module docs).
+        cache: crate::websearch::cache::global_search_cache(),
+        cache_scope,
     };
     let status = |phase| on_chunk(StreamChunk::SearchStatus { phase });
     let outcome = crate::websearch::orchestrator::run_search(
@@ -1742,6 +1751,7 @@ pub async fn ask_model(
                             &cancel_token,
                             &bound_recorder,
                             &pump,
+                            epoch_at_start,
                         )
                         .await
                     };

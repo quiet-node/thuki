@@ -36,8 +36,12 @@
 //! rate-limits are volume-triggered: the pipeline's own burst was observed
 //! live tripping them.
 //!
-//! `cached` is mapped to `web` for now (a correct re-search); the TTL'd
-//! multi-turn source cache is a later optimisation.
+//! A `cached` decision answers from [`SearchDeps::cache`], the TTL'd
+//! multi-turn source cache of the most recent successful search, when an
+//! unexpired entry exists for the turn's [`SearchDeps::cache_scope`]. An
+//! expired or empty cache falls back to the same `web` retrieval a `web`
+//! decision runs, using the classifier's route, standalone rewrite, and
+//! queries exactly as today.
 
 use tokio_util::sync::CancellationToken;
 
@@ -46,6 +50,7 @@ use crate::config::defaults::SERP_EARLY_STOP_HITS;
 use crate::net::transport::HttpTransport;
 use crate::trace::{BoundRecorder, RecorderEvent};
 use crate::websearch::assemble::{assemble_context, SourceBlock};
+use crate::websearch::cache::{CachedSearch, SourceCache};
 use crate::websearch::encyclopedia::{fetch_encyclopedia, is_volatile_question};
 use crate::websearch::engine::{web_search, EngineHealth, SearchHit};
 use crate::websearch::fetch::fetch_pages;
@@ -106,6 +111,14 @@ pub struct SearchDeps<'a> {
     /// bound recorder makes every emission a constant-time no-op when tracing is
     /// off (the production default).
     pub recorder: &'a BoundRecorder,
+    /// The multi-turn source cache backing a `cached` decision (see module
+    /// docs). Every successful `web`-tier answer writes its sources here;
+    /// only a `cached` decision reads from it.
+    pub cache: &'a dyn SourceCache,
+    /// Opaque scope key for `cache` reads/writes this turn (in production,
+    /// the backend's conversation epoch at the start of the turn), so a
+    /// cache entry from one conversation is never served to another.
+    pub cache_scope: u64,
 }
 
 /// Runs the pipeline for one turn. `chat_system_prompt`, `history`, and
@@ -187,8 +200,40 @@ pub async fn run_search(
     });
     match decision.decision {
         SearchDecision::No => SearchOutcome::NoSearch,
-        // `cached` is mapped to `web` for now (a correct re-search).
-        SearchDecision::Web | SearchDecision::Cached => {
+        // An unexpired cache entry for this turn's scope answers instantly,
+        // no retrieval at all. An expired or empty cache degrades to exactly
+        // the `web` path below, using the classifier's own route/rewrite.
+        SearchDecision::Cached => match deps.cache.get(deps.cache_scope) {
+            Some(cached) => grounded_answer(
+                deps,
+                "cache",
+                chat_system_prompt,
+                history,
+                latest_user,
+                &decision.standalone_question,
+                cached.sources,
+                today,
+                locale,
+            ),
+            None => {
+                run_web(
+                    deps,
+                    chat_system_prompt,
+                    history,
+                    latest_user,
+                    decision.route,
+                    &decision.standalone_question,
+                    &decision.queries,
+                    num_ctx,
+                    today,
+                    locale,
+                    cancel,
+                    status,
+                )
+                .await
+            }
+        },
+        SearchDecision::Web => {
             run_web(
                 deps,
                 chat_system_prompt,
@@ -229,10 +274,14 @@ fn route_label(route: SearchRoute) -> &'static str {
 }
 
 /// Combines the pre-filter verdict with the classifier's result into the final
-/// decision. `ForceWeb` overrides the classifier's own `search` value to `web`
-/// (the deterministic freshness signal is authoritative), keeping the
-/// classifier's standalone rewrite and queries and backfilling a query from the
-/// rewrite when the classifier, having leaned "no", produced none. Any other
+/// decision. `ForceWeb` overrides a classifier `no` to `web` (the deterministic
+/// freshness signal is authoritative over the model declining to search), but
+/// preserves a classifier `cached`: a repeated or rephrased "latest ..."
+/// question (the exact turn shape `ForceWeb` exists to catch) is the case the
+/// multi-turn cache is for, and sources fetched moments ago this same
+/// conversation are already at least as fresh as a re-search would find. The
+/// classifier's standalone rewrite and queries are kept either way, backfilling
+/// a query from the rewrite when the classifier produced none. Any other
 /// verdict leaves the classifier's decision untouched.
 fn resolve_decision(verdict: PreFilterVerdict, classified: PrePassDecision) -> PrePassDecision {
     match verdict {
@@ -242,8 +291,12 @@ fn resolve_decision(verdict: PreFilterVerdict, classified: PrePassDecision) -> P
             } else {
                 classified.queries
             };
+            let decision = match classified.decision {
+                SearchDecision::Cached => SearchDecision::Cached,
+                SearchDecision::No | SearchDecision::Web => SearchDecision::Web,
+            };
             PrePassDecision {
-                decision: SearchDecision::Web,
+                decision,
                 // Keep the classifier's route hint: ForceWeb overrides only the
                 // yes/no decision, not which source tier best answers the turn.
                 route: classified.route,
@@ -302,6 +355,7 @@ async fn run_web(
             chat_system_prompt,
             history,
             latest_user,
+            standalone_question,
             vec![block],
             today,
             locale,
@@ -318,13 +372,14 @@ async fn run_web(
     // same league match internally, so a route hit with no keyword match still
     // falls through cleanly. A miss falls through to the news feed / engines.
     if matches!(route, SearchRoute::Sports) || is_sports_intent(standalone_question) {
-        if let Some(block) = fetch_sports(deps.transport, standalone_question).await {
+        if let Some(block) = fetch_sports(deps.transport, standalone_question, today).await {
             return grounded_answer(
                 deps,
                 "sports",
                 chat_system_prompt,
                 history,
                 latest_user,
+                standalone_question,
                 vec![block],
                 today,
                 locale,
@@ -349,6 +404,7 @@ async fn run_web(
                     chat_system_prompt,
                     history,
                     latest_user,
+                    standalone_question,
                     vec![block],
                     today,
                     locale,
@@ -373,6 +429,7 @@ async fn run_web(
                 chat_system_prompt,
                 history,
                 latest_user,
+                standalone_question,
                 vec![block],
                 today,
                 locale,
@@ -421,16 +478,23 @@ async fn run_web(
         chat_system_prompt,
         history,
         latest_user,
+        standalone_question,
         sources,
         today,
         locale,
     )
 }
 
-/// Records the retrieval tier to the trace and builds the source-grounded
-/// [`SearchOutcome::Answer`]. `tier` is the source that answered the turn
-/// ("weather", "sports", "news", "wiki", or "engine"); the recorded URLs are
-/// the cited sources', so a trace shows exactly what grounded the reply.
+/// Records the retrieval tier to the trace, caches a freshly retrieved
+/// source set for a later `cached` decision to reuse, and builds the
+/// source-grounded [`SearchOutcome::Answer`]. `tier` is the source that
+/// answered the turn ("weather", "sports", "news", "wiki", "engine", or
+/// "cache"); the recorded URLs are the cited sources', so a trace shows
+/// exactly what grounded the reply.
+///
+/// The cache write is skipped for tier `"cache"` itself (an answer served
+/// from the cache is not a new search, so it must not reset the entry's TTL
+/// or overwrite it with the same sources).
 #[allow(clippy::too_many_arguments)]
 fn grounded_answer(
     deps: &SearchDeps<'_>,
@@ -438,6 +502,7 @@ fn grounded_answer(
     chat_system_prompt: &str,
     history: &[ChatMessage],
     latest_user: &str,
+    standalone_question: &str,
     sources: Vec<SourceBlock>,
     today: &str,
     locale: &str,
@@ -446,6 +511,15 @@ fn grounded_answer(
         tier: tier.to_string(),
         urls: sources.iter().map(|s| s.url.clone()).collect(),
     });
+    if tier != "cache" {
+        deps.cache.store(
+            deps.cache_scope,
+            CachedSearch {
+                standalone_question: standalone_question.to_string(),
+                sources: sources.clone(),
+            },
+        );
+    }
     let messages = writer_messages(
         chat_system_prompt,
         history,
@@ -469,6 +543,7 @@ fn dedupe_hits(hits: Vec<SearchHit>) -> Vec<SearchHit> {
 mod tests {
     use super::*;
     use crate::net::transport::{FakeHttpTransport, HttpRequest, HttpResponse, TransportError};
+    use crate::websearch::cache::TtlSourceCache;
     use crate::websearch::prepass::{FakePrePass, PrePassDecision};
     use crate::websearch::rank::Bm25Scorer;
     use async_trait::async_trait;
@@ -567,6 +642,28 @@ mod tests {
         scorer: &'a dyn Scorer,
         recorder: &'a crate::trace::BoundRecorder,
     ) -> SearchDeps<'a> {
+        // A fresh, empty cache per test (no test in this default path relies
+        // on a cache hit), scope 1 by convention.
+        deps_with_cache(
+            prepass,
+            transport,
+            scorer,
+            recorder,
+            Box::leak(Box::new(TtlSourceCache::new(
+                std::time::Duration::from_secs(600),
+            ))),
+            1,
+        )
+    }
+
+    fn deps_with_cache<'a>(
+        prepass: &'a dyn PrePass,
+        transport: &'a dyn HttpTransport,
+        scorer: &'a dyn Scorer,
+        recorder: &'a crate::trace::BoundRecorder,
+        cache: &'a dyn SourceCache,
+        cache_scope: u64,
+    ) -> SearchDeps<'a> {
         SearchDeps {
             prepass,
             transport,
@@ -575,6 +672,8 @@ mod tests {
             // test can never poison a parallel test's rotation.
             health: Box::leak(Box::new(EngineHealth::new())),
             recorder,
+            cache,
+            cache_scope,
         }
     }
 
@@ -1329,6 +1428,28 @@ mod tests {
     }
 
     #[test]
+    fn resolve_force_web_preserves_cached_decision() {
+        // The exact bug this preserves against: "what's the latest stable
+        // Rust version" carries the deterministic "latest" freshness word, so
+        // the pre-filter forces `ForceWeb` on every turn that asks it, even a
+        // repeat of the same question. If the classifier judges the repeat
+        // answerable from what was just fetched (`cached`), `ForceWeb` must
+        // NOT downgrade that back to a fresh `web` search: sources fetched
+        // moments ago this same conversation are already at least as fresh as
+        // a re-search would find.
+        let out = resolve_decision(
+            PreFilterVerdict::ForceWeb,
+            PrePassDecision {
+                decision: SearchDecision::Cached,
+                route: SearchRoute::Web,
+                standalone_question: "what's the latest stable rust version".into(),
+                queries: vec!["rust latest stable version".into()],
+            },
+        );
+        assert_eq!(out.decision, SearchDecision::Cached);
+    }
+
+    #[test]
     fn resolve_ambiguous_keeps_classifier_decision() {
         let classified = PrePassDecision {
             decision: SearchDecision::No,
@@ -1690,8 +1811,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cached_decision_runs_the_web_pipeline() {
-        // Cached is mapped to Web for now, so it still grounds the answer.
+    async fn cached_decision_with_empty_cache_falls_back_to_web_pipeline() {
+        // No prior search this conversation (or this test's fresh cache): the
+        // `cached` decision finds nothing to reuse and degrades to exactly the
+        // `web` pipeline, using the classifier's own route/rewrite/queries.
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Cached,
             route: SearchRoute::Web,
@@ -1713,6 +1836,207 @@ mod tests {
         )
         .await;
         assert!(matches!(outcome, SearchOutcome::Answer { .. }));
+        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+    }
+
+    #[tokio::test]
+    async fn cached_decision_with_matching_scope_answers_from_cache_without_retrieval() {
+        // A prior search stored sources under scope 7. A follow-up turn in the
+        // same conversation (same scope) with a `cached` decision must answer
+        // straight from those sources: no transport call at all, and the
+        // writer prompt embeds the cached source text.
+        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600));
+        cache.store(
+            7,
+            CachedSearch {
+                standalone_question: "what's the latest stable rust version".into(),
+                sources: vec![SourceBlock {
+                    index: 1,
+                    url: "https://blog.rust-lang.org/".into(),
+                    title: "Rust 1.90.0".into(),
+                    text: "Rust 1.90.0 is the latest stable release.".into(),
+                }],
+            },
+        );
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Cached,
+            route: SearchRoute::Web,
+            standalone_question: "what's the latest stable rust version".into(),
+            queries: vec!["rust latest stable version".into()],
+        }));
+        // No canned responses at all: a network call would fail the test by
+        // returning a transport error the pipeline would otherwise degrade on.
+        let transport = FakeHttpTransport::new();
+        let (mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_with_cache(&prepass, &transport, &Bm25Scorer, &bound, &cache, 7),
+            "sys",
+            &[],
+            "what's the latest stable rust version",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(
+            matches!(&outcome, SearchOutcome::Answer { messages, sources }
+            if sources.len() == 1
+                && sources[0].url == "https://blog.rust-lang.org/"
+                && messages.last().is_some_and(|m| m.content.contains("Rust 1.90.0 is the latest stable release")))
+        );
+        assert!(
+            transport.calls().is_empty(),
+            "a cache hit must not retrieve"
+        );
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            RecorderEvent::SearchRetrieved { tier, urls }
+            if tier == "cache" && urls == &vec!["https://blog.rust-lang.org/".to_string()]
+        )));
+    }
+
+    #[tokio::test]
+    async fn cached_decision_with_different_scope_falls_back_to_web_pipeline() {
+        // Sources cached under scope 1 (an earlier conversation, or the same
+        // conversation before a reset) must never answer a turn scoped to a
+        // different epoch: the cache read misses and the pipeline searches
+        // fresh, exactly like an empty cache.
+        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600));
+        cache.store(
+            1,
+            CachedSearch {
+                standalone_question: "stale question".into(),
+                sources: vec![SourceBlock {
+                    index: 1,
+                    url: "https://stale.example/".into(),
+                    title: "Stale".into(),
+                    text: "stale text".into(),
+                }],
+            },
+        );
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Cached,
+            route: SearchRoute::Web,
+            standalone_question: "treaty of versailles signed paris".into(),
+            queries: vec!["treaty versailles".into()],
+        }));
+        let transport = transport_with_serp_and_page();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            // Scope 2: does not match the scope 1 entry above.
+            &deps_with_cache(
+                &prepass,
+                &transport,
+                &Bm25Scorer,
+                Box::leak(Box::new(crate::trace::BoundRecorder::noop_for(
+                    crate::trace::ConversationId::new("test"),
+                ))),
+                &cache,
+                2,
+            ),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources[0].url == "https://match.example/"));
+        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+    }
+
+    #[tokio::test]
+    async fn cached_decision_after_ttl_elapses_falls_back_to_web_pipeline() {
+        // A zero-TTL cache: the entry is stored, but by the time it is read it
+        // has already expired, so the `cached` decision must degrade to a
+        // fresh search rather than serving the stale sources.
+        let cache = TtlSourceCache::new(std::time::Duration::ZERO);
+        cache.store(
+            7,
+            CachedSearch {
+                standalone_question: "stale question".into(),
+                sources: vec![SourceBlock {
+                    index: 1,
+                    url: "https://stale.example/".into(),
+                    title: "Stale".into(),
+                    text: "stale text".into(),
+                }],
+            },
+        );
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Cached,
+            route: SearchRoute::Web,
+            standalone_question: "treaty of versailles signed paris".into(),
+            queries: vec!["treaty versailles".into()],
+        }));
+        let transport = transport_with_serp_and_page();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_with_cache(
+                &prepass,
+                &transport,
+                &Bm25Scorer,
+                Box::leak(Box::new(crate::trace::BoundRecorder::noop_for(
+                    crate::trace::ConversationId::new("test"),
+                ))),
+                &cache,
+                7,
+            ),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources[0].url == "https://match.example/"));
+        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+    }
+
+    #[tokio::test]
+    async fn successful_web_answer_populates_the_cache_for_a_later_cached_turn() {
+        // A plain `web` decision that grounds an answer must leave the cache
+        // holding those exact sources, under the turn's scope, so the very
+        // next turn's `cached` decision (if the classifier judges the
+        // follow-up answerable from them) can reuse them without retrieving.
+        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600));
+        let prepass = FakePrePass::returning(Ok(web_decision(vec!["treaty versailles paris"])));
+        let transport = transport_with_serp_and_page();
+        let (_p, status) = recorder();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let _ = run_search(
+            &deps_with_cache(&prepass, &transport, &Bm25Scorer, &bound, &cache, 9),
+            "sys",
+            &[],
+            "when signed",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        let cached = cache
+            .get(9)
+            .expect("a successful search must populate the cache");
+        assert_eq!(cached.sources.len(), 1);
+        assert_eq!(cached.sources[0].url, "https://match.example/");
+        assert_eq!(
+            cached.standalone_question,
+            "when was the treaty of versailles signed in paris"
+        );
     }
 
     // ── trace emission ────────────────────────────────────────────────────────
