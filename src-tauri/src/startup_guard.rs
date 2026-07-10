@@ -831,5 +831,135 @@ pub fn disable_quit_keeps_windows() {
     });
 }
 
+// ---------------------------------------------------------------------------
+// Shutdown-signal handling (issue #296): a signal-requested stop is a CLEAN exit.
+// ---------------------------------------------------------------------------
+
+/// The polite-stop signals a controlling process sends to ask Thuki to quit:
+/// `SIGINT` (Ctrl+C in the dev terminal) and `SIGTERM` (what macOS sends every
+/// app during a system shutdown or restart).
+///
+/// Neither runs the Tauri `RunEvent` handlers, so without a handler the stop
+/// would leave `clean_exit: false` behind and be miscounted as abnormal. Both
+/// mean "a controlling process asked us to stop", which is a clean exit.
+///
+// why SIGKILL is deliberately ABSENT: `SIGKILL` (`kill -9`), a kernel panic, a
+// power cut, and a machine freeze are uncatchable BY CONSTRUCTION: the kernel
+// tears the process down without running any handler or thread. Those must
+// still yield an abnormal session (that is the memory-pressure class this
+// feature exists to catch), so we never trap them. `sigaddset` cannot even add
+// `SIGKILL` to a mask; the membership test below documents its absence.
+pub(crate) const SHUTDOWN_SIGNALS: [libc::c_int; 2] = [libc::SIGINT, libc::SIGTERM];
+
+/// Builds a `sigset_t` containing exactly the [`SHUTDOWN_SIGNALS`].
+///
+/// Deterministic and side-effect-free: it only populates a local `sigset_t` and
+/// raises no signal, so it is safe to call from a test. The signal thread and
+/// the mask installer both derive their set from here, so the "which signals do
+/// we trap" decision lives in exactly one place.
+fn shutdown_sigset() -> libc::sigset_t {
+    // Safety: `sigemptyset`/`sigaddset` write only into the local `set`; they
+    // touch no process state and raise no signal, so this is deterministic.
+    let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
+    unsafe {
+        libc::sigemptyset(&mut set);
+        for sig in SHUTDOWN_SIGNALS {
+            libc::sigaddset(&mut set, sig);
+        }
+    }
+    set
+}
+
+/// Blocks the [`SHUTDOWN_SIGNALS`] in the CALLING thread.
+///
+/// MUST be called as the very first thing in `run()`, before any other thread
+/// is spawned: a newly spawned thread inherits the signal mask of the thread
+/// that spawned it, so blocking on the main thread up front makes every
+/// subsequent thread inherit the block. That guarantees the process-directed
+/// signal is delivered to the one thread that consumes it via `sigwait`
+/// ([`spawn_shutdown_signal_thread`]) instead of running the default
+/// (terminate-now) disposition on some arbitrary thread that never got the
+/// block.
+///
+// why safe for the sidecar child: the spawned `llama-server` inherits this
+// block across fork+exec, but Thuki kills it with `SIGKILL` (tokio
+// `Child::kill`), which is unblockable, so the inherited block is inert and the
+// no-orphan-on-quit guarantee is unaffected.
+///
+/// Coverage-off: mutates the process's per-thread signal mask via `libc` FFI;
+/// running it under the test harness would swallow the harness's own Ctrl+C.
+/// The set it installs is built by the covered [`shutdown_sigset`].
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn block_shutdown_signals() {
+    let set = shutdown_sigset();
+    // Safety: blocks the shutdown signals in the calling thread. A null oldset
+    // discards the previous mask, which we never need to restore.
+    unsafe {
+        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+    }
+}
+
+/// Spawns the dedicated thread that waits for a shutdown signal, runs
+/// `on_shutdown` on that ORDINARY thread, then restores the signal's default
+/// disposition and re-raises it so the process dies exactly as the controlling
+/// process expects.
+///
+// why signal-safe: a durable write (`F_FULLFSYNC`, rename, directory fsync) is
+// NOT async-signal-safe and must never run inside a signal handler. This uses
+// the standard `sigwait` pattern instead: the shutdown signals are blocked
+// process-wide (see `block_shutdown_signals`), and this thread parks in
+// `sigwait`, which returns in NORMAL execution context: not a signal handler.
+// `on_shutdown` therefore runs the durable clean-exit write on a plain thread,
+// where blocking syscalls are perfectly legal.
+//
+// why re-raise with the default handler: after recording the clean exit we
+// restore `SIG_DFL`, unblock the signal in this thread (it is still blocked
+// here, so without unblocking the re-raise would stay pending forever), and
+// re-raise it. The process then terminates under the signal's own disposition,
+// so its wait-status (`WIFSIGNALED`) and any parent's expectations stay
+// correct, exactly as if we had never intercepted it.
+///
+/// `on_shutdown` runs at most once: after re-raising, the process is gone.
+///
+/// Coverage-off: pure process-lifecycle + `libc` FFI glue that parks a thread
+/// in `sigwait` for the process lifetime; it raises no signal in tests. The
+/// only decision it embeds (which signals to trap) is covered via
+/// [`shutdown_sigset`].
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn spawn_shutdown_signal_thread<F>(on_shutdown: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let set = shutdown_sigset();
+        let mut signum: libc::c_int = 0;
+        // Safety: `set` is a valid sigset for the process lifetime of this call;
+        // `signum` is a valid out-param. `sigwait` blocks until one of the
+        // (process-wide blocked) shutdown signals is delivered, then returns it.
+        let rc = unsafe { libc::sigwait(&set, &mut signum) };
+        if rc != 0 {
+            // sigwait failed: leave the process running untouched. The
+            // kernel-released lock plus the `clean_exit: false` record still
+            // classify an eventual abnormal death correctly, so nothing is lost.
+            eprintln!(
+                "thuki: [startup_guard] sigwait failed: {}",
+                std::io::Error::last_os_error()
+            );
+            return;
+        }
+        // Durable clean-exit write on this NORMAL thread, never in a signal
+        // handler. Routed through the caller's single clean-exit path.
+        on_shutdown();
+        // Safety: restore the default disposition for the caught signal, unblock
+        // it in this thread so the re-raise is delivered rather than left
+        // pending, then re-raise it to terminate under its own disposition.
+        unsafe {
+            libc::signal(signum, libc::SIG_DFL);
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+            libc::raise(signum);
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests;

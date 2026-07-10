@@ -2405,6 +2405,16 @@ fn engine_sidecar_path() -> std::path::PathBuf {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // ── Shutdown-signal mask (issue #296) ─────────────────────────────
+    // Block SIGINT/SIGTERM on the main thread FIRST, before Tauri (or
+    // anything else) spawns a single thread: every thread spawned afterward
+    // inherits this block, so the polite-stop signal is delivered to the one
+    // dedicated `sigwait` thread we start later (after the session record
+    // exists) rather than terminating the process on an arbitrary thread.
+    // Marking the clean exit itself happens on that ordinary thread, never in
+    // async-signal context. See `startup_guard::block_shutdown_signals`.
+    startup_guard::block_shutdown_signals();
+
     let mut builder = tauri::Builder::default();
 
     #[cfg(target_os = "macos")]
@@ -2591,6 +2601,32 @@ pub fn run() {
             // are two separate managed values by design; never conflated.
             app.manage(startup.safety);
             app.manage(startup.guard);
+
+            // ── Shutdown-signal → clean exit (issue #296) ─────────────
+            // Ctrl+C (SIGINT) in a dev terminal and SIGTERM at macOS
+            // shutdown/restart never run the Tauri RunEvent handlers, so
+            // without this a polite stop would leave `clean_exit: false` and be
+            // miscounted as abnormal: every normal Mac restart would inch the
+            // streak toward a false safe mode. A controlling process asking us
+            // to stop IS a clean exit.
+            //
+            // why HERE in the ordering: the mask was already installed at the
+            // very top of `run()` before any thread was spawned, so this thread
+            // (and all others) inherits the block and only this one consumes the
+            // signal. We spawn it now, AFTER the launch routine durably wrote
+            // this session's `clean_exit: false` record and AFTER `SessionGuard`
+            // is managed, so `mark_session_clean_exit` has a writer to flip.
+            //
+            // why cry-wolf is still prevented: SIGKILL, a kernel panic, a power
+            // cut, and a machine freeze remain uncatchable by construction: they
+            // terminate the process without running this thread, so they still
+            // leave `clean_exit: false` behind and correctly count as abnormal.
+            // Only the polite-stop signals are reclassified as clean, and the
+            // clean-exit write stays the single path in `mark_session_clean_exit`.
+            let signal_app = app.handle().clone();
+            startup_guard::spawn_shutdown_signal_thread(move || {
+                mark_session_clean_exit(&signal_app);
+            });
 
             // Defense-in-depth on top of the session record: ask macOS not to
             // auto-reopen our overlay after an unclean shutdown, reducing the

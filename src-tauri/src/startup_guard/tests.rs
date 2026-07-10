@@ -396,6 +396,29 @@ fn mark_clean_exit_persists() {
     assert!(read_record(&path).unwrap().clean_exit);
 }
 
+/// The shutdown sigset traps EXACTLY the polite-stop signals (SIGINT, SIGTERM)
+/// and never SIGKILL. This locks in "a signal-requested stop is a clean exit,
+/// but SIGKILL / panic / freeze remain uncatchable and therefore abnormal": the
+/// membership check is the load-bearing correctness claim of the signal path.
+#[test]
+fn shutdown_sigset_traps_only_polite_stop_signals() {
+    let set = shutdown_sigset();
+    for sig in SHUTDOWN_SIGNALS {
+        assert_eq!(
+            unsafe { libc::sigismember(&set, sig) },
+            1,
+            "shutdown sigset must contain signal {sig}"
+        );
+    }
+    assert_eq!(SHUTDOWN_SIGNALS, [libc::SIGINT, libc::SIGTERM]);
+    // SIGKILL is uncatchable by construction and must never be trapped.
+    assert_eq!(
+        unsafe { libc::sigismember(&set, libc::SIGKILL) },
+        0,
+        "SIGKILL must stay uncatchable, never trapped"
+    );
+}
+
 /// The wire format is stable: enums serialize to the documented snake_case /
 /// lowercase strings, and a record round-trips through JSON unchanged. Also
 /// exercises the `LoadingModel` and `Crashed` variants.
