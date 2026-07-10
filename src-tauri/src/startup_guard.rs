@@ -20,7 +20,10 @@
 //! and thin `coverage(off)` I/O wrappers that mirror the forgiving,
 //! never-panic-on-bad-input contract of `config::loader`/`config::writer`.
 
-use std::path::Path;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+use std::os::unix::io::AsRawFd;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -310,6 +313,588 @@ pub fn mark_startup_healthy(app: tauri::AppHandle) {
     if let Some(path) = guard_path(&app) {
         mark_healthy(&path);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Session-liveness circuit breaker (issue #296, phase 1: additive).
+//
+// The sentinel above clears from the FRONTEND about a second into launch, so
+// every dangerous auto-op (overlay auto-prime, downloads, first-message model
+// load) runs AFTER the "healthy" clear and escapes the gate. The reported
+// incident froze during a model DOWNLOAD while a model was already loaded,
+// which operation-bracketing also misses.
+//
+// This mechanism instead proves liveness with a process-lifetime advisory lock
+// (kernel releases it on death by ANY cause) plus a write-ahead session record
+// that is durably `clean_exit: false` on disk BEFORE any dangerous op begins. A
+// launch that finds the previous record still `clean_exit: false` knows the
+// previous process died abnormally. Modeled on Firefox nsAppStartup's profile
+// lock + last_success and Sentry's crashed-vs-abnormal session distinction.
+//
+// Phase 1 builds this alongside the old mechanism; phase 2 wires it into
+// `lib.rs`/`App.tsx` and deletes the old one. Unwired items carry
+// `#[allow(dead_code)]`.
+// ---------------------------------------------------------------------------
+
+/// The session-record schema version this build reads and writes.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+const SESSION_SCHEMA: u32 = 1;
+
+/// Filename of the JSON session record, next to `config.toml`.
+// why: phase 2 relocates this to `config::defaults` and migrates the legacy
+// `startup_guard.json`; kept local so phase 1 stays additive and never touches
+// `config/defaults.rs` (owned by another change in flight).
+#[allow(dead_code)]
+const SESSION_RECORD_FILENAME: &str = "session.json";
+
+/// Filename of the empty advisory-lock file, next to `config.toml`.
+// why: phase 2 relocates this to `config::defaults`.
+#[allow(dead_code)]
+const SESSION_LOCK_FILENAME: &str = "session.lock";
+
+/// Liveness state of a session, as recorded on disk.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum SessionState {
+    /// Running normally, or exited cleanly.
+    Ok,
+    /// The panic hook fired: the process is unwinding from a Rust panic.
+    Crashed,
+}
+
+/// What the app was doing when the record was last written. Context for the
+/// recovery UI only; it never influences the safe-mode decision.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ActivityKind {
+    /// No dangerous auto-op in flight.
+    Idle,
+    /// A model load / prime is in flight.
+    LoadingModel,
+    /// A model download is in flight.
+    Downloading,
+}
+
+/// The activity in flight when the record was last written.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SessionActivity {
+    /// The class of work in flight.
+    pub(crate) kind: ActivityKind,
+    /// The model involved, when the activity concerns a specific model.
+    pub(crate) model_id: Option<String>,
+}
+
+/// The persisted session record. Written durably at launch with
+/// `clean_exit: false`, updated as activity changes, and flipped to
+/// `clean_exit: true` only on a real exit.
+// why: wired in the follow-up pass (`schema`, `boot_time_secs`, `state`,
+// `clean_exit`, `consecutive_abnormal` are read by `decide_session`;
+// `started_at_secs`, `activity`, and `model_id` are read only by phase 2's UI).
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SessionRecord {
+    /// Schema version; a record whose schema is not [`SESSION_SCHEMA`] is
+    /// treated as clean (fails open).
+    pub(crate) schema: u32,
+    /// `kern.boottime` at launch, used only to classify the abnormal cause.
+    pub(crate) boot_time_secs: i64,
+    /// Unix seconds at launch.
+    pub(crate) started_at_secs: i64,
+    /// False at launch; true ONLY on a real exit. The sole safety input.
+    pub(crate) clean_exit: bool,
+    /// Liveness state; set to [`SessionState::Crashed`] by the panic hook.
+    pub(crate) state: SessionState,
+    /// The activity in flight at last write.
+    pub(crate) activity: SessionActivity,
+    /// Count of consecutive abnormal launches, carried across launches.
+    pub(crate) consecutive_abnormal: u32,
+}
+
+impl SessionRecord {
+    /// Builds the launch record: `clean_exit: false`, `state: Ok`, idle
+    /// activity, carrying the abnormal streak this launch computed.
+    // why: wired in the follow-up pass
+    #[allow(dead_code)]
+    pub(crate) fn launch(
+        boot_time_secs: i64,
+        started_at_secs: i64,
+        consecutive_abnormal: u32,
+    ) -> Self {
+        Self {
+            schema: SESSION_SCHEMA,
+            boot_time_secs,
+            started_at_secs,
+            clean_exit: false,
+            state: SessionState::Ok,
+            activity: SessionActivity {
+                kind: ActivityKind::Idle,
+                model_id: None,
+            },
+            consecutive_abnormal,
+        }
+    }
+}
+
+/// Whether the previous session ended cleanly or abnormally.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionOutcome {
+    /// Previous session exited cleanly (or there was none / it was unreadable).
+    Clean,
+    /// Previous session died without marking a clean exit.
+    Abnormal,
+}
+
+/// The classified cause of an abnormal previous session. Drives only the
+/// recovery message, never the safe-mode decision.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AbnormalCause {
+    /// The panic hook recorded a Rust panic.
+    Crashed,
+    /// The machine rebooted between launches (boot time changed).
+    MachineRestart,
+    /// Same boot, no panic recorded: a freeze, SIGKILL, or OS OOM-kill.
+    ProcessDied,
+}
+
+/// The pure verdict computed from the previous session record.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SessionDecision {
+    /// Whether the previous session ended cleanly or abnormally.
+    pub(crate) outcome: SessionOutcome,
+    /// The abnormal streak this launch represents (0 when clean).
+    pub(crate) streak: u32,
+    /// Whether this launch should enter safe mode.
+    pub(crate) safe_mode: bool,
+    /// The classified cause, present only when abnormal.
+    pub(crate) cause: Option<AbnormalCause>,
+}
+
+/// Pure decision logic: classify the previous session and decide safe mode. No
+/// I/O. `prev` is the previously persisted record, or `None` when missing /
+/// unreadable / corrupt.
+///
+/// - `None`, a wrong-schema record, or a `clean_exit: true` record all yield
+///   [`SessionOutcome::Clean`], streak 0, safe mode off, cause `None`. The
+///   breaker fails open: a bad file can never by itself trip safe mode.
+/// - Otherwise the launch is abnormal: the streak grows by one (saturating) and
+///   safe mode engages once the streak reaches `threshold`.
+///
+/// `threshold` is a parameter, not read from config here: phase 2 passes the
+/// compiled constant.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+pub(crate) fn decide_session(
+    prev: Option<SessionRecord>,
+    current_boot_secs: i64,
+    threshold: u32,
+) -> SessionDecision {
+    // why: safe_mode is decided ONLY by `clean_exit == false` plus the streak,
+    // and by NOTHING else. `boot_time_secs` and `activity` are deliberately
+    // excluded. An OS OOM-kill of Thuki during a model load happens on the SAME
+    // boot; gating safe mode on "boot time changed" would skip safe mode for
+    // exactly the memory-pressure class this feature exists to catch. `activity`
+    // is recovery-UI context only.
+    match prev {
+        Some(p) if p.schema == SESSION_SCHEMA && !p.clean_exit => {
+            let streak = p.consecutive_abnormal.saturating_add(1);
+            let safe_mode = streak >= threshold;
+            // Cause classification (never influences safe_mode): a recorded
+            // panic wins over everything, else a changed boot means the machine
+            // restarted, else the process died on the same boot (freeze / kill).
+            let cause = if p.state == SessionState::Crashed {
+                AbnormalCause::Crashed
+            } else if p.boot_time_secs != current_boot_secs {
+                AbnormalCause::MachineRestart
+            } else {
+                AbnormalCause::ProcessDied
+            };
+            SessionDecision {
+                outcome: SessionOutcome::Abnormal,
+                streak,
+                safe_mode,
+                cause: Some(cause),
+            }
+        }
+        _ => SessionDecision {
+            outcome: SessionOutcome::Clean,
+            streak: 0,
+            safe_mode: false,
+            cause: None,
+        },
+    }
+}
+
+/// Reads `kern.boottime` (seconds) via `sysctlbyname`. Stable for a boot,
+/// changes only on reboot, so it distinguishes a machine restart from a
+/// same-boot process death. On failure it returns 0, which can never differ
+/// between launches, so the cause degrades to `ProcessDied` and safe mode
+/// (which never reads boot time) is unaffected.
+///
+/// Coverage-off: pure `libc` FFI. It performs no arithmetic to delegate.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn boot_time_secs() -> i64 {
+    let mut tv = libc::timeval {
+        tv_sec: 0,
+        tv_usec: 0,
+    };
+    let mut size = std::mem::size_of::<libc::timeval>();
+    let name = c"kern.boottime";
+    // Safety: `sysctlbyname` writes at most `size` bytes into `tv`; the buffer
+    // is exactly one `timeval`, matching what `kern.boottime` returns.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            (&mut tv as *mut libc::timeval).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return 0;
+    }
+    tv.tv_sec
+}
+
+/// The outcome of trying to take the process-lifetime session lock.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+pub(crate) enum SessionLock {
+    /// The lock was acquired. The caller MUST keep this `File` alive for the
+    /// whole process: dropping it releases the lock. Phase 2 stores it in Tauri
+    /// managed state.
+    Acquired(File),
+    /// The lock is already held: another Thuki instance is alive. NOT a crash.
+    AlreadyRunning,
+}
+
+/// Opens the lock file the way [`acquire_session_lock`] does.
+///
+/// Coverage-off: filesystem I/O. Its CLOEXEC guarantee is asserted live by the
+/// `session_lock_fd_is_cloexec` test.
+// why: the fd MUST NOT leak into the spawned `llama-server` child. Rust sets
+// `O_CLOEXEC` on every fd it opens, so the lock is dropped across the `exec`
+// that starts the sidecar. If it leaked, the sidecar would hold the lock after
+// Thuki dies and the next launch would read "still alive" and never detect the
+// crash: a SILENT failure in the unsafe direction, hence the explicit test.
+#[allow(dead_code)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn open_lock_file(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+}
+
+/// Takes a non-blocking exclusive advisory lock on the session-lock file and
+/// returns the held `File`, or reports that another instance already holds it.
+///
+/// The lock is released by the kernel on process death by ANY cause (clean
+/// exit, panic, SIGKILL, OS OOM-kill, power loss); that is what makes crash
+/// detection work without a clean-exit signal. The caller never unlocks
+/// explicitly and must keep the returned `File` alive for the process lifetime.
+///
+/// Coverage-off: `libc::flock` FFI. The `Acquired` and `AlreadyRunning` arms
+/// are exercised live by `session_lock_twice_reports_already_running`.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn acquire_session_lock(path: &Path) -> std::io::Result<SessionLock> {
+    let file = open_lock_file(path)?;
+    // Safety: `file` owns a valid fd for the duration of this call.
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc == 0 {
+        return Ok(SessionLock::Acquired(file));
+    }
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
+        // Another live instance holds it. Do NOT infer a crash, rewrite the
+        // record, or enter safe mode: surface a distinct outcome instead.
+        return Ok(SessionLock::AlreadyRunning);
+    }
+    Err(err)
+}
+
+/// Returns a per-process, per-call temporary path beside `target`.
+///
+/// Coverage-off: time-dependent filesystem helper, exercised live by the
+/// durable-write test.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn tmp_path_for(target: &Path) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    let mut s = target.as_os_str().to_os_string();
+    s.push(format!(".tmp-{pid}-{nanos}"));
+    s.into()
+}
+
+/// Forces the file's data AND the drive's own write cache to disk.
+///
+/// Coverage-off: `libc::fcntl` FFI, exercised live by the durable-write test.
+// why: on macOS a plain `fsync`/`sync_all` flushes to the drive but does NOT
+// force the drive to flush its onboard write cache; only `F_FULLFSYNC` does.
+// Without it a power loss right after a "successful" write can still lose the
+// launch record, defeating the write-ahead durability guarantee.
+#[allow(dead_code)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn full_fsync(file: &File) -> std::io::Result<()> {
+    // Safety: `file` owns a valid fd; `F_FULLFSYNC` takes no argument.
+    let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) };
+    if rc == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Fsyncs a directory so a rename inside it is durable across power loss.
+///
+/// Coverage-off: filesystem I/O, exercised live by the durable-write test.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn fsync_dir(dir: &Path) -> std::io::Result<()> {
+    File::open(dir)?.sync_all()
+}
+
+/// Durably writes `bytes` to `path`: write a temp file, `F_FULLFSYNC` it,
+/// rename over the target, then fsync the parent directory.
+///
+/// This is stronger than [`crate::config::writer::atomic_write_bytes`], which
+/// gives atomicity but not power-loss durability. Used ONLY by this module; the
+/// existing callers of `atomic_write_bytes` are left unchanged.
+///
+/// Coverage-off: filesystem I/O, exercised live by the durable-write test.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn durable_write_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "session path has no parent directory",
+        )
+    })?;
+    std::fs::create_dir_all(parent)?;
+
+    let tmp = tmp_path_for(path);
+    {
+        let mut options = OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp)?;
+        file.write_all(bytes)?;
+        // why: F_FULLFSYNC on macOS, see `full_fsync`.
+        full_fsync(&file)?;
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    // Best-effort: the record itself is already durable via the temp fsync.
+    let _ = fsync_dir(parent);
+    Ok(())
+}
+
+/// Reads the session record at `path`, forgivingly.
+///
+/// Missing, unreadable, or unparseable all map to `None` (the clean default),
+/// never an error and never a panic, mirroring `read_state` and the config
+/// loader. A corrupt record can therefore never by itself trip safe mode.
+///
+/// Coverage-off: filesystem I/O, exercised live by the read-forgiveness tests.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn read_record(path: &Path) -> Option<SessionRecord> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => match serde_json::from_str::<SessionRecord>(&contents) {
+            Ok(record) => Some(record),
+            Err(e) => {
+                eprintln!(
+                    "thuki: [startup_guard] session record at {} unparseable: {e}. treating as clean",
+                    path.display()
+                );
+                None
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(source) => {
+            eprintln!(
+                "thuki: [startup_guard] cannot read session record {}: {source}. treating as clean",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+/// Durably serializes and writes `record` to `path`.
+///
+/// Coverage-off: thin wrapper over `serde_json` + [`durable_write_bytes`],
+/// exercised live by the durable-write test.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn durable_write_record(path: &Path, record: &SessionRecord) -> std::io::Result<()> {
+    // SessionRecord is scalars, strings, and enums: serialization is infallible.
+    let bytes = serde_json::to_vec(record).expect("SessionRecord serializes");
+    durable_write_bytes(path, &bytes)
+}
+
+/// Durably marks the session record at `path` as `state: crashed`.
+///
+/// Reads the current record (or a degenerate launch record if none exists),
+/// flips `state`, and durably rewrites it. Best-effort: failures are logged,
+/// never propagated, so it is safe from a panic hook.
+///
+/// Coverage-off: filesystem I/O, exercised live by `mark_crashed_sets_state`.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn mark_crashed(path: &Path) {
+    // Read-modify-write from disk rather than through the shared writer: a panic
+    // hook may run with the session mutex held or poisoned, so we never touch
+    // it here.
+    let mut record = read_record(path).unwrap_or_else(|| SessionRecord::launch(0, 0, 0));
+    record.state = SessionState::Crashed;
+    if let Err(e) = durable_write_record(path, &record) {
+        eprintln!(
+            "thuki: [startup_guard] failed to mark session crashed at {}: {e}",
+            path.display()
+        );
+    }
+}
+
+/// Installs a `std::panic::set_hook` that durably records `state: crashed`
+/// before the process unwinds, then chains to the previous hook.
+///
+/// This CANNOT catch SIGKILL, an OS OOM-kill, a kernel panic, or power loss:
+/// those kill the process without running any hook, by construction. Those
+/// cases are still caught as abnormal by the kernel-released lock plus the
+/// `clean_exit: false` record; the hook only refines the CAUSE to `Crashed`.
+///
+/// Coverage-off: installs a global process hook; its effect is exercised live
+/// through [`mark_crashed`].
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn install_panic_hook(path: PathBuf) {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        mark_crashed(&path);
+        previous(info);
+    }));
+}
+
+/// Single-owner, thread-safe writer for the live session record.
+///
+/// The record is guarded by a `Mutex` and each mutation holds the lock across
+/// the durable write, so the on-disk file has exactly one writer at a time even
+/// when called concurrently from spawned threads and async tasks. `PathBuf` and
+/// `Mutex<SessionRecord>` are both `Send + Sync`, so the writer satisfies Tauri
+/// managed-state bounds.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+pub(crate) struct SessionWriter {
+    /// Path of the session record this writer owns.
+    path: PathBuf,
+    /// The in-memory record, mutated under lock before each durable write.
+    record: std::sync::Mutex<SessionRecord>,
+}
+
+impl SessionWriter {
+    /// Wraps the launch `record`, which the caller has already durably written,
+    /// so subsequent mutations start from the on-disk state.
+    // why: wired in the follow-up pass
+    #[allow(dead_code)]
+    pub(crate) fn new(path: PathBuf, record: SessionRecord) -> Self {
+        Self {
+            path,
+            record: std::sync::Mutex::new(record),
+        }
+    }
+
+    /// Updates the recorded activity and durably persists it. Safe to call from
+    /// any thread or async task.
+    ///
+    /// Coverage-off: durable filesystem I/O, exercised live by
+    /// `set_activity_persists`.
+    // why: wired in the follow-up pass
+    #[allow(dead_code)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    pub(crate) fn set_activity(&self, activity: SessionActivity) -> std::io::Result<()> {
+        // Hold the lock across the write so concurrent callers cannot interleave
+        // writes to the single record file.
+        let mut record = self.record.lock().expect("session record mutex poisoned");
+        record.activity = activity;
+        durable_write_record(&self.path, &record)
+    }
+
+    /// Flips the record to `clean_exit: true` and durably persists it: the ONLY
+    /// place a clean exit is recorded. Phase 2 calls this on `RunEvent::Exit`.
+    ///
+    /// Coverage-off: durable filesystem I/O, exercised live by
+    /// `mark_clean_exit_persists`.
+    // why: wired in the follow-up pass
+    #[allow(dead_code)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    pub(crate) fn mark_clean_exit(&self) -> std::io::Result<()> {
+        let mut record = self.record.lock().expect("session record mutex poisoned");
+        record.clean_exit = true;
+        durable_write_record(&self.path, &record)
+    }
+}
+
+/// Resolves the session-record path beside `config.toml`. Coverage-off:
+/// requires a real `AppHandle` and the macOS filesystem.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn session_record_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    use tauri::Manager;
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|dir| dir.join(SESSION_RECORD_FILENAME))
+}
+
+/// Resolves the session-lock path beside `config.toml`. Coverage-off: requires
+/// a real `AppHandle` and the macOS filesystem.
+// why: wired in the follow-up pass
+#[allow(dead_code)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn session_lock_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    use tauri::Manager;
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|dir| dir.join(SESSION_LOCK_FILENAME))
 }
 
 #[cfg(test)]
