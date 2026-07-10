@@ -342,7 +342,7 @@ describe('App - safe-mode recovery (issue #296)', () => {
     expect(invoke).not.toHaveBeenCalledWith('ask_model', expect.anything());
   });
 
-  it('"Load last model anyway" just dismisses the screen with no extra invoke', async () => {
+  it('"Load last model anyway" force-loads the model and dismisses the screen', async () => {
     enableChannelCaptureWithResponses({
       startup_safety: { safe_mode: true, unclean_count: 3 },
       get_model_picker_state: {
@@ -361,8 +361,6 @@ describe('App - safe-mode recovery (issue #296)', () => {
     await act(async () => {});
     expect(screen.getByText(RECOVERY_HEADLINE)).toBeInTheDocument();
 
-    const callsBefore = invoke.mock.calls.length;
-
     await act(async () => {
       fireEvent.click(
         screen.getByRole('button', { name: 'Load last model anyway' }),
@@ -370,7 +368,9 @@ describe('App - safe-mode recovery (issue #296)', () => {
     });
 
     expect(screen.queryByText(RECOVERY_HEADLINE)).not.toBeInTheDocument();
-    expect(invoke.mock.calls.length).toBe(callsBefore);
+    // The user's explicit override must start the engine immediately, not
+    // defer the load until their first message (issue #296).
+    expect(invoke).toHaveBeenCalledWith('warm_up_model', { force: true });
   });
 
   it('never re-shows the screen after dismissal, even if the active model later changes', async () => {

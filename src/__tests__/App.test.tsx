@@ -2511,6 +2511,149 @@ describe('App', () => {
         new LogicalSize(DEFAULT_CONFIG.window.overlayWidth, 48),
       );
     });
+
+    it('force-loads the deferred model on "Load last model anyway" and swallows a rejected warm-up', async () => {
+      enableChannelCaptureWithResponses({
+        startup_safety: { safe_mode: true, unclean_count: 2 },
+        estimate_model_fit: { required_bytes: 4 * 1024 ** 3 },
+      });
+
+      render(<App />);
+      await screen.findByText('Recovered in Safe Mode');
+      await showOverlay();
+
+      invoke.mockClear();
+      // Reject the forced warm-up so the IO-boundary `.catch` runs: a rejected
+      // load must be swallowed, never an unhandled rejection, and must never
+      // resurrect the card.
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'warm_up_model') throw new Error('warm-up rejected');
+      });
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Load last model anyway' }),
+      );
+
+      // The forced load fires immediately (issue #296): the model must start
+      // loading now, not defer to the user's first message.
+      expect(invoke).toHaveBeenCalledWith('warm_up_model', { force: true });
+
+      // Card is dismissed synchronously and the rejected invoke does not bring
+      // it back.
+      await act(async () => {});
+      expect(
+        screen.queryByText('Recovered in Safe Mode'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('restores the ask-bar canonical position on "Load last model anyway"', async () => {
+      enableChannelCaptureWithResponses({
+        startup_safety: { safe_mode: true, unclean_count: 2 },
+        estimate_model_fit: { required_bytes: 4 * 1024 ** 3 },
+      });
+
+      render(<App />);
+      await screen.findByText('Recovered in Safe Mode');
+      await showOverlay();
+      invoke.mockClear();
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Load last model anyway' }),
+      );
+      await act(async () => {});
+
+      // The card centered the shared window; dismissing it back to the ask bar
+      // must restore the ask bar's default position (issue #296).
+      expect(invoke).toHaveBeenCalledWith('position_overlay_ask_bar');
+    });
+
+    it('swallows a rejected ask-bar reposition on recovery-card dismissal', async () => {
+      enableChannelCaptureWithResponses({
+        startup_safety: { safe_mode: true, unclean_count: 2 },
+        estimate_model_fit: { required_bytes: 4 * 1024 ** 3 },
+      });
+
+      render(<App />);
+      await screen.findByText('Recovered in Safe Mode');
+      await showOverlay();
+
+      invoke.mockClear();
+      // Reject the reposition so the IO-boundary `.catch` on the dismiss-edge
+      // effect runs: a rejected `position_overlay_ask_bar` must be swallowed,
+      // never an unhandled rejection, and must never resurrect the card.
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'position_overlay_ask_bar') {
+          throw new Error('reposition rejected');
+        }
+      });
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Load last model anyway' }),
+      );
+
+      // The reposition fired and its rejection is swallowed.
+      expect(invoke).toHaveBeenCalledWith('position_overlay_ask_bar');
+
+      // Settle the rejected invoke's microtask: the `.catch` swallows it, so no
+      // unhandled rejection escapes and the card stays dismissed.
+      await act(async () => {});
+      expect(
+        screen.queryByText('Recovered in Safe Mode'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('restores the ask-bar canonical position on "Choose a different model"', async () => {
+      enableChannelCaptureWithResponses({
+        startup_safety: { safe_mode: true, unclean_count: 2 },
+        estimate_model_fit: { required_bytes: 4 * 1024 ** 3 },
+      });
+
+      render(<App />);
+      await screen.findByText('Recovered in Safe Mode');
+      await showOverlay();
+      invoke.mockClear();
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Choose a different model' }),
+      );
+      await act(async () => {});
+
+      expect(invoke).toHaveBeenCalledWith('position_overlay_ask_bar');
+    });
+
+    it('does not reposition the ask bar on a normal selection-anchored show', async () => {
+      render(<App />);
+      await act(async () => {});
+      invoke.mockClear();
+
+      // show_overlay already positioned the window near the selection; the
+      // frontend must NOT clobber it with the top-center default.
+      await showOverlay('selected passage');
+
+      expect(invoke).not.toHaveBeenCalledWith('position_overlay_ask_bar');
+    });
+
+    it('does not reposition when the recovery card is dismissed while the overlay is not visible', async () => {
+      enableChannelCaptureWithResponses({
+        startup_safety: { safe_mode: true, unclean_count: 2 },
+        estimate_model_fit: { required_bytes: 4 * 1024 ** 3 },
+      });
+
+      render(<App />);
+      // Dismiss the card WITHOUT ever showing the overlay: overlayState is not
+      // 'visible', so the ask bar is not the mounted surface and the next
+      // native show_overlay will position it. Repositioning here would be
+      // premature, so the effect must stay quiet.
+      await screen.findByText('Recovered in Safe Mode');
+      invoke.mockClear();
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Load last model anyway' }),
+      );
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith('position_overlay_ask_bar');
+    });
   });
 
   // ─── History integration ─────────────────────────────────────────────────────

@@ -989,6 +989,34 @@ function App() {
   ]);
 
   /**
+   * Restores the overlay window to the ask bar's canonical default position
+   * when a borrowing surface (onboarding or the safe-mode recovery card, issue
+   * #296) is dismissed back to the ask bar.
+   *
+   * why: those surfaces re-center and resize the shared overlay window for
+   * themselves (via `useFitOnboardingWindow`), and nothing re-runs the native
+   * `show_overlay` positioning when they are dismissed, so without this the ask
+   * bar would render wherever the previous surface left the window. This effect
+   * is the single owner of the ask-bar POSITION on that hand-back edge; SIZE
+   * stays owned by the ResizeObserver / config-sync effect above. It fires ONLY
+   * on the borrowing-surface -> ask-bar transition (tracked via
+   * `wasBorrowingSurfaceRef`), never on a normal show, so `show_overlay`'s
+   * selection-anchored placement is never clobbered. The gate is also why
+   * onboarding-complete (which leaves `overlayState` non-'visible' and re-shows
+   * natively) does not reach this path.
+   */
+  const borrowingSurfaceActive =
+    onboardingStage !== null || safeModeRecovery !== null;
+  const wasBorrowingSurfaceRef = useRef(borrowingSurfaceActive);
+  useEffect(() => {
+    const wasBorrowing = wasBorrowingSurfaceRef.current;
+    wasBorrowingSurfaceRef.current = borrowingSurfaceActive;
+    if (wasBorrowing && !borrowingSurfaceActive && overlayState === 'visible') {
+      void invoke('position_overlay_ask_bar').catch(() => {});
+    }
+  }, [borrowingSurfaceActive, overlayState]);
+
+  /**
    * Drives the typography CSS variables on `<html>` from the user-tunable
    * `[window]` typography knobs. Consumers (the AI markdown body, the user
    * chat bubble text, and the AskBar textarea + caret-tracking mirror) read
@@ -3503,14 +3531,24 @@ function App() {
   }, [refreshModels, refreshModelCapabilities]);
 
   /**
-   * "Load last model anyway" on the safe-mode recovery screen: just
-   * dismisses the card. `safe_mode` only gates the auto-prime/download
-   * paths, never a user-initiated `ask_model`, so letting the user chat
-   * normally from here already loads the model through the normal, ungated
-   * path - no extra invoke needed.
+   * "Load last model anyway" on the safe-mode recovery screen (issue #296
+   * Screen A): the user consented to loading the model the circuit breaker
+   * deferred, so force-load it right now instead of waiting for their first
+   * message. Reuses the SAME `warm_up_model { force: true }` path as the
+   * ambient warning strip: `spawn_gated_builtin_warmup` is the single owner of
+   * built-in loads, and `warm_up_model` never consults `safe_mode` (safe mode
+   * gates only the no-user-action auto-prime in `show_overlay`), so this
+   * user-initiated forced load is honored while safe mode is on.
+   *
+   * why: dismiss the card synchronously BEFORE firing the IPC so the screen
+   * disappears on the click, with no wait on the `warm_up_model` round trip. A
+   * load failure surfaces through the normal engine error paths on the user's
+   * next send, never by resurrecting this card. `invoke` can reject at this IO
+   * boundary, so the rejection is swallowed rather than left unhandled.
    */
   const handleLoadModelAnywayFromSafeMode = useCallback(() => {
     setSafeModeRecovery(null);
+    void invoke('warm_up_model', { force: true }).catch(() => {});
   }, []);
 
   /**

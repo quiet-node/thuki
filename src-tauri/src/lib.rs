@@ -2051,6 +2051,62 @@ fn fit_onboarding_window(app_handle: tauri::AppHandle, width: f64, height: f64, 
     });
 }
 
+/// Repositions the overlay ("main") window to the ask bar's canonical default
+/// origin: the same top-center placement `show_overlay` uses when there is no
+/// text selection to anchor to (see `context::calculate_window_position`).
+///
+/// This is the single owner of "return the ask bar to its default position"
+/// for surfaces that borrow the shared overlay window and move it: onboarding
+/// and the safe-mode recovery card both re-center and resize the window for
+/// themselves via `fit_onboarding_window`. When such a surface is dismissed
+/// back to the ask bar there is no fresh native `show_overlay`, so nothing else
+/// restores the ask bar's origin and the bar would render wherever the previous
+/// surface left the window (issue #296).
+///
+/// why: POSITION only. The ask bar's SIZE is content-driven and owned by the
+/// frontend `ResizeObserver`, so this command deliberately never touches size;
+/// it owns just the one axis no other code path restores on a surface
+/// hand-back. The frontend calls it only on the borrowing-surface -> ask-bar
+/// dismiss edge, never on a normal show, so `show_overlay`'s selection-anchored
+/// placement is never clobbered. The default origin is taken from
+/// `calculate_window_position` with an empty context (its no-selection branch),
+/// never re-derived here, keeping `top_center` the single source of the value.
+///
+/// The reposition runs on the macOS main thread so it is atomic with the window
+/// server, mirroring `fit_onboarding_window` (positioning from JS is unreliable).
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn position_overlay_ask_bar(app_handle: tauri::AppHandle) {
+    let handle = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window("main") {
+            let monitor = window
+                .current_monitor()
+                .ok()
+                .flatten()
+                .or_else(|| window.primary_monitor().ok().flatten());
+            if let Some(mon) = monitor {
+                let scale = mon.scale_factor();
+                let pos = mon.position();
+                let size = mon.size();
+                let placement = crate::context::calculate_window_position(
+                    &crate::context::ActivationContext::empty(),
+                    size.width as f64 / scale,
+                    size.height as f64 / scale,
+                    OVERLAY_LOGICAL_WIDTH,
+                    OVERLAY_LOGICAL_HEIGHT_COLLAPSED,
+                );
+                // Placement is monitor-local; shift to global screen coordinates
+                // before setting the position, same conversion as show_overlay.
+                let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+                    placement.x + pos.x as f64 / scale,
+                    placement.y + pos.y as f64 / scale,
+                )));
+            }
+        }
+    });
+}
+
 /// Sizes the main window for the onboarding screen, centers it, makes it
 /// visible, and emits `thuki://onboarding` so the frontend switches to
 /// `OnboardingView`.
@@ -2909,6 +2965,7 @@ pub fn run() {
             advance_past_model_check,
             advance_past_builtin_announcement,
             fit_onboarding_window,
+            position_overlay_ask_bar,
             onboarding_stage,
             is_builtin_announced,
             open_settings_window,
