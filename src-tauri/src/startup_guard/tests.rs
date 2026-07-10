@@ -396,6 +396,35 @@ fn mark_clean_exit_persists() {
     assert!(read_record(&path).unwrap().clean_exit);
 }
 
+/// Both writer methods recover a poisoned record mutex instead of panicking:
+/// an unrelated panic while the lock is held must not permanently break the
+/// activity write or the clean-exit write, since the whole crash-detection
+/// feature depends on the latter still landing on a genuine exit.
+#[test]
+fn writer_methods_recover_poisoned_record_mutex() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("session.json");
+    let launch = SessionRecord::launch(1, 2, 0);
+    durable_write_record(&path, &launch).unwrap();
+    let writer = SessionWriter::new(path.clone(), launch);
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = writer.record.lock().unwrap();
+        panic!("poison");
+    }));
+    assert!(writer.record.lock().is_err(), "mutex must be poisoned");
+
+    let activity = SessionActivity {
+        kind: ActivityKind::Downloading,
+        model_id: Some("qwen".into()),
+    };
+    writer.set_activity(activity.clone()).unwrap();
+    assert_eq!(read_record(&path).unwrap().activity, activity);
+
+    writer.mark_clean_exit().unwrap();
+    assert!(read_record(&path).unwrap().clean_exit);
+}
+
 /// The shutdown sigset traps EXACTLY the polite-stop signals (SIGINT, SIGTERM)
 /// and never SIGKILL. This locks in "a signal-requested stop is a clean exit,
 /// but SIGKILL / panic / freeze remain uncatchable and therefore abnormal": the

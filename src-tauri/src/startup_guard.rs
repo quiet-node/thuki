@@ -759,8 +759,12 @@ impl SessionWriter {
     #[cfg_attr(coverage_nightly, coverage(off))]
     pub(crate) fn set_activity(&self, activity: SessionActivity) -> std::io::Result<()> {
         // Hold the lock across the write so concurrent callers cannot interleave
-        // writes to the single record file.
-        let mut record = self.record.lock().expect("session record mutex poisoned");
+        // writes to the single record file. A poisoned lock is recovered: an
+        // unrelated panic elsewhere must not permanently break this write path.
+        let mut record = match self.record.lock() {
+            Ok(record) => record,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         record.activity = activity;
         durable_write_record(&self.path, &record)
     }
@@ -772,7 +776,12 @@ impl SessionWriter {
     /// `mark_clean_exit_persists`.
     #[cfg_attr(coverage_nightly, coverage(off))]
     pub(crate) fn mark_clean_exit(&self) -> std::io::Result<()> {
-        let mut record = self.record.lock().expect("session record mutex poisoned");
+        // A poisoned lock is recovered: an unrelated panic elsewhere must not
+        // permanently block recording a genuine clean exit.
+        let mut record = match self.record.lock() {
+            Ok(record) => record,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         record.clean_exit = true;
         durable_write_record(&self.path, &record)
     }
