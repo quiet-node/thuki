@@ -259,19 +259,58 @@ impl EngineChild for TokioChild {
     }
 }
 
+/// Async-signal-safe child hook: clears the spawned process's signal mask so
+/// `llama-server` starts with normal (default, empty) signal semantics.
+///
+/// why: the parent blocks `SIGINT`/`SIGTERM` process-wide (see
+/// `crate::startup_guard::block_shutdown_signals`) so a dedicated `sigwait`
+/// thread can durably mark a clean exit. POSIX preserves the thread signal mask
+/// across `fork` and `exec`, so without this reset the sidecar would inherit
+/// that block: an orphaned `llama-server` (left behind if Thuki is `SIGKILL`ed)
+/// would then ignore `SIGTERM`, so a plain `kill`/`pkill` silently does nothing
+/// and only `kill -9` reaps it. That shutdown-signal policy is the parent's
+/// alone and must not leak into the child.
+///
+/// Coverage-off: `libc` FFI that mutates the calling thread's signal mask; it
+/// carries no branch logic to test and running it under the harness would
+/// clobber the harness's own mask.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn reset_child_signal_mask() -> std::io::Result<()> {
+    // SAFETY: runs in the forked child, between fork and exec, where only
+    // async-signal-safe work is legal. `sigemptyset` and `pthread_sigmask` are
+    // both async-signal-safe; this performs no allocation, takes no locks, logs
+    // nothing, and touches no shared state. `empty` is a valid local sigset for
+    // the duration of the call and a null oldset discards the previous mask,
+    // which the child never needs.
+    unsafe {
+        let mut empty: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut empty);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut());
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl EngineProcess for TokioEngineProcess {
     #[cfg_attr(coverage_nightly, coverage(off))]
     async fn spawn(&self, args: &SpawnArgs) -> Result<Box<dyn EngineChild>, String> {
-        let mut child = tokio::process::Command::new(&self.binary)
+        let mut command = tokio::process::Command::new(&self.binary);
+        command
             .args(llama_server_args(args))
             .stdout(std::process::Stdio::null())
             // Capture stderr so a load failure (e.g. "unknown model
             // architecture") reaches the user instead of being discarded.
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| e.to_string())?;
+            .kill_on_drop(true);
+        // SAFETY: `pre_exec` registers `reset_child_signal_mask` to run in the
+        // forked child before `exec`. That hook is async-signal-safe (only
+        // `sigemptyset`/`pthread_sigmask`, no allocation, no locks, no logging,
+        // no shared state), which is exactly what `pre_exec`'s contract
+        // requires in the post-fork window.
+        unsafe {
+            command.pre_exec(reset_child_signal_mask);
+        }
+        let mut child = command.spawn().map_err(|e| e.to_string())?;
 
         let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
         // Drain stderr into the bounded tail ring. The task ends when the pipe
