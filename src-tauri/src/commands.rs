@@ -823,6 +823,9 @@ async fn run_builtin_search(
         // never served to another (see `websearch::cache` module docs).
         cache: crate::websearch::cache::global_search_cache(),
         cache_scope,
+        // Process-wide in-memory SERP + page cache, shared across turns so a
+        // repeat scrape is served from memory (see `websearch::serp_cache`).
+        web_cache: crate::websearch::serp_cache::global_web_cache(),
         local_zone: local_zone.as_deref(),
     };
     let status = |phase| on_chunk(StreamChunk::SearchStatus { phase });

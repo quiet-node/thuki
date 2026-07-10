@@ -32,6 +32,7 @@
 use scraper::{Html, Selector};
 
 use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
+use crate::websearch::serp_cache::WebCache;
 
 /// One search-engine result row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,10 +218,16 @@ enum EngineOutcome {
 /// Runs a keyless web search for `query` by racing every live engine in
 /// [`ENGINES`] concurrently and fusing their ranked lists with Reciprocal Rank
 /// Fusion. Engines inside their block cooldown (see [`EngineHealth`]) are not
-/// requested at all; every other engine gets exactly one request. A bot
-/// challenge or rate-limit response marks that engine blocked for its cooldown
-/// window; an empty SERP or transport/SSRF error contributes nothing without
-/// marking (an empty page is a bad query, not a ban). The surviving lists are
+/// requested at all. Each remaining engine is first checked against the
+/// in-memory SERP cache (`cache`): a cache hit contributes its stored list to
+/// the fusion WITHOUT issuing a request (the strongest burst-reduction there is,
+/// since a repeat query costs the engine nothing), and only the cache-missing
+/// engines are actually raced. Every raced engine gets exactly one request. A
+/// bot challenge or rate-limit response marks that engine blocked for its
+/// cooldown window and is NOT cached (a block must never be replayed as truth);
+/// an empty SERP or transport/SSRF error contributes nothing without marking
+/// (an empty page is a bad query, not a ban) and is not cached either; only a
+/// successfully-parsed (Ok) list is written to the cache. The surviving lists are
 /// fused ([`rrf_fuse`]), then deduped and capped ([`dedupe_and_cap`]) so the
 /// final length still honours [`crate::config::defaults::SERP_MAX_RESULTS_PER_QUERY`].
 /// When no engine returns a usable list the result is empty, so the caller
@@ -250,45 +257,56 @@ pub async fn web_search(
     query: &str,
     health: &EngineHealth,
     freshness: bool,
+    cache: &WebCache,
 ) -> Vec<SearchHit> {
-    // Build one request per non-cooling engine and race them. `join_all`
-    // preserves input order, so the results come back in ENGINES order and the
-    // whole path is deterministic. `health` is intentionally not captured by the
-    // async tasks: cooldown marking is done sequentially after the join, so the
-    // mutex is never held across an `await`.
-    let tasks: Vec<_> = ENGINES
-        .iter()
-        .filter_map(|engine| {
-            if health.is_cooling(engine.name) {
-                eprintln!("[search] engine={} cooling -> skipped", engine.name);
-                return None;
-            }
-            let request = (engine.build)(query, freshness);
-            Some(async move {
-                let outcome = match transport.send(&request).await {
-                    Err(_) => EngineOutcome::TransportError,
-                    Ok(response) => {
-                        let body = String::from_utf8_lossy(&response.body);
-                        let hits = (engine.parse)(&body);
-                        match classify_serp(response.status, hits.len(), &body) {
-                            SerpOutcome::Ok => EngineOutcome::Hits(hits),
-                            SerpOutcome::Blocked => EngineOutcome::Blocked,
-                            SerpOutcome::Empty => EngineOutcome::Empty,
-                        }
+    // Cache-hit lists (served without a request) plus the tasks for the engines
+    // that must actually be raced. The SERP cache is read here, before the race,
+    // never inside the async tasks, so the cache lock is never held across an
+    // `await` (the same discipline `health` follows). `join_all` preserves input
+    // order for the raced engines, so the whole path stays deterministic.
+    let mut lists: Vec<Vec<SearchHit>> = Vec::new();
+    let mut tasks = Vec::new();
+    for engine in ENGINES {
+        if health.is_cooling(engine.name) {
+            eprintln!("[search] engine={} cooling -> skipped", engine.name);
+            continue;
+        }
+        if let Some(hits) = cache.serp_get(engine.name, query, freshness) {
+            eprintln!(
+                "[search] engine={} serp cache hit hits={}",
+                engine.name,
+                hits.len()
+            );
+            lists.push(hits);
+            continue;
+        }
+        let request = (engine.build)(query, freshness);
+        tasks.push(async move {
+            let outcome = match transport.send(&request).await {
+                Err(_) => EngineOutcome::TransportError,
+                Ok(response) => {
+                    let body = String::from_utf8_lossy(&response.body);
+                    let hits = (engine.parse)(&body);
+                    match classify_serp(response.status, hits.len(), &body) {
+                        SerpOutcome::Ok => EngineOutcome::Hits(hits),
+                        SerpOutcome::Blocked => EngineOutcome::Blocked,
+                        SerpOutcome::Empty => EngineOutcome::Empty,
                     }
-                };
-                (engine.name, engine.cooldown_s, outcome)
-            })
-        })
-        .collect();
+                }
+            };
+            (engine.name, engine.cooldown_s, outcome)
+        });
+    }
 
     let results = futures_util::future::join_all(tasks).await;
 
-    let mut lists: Vec<Vec<SearchHit>> = Vec::new();
     for (name, cooldown_s, outcome) in results {
         match outcome {
             EngineOutcome::Hits(hits) => {
                 eprintln!("[search] engine={name} ok hits={}", hits.len());
+                // Only Ok lists are cached; a repeat of this exact query within
+                // the TTL is then served from memory above.
+                cache.serp_put(name, query, freshness, hits.clone());
                 lists.push(hits);
             }
             EngineOutcome::Blocked => {
@@ -617,6 +635,18 @@ mod tests {
             url: url.into(),
             snippet: "s".into(),
         }
+    }
+
+    /// A fresh, empty SERP cache for the racing tests that do not exercise
+    /// caching: generous TTL and caps, so every lookup misses and every engine
+    /// races exactly as it did before caching was added.
+    fn empty_web_cache() -> WebCache {
+        WebCache::new(
+            std::time::Duration::from_secs(600),
+            std::time::Duration::from_secs(600),
+            64,
+            128,
+        )
     }
 
     // ── decode_uddg ─────────────────────────────────────────────────────────
@@ -997,7 +1027,14 @@ mod tests {
         // carries the df=w form field and the df=w cookie.
         let transport = FakeHttpTransport::new()
             .with_response(DDG_HTML_ENDPOINT, ok(DDG_HTML_ENDPOINT, DDG_HTML_FIXTURE));
-        let _ = web_search(&transport, "q", &EngineHealth::new(), true).await;
+        let _ = web_search(
+            &transport,
+            "q",
+            &EngineHealth::new(),
+            true,
+            &empty_web_cache(),
+        )
+        .await;
         let call = transport
             .calls()
             .into_iter()
@@ -1018,7 +1055,14 @@ mod tests {
         let transport = FakeHttpTransport::new()
             .with_response(DDG_HTML_ENDPOINT, ok(DDG_HTML_ENDPOINT, DDG_HTML_FIXTURE))
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let hits = web_search(&transport, "q", &EngineHealth::new(), false).await;
+        let hits = web_search(
+            &transport,
+            "q",
+            &EngineHealth::new(),
+            false,
+            &empty_web_cache(),
+        )
+        .await;
         let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
         // A DuckDuckGo result and a Mojeek result both survive the fusion.
         assert!(urls.contains(&"https://example.com/a"));
@@ -1048,7 +1092,7 @@ mod tests {
                 },
             )
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let hits = web_search(&transport, "q", &health, false).await;
+        let hits = web_search(&transport, "q", &health, false, &empty_web_cache()).await;
         // Blocked engine contributes no list; Mojeek's two hits survive.
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].url, "https://rust-lang.org/tools/install/");
@@ -1069,7 +1113,7 @@ mod tests {
                 ok(DDG_HTML_ENDPOINT, "<html><body>no results</body></html>"),
             )
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let hits = web_search(&transport, "q", &health, false).await;
+        let hits = web_search(&transport, "q", &health, false, &empty_web_cache()).await;
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].url, "https://rust-lang.org/tools/install/");
         // Empty is not a block: DuckDuckGo stays available for the next query.
@@ -1087,18 +1131,30 @@ mod tests {
         let transport = FakeHttpTransport::new()
             .with_response(DDG_HTML_ENDPOINT, blocked(DDG_HTML_ENDPOINT))
             .with_response(&mojeek_url, blocked(&mojeek_url));
-        assert!(web_search(&transport, "q", &EngineHealth::new(), false)
-            .await
-            .is_empty());
+        assert!(web_search(
+            &transport,
+            "q",
+            &EngineHealth::new(),
+            false,
+            &empty_web_cache()
+        )
+        .await
+        .is_empty());
     }
 
     #[tokio::test]
     async fn web_search_empty_when_all_engines_transport_error() {
         // No canned responses -> every engine's send errors -> empty.
         let transport = FakeHttpTransport::new();
-        assert!(web_search(&transport, "q", &EngineHealth::new(), false)
-            .await
-            .is_empty());
+        assert!(web_search(
+            &transport,
+            "q",
+            &EngineHealth::new(),
+            false,
+            &empty_web_cache()
+        )
+        .await
+        .is_empty());
     }
 
     // ── EngineHealth cooldown ───────────────────────────────────────────────
@@ -1152,7 +1208,7 @@ mod tests {
         let mojeek_url = mojeek_request("q", false).url;
         let transport = FakeHttpTransport::new()
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let hits = web_search(&transport, "q", &health, false).await;
+        let hits = web_search(&transport, "q", &health, false, &empty_web_cache()).await;
         assert_eq!(hits.len(), 2);
         // Single live engine: fusion is an identity on order, so Mojeek's own
         // ordering is preserved verbatim.
@@ -1178,8 +1234,9 @@ mod tests {
                 },
             )
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let _ = web_search(&transport, "q", &health, false).await;
-        let _ = web_search(&transport, "q", &health, false).await;
+        let cache = empty_web_cache();
+        let _ = web_search(&transport, "q", &health, false, &cache).await;
+        let _ = web_search(&transport, "q", &health, false, &cache).await;
         let ddg_posts = transport
             .calls()
             .into_iter()
@@ -1187,5 +1244,59 @@ mod tests {
             .count();
         assert_eq!(ddg_posts, 1, "blocked engine must not be re-queried");
         assert!(health.is_cooling("duckduckgo"));
+    }
+
+    // ── SERP cache integration ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn web_search_serp_cache_hit_skips_request_and_still_fuses() {
+        // DuckDuckGo's list is already cached for this exact query: it must NOT be
+        // requested, its cached list must still join the fusion, and the live
+        // (uncached) Mojeek engine must still race and contribute.
+        let mojeek_url = mojeek_request("q", false).url;
+        let cache = empty_web_cache();
+        cache.serp_put("duckduckgo", "q", false, vec![hit("https://cached-ddg/")]);
+        // Only Mojeek is canned; DuckDuckGo has no response because it must never
+        // be requested.
+        let transport = FakeHttpTransport::new()
+            .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
+        let health = EngineHealth::new();
+        let hits = web_search(&transport, "q", &health, false, &cache).await;
+        let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
+        // Cached DuckDuckGo hit and a live Mojeek hit both survive the fusion.
+        assert!(urls.contains(&"https://cached-ddg/"));
+        assert!(urls.contains(&"https://rust-lang.org/tools/install/"));
+        // Exactly one request total, and none of it to DuckDuckGo.
+        let calls = transport.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(!calls.iter().any(|c| c.url == DDG_HTML_ENDPOINT));
+    }
+
+    #[tokio::test]
+    async fn web_search_blocked_engine_is_not_cached() {
+        // A block must never be written to the cache (it must not be replayable as
+        // truth). Each call uses a FRESH health so cooldown never masks the cache
+        // behaviour: because the block was not cached, the second call re-requests
+        // DuckDuckGo (two DDG requests total), rather than serving a cached block.
+        let transport = FakeHttpTransport::new().with_response(
+            DDG_HTML_ENDPOINT,
+            HttpResponse {
+                status: 202,
+                final_url: DDG_HTML_ENDPOINT.into(),
+                body: b"<div class=\"anomaly-modal\">challenge-form</div>".to_vec(),
+            },
+        );
+        let cache = empty_web_cache();
+        let _ = web_search(&transport, "q", &EngineHealth::new(), false, &cache).await;
+        let _ = web_search(&transport, "q", &EngineHealth::new(), false, &cache).await;
+        let ddg_posts = transport
+            .calls()
+            .into_iter()
+            .filter(|c| c.url == DDG_HTML_ENDPOINT)
+            .count();
+        assert_eq!(
+            ddg_posts, 2,
+            "a blocked engine must not be served from cache"
+        );
     }
 }

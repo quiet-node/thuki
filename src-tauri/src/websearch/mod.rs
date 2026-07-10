@@ -16,6 +16,10 @@
 //!   does its own timezone arithmetic. Not a search decision: it never
 //!   triggers web search.
 //! - [`cache`] — the multi-turn source cache backing a `cached` decision.
+//! - [`serp_cache`] — process-lifetime, in-memory (never disk) TTL+FIFO cache of
+//!   engine SERP lists and extracted page bodies, so a repeat scrape is served
+//!   from memory instead of re-hitting a keyless engine (cuts latency and the
+//!   engines' volume-triggered rate limits).
 //! - [`engine`] — keyless search-engine scraping with rotation.
 //! - [`weather`], [`sports`], [`news`], [`encyclopedia`] — intent-routed
 //!   keyless verticals tried ahead of the scraped engines.
@@ -40,6 +44,7 @@ pub mod orchestrator;
 pub mod prefilter;
 pub mod prepass;
 pub mod rank;
+pub mod serp_cache;
 pub mod sports;
 pub mod weather;
 pub mod writer;

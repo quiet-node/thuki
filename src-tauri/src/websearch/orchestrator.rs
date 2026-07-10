@@ -61,6 +61,7 @@ use crate::websearch::prepass::{
     InferenceError, PrePass, PrePassDecision, SearchDecision, SearchRoute,
 };
 use crate::websearch::rank::{select_chunks, Scorer};
+use crate::websearch::serp_cache::WebCache;
 use crate::websearch::sports::{fetch_sports, is_sports_intent};
 use crate::websearch::weather::fetch_weather;
 use crate::websearch::writer::{unreachable_messages, writer_messages};
@@ -126,6 +127,15 @@ pub struct SearchDeps<'a> {
     /// the backend's conversation epoch at the start of the turn), so a
     /// cache entry from one conversation is never served to another.
     pub cache_scope: u64,
+    /// Process-lifetime, in-memory result cache for the scraped-engine tier: a
+    /// repeat SERP scrape or page fetch is served from memory instead of hitting
+    /// a keyless engine again, cutting latency and the volume that triggers the
+    /// engines' rate limits. Distinct from `cache` (the cross-turn SOURCE cache
+    /// backing a `cached` decision): this one holds raw engine SERP lists and
+    /// extracted page bodies, is not conversation-scoped (its contents are public
+    /// web pages, not the user's resolved question), and is read/written only
+    /// inside [`run_engine_tier`]. See [`crate::websearch::serp_cache`].
+    pub web_cache: &'a WebCache,
     /// The user's device IANA timezone (e.g. `"America/Chicago"`), when known,
     /// used by the sports vertical to localize scheduled kickoff times. `None`
     /// falls back to date-only event lines. An environmental value the caller
@@ -604,7 +614,16 @@ async fn run_engine_tier(
         if cancel.is_cancelled() {
             return EngineTierOutcome::Cancelled;
         }
-        hits.extend(web_search(deps.transport, query, deps.health, freshness).await);
+        hits.extend(
+            web_search(
+                deps.transport,
+                query,
+                deps.health,
+                freshness,
+                deps.web_cache,
+            )
+            .await,
+        );
         // Early stop: once one query has produced enough hits, further queries
         // add third-party burst (the engines' rate limits are volume-triggered)
         // and latency for marginal recall.
@@ -620,7 +639,7 @@ async fn run_engine_tier(
         return EngineTierOutcome::Cancelled;
     }
     status(SearchPhase::Reading);
-    let pages = fetch_pages(deps.transport, &hits, num_ctx).await;
+    let pages = fetch_pages(deps.transport, &hits, num_ctx, deps.web_cache).await;
     let chunks = select_chunks(&pages, standalone_question, deps.scorer);
     let sources = assemble_context(&chunks, num_ctx);
     if sources.is_empty() {
@@ -1021,6 +1040,14 @@ mod tests {
             recorder,
             cache,
             cache_scope,
+            // A fresh, empty web cache per test (leaked so it outlives the
+            // returned `SearchDeps`), so parallel tests never share cache state.
+            web_cache: Box::leak(Box::new(WebCache::new(
+                std::time::Duration::from_secs(600),
+                std::time::Duration::from_secs(600),
+                64,
+                128,
+            ))),
             // The sports vertical's kickoff-time localization is unit-tested in
             // `websearch::sports`; the orchestrator only threads the zone
             // through, so tests here run without one (date-only event lines).
@@ -1051,6 +1078,12 @@ mod tests {
                 std::time::Duration::from_secs(600),
             ))),
             cache_scope: 1,
+            web_cache: Box::leak(Box::new(WebCache::new(
+                std::time::Duration::from_secs(600),
+                std::time::Duration::from_secs(600),
+                64,
+                128,
+            ))),
             local_zone: None,
         }
     }

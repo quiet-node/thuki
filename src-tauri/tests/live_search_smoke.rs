@@ -25,6 +25,7 @@ use thuki_agent_lib::websearch::prepass::{
     InferenceError, PrePass, PrePassDecision, SearchDecision, SearchRoute,
 };
 use thuki_agent_lib::websearch::rank::Bm25Scorer;
+use thuki_agent_lib::websearch::serp_cache::WebCache;
 
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
@@ -96,6 +97,12 @@ async fn live_turn(
     let health = EngineHealth::new();
     let recorder = BoundRecorder::noop_for(ConversationId::new("smoke"));
     let cache = TtlSourceCache::new(std::time::Duration::from_secs(600));
+    let web_cache = WebCache::new(
+        std::time::Duration::from_secs(600),
+        std::time::Duration::from_secs(600),
+        64,
+        128,
+    );
     let deps = SearchDeps {
         prepass: &prepass,
         judge: &judge,
@@ -105,6 +112,7 @@ async fn live_turn(
         recorder: &recorder,
         cache: &cache,
         cache_scope: 1,
+        web_cache: &web_cache,
         local_zone: None,
     };
     run_search(

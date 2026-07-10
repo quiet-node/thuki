@@ -1015,6 +1015,48 @@ pub const ENGINE_COOLDOWN_PRIMARY_S: u64 = 1800;
 /// Cooldown for fallback engines (seconds). See [`ENGINE_COOLDOWN_PRIMARY_S`].
 pub const ENGINE_COOLDOWN_FALLBACK_S: u64 = 120;
 
+// ─── Web-search in-memory result cache (process-lifetime, never persisted) ────
+
+/// How long a per-engine SERP result list stays reusable in the in-memory web
+/// cache (seconds). A repeat scrape of the same query within this window is
+/// served from memory instead of re-hitting the keyless engine, which both cuts
+/// latency and starves the engines' volume-triggered rate limits (a burst of
+/// identical requests is exactly what earns a multi-hour DuckDuckGo IP block).
+/// 5 minutes matches the realistic turn-to-turn repeat window while keeping SERP
+/// freshness tight, since ranked results shift faster than page bodies.
+///
+/// Not user-tunable: an internal robustness bound, the same rationale as
+/// [`SEARCH_CACHE_TTL_S`] and [`ENGINE_COOLDOWN_PRIMARY_S`].
+pub const SERP_CACHE_TTL_S: u64 = 300;
+
+/// How long an extracted page body stays reusable in the in-memory web cache
+/// (seconds). Longer than [`SERP_CACHE_TTL_S`] because article text drifts more
+/// slowly than the ranked result set that points at it, so a fetched page is
+/// safe to reuse across a longer window.
+///
+/// Not user-tunable: an internal robustness bound, the same rationale as
+/// [`SERP_CACHE_TTL_S`].
+pub const PAGE_CACHE_TTL_S: u64 = 900;
+
+/// Hard cap on the number of per-engine SERP lists held in the in-memory web
+/// cache at once. When the cache is full the oldest-inserted entry is evicted to
+/// make room, so the cache's memory footprint is bounded regardless of how many
+/// distinct queries a session runs. Sized to comfortably cover a session's
+/// recent-query working set without letting a long session grow the map without
+/// limit.
+///
+/// Not user-tunable: an internal memory-safety bound.
+pub const SERP_CACHE_MAX_ENTRIES: usize = 64;
+
+/// Hard cap on the number of extracted page bodies held in the in-memory web
+/// cache at once. Larger than [`SERP_CACHE_MAX_ENTRIES`] because a single SERP
+/// fans out to several fetched pages, so the page working set is larger than the
+/// query working set. Oldest-inserted entries are evicted at the cap, bounding
+/// memory.
+///
+/// Not user-tunable: an internal memory-safety bound.
+pub const PAGE_CACHE_MAX_ENTRIES: usize = 128;
+
 // ─── Web-search fetch + extract ──────────────────────────────────────────────
 
 /// `num_ctx` at or above which the fetch stage is allowed the larger page

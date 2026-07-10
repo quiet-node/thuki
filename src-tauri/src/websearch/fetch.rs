@@ -26,6 +26,7 @@ use crate::config::defaults::{
 };
 use crate::net::transport::{HttpRequest, HttpTransport};
 use crate::websearch::engine::SearchHit;
+use crate::websearch::serp_cache::WebCache;
 
 /// A page reduced to what the ranking and writer stages consume: the resolved
 /// URL, a title, and readable body text. On a fetch/extract failure `text` is
@@ -100,6 +101,12 @@ pub(crate) fn page_from_parts(hit: &SearchHit, extracted: Option<String>) -> Fet
 /// contribute their snippet directly. Never errors, never hangs past the
 /// per-URL bound.
 ///
+/// `cache` is the in-memory page cache: each fetched URL is looked up before the
+/// network fetch (a hit skips the fetch entirely), and a successful extraction is
+/// written back so a later turn reuses it. Only the fetched slice consults the
+/// cache; snippet-only hits beyond the fetch budget were never going to hit the
+/// network and stay snippet-only.
+///
 /// Coverage-excluded: async fan-out over the injectable transport and
 /// `tokio::time`. Every decision (how many to fetch, extract-or-snippet,
 /// snippet passthrough) lives in the pure helpers tested above and is
@@ -109,11 +116,13 @@ pub async fn fetch_pages(
     transport: &dyn HttpTransport,
     hits: &[SearchHit],
     num_ctx: u32,
+    cache: &WebCache,
 ) -> Vec<FetchedPage> {
     let n = pages_to_fetch(num_ctx, hits.len());
     let (to_fetch, snippet_only) = hits.split_at(n);
     let fetched =
-        futures_util::future::join_all(to_fetch.iter().map(|hit| fetch_one(transport, hit))).await;
+        futures_util::future::join_all(to_fetch.iter().map(|hit| fetch_one(transport, hit, cache)))
+            .await;
     fetched
         .into_iter()
         .chain(snippet_only.iter().map(|hit| page_from_parts(hit, None)))
@@ -123,8 +132,23 @@ pub async fn fetch_pages(
 /// Fetches and extracts one page, bounded by [`FETCH_PER_URL_TIMEOUT_S`]; any
 /// failure (timeout, transport/SSRF error, non-2xx, unreadable) degrades to the
 /// hit's SERP snippet.
+///
+/// Consults `cache` first: a cached extracted body for this URL skips the network
+/// fetch entirely. On a fresh, successful extraction the body is written back to
+/// the cache; a snippet fallback (no extractable text) and any failed fetch are
+/// never cached, so only real article text is ever reused. The cache is read
+/// before and written after the `await`, never across it, so its lock is never
+/// held over I/O.
 #[cfg_attr(coverage_nightly, coverage(off))]
-async fn fetch_one(transport: &dyn HttpTransport, hit: &SearchHit) -> FetchedPage {
+async fn fetch_one(
+    transport: &dyn HttpTransport,
+    hit: &SearchHit,
+    cache: &WebCache,
+) -> FetchedPage {
+    if let Some(text) = cache.page_get(hit.url.as_str()) {
+        eprintln!("[search] page cache hit url={}", hit.url);
+        return page_from_parts(hit, Some(text));
+    }
     let request = HttpRequest::get(hit.url.as_str());
     let extracted = match tokio::time::timeout(
         std::time::Duration::from_secs(FETCH_PER_URL_TIMEOUT_S),
@@ -138,6 +162,9 @@ async fn fetch_one(transport: &dyn HttpTransport, hit: &SearchHit) -> FetchedPag
         ),
         _ => None,
     };
+    if let Some(text) = &extracted {
+        cache.page_put(hit.url.as_str(), text.clone());
+    }
     page_from_parts(hit, extracted)
 }
 
@@ -175,6 +202,17 @@ mod tests {
             url: url.into(),
             snippet: snippet.into(),
         }
+    }
+
+    /// A fresh, empty page cache for the fetch tests that do not exercise
+    /// caching, so every fetch behaves exactly as it did before caching.
+    fn empty_web_cache() -> WebCache {
+        WebCache::new(
+            std::time::Duration::from_secs(600),
+            std::time::Duration::from_secs(600),
+            64,
+            128,
+        )
     }
 
     // ── pages_to_fetch ────────────────────────────────────────────────────────
@@ -254,7 +292,7 @@ mod tests {
             hit("https://b.com/", "snippet b"),
         ];
         // Small ctx -> fetch 2, but only a.com has a canned page.
-        let pages = fetch_pages(&transport, &hits, 8192).await;
+        let pages = fetch_pages(&transport, &hits, 8192, &empty_web_cache()).await;
         assert_eq!(pages.len(), 2);
         assert!(pages[0]
             .text
@@ -265,19 +303,23 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_pages_snippets_beyond_budget() {
-        let resp = HttpResponse {
+        let resp = |url: &str| HttpResponse {
             status: 200,
-            final_url: "https://a.com/".into(),
+            final_url: url.into(),
             body: ARTICLE_HTML.as_bytes().to_vec(),
         };
-        let transport = FakeHttpTransport::new().with_response("https://a.com/", resp);
-        // 3 hits, small ctx budget of 2 -> the 3rd is snippet-only, never fetched.
+        let transport = FakeHttpTransport::new()
+            .with_response("https://a.com/", resp("https://a.com/"))
+            .with_response("https://b.com/", resp("https://b.com/"));
+        // 3 hits (distinct URLs, as they always are post-dedupe), small ctx
+        // budget of 2 -> the top two are fetched, the 3rd is snippet-only and
+        // never reaches the network.
         let hits = vec![
             hit("https://a.com/", "snip a"),
-            hit("https://a.com/", "snip a2"),
+            hit("https://b.com/", "snip b"),
             hit("https://c.com/", "snip c"),
         ];
-        let pages = fetch_pages(&transport, &hits, 8192).await;
+        let pages = fetch_pages(&transport, &hits, 8192, &empty_web_cache()).await;
         assert_eq!(pages.len(), 3);
         assert_eq!(pages[2].text, "snip c");
         assert_eq!(transport.calls().len(), 2);
@@ -292,7 +334,44 @@ mod tests {
         };
         let transport = FakeHttpTransport::new().with_response("https://a.com/", resp);
         let hits = vec![hit("https://a.com/", "the snippet")];
-        let pages = fetch_pages(&transport, &hits, 8192).await;
+        let pages = fetch_pages(&transport, &hits, 8192, &empty_web_cache()).await;
         assert_eq!(pages[0].text, "the snippet");
+    }
+
+    // ── page cache integration ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_pages_caches_extracted_page_and_reuses_it() {
+        // First fetch extracts and caches the page; the second fetch is served
+        // from the cache with no new network request.
+        let resp = HttpResponse {
+            status: 200,
+            final_url: "https://a.com/".into(),
+            body: ARTICLE_HTML.as_bytes().to_vec(),
+        };
+        let transport = FakeHttpTransport::new().with_response("https://a.com/", resp);
+        let hits = vec![hit("https://a.com/", "snippet a")];
+        let cache = empty_web_cache();
+        let pages1 = fetch_pages(&transport, &hits, 8192, &cache).await;
+        assert!(pages1[0]
+            .text
+            .contains("Ownership is the most distinctive feature"));
+        assert_eq!(transport.calls().len(), 1);
+        // Second call hits the cache: same text, still exactly one network call.
+        let pages2 = fetch_pages(&transport, &hits, 8192, &cache).await;
+        assert_eq!(pages2[0].text, pages1[0].text);
+        assert_eq!(transport.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn fetch_pages_does_not_cache_snippet_fallback() {
+        // No canned response -> transport error -> snippet fallback. A snippet
+        // fallback is not real extracted text, so nothing is written to the cache.
+        let transport = FakeHttpTransport::new();
+        let hits = vec![hit("https://b.com/", "snippet b")];
+        let cache = empty_web_cache();
+        let pages = fetch_pages(&transport, &hits, 8192, &cache).await;
+        assert_eq!(pages[0].text, "snippet b");
+        assert!(cache.page_get("https://b.com/").is_none());
     }
 }
