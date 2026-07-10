@@ -958,7 +958,18 @@ function App() {
     overlayWidthRef.current = config.window.overlayWidth;
     maxChatHeightRef.current = config.window.maxChatHeight;
     /* v8 ignore start -- requires real Tauri webview to setSize */
-    if (overlayState === 'visible') {
+    // why: onboarding and the safe-mode recovery card (issue #296) replace
+    // this whole render tree and own their own window sizing via
+    // `useFitOnboardingWindow`. Without this guard, an `overlayState`
+    // transition to 'visible' while either is showing (e.g. resummoning
+    // after Escape/Cmd+W) finds `morphingContainerNodeRef` unmounted and
+    // falls back to `COLLAPSED_WINDOW_HEIGHT`, clobbering the size that
+    // surface already fit itself to and clipping its content.
+    if (
+      overlayState === 'visible' &&
+      onboardingStage === null &&
+      !safeModeRecovery
+    ) {
       const node = morphingContainerNodeRef.current;
       const currentHeight = node
         ? Math.ceil(node.getBoundingClientRect().height) +
@@ -969,7 +980,13 @@ function App() {
       );
     }
     /* v8 ignore stop */
-  }, [config.window.overlayWidth, config.window.maxChatHeight, overlayState]);
+  }, [
+    config.window.overlayWidth,
+    config.window.maxChatHeight,
+    overlayState,
+    onboardingStage,
+    safeModeRecovery,
+  ]);
 
   /**
    * Drives the typography CSS variables on `<html>` from the user-tunable

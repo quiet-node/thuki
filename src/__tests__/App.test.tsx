@@ -26,6 +26,7 @@ import {
   __mockWindow,
   __setWindowGeometry,
   __setAvailableMonitors,
+  LogicalSize,
 } from '../testUtils/mocks/tauri-window';
 import { useTips } from '../hooks/useTips';
 import { flushSync } from 'react-dom';
@@ -2445,6 +2446,71 @@ describe('App', () => {
 
     // No crash, no change - overlay is already hidden
     expect(document.querySelector('.morphing-container')).toBeNull();
+  });
+
+  // ─── Safe-mode recovery window sizing (issue #296) ─────────────────────────
+  // Regression coverage for the bug where hiding the overlay (Escape/Cmd+W/
+  // double-Control) while the safe-mode recovery card is up and then
+  // resummoning collapsed the native window to the icon-sized fallback,
+  // clipping the card down to just its logo.
+
+  describe('safe-mode recovery card window sizing (issue #296)', () => {
+    it('does not collapse the window on show or on resummon while the recovery card is up', async () => {
+      enableChannelCaptureWithResponses({
+        startup_safety: { safe_mode: true, unclean_count: 2 },
+        estimate_model_fit: { required_bytes: 4 * 1024 ** 3 },
+      });
+
+      render(<App />);
+      await screen.findByText('Recovered in Safe Mode');
+
+      // Initial show: the config-sync effect (App.tsx) must not fall back to
+      // COLLAPSED_WINDOW_HEIGHT just because the ask-bar container isn't the
+      // mounted surface - the card owns its own sizing via
+      // useFitOnboardingWindow.
+      __mockWindow.setSize.mockClear();
+      await showOverlay();
+      expect(__mockWindow.setSize).not.toHaveBeenCalled();
+
+      // Hide (Escape/Cmd+W/double-Control all route through the same
+      // backend hide-request) then resummon. Dismissal is permanent only via
+      // the card's own buttons, so the card is still up - the window must
+      // stay at whatever size the card already fit itself to, not collapse.
+      await act(async () => {
+        emitTauriEvent('thuki://visibility', { state: 'hide-request' });
+      });
+      __mockWindow.setSize.mockClear();
+      await showOverlay();
+
+      expect(__mockWindow.setSize).not.toHaveBeenCalled();
+      expect(screen.getByText('Recovered in Safe Mode')).toBeInTheDocument();
+    });
+
+    it('resizes the window for the ask bar once the recovery card is dismissed', async () => {
+      enableChannelCaptureWithResponses({
+        startup_safety: { safe_mode: true, unclean_count: 2 },
+        estimate_model_fit: { required_bytes: 4 * 1024 ** 3 },
+      });
+
+      render(<App />);
+      await screen.findByText('Recovered in Safe Mode');
+      await showOverlay();
+      __mockWindow.setSize.mockClear();
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Load last model anyway' }),
+      );
+      await act(async () => {});
+
+      // The ask bar is now the mounted surface, so the config-sync effect
+      // must re-fire against its real container (48 = CONTAINER_VERTICAL_PADDING
+      // in App.tsx; jsdom reports 0 layout height), not leave the window at
+      // the card's old size or the collapsed fallback (80).
+      expect(document.querySelector('.morphing-container')).not.toBeNull();
+      expect(__mockWindow.setSize).toHaveBeenCalledWith(
+        new LogicalSize(DEFAULT_CONFIG.window.overlayWidth, 48),
+      );
+    });
   });
 
   // ─── History integration ─────────────────────────────────────────────────────
