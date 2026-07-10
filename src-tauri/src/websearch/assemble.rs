@@ -32,8 +32,10 @@ pub(crate) fn budget_tokens(num_ctx: u32) -> usize {
 }
 
 /// Rough token count of `text`, rounding up so the assembled context stays
-/// under the real token budget rather than over it.
-fn estimate_tokens(text: &str) -> usize {
+/// under the real token budget rather than over it. Crate-visible because the
+/// orchestrator's escalation merge re-budgets with the same accounting this
+/// module uses, so the two stages can never disagree about a block's cost.
+pub(crate) fn estimate_tokens(text: &str) -> usize {
     text.chars().count().div_ceil(CHARS_PER_TOKEN)
 }
 

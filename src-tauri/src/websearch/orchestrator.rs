@@ -784,7 +784,7 @@ async fn commit_or_escalate(
                 history,
                 latest_user,
                 standalone_question,
-                merge_sources(block, sources),
+                merge_sources(block, sources, num_ctx),
                 today,
                 locale,
             )
@@ -878,15 +878,35 @@ fn grounded_answer(
 /// still flagged insufficient, while the replacement engine sources omitted
 /// it). Discarding retrieved information on escalation throws that away, so
 /// escalation merges instead of replaces.
-fn merge_sources(vertical: SourceBlock, engines: Vec<SourceBlock>) -> Vec<SourceBlock> {
-    std::iter::once(vertical)
-        .chain(engines)
-        .enumerate()
-        .map(|(i, mut block)| {
-            block.index = i + 1;
-            block
-        })
-        .collect()
+///
+/// The merged list is re-budgeted to the same token allowance the engine tier
+/// was assembled under (`assemble::budget_tokens(num_ctx)`, same
+/// `estimate_tokens` accounting): the engine sources already fill that budget
+/// on their own, so appending the vertical block unchecked would overflow the
+/// documented source budget and silently eat conversation-history headroom.
+/// The vertical block is kept whole (it is the judged-relevant partial the
+/// merge exists to preserve) and engine sources are dropped from the tail,
+/// the fusion's lowest-ranked end, until the combined list fits.
+fn merge_sources(
+    vertical: SourceBlock,
+    engines: Vec<SourceBlock>,
+    num_ctx: u32,
+) -> Vec<SourceBlock> {
+    let budget = crate::websearch::assemble::budget_tokens(num_ctx);
+    let mut spent = crate::websearch::assemble::estimate_tokens(&vertical.text);
+    let mut merged = vec![vertical];
+    for block in engines {
+        let cost = crate::websearch::assemble::estimate_tokens(&block.text);
+        if spent + cost > budget {
+            break;
+        }
+        spent += cost;
+        merged.push(block);
+    }
+    for (i, block) in merged.iter_mut().enumerate() {
+        block.index = i + 1;
+    }
+    merged
 }
 
 /// Removes cross-query duplicate hits by URL, preserving first-seen order.
@@ -1131,7 +1151,7 @@ mod tests {
             source(1, "https://engine-a.example/"),
             source(2, "https://engine-b.example/"),
         ];
-        let merged = merge_sources(vertical, engines);
+        let merged = merge_sources(vertical, engines, 16384);
         assert_eq!(merged.len(), 3);
         assert_eq!(merged[0].url, "https://vertical.example/");
         assert_eq!(merged[0].index, 1);
@@ -1139,6 +1159,44 @@ mod tests {
         assert_eq!(merged[1].index, 2);
         assert_eq!(merged[2].url, "https://engine-b.example/");
         assert_eq!(merged[2].index, 3);
+    }
+
+    #[test]
+    fn merge_sources_drops_tail_engine_blocks_that_overflow_the_budget() {
+        // Regression pin for the combine-then-overflow hazard: the engine
+        // sources already fill the whole token budget on their own, so a merge
+        // that never re-budgets would exceed the documented source allowance.
+        // The vertical block must be kept whole and engine blocks must drop
+        // from the tail (the fusion's lowest-ranked end) until the merged list
+        // fits, with indices still contiguous.
+        let budget = crate::websearch::assemble::budget_tokens(16384);
+        // Three engine blocks of ~half a budget each: the first fits next to
+        // the vertical block, the second and third must be dropped.
+        let big_text = "y".repeat(budget / 2 * crate::config::defaults::CHARS_PER_TOKEN);
+        let block = |index: usize, url: &str, text: &str| SourceBlock {
+            index,
+            url: url.into(),
+            title: "t".into(),
+            text: text.into(),
+        };
+        let vertical = block(1, "https://vertical.example/", "small vertical block");
+        let engines = vec![
+            block(1, "https://engine-a.example/", &big_text),
+            block(2, "https://engine-b.example/", &big_text),
+            block(3, "https://engine-c.example/", &big_text),
+        ];
+        let merged = merge_sources(vertical, engines, 16384);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].url, "https://vertical.example/");
+        assert_eq!(merged[0].index, 1);
+        assert_eq!(merged[1].url, "https://engine-a.example/");
+        assert_eq!(merged[1].index, 2);
+        // The kept set fits the same budget the engine tier assembles under.
+        let spent: usize = merged
+            .iter()
+            .map(|b| crate::websearch::assemble::estimate_tokens(&b.text))
+            .sum();
+        assert!(spent <= budget);
     }
 
     // ── run_search: decision branches ─────────────────────────────────────────
