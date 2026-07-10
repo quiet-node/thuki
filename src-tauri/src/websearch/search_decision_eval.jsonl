@@ -29,6 +29,12 @@
 {"message": "is the World Cup 2026 still going on", "label": "search", "category": "sports", "route": "news"}
 {"message": "what's the current state of the writers strike", "label": "search", "category": "current_events", "route": "news"}
 {"message": "what is the reigning F1 champion right now", "label": "search", "category": "sports", "route": "news"}
+{"message": "what's the score of the Lakers game right now", "label": "search", "category": "sports", "route": "sports"}
+{"message": "current standings in the NBA", "label": "search", "category": "sports", "route": "sports"}
+{"message": "is the World Cup 2026 final over yet", "label": "search", "category": "sports", "route": "sports"}
+{"message": "who is playing in the Premier League today", "label": "search", "category": "sports", "route": "sports"}
+{"message": "who won the last NFL Super Bowl", "label": "search", "category": "sports", "route": "news"}
+{"message": "what's the price of an NBA League Pass subscription", "label": "search", "category": "prices", "route": "web"}
 {"message": "what is the capital of France", "label": "no", "category": "stable_fact", "route": "wiki"}
 {"message": "explain how photosynthesis works", "label": "no", "category": "definition", "route": "wiki"}
 {"message": "2 + 2", "label": "no", "category": "math", "route": "web"}

@@ -55,6 +55,7 @@ use crate::websearch::prepass::{
     InferenceError, PrePass, PrePassDecision, SearchDecision, SearchRoute,
 };
 use crate::websearch::rank::{select_chunks, Scorer};
+use crate::websearch::sports::{fetch_sports, is_sports_intent};
 use crate::websearch::weather::fetch_weather;
 use crate::websearch::writer::{unreachable_messages, writer_messages};
 
@@ -222,6 +223,7 @@ fn route_label(route: SearchRoute) -> &'static str {
         SearchRoute::Weather => "weather",
         SearchRoute::News => "news",
         SearchRoute::Wiki => "wiki",
+        SearchRoute::Sports => "sports",
         SearchRoute::Web => "web",
     }
 }
@@ -278,6 +280,13 @@ async fn run_web(
         return SearchOutcome::Cancelled;
     }
     status(SearchPhase::Searching);
+    // Whether the standalone question carries a freshness signal (reusing the
+    // Wikipedia vertical's volatility guard as the freshness detector, see
+    // `encyclopedia::is_volatile_question`). Computed once and reused below to
+    // gate the wiki tier AND to bias the news feed and scraped-engine queries
+    // toward recent results, since a needless date filter costs nothing on a
+    // stable question but a missing one on a volatile one risks a stale answer.
+    let freshness = is_volatile_question(standalone_question);
     // Vertical tier first: an official keyless API that recognises the question
     // answers it directly and skips the scraped engines entirely (an API cannot
     // bot-block the way SERPs do). A miss falls through with nothing lost.
@@ -301,14 +310,39 @@ async fn run_web(
     if cancel.is_cancelled() {
         return SearchOutcome::Cancelled;
     }
+    // Sports tier: ESPN's public scoreboard API, positioned ahead of the news
+    // feed because a scoreboard beats headlines for a live score/fixture/
+    // standings question (the feed's dated headlines can lag the live state by
+    // minutes). Runs when the classifier routed to sports OR the deterministic
+    // league-keyword map matches; either way `fetch_sports` self-gates on the
+    // same league match internally, so a route hit with no keyword match still
+    // falls through cleanly. A miss falls through to the news feed / engines.
+    if matches!(route, SearchRoute::Sports) || is_sports_intent(standalone_question) {
+        if let Some(block) = fetch_sports(deps.transport, standalone_question).await {
+            return grounded_answer(
+                deps,
+                "sports",
+                chat_system_prompt,
+                history,
+                latest_user,
+                vec![block],
+                today,
+                locale,
+            );
+        }
+    }
+    if cancel.is_cancelled() {
+        return SearchOutcome::Cancelled;
+    }
     // News tier: keyless Google News RSS, not SERP-bot-gated, whose dated
     // headlines answer the who-won / what-happened / latest-status class
     // directly. Runs when the classifier routed to news OR the deterministic
     // token gate matches (kept as a cheap additive hint, no longer the sole
-    // gate). A miss falls through to the engines.
+    // gate). A miss falls through to the engines. The query is biased toward
+    // recent results when the standalone question carried a freshness signal.
     if matches!(route, SearchRoute::News) || is_news_intent(standalone_question) {
         if let Some(query) = queries.first() {
-            if let Some(block) = fetch_news(deps.transport, query).await {
+            if let Some(block) = fetch_news(deps.transport, query, freshness).await {
                 return grounded_answer(
                     deps,
                     "news",
@@ -331,7 +365,7 @@ async fn run_web(
     // marker or a present/future year) must never be served from it. The
     // vertical itself applies a second, year-mismatch guard after resolving the
     // article title. A miss or a refusal falls through to the engines.
-    if matches!(route, SearchRoute::Wiki) && !is_volatile_question(standalone_question) {
+    if matches!(route, SearchRoute::Wiki) && !freshness {
         if let Some(block) = fetch_encyclopedia(deps.transport, standalone_question).await {
             return grounded_answer(
                 deps,
@@ -353,7 +387,7 @@ async fn run_web(
         if cancel.is_cancelled() {
             return SearchOutcome::Cancelled;
         }
-        hits.extend(web_search(deps.transport, query, deps.health).await);
+        hits.extend(web_search(deps.transport, query, deps.health, freshness).await);
         // Early stop: once one query has produced enough hits, further queries
         // add third-party burst (the engines' rate limits are volume-triggered)
         // and latency for marginal recall.
@@ -395,8 +429,8 @@ async fn run_web(
 
 /// Records the retrieval tier to the trace and builds the source-grounded
 /// [`SearchOutcome::Answer`]. `tier` is the source that answered the turn
-/// ("weather", "news", "wiki", or "engine"); the recorded URLs are the cited
-/// sources', so a trace shows exactly what grounded the reply.
+/// ("weather", "sports", "news", "wiki", or "engine"); the recorded URLs are
+/// the cited sources', so a trace shows exactly what grounded the reply.
 #[allow(clippy::too_many_arguments)]
 fn grounded_answer(
     deps: &SearchDeps<'_>,
@@ -671,7 +705,7 @@ mod tests {
             standalone_question: "who won the most recent F1 race".into(),
             queries: vec!["f1 race winner".into()],
         }));
-        let feed_url = crate::websearch::news::news_request("f1 race winner").url;
+        let feed_url = crate::websearch::news::news_request("f1 race winner", true).url;
         let feed = r#"<rss><channel><item><title>Leclerc wins British GP - Formula 1</title><pubDate>Wed, 08 Jul 2026 01:11:35 GMT</pubDate></item></channel></rss>"#;
         let transport = FakeHttpTransport::new().with_response(
             &feed_url,
@@ -908,6 +942,240 @@ mod tests {
         // engines ran and grounded the answer.
         assert!(matches!(outcome, SearchOutcome::Answer { .. }));
         assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+    }
+
+    // ── sports vertical routing ────────────────────────────────────────────────
+
+    /// A minimal valid ESPN scoreboard fixture: one completed match.
+    const ESPN_SCOREBOARD_FIXTURE: &str = r#"{"leagues":[{"name":"National Basketball Association"}],"events":[{"name":"Lakers at Celtics","status":{"type":{"state":"post","completed":true,"shortDetail":"Final"}},"competitions":[{"competitors":[{"homeAway":"home","score":"110","team":{"displayName":"Boston Celtics"}},{"homeAway":"away","score":"102","team":{"displayName":"Los Angeles Lakers"}}]}]}]}"#;
+
+    #[tokio::test]
+    async fn sports_route_hit_answers_via_vertical_without_engines() {
+        // The classifier routed to sports; the league keyword ("nba") also
+        // matches. The vertical resolves the scoreboard and neither the news
+        // feed nor the scraped engines are ever queried.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Sports,
+            standalone_question: "what's the score of the nba game".into(),
+            queries: vec!["nba score".into()],
+        }));
+        let espn_url = crate::websearch::sports::scoreboard_request("basketball", "nba").url;
+        let transport = FakeHttpTransport::new().with_response(
+            &espn_url,
+            HttpResponse {
+                status: 200,
+                final_url: espn_url.clone(),
+                body: ESPN_SCOREBOARD_FIXTURE.as_bytes().to_vec(),
+            },
+        );
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "what's the score of the nba game",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(
+            matches!(&outcome, SearchOutcome::Answer { messages, sources }
+            if sources.len() == 1
+                && sources[0].url == "https://www.espn.com/"
+                && messages.last().is_some_and(|m| m.content.contains("Celtics")))
+        );
+        assert!(!transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+    }
+
+    #[tokio::test]
+    async fn sports_keyword_hit_triggers_vertical_even_on_web_route() {
+        // The classifier missed and routed to the general web tier, but the
+        // deterministic league-keyword map still matches ("nfl"): the sports
+        // vertical runs on its own signal, mirroring the weather/news verticals'
+        // "own signal OR classifier route" gate.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: "nfl scores this week".into(),
+            queries: vec!["nfl scores".into()],
+        }));
+        let espn_url = crate::websearch::sports::scoreboard_request("football", "nfl").url;
+        let transport = FakeHttpTransport::new().with_response(
+            &espn_url,
+            HttpResponse {
+                status: 200,
+                final_url: espn_url.clone(),
+                body: ESPN_SCOREBOARD_FIXTURE.as_bytes().to_vec(),
+            },
+        );
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "nfl scores this week",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources[0].url == "https://www.espn.com/"));
+    }
+
+    #[tokio::test]
+    async fn sports_tier_wins_over_news_when_both_signals_match() {
+        // "game" trips the news intent gate AND "nba" trips the sports keyword
+        // map. Both the ESPN scoreboard and the news feed have canned
+        // responses, but the sports tier is positioned first and returns before
+        // the news feed is ever queried, proving the tier ordering.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: "what's the score of the nba game".into(),
+            queries: vec!["nba game score".into()],
+        }));
+        let espn_url = crate::websearch::sports::scoreboard_request("basketball", "nba").url;
+        let feed_url = crate::websearch::news::news_request("nba game score", false).url;
+        let transport = FakeHttpTransport::new()
+            .with_response(
+                &espn_url,
+                HttpResponse {
+                    status: 200,
+                    final_url: espn_url.clone(),
+                    body: ESPN_SCOREBOARD_FIXTURE.as_bytes().to_vec(),
+                },
+            )
+            .with_response(
+                &feed_url,
+                HttpResponse {
+                    status: 200,
+                    final_url: feed_url.clone(),
+                    body: br#"<rss><channel><item><title>Lakers fall to Celtics - NBA</title></item></channel></rss>"#.to_vec(),
+                },
+            );
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "what's the score of the nba game",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources[0].url == "https://www.espn.com/"));
+        assert!(
+            !transport.calls().iter().any(|c| c.url == feed_url),
+            "sports tier must intercept before the news feed is queried"
+        );
+    }
+
+    #[tokio::test]
+    async fn sports_miss_falls_through_to_news_tier() {
+        // The league keyword matches ("nba"), but the ESPN endpoint has no
+        // canned response (transport error -> miss). The turn still grounds via
+        // the news feed, proving the fallthrough ordering.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::News,
+            standalone_question: "what's the score of the nba game".into(),
+            queries: vec!["nba game score".into()],
+        }));
+        let feed_url = crate::websearch::news::news_request("nba game score", false).url;
+        let transport = FakeHttpTransport::new().with_response(
+            &feed_url,
+            HttpResponse {
+                status: 200,
+                final_url: feed_url.clone(),
+                body: br#"<rss><channel><item><title>Lakers fall to Celtics - NBA</title></item></channel></rss>"#.to_vec(),
+            },
+        );
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "what's the score of the nba game",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources[0].url == "https://news.google.com/"));
+    }
+
+    #[tokio::test]
+    async fn sports_miss_falls_through_to_engines_when_news_also_misses() {
+        // League keyword matches but neither ESPN nor the news feed has a
+        // canned response: falls all the way through to the scraped engines.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: "nhl scores treaty versailles paris".into(),
+            queries: vec!["treaty versailles paris".into()],
+        }));
+        let transport = transport_with_serp_and_page();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Answer { .. }));
+        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+    }
+
+    #[tokio::test]
+    async fn cancel_during_sports_miss_yields_cancelled() {
+        // A sports-shaped question whose scoreboard call cancels the token and
+        // returns junk: the vertical misses, and the post-sports cancellation
+        // check aborts before the news feed or any engine is queried.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Sports,
+            standalone_question: "nba scores tonight".into(),
+            queries: vec!["q".into()],
+        }));
+        let cancel = CancellationToken::new();
+        let transport = CancelOnSend {
+            token: cancel.clone(),
+            serp: b"not scoreboard json".to_vec(),
+        };
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &cancel,
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Cancelled));
     }
 
     // ── encyclopedia vertical routing ─────────────────────────────────────────
@@ -1474,7 +1742,7 @@ mod tests {
             standalone_question: "who won the most recent F1 race".into(),
             queries: vec!["f1 race winner".into()],
         }));
-        let feed_url = crate::websearch::news::news_request("f1 race winner").url;
+        let feed_url = crate::websearch::news::news_request("f1 race winner", true).url;
         let feed = r#"<rss><channel><item><title>Leclerc wins British GP - Formula 1</title><pubDate>Wed, 08 Jul 2026 01:11:35 GMT</pubDate></item></channel></rss>"#;
         let transport = FakeHttpTransport::new().with_response(
             &feed_url,

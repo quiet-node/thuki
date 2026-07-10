@@ -70,12 +70,24 @@ pub(crate) fn is_news_intent(question: &str) -> bool {
         .any(|t| NEWS_WORDS.contains(&t))
 }
 
-/// Builds the Google News RSS search GET request for `query`.
-pub(crate) fn news_request(query: &str) -> HttpRequest {
+/// Builds the Google News RSS search GET request for `query`. When `freshness`
+/// is set (the turn's standalone question carried a freshness signal),
+/// [`crate::config::defaults::NEWS_FRESHNESS_OPERATOR`] is appended to the
+/// query: the feed's default ordering skews stale, and the operator narrows it
+/// to recent coverage.
+pub(crate) fn news_request(query: &str, freshness: bool) -> HttpRequest {
     // NEWS_ENDPOINT is a compile-time-valid absolute URL.
     let mut url = url::Url::parse(NEWS_ENDPOINT).expect("static endpoint");
+    let q = if freshness {
+        format!(
+            "{query} {}",
+            crate::config::defaults::NEWS_FRESHNESS_OPERATOR
+        )
+    } else {
+        query.to_string()
+    };
     url.query_pairs_mut()
-        .append_pair("q", query)
+        .append_pair("q", &q)
         .append_pair("hl", "en-US")
         .append_pair("gl", "US")
         .append_pair("ceid", "US:en");
@@ -168,8 +180,12 @@ fn unescape_xml(text: &str) -> String {
 /// every decision to the pure helpers above; still exercised against
 /// [`crate::net::transport::FakeHttpTransport`] in the tests below.
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub(crate) async fn fetch_news(transport: &dyn HttpTransport, query: &str) -> Option<SourceBlock> {
-    let response = match transport.send(&news_request(query)).await {
+pub(crate) async fn fetch_news(
+    transport: &dyn HttpTransport,
+    query: &str,
+    freshness: bool,
+) -> Option<SourceBlock> {
+    let response = match transport.send(&news_request(query, freshness)).await {
         Ok(response) => response,
         Err(_) => {
             eprintln!("[search] vertical=news transport_error -> engines");
@@ -225,11 +241,30 @@ mod tests {
 
     #[test]
     fn news_request_is_get_on_rss_search() {
-        let req = news_request("f1 race winner");
+        let req = news_request("f1 race winner", false);
         assert_eq!(req.method, HttpMethod::Get);
         assert!(req.url.starts_with(NEWS_ENDPOINT));
         assert!(req.url.contains("q=f1+race+winner"));
         assert!(req.url.contains("ceid=US%3Aen"));
+    }
+
+    // ── freshness operator ──────────────────────────────────────────────────
+
+    #[test]
+    fn news_request_carries_no_freshness_operator_by_default() {
+        let req = news_request("f1 race winner", false);
+        assert!(!req.url.contains("when"));
+    }
+
+    #[test]
+    fn news_request_appends_when_7d_when_fresh() {
+        let req = news_request("f1 race winner", true);
+        assert!(
+            req.url.contains("when%3A7d") || req.url.contains("when:7d"),
+            "expected when:7d operator in {}",
+            req.url
+        );
+        assert!(req.url.contains("f1") && req.url.contains("winner"));
     }
 
     // ── parser / block assembly ──────────────────────────────────────────────
@@ -283,7 +318,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_news_returns_block_on_ok_feed() {
-        let url = news_request("f1").url;
+        let url = news_request("f1", false).url;
         let transport = FakeHttpTransport::new().with_response(
             &url,
             HttpResponse {
@@ -292,15 +327,17 @@ mod tests {
                 body: RSS_FIXTURE.as_bytes().to_vec(),
             },
         );
-        let block = fetch_news(&transport, "f1").await.unwrap();
+        let block = fetch_news(&transport, "f1", false).await.unwrap();
         assert!(block.text.contains("Leclerc"));
     }
 
     #[tokio::test]
     async fn fetch_news_none_on_error_bad_status_or_empty() {
         // No canned response -> transport error -> None.
-        assert!(fetch_news(&FakeHttpTransport::new(), "f1").await.is_none());
-        let url = news_request("f1").url;
+        assert!(fetch_news(&FakeHttpTransport::new(), "f1", false)
+            .await
+            .is_none());
+        let url = news_request("f1", false).url;
         let bad = FakeHttpTransport::new().with_response(
             &url,
             HttpResponse {
@@ -309,7 +346,7 @@ mod tests {
                 body: Vec::new(),
             },
         );
-        assert!(fetch_news(&bad, "f1").await.is_none());
+        assert!(fetch_news(&bad, "f1", false).await.is_none());
         let empty = FakeHttpTransport::new().with_response(
             &url,
             HttpResponse {
@@ -318,6 +355,24 @@ mod tests {
                 body: b"<rss><channel></channel></rss>".to_vec(),
             },
         );
-        assert!(fetch_news(&empty, "f1").await.is_none());
+        assert!(fetch_news(&empty, "f1", false).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn fetch_news_forwards_freshness_to_the_request() {
+        // freshness=true must reach news_request: the recorded call's URL
+        // carries the when:7d operator.
+        let url = news_request("f1", true).url;
+        let transport = FakeHttpTransport::new().with_response(
+            &url,
+            HttpResponse {
+                status: 200,
+                final_url: url.clone(),
+                body: RSS_FIXTURE.as_bytes().to_vec(),
+            },
+        );
+        let block = fetch_news(&transport, "f1", true).await.unwrap();
+        assert!(block.text.contains("Leclerc"));
+        assert!(transport.calls().iter().any(|c| c.url == url));
     }
 }

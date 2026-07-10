@@ -172,6 +172,23 @@ async fn live_bitcoin_price_answers_via_engines() {
 
 #[tokio::test]
 #[ignore = "hits the live internet; run explicitly"]
+async fn live_world_cup_scores_answers_via_espn_sports_vertical() {
+    let outcome = live_turn(
+        "what's the latest status of the World Cup 2026",
+        SearchRoute::Sports,
+        "what is the current status of the 2026 World Cup",
+        vec!["world cup 2026 scores"],
+    )
+    .await;
+    if let SearchOutcome::Answer { sources, .. } = &outcome {
+        assert_eq!(sources[0].url, "https://www.espn.com/");
+        assert!(sources[0].title.to_lowercase().contains("world cup"));
+    }
+    expect_answer(outcome, "world-cup-sports");
+}
+
+#[tokio::test]
+#[ignore = "hits the live internet; run explicitly"]
 async fn live_photosynthesis_answers_via_wikipedia() {
     let outcome = live_turn(
         "what is photosynthesis",

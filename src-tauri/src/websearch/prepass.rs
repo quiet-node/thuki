@@ -60,17 +60,22 @@ pub enum SearchDecision {
 pub enum SearchRoute {
     /// Current weather or forecast for a location → weather vertical.
     Weather,
-    /// Current events, sports results/status, recent developments → news vertical.
+    /// Current events, recent developments, general news → news vertical.
     News,
     /// Stable definitional or historical facts → Wikipedia vertical.
     Wiki,
+    /// Live scores, fixtures, or standings for a named competition/team →
+    /// sports vertical. Advisory: the orchestrator also runs the sports
+    /// vertical on its own deterministic league-keyword signal regardless of
+    /// this route (see [`crate::websearch::sports::detect_league`]).
+    Sports,
     /// Everything else (software versions, prices, niche live facts) → engines.
     Web,
 }
 
 impl SearchRoute {
     /// Normalises the raw `route` string from the model to a [`SearchRoute`].
-    /// Any value that is not one of the four known tiers (including an empty or
+    /// Any value that is not one of the five known tiers (including an empty or
     /// missing field) maps to [`SearchRoute::Web`], so a malformed route never
     /// fails the turn and only ever falls back to the general engine tier.
     pub(crate) fn from_wire(raw: &str) -> Self {
@@ -78,6 +83,7 @@ impl SearchRoute {
             "weather" => SearchRoute::Weather,
             "news" => SearchRoute::News,
             "wiki" => SearchRoute::Wiki,
+            "sports" => SearchRoute::Sports,
             _ => SearchRoute::Web,
         }
     }
@@ -202,7 +208,7 @@ impl PrePass for BuiltinPrePass {
 /// directive: without it the model spends 1000+ chain-of-thought tokens on a
 /// three-way classification and can blow the call timeout (observed live at
 /// ~63 tok/s decode). Inert plain text for every other model family.
-const CLASSIFIER_SYSTEM: &str = "Reasoning: low\n\nYou are a retrieval-routing classifier inside a local AI assistant. Your only job is to decide whether answering the user's latest message needs a fresh web search, to pick which source best answers it, and if so to rewrite it into a standalone search query. You never answer the message itself.\n\nOutput ONLY a JSON object: {\"search\": \"no\"|\"cached\"|\"web\", \"route\": \"weather\"|\"news\"|\"wiki\"|\"web\", \"standalone_question\": \"...\", \"queries\": [\"...\"]}.\n\nChoose \"search\":\n- \"web\" when a good answer needs information that changes over time or is past your training cutoff: news, prices, weather, sports results, software versions, releases, schedules, who currently holds a role, or any live fact; OR when you are not confident your own knowledge is current and correct.\n- \"cached\" when the needed web sources were already fetched earlier in this same conversation.\n- \"no\" only when you can answer confidently and correctly from stable general knowledge or from the conversation alone.\nWhen you are unsure whether your knowledge is up to date, choose \"web\": a needless search is far cheaper than a confidently wrong answer.\n\nChoose \"route\" (which source best answers it):\n- \"weather\" for current weather or forecast for a place.\n- \"news\" for current events, sports results or status, elections, and anything asking the latest, current, or recent state of an evolving topic (a tournament, a race, a conflict, a company).\n- \"wiki\" for stable definitional or historical facts that do not change from month to month.\n- \"web\" for everything else (software versions, prices, product specs, niche live facts).\nWhen a question is about the present state of an ongoing event, route \"news\", never \"wiki\", even if it is phrased like \"what is ...\". Always set a route, even when search is \"no\".\n\n\"standalone_question\": the latest message rewritten as one self-contained question, resolving pronouns and references from the conversation.\n\"queries\": 1 to 3 short keyword search queries, not full sentences.\n\nExamples (message -> JSON):\n\"who is the CEO of OpenAI right now\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"who is the current CEO of OpenAI\",\"queries\":[\"openai ceo\"]}\n\"what is the boiling point of water\" -> {\"search\":\"no\",\"route\":\"wiki\",\"standalone_question\":\"what is the boiling point of water\",\"queries\":[\"boiling point of water\"]}\n\"what is photosynthesis\" -> {\"search\":\"web\",\"route\":\"wiki\",\"standalone_question\":\"what is photosynthesis\",\"queries\":[\"photosynthesis\"]}\n\"weather in Paris\" -> {\"search\":\"web\",\"route\":\"weather\",\"standalone_question\":\"what is the current weather in Paris\",\"queries\":[\"paris weather\"]}\n\"what's the latest status of the World Cup 2026\" -> {\"search\":\"web\",\"route\":\"news\",\"standalone_question\":\"what is the current status of the 2026 World Cup\",\"queries\":[\"world cup 2026 status\"]}\n\"who won the most recent F1 race\" -> {\"search\":\"web\",\"route\":\"news\",\"standalone_question\":\"who won the most recent Formula 1 race\",\"queries\":[\"latest f1 race winner\"]}\n\"write a short poem about autumn\" -> {\"search\":\"no\",\"route\":\"web\",\"standalone_question\":\"write a short poem about autumn\",\"queries\":[\"autumn poem\"]}\n(after discussing France) \"and its population?\" -> {\"search\":\"no\",\"route\":\"wiki\",\"standalone_question\":\"what is the population of France\",\"queries\":[\"france population\"]}\n(after discussing the US president) \"what about Argentina?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"who is the current president of Argentina\",\"queries\":[\"argentina president\"]}";
+const CLASSIFIER_SYSTEM: &str = "Reasoning: low\n\nYou are a retrieval-routing classifier inside a local AI assistant. Your only job is to decide whether answering the user's latest message needs a fresh web search, to pick which source best answers it, and if so to rewrite it into a standalone search query. You never answer the message itself.\n\nOutput ONLY a JSON object: {\"search\": \"no\"|\"cached\"|\"web\", \"route\": \"weather\"|\"news\"|\"wiki\"|\"sports\"|\"web\", \"standalone_question\": \"...\", \"queries\": [\"...\"]}.\n\nChoose \"search\":\n- \"web\" when a good answer needs information that changes over time or is past your training cutoff: news, prices, weather, sports results, software versions, releases, schedules, who currently holds a role, or any live fact; OR when you are not confident your own knowledge is current and correct.\n- \"cached\" when the needed web sources were already fetched earlier in this same conversation.\n- \"no\" only when you can answer confidently and correctly from stable general knowledge or from the conversation alone.\nWhen you are unsure whether your knowledge is up to date, choose \"web\": a needless search is far cheaper than a confidently wrong answer.\n\nChoose \"route\" (which source best answers it):\n- \"weather\" for current weather or forecast for a place.\n- \"news\" for current events, elections, and anything asking the latest, current, or recent state of an evolving topic (a conflict, a company, a policy) that is not a live score, fixture, or standings.\n- \"wiki\" for stable definitional or historical facts that do not change from month to month.\n- \"sports\" for live scores, fixtures, or standings for a named competition or team, or the status of an ongoing match or tournament.\n- \"web\" for everything else (software versions, prices, product specs, niche live facts).\nWhen a question is about the present state of an ongoing event, route \"news\" (or \"sports\" for a score/fixture/standings question), never \"wiki\", even if it is phrased like \"what is ...\". Always set a route, even when search is \"no\".\n\n\"standalone_question\": the latest message rewritten as one self-contained question, resolving pronouns and references from the conversation.\n\"queries\": 1 to 3 short keyword search queries, not full sentences.\n\nExamples (message -> JSON):\n\"who is the CEO of OpenAI right now\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"who is the current CEO of OpenAI\",\"queries\":[\"openai ceo\"]}\n\"what is the boiling point of water\" -> {\"search\":\"no\",\"route\":\"wiki\",\"standalone_question\":\"what is the boiling point of water\",\"queries\":[\"boiling point of water\"]}\n\"what is photosynthesis\" -> {\"search\":\"web\",\"route\":\"wiki\",\"standalone_question\":\"what is photosynthesis\",\"queries\":[\"photosynthesis\"]}\n\"weather in Paris\" -> {\"search\":\"web\",\"route\":\"weather\",\"standalone_question\":\"what is the current weather in Paris\",\"queries\":[\"paris weather\"]}\n\"what's the latest status of the World Cup 2026\" -> {\"search\":\"web\",\"route\":\"news\",\"standalone_question\":\"what is the current status of the 2026 World Cup\",\"queries\":[\"world cup 2026 status\"]}\n\"who won the most recent F1 race\" -> {\"search\":\"web\",\"route\":\"news\",\"standalone_question\":\"who won the most recent Formula 1 race\",\"queries\":[\"latest f1 race winner\"]}\n\"what's the score of the Lakers game\" -> {\"search\":\"web\",\"route\":\"sports\",\"standalone_question\":\"what is the current score of the Los Angeles Lakers game\",\"queries\":[\"lakers score\"]}\n\"write a short poem about autumn\" -> {\"search\":\"no\",\"route\":\"web\",\"standalone_question\":\"write a short poem about autumn\",\"queries\":[\"autumn poem\"]}\n(after discussing France) \"and its population?\" -> {\"search\":\"no\",\"route\":\"wiki\",\"standalone_question\":\"what is the population of France\",\"queries\":[\"france population\"]}\n(after discussing the US president) \"what about Argentina?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"who is the current president of Argentina\",\"queries\":[\"argentina president\"]}";
 
 /// The trailing instruction on the classifier's user turn, after the optional
 /// conversation block and the latest message.
@@ -219,7 +225,7 @@ pub(crate) fn prepass_schema() -> serde_json::Value {
         "type": "object",
         "properties": {
             "search": { "type": "string", "enum": ["no", "cached", "web"] },
-            "route": { "type": "string", "enum": ["weather", "news", "wiki", "web"] },
+            "route": { "type": "string", "enum": ["weather", "news", "wiki", "sports", "web"] },
             "standalone_question": { "type": "string" },
             "queries": {
                 "type": "array",
@@ -433,7 +439,8 @@ mod tests {
         let s = prepass_schema();
         assert_eq!(s["properties"]["search"]["enum"][0], "no");
         assert_eq!(s["properties"]["route"]["enum"][0], "weather");
-        assert_eq!(s["properties"]["route"]["enum"][3], "web");
+        assert_eq!(s["properties"]["route"]["enum"][3], "sports");
+        assert_eq!(s["properties"]["route"]["enum"][4], "web");
         assert_eq!(s["properties"]["queries"]["maxItems"], MAX_QUERIES);
         assert!(s["required"]
             .as_array()
@@ -450,6 +457,7 @@ mod tests {
         assert_eq!(SearchRoute::from_wire("weather"), SearchRoute::Weather);
         assert_eq!(SearchRoute::from_wire("news"), SearchRoute::News);
         assert_eq!(SearchRoute::from_wire("wiki"), SearchRoute::Wiki);
+        assert_eq!(SearchRoute::from_wire("sports"), SearchRoute::Sports);
         assert_eq!(SearchRoute::from_wire("web"), SearchRoute::Web);
         // Case-insensitive and whitespace-tolerant.
         assert_eq!(SearchRoute::from_wire("  NEWS "), SearchRoute::News);

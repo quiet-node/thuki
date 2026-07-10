@@ -12,8 +12,8 @@
 //! - [`prepass`] — the persona-free classifier for the ambiguous middle: the
 //!   `no｜cached｜web` decision and query rewrite.
 //! - [`engine`] — keyless search-engine scraping with rotation.
-//! - [`weather`], [`news`], [`encyclopedia`] — intent-routed keyless verticals
-//!   tried ahead of the scraped engines.
+//! - [`weather`], [`sports`], [`news`], [`encyclopedia`] — intent-routed
+//!   keyless verticals tried ahead of the scraped engines.
 //! - [`fetch`] — concurrent page fetch + readability extraction.
 //! - [`rank`] — chunking + BM25 extractive filter behind a `Scorer` seam.
 //! - [`assemble`] — group ranked chunks into budgeted numbered source blocks.
@@ -29,6 +29,7 @@ pub mod orchestrator;
 pub mod prefilter;
 pub mod prepass;
 pub mod rank;
+pub mod sports;
 pub mod weather;
 pub mod writer;
 

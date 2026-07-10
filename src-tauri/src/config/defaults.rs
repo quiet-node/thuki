@@ -838,6 +838,30 @@ pub const WIKI_VOLATILITY_PHRASES: &[&str] = &["right now", "this year"];
 /// Not user-tunable: a routing-contract bound tied to the volatility guard.
 pub const WIKI_VOLATILITY_MIN_YEAR: u32 = 2025;
 
+/// Deterministic keyword-to-league map for the sports vertical (ESPN's public
+/// scoreboard API): `(keyword, sport, league)`, where `sport`/`league` are the
+/// path segments of `https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/scoreboard`.
+/// Matched against the lowercased standalone question: a multi-word keyword
+/// (containing a space) matches as a whole phrase, a single-word keyword
+/// matches as a whole token. The first match wins; no match means the sports
+/// vertical does not run for this turn.
+///
+/// Not user-tunable: a routing contract mapping known competitions/leagues to
+/// their ESPN path segments, the same rationale as [`WIKI_VOLATILITY_MARKERS`].
+/// Exposing it as a knob would let a bad edit silently break the vertical for a
+/// whole league.
+pub const SPORTS_LEAGUE_MAP: &[(&str, &str, &str)] = &[
+    ("world cup", "soccer", "fifa.world"),
+    ("premier league", "soccer", "eng.1"),
+    ("champions league", "soccer", "uefa.champions"),
+    ("nba", "basketball", "nba"),
+    ("nfl", "football", "nfl"),
+    ("mlb", "baseball", "mlb"),
+    ("nhl", "hockey", "nhl"),
+    ("f1", "racing", "f1"),
+    ("formula 1", "racing", "f1"),
+];
+
 // ─── Web-search engine results ───────────────────────────────────────────────
 
 /// Maximum result rows kept from one keyless search-engine query after dedupe.
@@ -864,6 +888,33 @@ pub const SERP_MAX_RESULTS_PER_DOMAIN: usize = 2;
 ///
 /// Not user-tunable: a rate-limit-survival bound on third-party request volume.
 pub const SERP_EARLY_STOP_HITS: usize = 8;
+
+// ─── Web-search freshness operators ──────────────────────────────────────────
+
+/// DuckDuckGo `df` (date filter) value applied to the POST form and mirrored as
+/// a `df` cookie when the standalone question carries a freshness signal (see
+/// [`WIKI_VOLATILITY_MARKERS`]). `"w"` restricts results to the past week. The
+/// dual form+cookie placement matches SearXNG's maintained DuckDuckGo scraper,
+/// which sets the filter both ways because the HTML endpoint honours either.
+///
+/// Not user-tunable: a fixed protocol convention of an external service, not a
+/// quality knob.
+pub const DDG_FRESHNESS_DF_VALUE: &str = "w";
+
+/// Mojeek search-operator suffix appended to the query when the standalone
+/// question carries a freshness signal. `since:week` is Mojeek's own query
+/// syntax for narrowing results to the past week.
+///
+/// Not user-tunable: a fixed protocol convention of an external service.
+pub const MOJEEK_FRESHNESS_OPERATOR: &str = "since:week";
+
+/// Google News RSS search-operator suffix appended to the query when the
+/// standalone question carries a freshness signal. `when:7d` narrows the feed
+/// to the past 7 days, correcting the feed's default ordering, which otherwise
+/// skews stale.
+///
+/// Not user-tunable: a fixed protocol convention of an external service.
+pub const NEWS_FRESHNESS_OPERATOR: &str = "when:7d";
 
 /// How long a search engine is skipped after it returns a bot challenge or
 /// rate-limit response (seconds), keyed per engine. Re-hammering a blocked

@@ -35,6 +35,7 @@ fn route_label(route: SearchRoute) -> &'static str {
         SearchRoute::Weather => "weather",
         SearchRoute::News => "news",
         SearchRoute::Wiki => "wiki",
+        SearchRoute::Sports => "sports",
         SearchRoute::Web => "web",
     }
 }

@@ -287,8 +287,8 @@ pub enum RecorderEvent {
         queries: Vec<String>,
     },
     /// Which source tier answered a chat turn's auto-search, and the URLs (or
-    /// titles) it cited. `tier` is one of "weather", "news", "wiki", or
-    /// "engine". Emitted once when retrieval produces a grounded answer.
+    /// titles) it cited. `tier` is one of "weather", "sports", "news", "wiki",
+    /// or "engine". Emitted once when retrieval produces a grounded answer.
     SearchRetrieved { tier: String, urls: Vec<String> },
     /// Final event in a chat-domain file. Emitted by the frontend when
     /// the user resets the conversation or by the backend on app quit

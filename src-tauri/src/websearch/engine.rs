@@ -64,8 +64,10 @@ const MOJEEK_ENDPOINT: &str = "https://www.mojeek.com/search";
 struct Engine {
     /// Identifier used in the `[search]` stderr log line and as the cooldown key.
     name: &'static str,
-    /// Builds the outbound request for `query`.
-    build: fn(&str) -> HttpRequest,
+    /// Builds the outbound request for `query`. `freshness` biases the request
+    /// toward recent results when the turn's standalone question carried a
+    /// freshness signal (see [`super::encyclopedia::is_volatile_question`]).
+    build: fn(&str, bool) -> HttpRequest,
     /// Parses this engine's SERP HTML into result rows.
     parse: fn(&str) -> Vec<SearchHit>,
     /// How long the engine is skipped after a block (seconds). Matches the
@@ -164,7 +166,9 @@ pub fn global_engine_health() -> &'static EngineHealth {
 /// a bad query, not a ban). When all engines are exhausted the result is an
 /// empty list, so the caller degrades gracefully rather than hanging or
 /// hallucinating. Every attempt logs its outcome to stderr under `[search]` so
-/// the path is visible in the dev console.
+/// the path is visible in the dev console. `freshness` is forwarded to each
+/// engine's request builder to bias results toward recent content when the
+/// turn's standalone question carried a freshness signal.
 ///
 /// Coverage-excluded: thin async glue over the injectable transport that
 /// delegates every decision to the pure, directly-tested helpers (each engine's
@@ -177,13 +181,14 @@ pub async fn web_search(
     transport: &dyn HttpTransport,
     query: &str,
     health: &EngineHealth,
+    freshness: bool,
 ) -> Vec<SearchHit> {
     for engine in ENGINES {
         if health.is_cooling(engine.name) {
             eprintln!("[search] engine={} cooling -> skipped", engine.name);
             continue;
         }
-        let response = match transport.send(&(engine.build)(query)).await {
+        let response = match transport.send(&(engine.build)(query, freshness)).await {
             Ok(response) => response,
             Err(_) => {
                 eprintln!(
@@ -222,35 +227,55 @@ pub async fn web_search(
 }
 
 /// Builds the DuckDuckGo `html` POST request with browser headers and the
-/// form-encoded query.
-pub(crate) fn ddg_html_request(query: &str) -> HttpRequest {
+/// form-encoded query. When `freshness` is set (the turn's standalone question
+/// carried a freshness signal), the request is biased toward recent results
+/// via [`crate::config::defaults::DDG_FRESHNESS_DF_VALUE`], set both as a `df`
+/// form field and as a `df` cookie: SearXNG's maintained DuckDuckGo scraper
+/// sets the filter both ways because the HTML endpoint honours either.
+pub(crate) fn ddg_html_request(query: &str, freshness: bool) -> HttpRequest {
+    let mut headers = vec![
+        ("User-Agent".to_string(), BROWSER_USER_AGENT.to_string()),
+        (
+            "Accept".to_string(),
+            "text/html,application/xhtml+xml".to_string(),
+        ),
+        ("Accept-Language".to_string(), "en-US,en;q=0.9".to_string()),
+        ("Referer".to_string(), "https://duckduckgo.com/".to_string()),
+    ];
+    let mut form = vec![
+        ("q".to_string(), query.to_string()),
+        ("kl".to_string(), "us-en".to_string()),
+        ("b".to_string(), String::new()),
+    ];
+    if freshness {
+        let df = crate::config::defaults::DDG_FRESHNESS_DF_VALUE;
+        form.push(("df".to_string(), df.to_string()));
+        headers.push(("Cookie".to_string(), format!("df={df}")));
+    }
     HttpRequest {
         method: HttpMethod::Post,
         url: DDG_HTML_ENDPOINT.to_string(),
-        headers: vec![
-            ("User-Agent".to_string(), BROWSER_USER_AGENT.to_string()),
-            (
-                "Accept".to_string(),
-                "text/html,application/xhtml+xml".to_string(),
-            ),
-            ("Accept-Language".to_string(), "en-US,en;q=0.9".to_string()),
-            ("Referer".to_string(), "https://duckduckgo.com/".to_string()),
-        ],
-        form: vec![
-            ("q".to_string(), query.to_string()),
-            ("kl".to_string(), "us-en".to_string()),
-            ("b".to_string(), String::new()),
-        ],
+        headers,
+        form,
     }
 }
 
 /// Builds the Mojeek `search` GET request. Mojeek takes the query as a `q` URL
 /// parameter and returns lightweight result HTML with direct (non-wrapped)
-/// destination URLs.
-pub(crate) fn mojeek_request(query: &str) -> HttpRequest {
+/// destination URLs. When `freshness` is set, [`crate::config::defaults::MOJEEK_FRESHNESS_OPERATOR`]
+/// is appended to the query to bias results toward recent content.
+pub(crate) fn mojeek_request(query: &str, freshness: bool) -> HttpRequest {
     // MOJEEK_ENDPOINT is a compile-time-valid absolute URL.
     let mut url = url::Url::parse(MOJEEK_ENDPOINT).expect("static endpoint");
-    url.query_pairs_mut().append_pair("q", query);
+    let q = if freshness {
+        format!(
+            "{query} {}",
+            crate::config::defaults::MOJEEK_FRESHNESS_OPERATOR
+        )
+    } else {
+        query.to_string()
+    };
+    url.query_pairs_mut().append_pair("q", &q);
     HttpRequest {
         method: HttpMethod::Get,
         url: url.to_string(),
@@ -677,7 +702,7 @@ mod tests {
 
     #[test]
     fn ddg_request_is_post_with_query_form() {
-        let req = ddg_html_request("rust bm25");
+        let req = ddg_html_request("rust bm25", false);
         assert_eq!(req.method, HttpMethod::Post);
         assert_eq!(req.url, DDG_HTML_ENDPOINT);
         assert!(req.form.iter().any(|(k, v)| k == "q" && v == "rust bm25"));
@@ -686,12 +711,51 @@ mod tests {
 
     #[test]
     fn mojeek_request_is_get_with_query_param() {
-        let req = mojeek_request("rust version");
+        let req = mojeek_request("rust version", false);
         assert_eq!(req.method, HttpMethod::Get);
         assert!(req.url.starts_with(MOJEEK_ENDPOINT));
         assert!(req.url.contains("q=rust+version") || req.url.contains("q=rust%20version"));
         assert!(req.form.is_empty());
         assert!(req.headers.iter().any(|(k, _)| k == "User-Agent"));
+    }
+
+    // ── freshness operators ──────────────────────────────────────────────────
+
+    #[test]
+    fn ddg_request_carries_no_freshness_operator_by_default() {
+        let req = ddg_html_request("rust bm25", false);
+        assert!(!req.form.iter().any(|(k, _)| k == "df"));
+        assert!(!req.headers.iter().any(|(k, _)| k == "Cookie"));
+    }
+
+    #[test]
+    fn ddg_request_adds_df_form_field_and_cookie_when_fresh() {
+        let req = ddg_html_request("rust bm25", true);
+        assert!(req.form.iter().any(|(k, v)| k == "df" && v == "w"));
+        assert!(req
+            .headers
+            .iter()
+            .any(|(k, v)| k == "Cookie" && v == "df=w"));
+        // The query itself is untouched; only the date-filter dimension changes.
+        assert!(req.form.iter().any(|(k, v)| k == "q" && v == "rust bm25"));
+    }
+
+    #[test]
+    fn mojeek_request_carries_no_freshness_operator_by_default() {
+        let req = mojeek_request("rust version", false);
+        assert!(!req.url.contains("since"));
+    }
+
+    #[test]
+    fn mojeek_request_appends_since_week_when_fresh() {
+        let req = mojeek_request("rust version", true);
+        assert!(
+            req.url.contains("since%3Aweek") || req.url.contains("since:week"),
+            "expected since:week operator in {}",
+            req.url
+        );
+        // The operator is appended to the query, not replacing it.
+        assert!(req.url.contains("rust") && req.url.contains("version"));
     }
 
     // ── web_search rotation over the fake transport ─────────────────────────
@@ -705,13 +769,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn web_search_forwards_freshness_to_the_engine_request() {
+        // freshness=true must reach the DDG request builder: the recorded call
+        // carries the df=w form field and the df=w cookie.
+        let transport = FakeHttpTransport::new()
+            .with_response(DDG_HTML_ENDPOINT, ok(DDG_HTML_ENDPOINT, DDG_HTML_FIXTURE));
+        let _ = web_search(&transport, "q", &EngineHealth::new(), true).await;
+        let call = transport
+            .calls()
+            .into_iter()
+            .find(|c| c.url == DDG_HTML_ENDPOINT)
+            .expect("ddg request recorded");
+        assert!(call.form.iter().any(|(k, v)| k == "df" && v == "w"));
+        assert!(call
+            .headers
+            .iter()
+            .any(|(k, v)| k == "Cookie" && v == "df=w"));
+    }
+
+    #[tokio::test]
     async fn web_search_returns_first_engine_hits_without_rotating() {
         // DuckDuckGo answers Ok, so Mojeek is never queried.
         let transport = FakeHttpTransport::new()
             .with_response(DDG_HTML_ENDPOINT, ok(DDG_HTML_ENDPOINT, DDG_HTML_FIXTURE));
-        let hits = web_search(&transport, "q", &EngineHealth::new()).await;
+        let hits = web_search(&transport, "q", &EngineHealth::new(), false).await;
         assert_eq!(hits.len(), 2);
-        let mojeek_url = mojeek_request("q").url;
+        let mojeek_url = mojeek_request("q", false).url;
         assert!(!transport.calls().iter().any(|c| c.url == mojeek_url));
     }
 
@@ -719,7 +802,7 @@ mod tests {
     async fn web_search_rotates_to_mojeek_when_ddg_blocked() {
         // The live failure mode: DuckDuckGo hard-blocks (HTTP 202 challenge), so
         // the search rotates to Mojeek and returns its results.
-        let mojeek_url = mojeek_request("q").url;
+        let mojeek_url = mojeek_request("q", false).url;
         let transport = FakeHttpTransport::new()
             .with_response(
                 DDG_HTML_ENDPOINT,
@@ -730,14 +813,14 @@ mod tests {
                 },
             )
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let hits = web_search(&transport, "q", &EngineHealth::new()).await;
+        let hits = web_search(&transport, "q", &EngineHealth::new(), false).await;
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].url, "https://rust-lang.org/tools/install/");
     }
 
     #[tokio::test]
     async fn web_search_empty_when_all_engines_blocked() {
-        let mojeek_url = mojeek_request("q").url;
+        let mojeek_url = mojeek_request("q", false).url;
         let blocked = |url: &str| HttpResponse {
             status: 429,
             final_url: url.into(),
@@ -746,7 +829,7 @@ mod tests {
         let transport = FakeHttpTransport::new()
             .with_response(DDG_HTML_ENDPOINT, blocked(DDG_HTML_ENDPOINT))
             .with_response(&mojeek_url, blocked(&mojeek_url));
-        assert!(web_search(&transport, "q", &EngineHealth::new())
+        assert!(web_search(&transport, "q", &EngineHealth::new(), false)
             .await
             .is_empty());
     }
@@ -755,7 +838,7 @@ mod tests {
     async fn web_search_empty_when_all_engines_transport_error() {
         // No canned responses -> every engine's send errors -> empty.
         let transport = FakeHttpTransport::new();
-        assert!(web_search(&transport, "q", &EngineHealth::new())
+        assert!(web_search(&transport, "q", &EngineHealth::new(), false)
             .await
             .is_empty());
     }
@@ -785,10 +868,10 @@ mod tests {
         // Mojeek serves the query.
         let health = EngineHealth::new();
         health.mark_blocked("duckduckgo", 3600);
-        let mojeek_url = mojeek_request("q").url;
+        let mojeek_url = mojeek_request("q", false).url;
         let transport = FakeHttpTransport::new()
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let hits = web_search(&transport, "q", &health).await;
+        let hits = web_search(&transport, "q", &health, false).await;
         assert_eq!(hits.len(), 2);
         assert!(!transport.calls().iter().any(|c| c.url == DDG_HTML_ENDPOINT));
     }
@@ -799,7 +882,7 @@ mod tests {
         // Second query: DuckDuckGo is skipped without a request (one DDG POST
         // total across both queries).
         let health = EngineHealth::new();
-        let mojeek_url = mojeek_request("q").url;
+        let mojeek_url = mojeek_request("q", false).url;
         let transport = FakeHttpTransport::new()
             .with_response(
                 DDG_HTML_ENDPOINT,
@@ -810,8 +893,8 @@ mod tests {
                 },
             )
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let _ = web_search(&transport, "q", &health).await;
-        let _ = web_search(&transport, "q", &health).await;
+        let _ = web_search(&transport, "q", &health, false).await;
+        let _ = web_search(&transport, "q", &health, false).await;
         let ddg_posts = transport
             .calls()
             .into_iter()
