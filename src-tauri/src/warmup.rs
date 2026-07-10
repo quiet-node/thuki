@@ -1895,6 +1895,7 @@ mod tests {
         );
     }
 
+    /// A minimal `Target` naming an arbitrary model path at the default context size.
     fn sample_target() -> crate::engine::state::Target {
         crate::engine::state::Target {
             model_path: std::path::PathBuf::from("/blobs/model.gguf"),

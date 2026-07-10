@@ -335,10 +335,12 @@ mod tests {
 
     const OUR_UID: u32 = 501;
 
+    /// The stand-in path for "our" bundled `llama-server` binary under test.
     fn our_binary() -> PathBuf {
         PathBuf::from("/apps/Thuki.app/Contents/MacOS/llama-server")
     }
 
+    /// Builds a `ProcIdent` from raw pid/ppid/ruid fields.
     fn ident(pid: i32, ppid: i32, ruid: u32) -> ProcIdent {
         ProcIdent { pid, ppid, ruid }
     }
