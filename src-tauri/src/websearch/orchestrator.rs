@@ -641,11 +641,11 @@ async fn run_engine_tier(
 /// - **sufficient** (or a judge failure, which fails toward committing): answer
 ///   from the vertical block, exactly as before.
 /// - **insufficient, an engine available**: run the scraped-engine tier and, on
-///   a hit, answer from those sources instead (replace, not merge: the engine
-///   result subsumes the vertical's narrower page and a single clean source set
-///   avoids the mis-citation a merged set invites). On an engine miss, fall back
-///   to the vertical block as a partial answer (the writer caveats what is
-///   missing) rather than a wall.
+///   a hit, answer from the vertical block merged with those sources (merge,
+///   not replace: an insufficient block is still partially relevant, and
+///   dropping it loses data the engines may lack — see [`merge_sources`]). On
+///   an engine miss, fall back to the vertical block as a partial answer (the
+///   writer caveats what is missing) rather than a wall.
 /// - **insufficient, every engine cooling**: escalation is futile and, on the
 ///   burst that caused the cooldowns, would risk deepening the block, so serve
 ///   the vertical block as a partial answer directly.
@@ -747,7 +747,8 @@ async fn commit_or_escalate(
     .await
     {
         EngineTierOutcome::Cancelled => SearchOutcome::Cancelled,
-        // The engines answered: replace the vertical block with their sources.
+        // The engines answered: merge the vertical block with their sources
+        // rather than discard it (see `merge_sources`).
         EngineTierOutcome::Ranked(sources) => {
             deps.recorder.record(RecorderEvent::SearchEscalated {
                 from_tier: tier.to_string(),
@@ -763,7 +764,7 @@ async fn commit_or_escalate(
                 history,
                 latest_user,
                 standalone_question,
-                sources,
+                merge_sources(block, sources),
                 today,
                 locale,
             )
@@ -845,6 +846,27 @@ fn grounded_answer(
         is_cache_tier,
     );
     SearchOutcome::Answer { messages, sources }
+}
+
+/// Merges an insufficient vertical's `block` with the engine tier's `sources`,
+/// vertical first, and re-assigns contiguous 1-based indices across the
+/// combined list.
+///
+/// An insufficient verdict means the block does not fully answer the
+/// question, not that it is irrelevant: it can still carry a fact the engines
+/// miss (observed live: a sports block with the exact kickoff time the judge
+/// still flagged insufficient, while the replacement engine sources omitted
+/// it). Discarding retrieved information on escalation throws that away, so
+/// escalation merges instead of replaces.
+fn merge_sources(vertical: SourceBlock, engines: Vec<SourceBlock>) -> Vec<SourceBlock> {
+    std::iter::once(vertical)
+        .chain(engines)
+        .enumerate()
+        .map(|(i, mut block)| {
+            block.index = i + 1;
+            block
+        })
+        .collect()
 }
 
 /// Removes cross-query duplicate hits by URL, preserving first-seen order.
@@ -1058,6 +1080,31 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].url, "https://a/");
         assert_eq!(out[1].url, "https://b/");
+    }
+
+    #[test]
+    fn merge_sources_puts_vertical_first_and_reindexes_contiguously() {
+        let source = |index: usize, url: &str| SourceBlock {
+            index,
+            url: url.into(),
+            title: "t".into(),
+            text: "x".into(),
+        };
+        // Stale index (1) on the vertical block, as it arrives from the
+        // vertical tier; two engine blocks already indexed 1, 2.
+        let vertical = source(1, "https://vertical.example/");
+        let engines = vec![
+            source(1, "https://engine-a.example/"),
+            source(2, "https://engine-b.example/"),
+        ];
+        let merged = merge_sources(vertical, engines);
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[0].url, "https://vertical.example/");
+        assert_eq!(merged[0].index, 1);
+        assert_eq!(merged[1].url, "https://engine-a.example/");
+        assert_eq!(merged[1].index, 2);
+        assert_eq!(merged[2].url, "https://engine-b.example/");
+        assert_eq!(merged[2].index, 3);
     }
 
     // ── run_search: decision branches ─────────────────────────────────────────
@@ -2990,10 +3037,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn insufficient_vertical_escalates_and_replaces_with_engine_sources() {
+    async fn insufficient_vertical_escalates_and_merges_vertical_with_engine_sources() {
         // The news vertical answers, the judge finds the block insufficient, and
         // an engine is available: the pipeline escalates and answers from the
-        // engine sources, replacing (not merging) the vertical block.
+        // vertical block merged with the engine sources (vertical first),
+        // rather than discarding the vertical's data.
         let prepass = FakePrePass::returning(Ok(news_route_decision()));
         let transport = news_and_engine_transport();
         let judge = insufficient();
@@ -3013,7 +3061,11 @@ mod tests {
         )
         .await;
         assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
-            if sources.len() == 1 && sources[0].url == "https://match.example/"));
+            if sources.len() == 2
+                && sources[0].url == "https://news.google.com/"
+                && sources[0].index == 1
+                && sources[1].url == "https://match.example/"
+                && sources[1].index == 2));
         assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
         let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
         assert!(events.iter().any(|e| matches!(e,
