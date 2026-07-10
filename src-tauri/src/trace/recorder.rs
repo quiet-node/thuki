@@ -137,6 +137,18 @@ impl TraceRecorder for NoopRecorder {
     fn record(&self, _conversation_id: &ConversationId, _event: RecorderEvent) {}
 }
 
+/// One cited source recorded in a [`RecorderEvent::SearchRetrieved`] event: the
+/// URL that grounded the answer and its human-readable title. The title is what
+/// makes a vertical's generic homepage URL ("https://www.espn.com/",
+/// "https://news.google.com/") legible in the forensic trace: those URLs alone
+/// do not say which league or which headline set actually answered the turn, so
+/// the title is recorded alongside every URL.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RetrievedSource {
+    pub url: String,
+    pub title: String,
+}
+
 /// Forensic trace events emitted by the chat layer or the search pipeline.
 ///
 /// Each variant maps to one JSON-Lines record. Field shapes are
@@ -286,10 +298,14 @@ pub enum RecorderEvent {
         standalone_question: String,
         queries: Vec<String>,
     },
-    /// Which source tier answered a chat turn's auto-search, and the URLs (or
-    /// titles) it cited. `tier` is one of "weather", "sports", "news", "wiki",
-    /// or "engine". Emitted once when retrieval produces a grounded answer.
-    SearchRetrieved { tier: String, urls: Vec<String> },
+    /// Which source tier answered a chat turn's auto-search, and the sources
+    /// (URL + title) it cited. `tier` is one of "weather", "sports", "news",
+    /// "wiki", "engine", or "cache". Emitted once when retrieval produces a
+    /// grounded answer.
+    SearchRetrieved {
+        tier: String,
+        sources: Vec<RetrievedSource>,
+    },
     /// Final event in a chat-domain file. Emitted by the frontend when
     /// the user resets the conversation or by the backend on app quit
     /// (reason = "quit"). Window-hide does NOT emit this event because
@@ -796,10 +812,10 @@ impl Serialize for RecorderEvent {
                 map.serialize_entry("standalone_question", standalone_question)?;
                 map.serialize_entry("queries", queries)?;
             }
-            RecorderEvent::SearchRetrieved { tier, urls } => {
+            RecorderEvent::SearchRetrieved { tier, sources } => {
                 map.serialize_entry("kind", "search_retrieved")?;
                 map.serialize_entry("tier", tier)?;
-                map.serialize_entry("urls", urls)?;
+                map.serialize_entry("sources", sources)?;
             }
             RecorderEvent::ConversationEnd { reason } => {
                 map.serialize_entry("kind", "conversation_end")?;
@@ -991,7 +1007,10 @@ mod tests {
             },
             RecorderEvent::SearchRetrieved {
                 tier: "news".into(),
-                urls: vec!["https://news.google.com/".into()],
+                sources: vec![RetrievedSource {
+                    url: "https://news.google.com/".into(),
+                    title: "Google News headlines".into(),
+                }],
             },
             RecorderEvent::ConversationEnd {
                 reason: "quit".into(),
@@ -1314,7 +1333,10 @@ mod tests {
             &cid("conv-chat"),
             RecorderEvent::SearchRetrieved {
                 tier: "wiki".into(),
-                urls: vec!["https://en.wikipedia.org/wiki/Photosynthesis".into()],
+                sources: vec![RetrievedSource {
+                    url: "https://en.wikipedia.org/wiki/Photosynthesis".into(),
+                    title: "Photosynthesis".into(),
+                }],
             },
         );
         r.record(
@@ -1346,8 +1368,8 @@ mod tests {
         assert_eq!(lines[6]["queries"], json!(["photosynthesis"]));
         assert_eq!(lines[7]["tier"], "wiki");
         assert_eq!(
-            lines[7]["urls"],
-            json!(["https://en.wikipedia.org/wiki/Photosynthesis"])
+            lines[7]["sources"],
+            json!([{"url": "https://en.wikipedia.org/wiki/Photosynthesis", "title": "Photosynthesis"}])
         );
         assert_eq!(lines[8]["reason"], "quit");
     }

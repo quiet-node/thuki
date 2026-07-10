@@ -160,7 +160,10 @@ fn season_year(json: &serde_json::Value) -> Option<i64> {
 /// malformed or unrecognisable row is skipped rather than shown half-blank).
 /// The line always carries the event's date when ESPN provides one, whatever
 /// its status: a `post` (final) event's own status text has no date at all.
-fn format_event(event: &serde_json::Value) -> Option<String> {
+/// `round` is the competition's round/stage label (e.g. "Quarterfinals"),
+/// appended to the status parens when present so the writer can tell a
+/// quarterfinal from a final and never over-states which round a score decided.
+fn format_event(event: &serde_json::Value, round: Option<&str>) -> Option<String> {
     let name = event.get("name")?.as_str()?.to_string();
     let competitors = event
         .get("competitions")?
@@ -184,10 +187,14 @@ fn format_event(event: &serde_json::Value) -> Option<String> {
         .and_then(|s| s.as_str())
         .unwrap_or("");
     let status = status_label(state, short_detail);
+    let detail = match round {
+        Some(round) if !round.trim().is_empty() => format!("{status}, {}", round.trim()),
+        _ => status,
+    };
     let scoreline = lines.join(" vs ");
     match event_date(event) {
-        Some(date) => Some(format!("{name}: {scoreline} ({status}) on {date}")),
-        None => Some(format!("{name}: {scoreline} ({status})")),
+        Some(date) => Some(format!("{name}: {scoreline} ({detail}) on {date}")),
+        None => Some(format!("{name}: {scoreline} ({detail})")),
     }
 }
 
@@ -197,6 +204,12 @@ fn format_event(event: &serde_json::Value) -> Option<String> {
 /// carries no `events` field at all; an `events` array that parses to zero
 /// usable lines (e.g. an off-season slate) returns `Some((label, vec![]))`,
 /// which the caller treats as a miss.
+///
+/// The round/stage label is read once from the response-level
+/// `leagues[0].season.type.name` ("Quarterfinals", "Regular Season", ...) and
+/// applied to every event line: one scoreboard response is one league's current
+/// slate, so the slate shares a stage. It is threaded to each [`format_event`]
+/// so the writer can name the round without inferring it from the score.
 pub(crate) fn parse_scoreboard(body: &str) -> Option<(String, Vec<String>)> {
     let json: serde_json::Value = serde_json::from_str(body).ok()?;
     let league_name = json
@@ -210,10 +223,17 @@ pub(crate) fn parse_scoreboard(body: &str) -> Option<(String, Vec<String>)> {
         Some(year) => format!("{league_name} {year}"),
         None => league_name,
     };
+    let round = json
+        .get("leagues")
+        .and_then(|l| l.get(0))
+        .and_then(|l| l.get("season"))
+        .and_then(|s| s.get("type"))
+        .and_then(|t| t.get("name"))
+        .and_then(|n| n.as_str());
     let events = json.get("events")?.as_array()?;
     let lines = events
         .iter()
-        .filter_map(format_event)
+        .filter_map(|event| format_event(event, round))
         .take(MAX_SPORTS_EVENTS)
         .collect();
     Some((league_label, lines))
@@ -262,7 +282,16 @@ pub(crate) async fn fetch_sports(
     standalone_question: &str,
     today: &str,
 ) -> Option<SourceBlock> {
-    let (sport, league) = detect_league(standalone_question)?;
+    // The classifier may route a turn to sports whose competition the league map
+    // does not recognise (e.g. a named Grand Prix with no "f1"/"formula 1"
+    // token, or a niche league). Log the miss explicitly rather than returning a
+    // silent `None`: a route=sports turn that vanished here with no reason line
+    // is exactly the forensics gap the trace pass hit. The caller falls through
+    // to the news / engine tiers.
+    let Some((sport, league)) = detect_league(standalone_question) else {
+        eprintln!("[search] vertical=sports no_league_match -> next tier");
+        return None;
+    };
     let response = match transport.send(&scoreboard_request(sport, league)).await {
         Ok(response) => response,
         Err(e) => {
@@ -299,13 +328,15 @@ mod tests {
     use crate::net::transport::{FakeHttpTransport, HttpResponse};
 
     /// Real ESPN scoreboard response shape, trimmed to the fields this module
-    /// reads (captured live via curl 2026-07-09, `soccer/fifa.world/scoreboard`):
-    /// one completed match. Carries `leagues[0].season.year`, proving the
-    /// season-year path: this is the exact shape of the bug this module
-    /// exists to fix (a `post`/final match whose own status text ["FT"] has
-    /// no date, previously letting a small model mistake a live 2026 result
-    /// for the famous 2022 semifinal).
-    const WORLD_CUP_FIXTURE: &str = r#"{"leagues": [{"name": "FIFA World Cup", "season": {"year": 2026}}], "events": [{"name": "Morocco at France", "date": "2026-07-09T20:00Z", "status": {"type": {"state": "post", "completed": true, "shortDetail": "FT"}}, "competitions": [{"competitors": [{"homeAway": "home", "score": "2", "team": {"displayName": "France"}}, {"homeAway": "away", "score": "0", "team": {"displayName": "Morocco"}}]}]}]}"#;
+    /// reads (captured live via curl `soccer/fifa.world/scoreboard`, round/stage
+    /// shape re-confirmed 2026-07-10): one completed match. Carries
+    /// `leagues[0].season.year` (season-year path) AND
+    /// `leagues[0].season.type.name` (the round/stage label, "Quarterfinals" in
+    /// the live response). This is the exact shape of the bug this module exists
+    /// to fix: a `post`/final match whose own status text ["FT"] has no date and
+    /// no round, previously letting a small model mistake a live 2026
+    /// quarterfinal for the final, or for the famous 2022 semifinal.
+    const WORLD_CUP_FIXTURE: &str = r#"{"leagues": [{"name": "FIFA World Cup", "season": {"year": 2026, "type": {"id": "4", "name": "Quarterfinals"}}}], "events": [{"name": "Morocco at France", "date": "2026-07-09T20:00Z", "season": {"year": 2026, "slug": "quarterfinals"}, "status": {"type": {"state": "post", "completed": true, "shortDetail": "FT"}}, "competitions": [{"notes": [], "competitors": [{"homeAway": "home", "score": "2", "team": {"displayName": "France"}}, {"homeAway": "away", "score": "0", "team": {"displayName": "Morocco"}}]}]}]}"#;
 
     /// Real ESPN scoreboard response shape, trimmed to the fields this module
     /// reads (captured live via curl 2026-07-09, `football/nfl/scoreboard`):
@@ -459,15 +490,33 @@ mod tests {
         // and the event line carries its own date even though it is a `post`
         // (final) event whose status text alone ("FT" -> "final") has none:
         // this is the concrete fix for the bug where an undated final score
-        // reads as a past tournament rather than the live one it is.
+        // reads as a past tournament rather than the live one it is. The line
+        // also names the round ("Quarterfinals", from the response-level
+        // season.type.name), so the writer can never call a quarterfinal the
+        // final.
         let (league, lines) = parse_scoreboard(WORLD_CUP_FIXTURE).unwrap();
         assert_eq!(league, "FIFA World Cup 2026");
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("Morocco at France"));
         assert!(lines[0].contains("France 2"));
         assert!(lines[0].contains("Morocco 0"));
-        assert!(lines[0].contains("(final)"));
+        // Status and round are grouped in the parens: "(final, Quarterfinals)".
+        assert!(lines[0].contains("(final, Quarterfinals)"));
         assert!(lines[0].contains("on 2026-07-09"));
+    }
+
+    #[test]
+    fn parse_scoreboard_omits_round_when_season_type_absent_or_blank() {
+        // No season.type at all -> no round appended (the NFL fixture path).
+        let (_, nfl) = parse_scoreboard(NFL_SCHEDULED_FIXTURE).unwrap();
+        assert!(nfl[0].contains("(scheduled, 9/9 - 8:20 PM EDT)"));
+        assert!(!nfl[0].contains("(scheduled, 9/9 - 8:20 PM EDT,"));
+        // A present-but-blank season.type.name is treated as absent, not
+        // appended as a dangling ", ".
+        let blank = r#"{"leagues": [{"name": "X", "season": {"type": {"name": "   "}}}], "events": [{"name": "A at B", "status": {"type": {"state": "post", "shortDetail": "Final"}}, "competitions": [{"competitors": [{"team": {"displayName": "A"}, "score": "1"}, {"team": {"displayName": "B"}, "score": "2"}]}]}]}"#;
+        let (_, lines) = parse_scoreboard(blank).unwrap();
+        assert!(lines[0].contains("(final)"));
+        assert!(!lines[0].contains("final,"));
     }
 
     #[test]

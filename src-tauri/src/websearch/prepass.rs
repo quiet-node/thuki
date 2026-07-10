@@ -208,7 +208,7 @@ impl PrePass for BuiltinPrePass {
 /// directive: without it the model spends 1000+ chain-of-thought tokens on a
 /// three-way classification and can blow the call timeout (observed live at
 /// ~63 tok/s decode). Inert plain text for every other model family.
-const CLASSIFIER_SYSTEM: &str = "Reasoning: low\n\nYou are a retrieval-routing classifier inside a local AI assistant. Your only job is to decide whether answering the user's latest message needs a fresh web search, to pick which source best answers it, and if so to rewrite it into a standalone search query. You never answer the message itself.\n\nOutput ONLY a JSON object: {\"search\": \"no\"|\"cached\"|\"web\", \"route\": \"weather\"|\"news\"|\"wiki\"|\"sports\"|\"web\", \"standalone_question\": \"...\", \"queries\": [\"...\"]}.\n\nChoose \"search\":\n- \"web\" when a good answer needs information that changes over time or is past your training cutoff: news, prices, weather, sports results, software versions, releases, schedules, who currently holds a role, or any live fact; OR when you are not confident your own knowledge is current and correct.\n- \"cached\" when the assistant already searched the web earlier in this same conversation and those sources still answer this message: a repeat or rephrase of the same question, or a direct follow-up about what those sources covered.\n- \"no\" only when you can answer confidently and correctly from stable general knowledge or from the conversation alone.\nWhen you are unsure whether your knowledge is up to date, choose \"web\": a needless search is far cheaper than a confidently wrong answer.\n\nChoose \"route\" (which source best answers it):\n- \"weather\" for current weather or forecast for a place.\n- \"news\" for current events, elections, and anything asking the latest, current, or recent state of an evolving topic (a conflict, a company, a policy) that is not a live score, fixture, or standings.\n- \"wiki\" for stable definitional or historical facts that do not change from month to month.\n- \"sports\" for live scores, fixtures, or standings for a named competition or team, or the status of an ongoing match or tournament.\n- \"web\" for everything else (software versions, prices, product specs, niche live facts).\nWhen a question is about the present state of an ongoing event, route \"news\" (or \"sports\" for a score/fixture/standings question), never \"wiki\", even if it is phrased like \"what is ...\". Always set a route, even when search is \"no\".\n\n\"standalone_question\": the latest message rewritten as one self-contained question, resolving pronouns and references from the conversation.\n\"queries\": 1 to 3 short keyword search queries, not full sentences.\n\nExamples (message -> JSON):\n\"who is the CEO of OpenAI right now\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"who is the current CEO of OpenAI\",\"queries\":[\"openai ceo\"]}\n\"what is the boiling point of water\" -> {\"search\":\"no\",\"route\":\"wiki\",\"standalone_question\":\"what is the boiling point of water\",\"queries\":[\"boiling point of water\"]}\n\"what is photosynthesis\" -> {\"search\":\"web\",\"route\":\"wiki\",\"standalone_question\":\"what is photosynthesis\",\"queries\":[\"photosynthesis\"]}\n\"weather in Paris\" -> {\"search\":\"web\",\"route\":\"weather\",\"standalone_question\":\"what is the current weather in Paris\",\"queries\":[\"paris weather\"]}\n\"what's the latest status of the World Cup 2026\" -> {\"search\":\"web\",\"route\":\"news\",\"standalone_question\":\"what is the current status of the 2026 World Cup\",\"queries\":[\"world cup 2026 status\"]}\n\"who won the most recent F1 race\" -> {\"search\":\"web\",\"route\":\"news\",\"standalone_question\":\"who won the most recent Formula 1 race\",\"queries\":[\"latest f1 race winner\"]}\n\"what's the score of the Lakers game\" -> {\"search\":\"web\",\"route\":\"sports\",\"standalone_question\":\"what is the current score of the Los Angeles Lakers game\",\"queries\":[\"lakers score\"]}\n(you already searched and answered \"what's the latest stable Rust version\" with web sources earlier in this conversation) \"what's the latest stable Rust version\" -> {\"search\":\"cached\",\"route\":\"web\",\"standalone_question\":\"what is the latest stable Rust version\",\"queries\":[\"rust latest stable version\"]}\n\"write a short poem about autumn\" -> {\"search\":\"no\",\"route\":\"web\",\"standalone_question\":\"write a short poem about autumn\",\"queries\":[\"autumn poem\"]}\n(after discussing France) \"and its population?\" -> {\"search\":\"no\",\"route\":\"wiki\",\"standalone_question\":\"what is the population of France\",\"queries\":[\"france population\"]}\n(after discussing the US president) \"what about Argentina?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"who is the current president of Argentina\",\"queries\":[\"argentina president\"]}";
+const CLASSIFIER_SYSTEM: &str = "Reasoning: low\n\nYou are a retrieval-routing classifier inside a local AI assistant. Your only job is to decide whether answering the user's latest message needs a fresh web search, to pick which source best answers it, and if so to rewrite it into a standalone search query. You never answer the message itself.\n\nOutput ONLY a JSON object: {\"search\": \"no\"|\"cached\"|\"web\", \"route\": \"weather\"|\"news\"|\"wiki\"|\"sports\"|\"web\", \"standalone_question\": \"...\", \"queries\": [\"...\"]}.\n\nChoose \"search\":\n- \"web\" when a good answer needs information that changes over time or is past your training cutoff: news, prices, weather, sports results, software versions, releases, schedules, who currently holds a role, or any live fact; OR when you are not confident your own knowledge is current and correct.\n- \"cached\" when the assistant already searched the web earlier in this same conversation and those sources still answer this message: a repeat or rephrase of the same question, or a direct follow-up about what those sources covered.\n- \"no\" only when you can answer confidently and correctly from stable general knowledge or from the conversation alone.\nWhen you are unsure whether your knowledge is up to date, choose \"web\": a needless search is far cheaper than a confidently wrong answer.\n\nChoose \"route\" (which source best answers it):\n- \"weather\" for current weather or forecast for a place.\n- \"news\" for current events, elections, and anything asking the latest, current, or recent state of an evolving topic (a conflict, a company, a policy) that is not a live score, fixture, or standings.\n- \"wiki\" for stable definitional or historical facts that do not change from month to month.\n- \"sports\" for live scores, fixtures, or standings for a named competition or team, or the status of an ongoing match or tournament.\n- \"web\" for everything else (software versions, prices, product specs, niche live facts).\nWhen a question is about the present state of an ongoing event, route \"news\" (or \"sports\" for a score/fixture/standings question), never \"wiki\", even if it is phrased like \"what is ...\". Always set a route, even when search is \"no\".\n\n\"standalone_question\": the latest message rewritten as one self-contained question, resolving pronouns and references from the conversation, including entities named in the assistant's previous answers, not only in the user's questions. When the follow-up is an ellipsis like \"how about X?\" or \"what about X?\", keep the SAME question the conversation was already asking and swap in only the new subject X; do not invent a different kind of question.\n\"queries\": 1 to 3 short keyword search queries, not full sentences.\n\nExamples (message -> JSON):\n\"who is the CEO of OpenAI right now\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"who is the current CEO of OpenAI\",\"queries\":[\"openai ceo\"]}\n\"what is the boiling point of water\" -> {\"search\":\"no\",\"route\":\"wiki\",\"standalone_question\":\"what is the boiling point of water\",\"queries\":[\"boiling point of water\"]}\n\"what is photosynthesis\" -> {\"search\":\"web\",\"route\":\"wiki\",\"standalone_question\":\"what is photosynthesis\",\"queries\":[\"photosynthesis\"]}\n\"weather in Paris\" -> {\"search\":\"web\",\"route\":\"weather\",\"standalone_question\":\"what is the current weather in Paris\",\"queries\":[\"paris weather\"]}\n\"what's the latest status of the World Cup 2026\" -> {\"search\":\"web\",\"route\":\"news\",\"standalone_question\":\"what is the current status of the 2026 World Cup\",\"queries\":[\"world cup 2026 status\"]}\n\"who won the most recent F1 race\" -> {\"search\":\"web\",\"route\":\"news\",\"standalone_question\":\"who won the most recent Formula 1 race\",\"queries\":[\"latest f1 race winner\"]}\n\"what's the score of the Lakers game\" -> {\"search\":\"web\",\"route\":\"sports\",\"standalone_question\":\"what is the current score of the Los Angeles Lakers game\",\"queries\":[\"lakers score\"]}\n(you already searched and answered \"what's the latest stable Rust version\" with web sources earlier in this conversation) \"what's the latest stable Rust version\" -> {\"search\":\"cached\",\"route\":\"web\",\"standalone_question\":\"what is the latest stable Rust version\",\"queries\":[\"rust latest stable version\"]}\n\"write a short poem about autumn\" -> {\"search\":\"no\",\"route\":\"web\",\"standalone_question\":\"write a short poem about autumn\",\"queries\":[\"autumn poem\"]}\n(after discussing France) \"and its population?\" -> {\"search\":\"no\",\"route\":\"wiki\",\"standalone_question\":\"what is the population of France\",\"queries\":[\"france population\"]}\n(after discussing the US president) \"what about Argentina?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"who is the current president of Argentina\",\"queries\":[\"argentina president\"]}\n(you just told the user Elon Musk's net worth is about $240 billion) \"How about Donald Trump?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"what is Donald Trump's net worth\",\"queries\":[\"donald trump net worth\"]}\n(your previous answer said Jensen Huang is the CEO of Nvidia) \"how much is he worth?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"what is Jensen Huang's net worth\",\"queries\":[\"jensen huang net worth\"]}";
 
 /// The trailing instruction on the classifier's user turn, after the optional
 /// conversation block and the latest message.
@@ -289,7 +289,12 @@ fn build_classifier_user_turn(
 
 /// Formats the last [`CLASSIFIER_HISTORY_TURNS`] conversation turns as plain
 /// `Role: text` lines for context. Returns an empty string when there is no
-/// history. Message images are ignored: the classifier reasons over text only.
+/// history. Assistant answers carry the entities that resolve an elliptical
+/// follow-up ("what about X?"), so they are embedded too, but truncated to a
+/// [`crate::config::defaults::CLASSIFIER_ASSISTANT_PREFIX_CHARS`] prefix to keep
+/// the classifier prompt within its warm-slot budget; user turns (short
+/// questions) are embedded whole. Message images are ignored: the classifier
+/// reasons over text only.
 fn recent_history_block(history: &[ChatMessage]) -> String {
     let start = history
         .len()
@@ -297,15 +302,30 @@ fn recent_history_block(history: &[ChatMessage]) -> String {
     history[start..]
         .iter()
         .map(|m| {
-            let role = if m.role == "assistant" {
-                "Assistant"
+            if m.role == "assistant" {
+                let answer = truncate_prefix(
+                    m.content.trim(),
+                    crate::config::defaults::CLASSIFIER_ASSISTANT_PREFIX_CHARS,
+                );
+                format!("Assistant: {answer}")
             } else {
-                "User"
-            };
-            format!("{role}: {}", m.content.trim())
+                format!("User: {}", m.content.trim())
+            }
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Truncates `text` to at most `max_chars` characters on a character boundary,
+/// appending a `…` marker when it had to cut so the classifier can tell the
+/// answer was clipped. Counting by `char` (not byte) keeps a multi-byte prefix
+/// from splitting a codepoint.
+fn truncate_prefix(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let prefix: String = text.chars().take(max_chars).collect();
+    format!("{prefix}…")
 }
 
 /// The wire shape the grammar constrains the model to. Parsed leniently: the
@@ -533,6 +553,69 @@ mod tests {
         assert!(!block.contains("turn 0"));
         assert!(block.contains(&format!("turn {}", cap + 2)));
         assert_eq!(block.lines().count(), cap);
+    }
+
+    #[test]
+    fn truncate_prefix_clips_long_text_and_keeps_short_text() {
+        let bound = crate::config::defaults::CLASSIFIER_ASSISTANT_PREFIX_CHARS;
+        // Short text is returned verbatim, no ellipsis.
+        assert_eq!(truncate_prefix("brief", bound), "brief");
+        // A string exactly at the bound is not clipped.
+        let exact: String = "x".repeat(bound);
+        assert_eq!(truncate_prefix(&exact, bound), exact);
+        // One over the bound is clipped to `bound` chars plus the marker.
+        let over: String = "y".repeat(bound + 50);
+        let clipped = truncate_prefix(&over, bound);
+        assert_eq!(clipped.chars().count(), bound + 1);
+        assert!(clipped.ends_with('…'));
+        assert!(clipped.starts_with(&"y".repeat(bound)));
+    }
+
+    #[test]
+    fn truncate_prefix_cuts_on_a_char_boundary() {
+        // Multi-byte codepoints must not be split mid-byte.
+        let text: String = "é".repeat(10);
+        let clipped = truncate_prefix(&text, 4);
+        assert_eq!(clipped, "éééé…");
+    }
+
+    #[test]
+    fn history_block_truncates_assistant_answers_but_not_user_turns() {
+        let bound = crate::config::defaults::CLASSIFIER_ASSISTANT_PREFIX_CHARS;
+        let long_answer = "a".repeat(bound + 100);
+        let long_question = "b".repeat(bound + 100);
+        let history = vec![
+            {
+                let mut m = user(&long_question);
+                m.role = "user".into();
+                m
+            },
+            {
+                let mut m = user(&long_answer);
+                m.role = "assistant".into();
+                m
+            },
+        ];
+        let block = recent_history_block(&history);
+        // The assistant answer is clipped to the bound plus the marker.
+        assert!(block.contains(&format!("Assistant: {}…", "a".repeat(bound))));
+        assert!(!block.contains(&"a".repeat(bound + 1)));
+        // The user question is embedded whole (short questions stay intact).
+        assert!(block.contains(&format!("User: {long_question}")));
+    }
+
+    #[test]
+    fn classifier_prompt_carries_ellipsis_resolution_fewshots() {
+        // The topic-swap ellipsis example: same frame ("net worth"), swapped
+        // subject, not an invented question type (the observed llama-3.2-3B bug).
+        assert!(CLASSIFIER_SYSTEM.contains("How about Donald Trump?"));
+        assert!(CLASSIFIER_SYSTEM.contains("what is Donald Trump's net worth"));
+        // The pronoun-from-answer example resolves "he" from the prior answer.
+        assert!(CLASSIFIER_SYSTEM.contains("how much is he worth?"));
+        assert!(CLASSIFIER_SYSTEM.contains("what is Jensen Huang's net worth"));
+        // The instruction to resolve from the assistant's answers, not only the
+        // user's questions.
+        assert!(CLASSIFIER_SYSTEM.contains("entities named in the assistant's previous answers"));
     }
 
     // ── parse ───────────────────────────────────────────────────────────────

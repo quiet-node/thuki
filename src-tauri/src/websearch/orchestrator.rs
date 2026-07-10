@@ -48,7 +48,7 @@ use tokio_util::sync::CancellationToken;
 use crate::commands::ChatMessage;
 use crate::config::defaults::SERP_EARLY_STOP_HITS;
 use crate::net::transport::HttpTransport;
-use crate::trace::{BoundRecorder, RecorderEvent};
+use crate::trace::{BoundRecorder, RecorderEvent, RetrievedSource};
 use crate::websearch::assemble::{assemble_context, SourceBlock};
 use crate::websearch::cache::{CachedSearch, SourceCache};
 use crate::websearch::encyclopedia::{fetch_encyclopedia, is_volatile_question};
@@ -364,14 +364,25 @@ async fn run_web(
     if cancel.is_cancelled() {
         return SearchOutcome::Cancelled;
     }
+    // Route-respect hint gating (see `hint_claims_turn`): the classifier's
+    // explicit route outranks a vertical's deterministic keyword hint. A hint
+    // only claims a turn the model routed to that same vertical, or to the
+    // general Web tier (a classifier miss the hint can rescue), plus the one
+    // deliberate cross-tier upgrade below.
+    //
     // Sports tier: ESPN's public scoreboard API, positioned ahead of the news
     // feed because a scoreboard beats headlines for a live score/fixture/
     // standings question (the feed's dated headlines can lag the live state by
-    // minutes). Runs when the classifier routed to sports OR the deterministic
-    // league-keyword map matches; either way `fetch_sports` self-gates on the
-    // same league match internally, so a route hit with no keyword match still
-    // falls through cleanly. A miss falls through to the news feed / engines.
-    if matches!(route, SearchRoute::Sports) || is_sports_intent(standalone_question) {
+    // minutes). Runs when the classifier routed to sports, OR its league-keyword
+    // hint matches on a News/Web-routed turn: the news->sports upgrade is kept on
+    // purpose (a score-shaped question the model called "news" is still better
+    // served by a scoreboard), but the hint must never hijack a weather- or
+    // wiki-routed turn. `fetch_sports` self-gates on the league match internally,
+    // so a route hit with no keyword match falls through cleanly with a logged
+    // reason. A miss falls through to the news feed / engines.
+    let sports_hint = is_sports_intent(standalone_question)
+        && matches!(route, SearchRoute::News | SearchRoute::Web);
+    if matches!(route, SearchRoute::Sports) || sports_hint {
         if let Some(block) = fetch_sports(deps.transport, standalone_question, today).await {
             return grounded_answer(
                 deps,
@@ -391,12 +402,18 @@ async fn run_web(
     }
     // News tier: keyless Google News RSS, not SERP-bot-gated, whose dated
     // headlines answer the who-won / what-happened / latest-status class
-    // directly. Runs when the classifier routed to news OR the deterministic
-    // token gate matches (kept as a cheap additive hint, no longer the sole
-    // gate). A miss falls through to the engines. The query is biased toward
-    // recent results when the standalone question carried a freshness signal.
-    if matches!(route, SearchRoute::News) || is_news_intent(standalone_question) {
-        if let Some(query) = queries.first() {
+    // directly. Runs when the classifier routed to news, OR its token hint
+    // matches on a Web-routed turn ONLY: news must never claim a turn the model
+    // routed to Sports/Wiki/Weather. This is the fix for the observed F1-points
+    // dead end, where route=sports but the "race"/"championship" token let news
+    // steal the turn and dead-end on headlines that had no standings. Each
+    // classifier query is tried in order until one yields a block (mirroring the
+    // engine tier), so a first query that returns nothing no longer strands the
+    // turn on an empty first result. Queries are biased toward recent results
+    // when the standalone question carried a freshness signal.
+    let news_hint = is_news_intent(standalone_question) && matches!(route, SearchRoute::Web);
+    if matches!(route, SearchRoute::News) || news_hint {
+        for query in queries {
             if let Some(block) = fetch_news(deps.transport, query, freshness).await {
                 return grounded_answer(
                     deps,
@@ -509,7 +526,13 @@ fn grounded_answer(
 ) -> SearchOutcome {
     deps.recorder.record(RecorderEvent::SearchRetrieved {
         tier: tier.to_string(),
-        urls: sources.iter().map(|s| s.url.clone()).collect(),
+        sources: sources
+            .iter()
+            .map(|s| RetrievedSource {
+                url: s.url.clone(),
+                title: s.title.clone(),
+            })
+            .collect(),
     });
     if tier != "cache" {
         deps.cache.store(
@@ -922,6 +945,60 @@ mod tests {
         .await;
         assert!(matches!(outcome, SearchOutcome::Answer { .. }));
         assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+    }
+
+    #[tokio::test]
+    async fn news_tries_each_query_until_one_yields_headlines() {
+        // Fix 4b: the news tier loops every classifier query, not just the
+        // first. Here the first query's feed is empty (no items) and the second
+        // query's feed carries a headline, so the turn grounds on the second
+        // query instead of dead-ending on the empty first result.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::News,
+            standalone_question: "who won the race".into(),
+            queries: vec!["empty first query".into(), "race winner".into()],
+        }));
+        let first_url = crate::websearch::news::news_request("empty first query", false).url;
+        let second_url = crate::websearch::news::news_request("race winner", false).url;
+        let transport = FakeHttpTransport::new()
+            .with_response(
+                &first_url,
+                HttpResponse {
+                    status: 200,
+                    final_url: first_url.clone(),
+                    body: b"<rss><channel></channel></rss>".to_vec(),
+                },
+            )
+            .with_response(
+                &second_url,
+                HttpResponse {
+                    status: 200,
+                    final_url: second_url.clone(),
+                    body: br#"<rss><channel><item><title>Leclerc wins the race - Formula 1</title></item></channel></rss>"#.to_vec(),
+                },
+            );
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "who won the race",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(
+            matches!(&outcome, SearchOutcome::Answer { messages, sources }
+            if sources[0].url == "https://news.google.com/"
+                && messages.last().is_some_and(|m| m.content.contains("Leclerc wins the race")))
+        );
+        // Both feed queries were attempted, in order.
+        assert!(transport.calls().iter().any(|c| c.url == first_url));
+        assert!(transport.calls().iter().any(|c| c.url == second_url));
     }
 
     // ── weather vertical routing ──────────────────────────────────────────────
@@ -1391,6 +1468,165 @@ mod tests {
         .await;
         assert!(matches!(outcome, SearchOutcome::Answer { .. }));
         assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+    }
+
+    // ── route-respect hint gating ─────────────────────────────────────────────
+    // The classifier's explicit route outranks a vertical's keyword hint. A hint
+    // only claims a turn routed to that same vertical or to Web (plus the one
+    // news->sports upgrade). These four cover the decision matrix.
+
+    #[tokio::test]
+    async fn route_sports_with_news_keyword_skips_news_and_reaches_engines() {
+        // The exact observed F1 shape: route=sports, but the question carries a
+        // news token ("won"/"championship") and NO league keyword, so the sports
+        // vertical self-misses (no_league_match). News must NOT steal the turn
+        // (route is sports, not news/web); the engines run instead.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Sports,
+            standalone_question: "who won the championship treaty versailles paris".into(),
+            queries: vec!["treaty versailles paris".into()],
+        }));
+        let transport = transport_with_serp_and_page();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Answer { .. }));
+        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+        // News was never consulted: the route-respect rule kept it out.
+        assert!(
+            !transport
+                .calls()
+                .iter()
+                .any(|c| c.url.starts_with("https://news.google.com/rss")),
+            "news must not claim a sports-routed turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn route_web_with_news_keyword_runs_news() {
+        // route=web + a news token: the news hint legitimately rescues a
+        // classifier miss on a web-routed turn, so the feed answers.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: "who won the big game tonight".into(),
+            queries: vec!["big game result".into()],
+        }));
+        let feed_url = crate::websearch::news::news_request("big game result", false).url;
+        let transport = FakeHttpTransport::new().with_response(
+            &feed_url,
+            HttpResponse {
+                status: 200,
+                final_url: feed_url.clone(),
+                body: br#"<rss><channel><item><title>Home team wins big - Sports Daily</title></item></channel></rss>"#.to_vec(),
+            },
+        );
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "who won the big game tonight",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources[0].url == "https://news.google.com/"));
+    }
+
+    #[tokio::test]
+    async fn route_news_with_sports_keyword_upgrades_to_sports() {
+        // route=news + a league keyword ("nba"): the deliberate news->sports
+        // upgrade fires (a scoreboard beats headlines for a score question), so
+        // the sports vertical answers and the news feed is never queried.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::News,
+            standalone_question: "what's the nba score tonight".into(),
+            queries: vec!["nba score".into()],
+        }));
+        let espn_url = crate::websearch::sports::scoreboard_request("basketball", "nba").url;
+        let transport = FakeHttpTransport::new().with_response(
+            &espn_url,
+            HttpResponse {
+                status: 200,
+                final_url: espn_url.clone(),
+                body: ESPN_SCOREBOARD_FIXTURE.as_bytes().to_vec(),
+            },
+        );
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "what's the nba score tonight",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources[0].url == "https://www.espn.com/"));
+        assert!(
+            !transport
+                .calls()
+                .iter()
+                .any(|c| c.url.starts_with("https://news.google.com/rss")),
+            "the news->sports upgrade must intercept before the feed"
+        );
+    }
+
+    #[tokio::test]
+    async fn route_wiki_with_news_keyword_skips_news() {
+        // route=wiki + a news token: news must NOT claim the turn. The wiki
+        // vertical misses (no canned Wikipedia response) and the turn falls to
+        // the engines; the news feed is never queried.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Wiki,
+            standalone_question: "who won the election treaty versailles paris".into(),
+            queries: vec!["treaty versailles paris".into()],
+        }));
+        let transport = transport_with_serp_and_page();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Answer { .. }));
+        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+        assert!(
+            !transport
+                .calls()
+                .iter()
+                .any(|c| c.url.starts_with("https://news.google.com/rss")),
+            "news must not claim a wiki-routed turn"
+        );
     }
 
     // ── resolve_decision (pure) ───────────────────────────────────────────────
@@ -1894,8 +2130,11 @@ mod tests {
         let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
         assert!(events.iter().any(|e| matches!(
             e,
-            RecorderEvent::SearchRetrieved { tier, urls }
-            if tier == "cache" && urls == &vec!["https://blog.rust-lang.org/".to_string()]
+            RecorderEvent::SearchRetrieved { tier, sources }
+            if tier == "cache" && sources == &vec![RetrievedSource {
+                url: "https://blog.rust-lang.org/".into(),
+                title: "Rust 1.90.0".into(),
+            }]
         )));
     }
 
@@ -2101,11 +2340,15 @@ mod tests {
                 && standalone_question == "who won the most recent F1 race"
                 && queries == &vec!["f1 race winner".to_string()]
         ));
-        // The retrieval tier and its cited URL follow.
+        // The retrieval tier follows, carrying the cited source's URL AND title:
+        // the generic feed homepage URL is uninformative without the title.
         assert!(events.iter().any(|e| matches!(
             e,
-            RecorderEvent::SearchRetrieved { tier, urls }
-            if tier == "news" && urls == &vec!["https://news.google.com/".to_string()]
+            RecorderEvent::SearchRetrieved { tier, sources }
+            if tier == "news" && sources == &vec![RetrievedSource {
+                url: "https://news.google.com/".into(),
+                title: "Google News headlines: f1 race winner".into(),
+            }]
         )));
     }
 
@@ -2161,8 +2404,8 @@ mod tests {
         let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
         assert!(events.iter().any(|e| matches!(
             e,
-            RecorderEvent::SearchRetrieved { tier, urls }
-            if tier == "engine" && urls == &vec!["https://match.example/".to_string()]
+            RecorderEvent::SearchRetrieved { tier, sources }
+            if tier == "engine" && sources.iter().any(|s| s.url == "https://match.example/")
         )));
     }
 }

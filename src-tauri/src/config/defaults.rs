@@ -778,6 +778,19 @@ pub const PREFILTER_MAX_SCAN_CHARS: usize = 4096;
 /// Not user-tunable: a classifier-prompt shape constant.
 pub const CLASSIFIER_HISTORY_TURNS: usize = 4;
 
+/// Maximum number of leading characters of each embedded *assistant* answer the
+/// classifier sees when rewriting a follow-up into a standalone question. The
+/// referent for an elliptical follow-up ("how about him?", "what about X?")
+/// usually lives in the assistant's previous answer, not the user's question, so
+/// the answers must be embedded; but a full answer can run to hundreds of tokens
+/// and would blow the warm-slot classifier budget if embedded whole. The opening
+/// sentences carry the named entities that resolve the reference, so a bounded
+/// prefix is enough. User turns are embedded whole (they are short questions).
+///
+/// Not user-tunable: a classifier-prompt shape constant, same rationale as
+/// [`CLASSIFIER_HISTORY_TURNS`].
+pub const CLASSIFIER_ASSISTANT_PREFIX_CHARS: usize = 300;
+
 /// Token cap for the grammar-constrained classifier response. The JSON itself is
 /// tiny (~60 tokens), but reasoning-family models (e.g. gpt-oss) spend internal
 /// tokens on chain-of-thought before emitting the JSON, and ignore the
