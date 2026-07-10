@@ -1,10 +1,24 @@
 import { motion } from 'framer-motion';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type KeyboardEvent } from 'react';
 import thukiLogo from '../../src-tauri/icons/128x128.png';
 import { useFitOnboardingWindow } from '../hooks/useFitOnboardingWindow';
 
 /** Stable id for the headline, referenced by the dialog's `aria-labelledby`. */
 const HEADING_ID = 'safe-mode-recovery-heading';
+
+/**
+ * Keys that count as a deliberate keyboard traversal out of the dialog
+ * container. Used by `handleContainerKeyDown` to flip the
+ * "user has interacted" latch, after which the window-focus handler must
+ * never steal focus back.
+ */
+const INTERACTION_KEYS = [
+  'Tab',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+];
 
 interface SafeModeRecoveryCardProps {
   /** Display name of the model that was loading when the previous launch never reached a healthy state. */
@@ -31,12 +45,36 @@ export function SafeModeRecoveryCard({
   onLoadAnyway,
 }: SafeModeRecoveryCardProps) {
   const cardRef = useRef<HTMLDivElement>(null);
+  const primaryButtonRef = useRef<HTMLButtonElement>(null);
+  const secondaryButtonRef = useRef<HTMLButtonElement>(null);
+  // why: latches to true on the first deliberate keyboard traversal (Tab /
+  // arrow) or pointer press on one of the card's own buttons. Once true, the
+  // window-focus handler below must stop reclaiming focus: it is only
+  // allowed to override an *unprompted* WebKit focus assignment, never a
+  // focus change the user actually asked for.
+  const hasUserInteractedRef = useRef(false);
+
   // Match the transparent window to the card, same as the onboarding steps
   // this screen mirrors; the card's content is fully known before it ever
   // mounts (the resolution effect in App.tsx only flips this screen on once
   // the model name and size are resolved), so there is no later reflow to
   // key a re-fit on.
   useFitOnboardingWindow(cardRef, null);
+
+  /**
+   * Marks the current interaction as user-driven so the window-focus
+   * handler stops reclaiming focus. Attached to the container's `keydown`
+   * (Tab / arrow) and to each button's `pointerdown`.
+   */
+  const markUserInteracted = () => {
+    hasUserInteractedRef.current = true;
+  };
+
+  const handleContainerKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (INTERACTION_KEYS.includes(event.key)) {
+      markUserInteracted();
+    }
+  };
 
   // Thuki is summoned by a keyboard hotkey, so WebKit's :focus-visible
   // heuristic treats the interaction as keyboard-originated: whichever
@@ -46,7 +84,41 @@ export function SafeModeRecoveryCard({
   // still moving focus into the dialog for screen readers and keyboard
   // traversal.
   useEffect(() => {
-    cardRef.current?.focus();
+    // why: Thuki's window is an NSPanel that only becomes key AFTER this
+    // webview has mounted and painted (the panel is shown/activated
+    // post-render). A synchronous `.focus()` here loses that race: when the
+    // panel becomes key, WebKit assigns focus to the first focusable element
+    // in the document (the primary button), overriding it. Deferring to
+    // requestAnimationFrame runs the focus call after that first paint, so
+    // it lands after the initial focus assignment instead of before it.
+    const rafId = requestAnimationFrame(() => {
+      cardRef.current?.focus();
+    });
+
+    // why: the panel can still become key later than the rAF above (window
+    // activation is asynchronous relative to React's render), reassigning
+    // focus to the primary button a second time and painting the
+    // keyboard-originated ring on it. Re-assert focus on the container
+    // whenever the window regains focus, but only reclaim it from an
+    // *unprompted* UA assignment: skip entirely once the user has
+    // deliberately interacted, and only act when focus is currently sitting
+    // on one of this card's own buttons (never yank focus from elsewhere).
+    const cardButtons = [primaryButtonRef, secondaryButtonRef];
+    const handleWindowFocus = () => {
+      if (hasUserInteractedRef.current) return;
+      const focusIsOnCardButton = cardButtons.some(
+        (ref) => ref.current === document.activeElement,
+      );
+      if (focusIsOnCardButton) {
+        cardRef.current?.focus();
+      }
+    };
+    window.addEventListener('focus', handleWindowFocus);
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
   }, []);
 
   return (
@@ -66,6 +138,7 @@ export function SafeModeRecoveryCard({
         aria-modal="true"
         aria-labelledby={HEADING_ID}
         tabIndex={-1}
+        onKeyDown={handleContainerKeyDown}
         initial={{ opacity: 0, scale: 0.97, y: 8 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         transition={{ type: 'spring', stiffness: 300, damping: 28 }}
@@ -136,7 +209,9 @@ export function SafeModeRecoveryCard({
 
         {/* Primary CTA */}
         <button
+          ref={primaryButtonRef}
           onClick={onChooseDifferentModel}
+          onPointerDown={markUserInteracted}
           aria-label="Choose a different model"
           style={{
             display: 'block',
@@ -150,7 +225,6 @@ export function SafeModeRecoveryCard({
             borderRadius: 12,
             cursor: 'pointer',
             letterSpacing: '-0.1px',
-            boxShadow: '0 4px 20px rgba(255,100,40,0.28)',
             textAlign: 'center',
           }}
         >
@@ -159,7 +233,9 @@ export function SafeModeRecoveryCard({
 
         {/* Secondary, quiet CTA - no fill, so it reads as the lower-emphasis choice. */}
         <button
+          ref={secondaryButtonRef}
           onClick={onLoadAnyway}
+          onPointerDown={markUserInteracted}
           aria-label="Load last model anyway"
           style={{
             display: 'block',
