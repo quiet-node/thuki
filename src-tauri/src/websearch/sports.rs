@@ -142,6 +142,65 @@ fn event_date(event: &serde_json::Value) -> Option<String> {
     Some(date.to_string())
 }
 
+/// Parses an ESPN ISO-8601 UTC `date` string (`"YYYY-MM-DDTHH:MM[:SS]Z"`) into
+/// a UTC [`time::OffsetDateTime`], or `None` on any shape it does not
+/// recognise. ESPN emits minute precision with a literal `Z`, which the
+/// well-known RFC 3339 parser rejects (it requires seconds), so the fields are
+/// split by hand. A value carrying an explicit numeric offset instead of `Z`
+/// is treated as unrecognised (returns `None`) rather than risk mis-zoning it:
+/// the scoreboard always emits `Z`. Never panics.
+fn parse_event_utc(raw: &str) -> Option<time::OffsetDateTime> {
+    let (date_part, time_part) = raw.split_once('T')?;
+    let mut ymd = date_part.split('-');
+    let year: i32 = ymd.next()?.parse().ok()?;
+    let month: u8 = ymd.next()?.parse().ok()?;
+    let day: u8 = ymd.next()?.parse().ok()?;
+    if ymd.next().is_some() {
+        return None;
+    }
+    let time_str = time_part.strip_suffix('Z')?;
+    let mut hms = time_str.split(':');
+    let hour: u8 = hms.next()?.parse().ok()?;
+    let minute: u8 = hms.next()?.parse().ok()?;
+    let second: u8 = match hms.next() {
+        Some(s) => s.parse().ok()?,
+        None => 0,
+    };
+    if hms.next().is_some() {
+        return None;
+    }
+    let month = time::Month::try_from(month).ok()?;
+    let date = time::Date::from_calendar_date(year, month, day).ok()?;
+    let clock = time::Time::from_hms(hour, minute, second).ok()?;
+    Some(time::PrimitiveDateTime::new(date, clock).assume_utc())
+}
+
+/// Formats a scheduled event's kickoff instant in the user's local zone as
+/// `"YYYY-MM-DD at HH:MM (Zone)"`, e.g. `"2026-09-09 at 20:20
+/// (America/New_York)"`, or `None` when there is no local zone, the `date`
+/// field does not parse (see [`parse_event_utc`]), or the zone does not resolve
+/// (see [`crate::websearch::clock::resolve_offset`]). Both the date AND the
+/// time are localized, so a fixture whose UTC calendar date differs from the
+/// user's (a late-evening local kickoff) is dated correctly for them. The
+/// offset is looked up for the event's own instant, so it is DST-correct even
+/// for a fixture on the far side of a daylight-saving transition. On any miss
+/// the caller keeps the UTC-date-only line, this vertical's prior behaviour.
+fn event_local_kickoff(event: &serde_json::Value, local_zone: Option<&str>) -> Option<String> {
+    let zone = local_zone?;
+    let raw = event.get("date")?.as_str()?;
+    let utc = parse_event_utc(raw)?;
+    let offset = crate::websearch::clock::resolve_offset(zone, utc)?;
+    let local = utc.to_offset(offset);
+    Some(format!(
+        "{:04}-{:02}-{:02} at {:02}:{:02} ({zone})",
+        local.year(),
+        u8::from(local.month()),
+        local.day(),
+        local.hour(),
+        local.minute()
+    ))
+}
+
 /// Reads the scoreboard's season year from `leagues[0].season.year`, when
 /// ESPN's response includes it, so the block's league label can disambiguate
 /// "the 2026 World Cup" from any other year's tournament of the same name.
@@ -163,7 +222,14 @@ fn season_year(json: &serde_json::Value) -> Option<i64> {
 /// `round` is the competition's round/stage label (e.g. "Quarterfinals"),
 /// appended to the status parens when present so the writer can tell a
 /// quarterfinal from a final and never over-states which round a score decided.
-fn format_event(event: &serde_json::Value, round: Option<&str>) -> Option<String> {
+/// `local_zone` is the user's device IANA timezone (when known): a scheduled
+/// (`pre`) event's line then carries its kickoff time converted to that zone
+/// (see [`event_local_kickoff`]), the "at what time" detail a user drills into.
+fn format_event(
+    event: &serde_json::Value,
+    round: Option<&str>,
+    local_zone: Option<&str>,
+) -> Option<String> {
     let name = event.get("name")?.as_str()?.to_string();
     let competitors = event
         .get("competitions")?
@@ -192,10 +258,21 @@ fn format_event(event: &serde_json::Value, round: Option<&str>) -> Option<String
         _ => status,
     };
     let scoreline = lines.join(" vs ");
-    match event_date(event) {
-        Some(date) => Some(format!("{name}: {scoreline} ({detail}) on {date}")),
-        None => Some(format!("{name}: {scoreline} ({detail})")),
-    }
+    // Only scheduled (`pre`) events get a localized kickoff datetime: it is the
+    // "at what time" detail a user drills into. A live/final event carries a
+    // clock/"Final" status instead, where a start time would mislead. On a miss
+    // (non-`pre` state, no zone, or an unparseable date) the line falls back to
+    // ESPN's own UTC calendar date, this vertical's prior behaviour.
+    let localized_kickoff = if state == "pre" {
+        event_local_kickoff(event, local_zone)
+    } else {
+        None
+    };
+    let date_suffix = match localized_kickoff.or_else(|| event_date(event)) {
+        Some(when) => format!(" on {when}"),
+        None => String::new(),
+    };
+    Some(format!("{name}: {scoreline} ({detail}){date_suffix}"))
 }
 
 /// Parses a scoreboard response body into the league's display label (name,
@@ -210,7 +287,12 @@ fn format_event(event: &serde_json::Value, round: Option<&str>) -> Option<String
 /// applied to every event line: one scoreboard response is one league's current
 /// slate, so the slate shares a stage. It is threaded to each [`format_event`]
 /// so the writer can name the round without inferring it from the score.
-pub(crate) fn parse_scoreboard(body: &str) -> Option<(String, Vec<String>)> {
+/// `local_zone` is threaded to [`format_event`] to localize scheduled kickoff
+/// times.
+pub(crate) fn parse_scoreboard(
+    body: &str,
+    local_zone: Option<&str>,
+) -> Option<(String, Vec<String>)> {
     let json: serde_json::Value = serde_json::from_str(body).ok()?;
     let league_name = json
         .get("leagues")
@@ -233,7 +315,7 @@ pub(crate) fn parse_scoreboard(body: &str) -> Option<(String, Vec<String>)> {
     let events = json.get("events")?.as_array()?;
     let lines = events
         .iter()
-        .filter_map(|event| format_event(event, round))
+        .filter_map(|event| format_event(event, round, local_zone))
         .take(MAX_SPORTS_EVENTS)
         .collect();
     Some((league_label, lines))
@@ -270,7 +352,9 @@ pub(crate) fn sports_source_block(
 /// scoreboard fetch, parse. Returns `None` on any miss (no league match,
 /// transport error, non-200, unparseable body, or zero usable events) so the
 /// caller falls through to the news / engine tiers. `today` becomes the
-/// source block's as-of line (see [`sports_source_block`]).
+/// source block's as-of line (see [`sports_source_block`]); `local_zone` is the
+/// user's device IANA timezone, threaded through to localize scheduled kickoff
+/// times (see [`format_event`]).
 ///
 /// Coverage-excluded: thin async glue over the injectable transport
 /// delegating every decision to the pure helpers above, which are all tested
@@ -281,6 +365,7 @@ pub(crate) async fn fetch_sports(
     transport: &dyn HttpTransport,
     standalone_question: &str,
     today: &str,
+    local_zone: Option<&str>,
 ) -> Option<SourceBlock> {
     // The classifier may route a turn to sports whose competition the league map
     // does not recognise (e.g. a named Grand Prix with no "f1"/"formula 1"
@@ -306,7 +391,8 @@ pub(crate) async fn fetch_sports(
         );
         return None;
     }
-    let Some((league_label, lines)) = parse_scoreboard(&String::from_utf8_lossy(&response.body))
+    let Some((league_label, lines)) =
+        parse_scoreboard(&String::from_utf8_lossy(&response.body), local_zone)
     else {
         eprintln!("[search] vertical=sports unparseable -> engines");
         return None;
@@ -449,6 +535,104 @@ mod tests {
         assert_eq!(event_date(&serde_json::json!({"date": 20260709})), None);
     }
 
+    // ── kickoff time (local tz) ───────────────────────────────────────────────
+
+    #[test]
+    fn parse_event_utc_reads_minute_and_second_precision() {
+        // ESPN's own shape: minute precision, literal `Z`.
+        let dt = parse_event_utc("2026-09-10T00:20Z").unwrap();
+        assert_eq!(dt.year(), 2026);
+        assert_eq!(u8::from(dt.month()), 9);
+        assert_eq!(dt.day(), 10);
+        assert_eq!(dt.hour(), 0);
+        assert_eq!(dt.minute(), 20);
+        assert_eq!(dt.offset(), time::UtcOffset::UTC);
+        // A second-precision value is also accepted.
+        let with_secs = parse_event_utc("2026-09-10T00:20:45Z").unwrap();
+        assert_eq!(with_secs.second(), 45);
+    }
+
+    #[test]
+    fn parse_event_utc_none_on_unrecognised_shapes() {
+        // No `T` separator.
+        assert!(parse_event_utc("2026-09-10").is_none());
+        // A non-`Z` value (explicit numeric offset) is treated as unrecognised
+        // rather than risk mis-zoning it.
+        assert!(parse_event_utc("2026-09-10T00:20-04:00").is_none());
+        // An extra date segment and an extra time segment are both rejected.
+        assert!(parse_event_utc("2026-09-10-1T00:20Z").is_none());
+        assert!(parse_event_utc("2026-09-10T00:20:00:00Z").is_none());
+        // Non-numeric and out-of-range field values.
+        assert!(parse_event_utc("2026-xx-10T00:20Z").is_none());
+        assert!(parse_event_utc("2026-13-10T00:20Z").is_none());
+        assert!(parse_event_utc("2026-09-31T00:20Z").is_none());
+        assert!(parse_event_utc("2026-09-10T25:20Z").is_none());
+    }
+
+    #[test]
+    fn event_local_kickoff_converts_utc_to_local_zone() {
+        // 2026-09-10T00:20Z in America/New_York is EDT (UTC-4) in September:
+        // 00:20 - 4h = 20:20 the prior evening (2026-09-09). Both the date and
+        // the time are localized, so a late-UTC kickoff dates correctly.
+        let event = serde_json::json!({"date": "2026-09-10T00:20Z"});
+        assert_eq!(
+            event_local_kickoff(&event, Some("America/New_York")),
+            Some("2026-09-09 at 20:20 (America/New_York)".to_string())
+        );
+    }
+
+    #[test]
+    fn event_local_kickoff_none_on_missing_zone_bad_date_or_unknown_zone() {
+        let event = serde_json::json!({"date": "2026-09-10T00:20Z"});
+        // No local zone known.
+        assert!(event_local_kickoff(&event, None).is_none());
+        // Zone present but the date field is missing / wrong-typed.
+        assert!(event_local_kickoff(&serde_json::json!({}), Some("America/New_York")).is_none());
+        assert!(event_local_kickoff(
+            &serde_json::json!({"date": 20260910}),
+            Some("America/New_York")
+        )
+        .is_none());
+        // Zone present but the date does not parse (no time component).
+        let dateless = serde_json::json!({"date": "2026-09-10"});
+        assert!(event_local_kickoff(&dateless, Some("America/New_York")).is_none());
+        // Zone present but does not resolve.
+        assert!(event_local_kickoff(&event, Some("Mars/Olympus_Mons")).is_none());
+    }
+
+    #[test]
+    fn format_event_appends_local_kickoff_only_for_scheduled_events() {
+        // A scheduled (`pre`) event carries its localized kickoff datetime.
+        let (_, scheduled) =
+            parse_scoreboard(NFL_SCHEDULED_FIXTURE, Some("America/New_York")).unwrap();
+        assert!(scheduled[0].contains("on 2026-09-09 at 20:20 (America/New_York)"));
+        // A final (`post`) event never gets a kickoff datetime even with a zone:
+        // it keeps ESPN's own UTC calendar date and no localized time (the zone
+        // label appears only in a kickoff suffix, so its absence proves the skip;
+        // the event name "Morocco at France" contains an unrelated " at ").
+        let (_, finished) = parse_scoreboard(WORLD_CUP_FIXTURE, Some("America/New_York")).unwrap();
+        assert!(finished[0].contains("on 2026-07-09"));
+        assert!(!finished[0].contains("(America/New_York)"));
+    }
+
+    #[test]
+    fn event_local_kickoff_is_dst_correct_at_the_event_instant() {
+        // America/Los_Angeles 2026 spring-forward is 2026-03-08T10:00:00Z. An
+        // event at 09:00Z is still PST (UTC-8, local 01:00); one at 11:00Z is
+        // PDT (UTC-7, local 04:00). The offset is looked up for the event's own
+        // instant, so a fixture either side of the transition localizes right.
+        let before = serde_json::json!({"date": "2026-03-08T09:00Z"});
+        let after = serde_json::json!({"date": "2026-03-08T11:00Z"});
+        assert_eq!(
+            event_local_kickoff(&before, Some("America/Los_Angeles")),
+            Some("2026-03-08 at 01:00 (America/Los_Angeles)".to_string())
+        );
+        assert_eq!(
+            event_local_kickoff(&after, Some("America/Los_Angeles")),
+            Some("2026-03-08 at 04:00 (America/Los_Angeles)".to_string())
+        );
+    }
+
     // ── season_year ───────────────────────────────────────────────────────────
 
     #[test]
@@ -494,7 +678,7 @@ mod tests {
         // also names the round ("Quarterfinals", from the response-level
         // season.type.name), so the writer can never call a quarterfinal the
         // final.
-        let (league, lines) = parse_scoreboard(WORLD_CUP_FIXTURE).unwrap();
+        let (league, lines) = parse_scoreboard(WORLD_CUP_FIXTURE, None).unwrap();
         assert_eq!(league, "FIFA World Cup 2026");
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("Morocco at France"));
@@ -508,13 +692,13 @@ mod tests {
     #[test]
     fn parse_scoreboard_omits_round_when_season_type_absent_or_blank() {
         // No season.type at all -> no round appended (the NFL fixture path).
-        let (_, nfl) = parse_scoreboard(NFL_SCHEDULED_FIXTURE).unwrap();
+        let (_, nfl) = parse_scoreboard(NFL_SCHEDULED_FIXTURE, None).unwrap();
         assert!(nfl[0].contains("(scheduled, 9/9 - 8:20 PM EDT)"));
         assert!(!nfl[0].contains("(scheduled, 9/9 - 8:20 PM EDT,"));
         // A present-but-blank season.type.name is treated as absent, not
         // appended as a dangling ", ".
         let blank = r#"{"leagues": [{"name": "X", "season": {"type": {"name": "   "}}}], "events": [{"name": "A at B", "status": {"type": {"state": "post", "shortDetail": "Final"}}, "competitions": [{"competitors": [{"team": {"displayName": "A"}, "score": "1"}, {"team": {"displayName": "B"}, "score": "2"}]}]}]}"#;
-        let (_, lines) = parse_scoreboard(blank).unwrap();
+        let (_, lines) = parse_scoreboard(blank, None).unwrap();
         assert!(lines[0].contains("(final)"));
         assert!(!lines[0].contains("final,"));
     }
@@ -523,7 +707,7 @@ mod tests {
     fn parse_scoreboard_reads_scheduled_events_with_date() {
         // No `season` field in this fixture: the league label falls back to
         // the plain name, proving the season-year path is optional.
-        let (league, lines) = parse_scoreboard(NFL_SCHEDULED_FIXTURE).unwrap();
+        let (league, lines) = parse_scoreboard(NFL_SCHEDULED_FIXTURE, None).unwrap();
         assert_eq!(league, "National Football League");
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("scheduled, 9/9 - 8:20 PM EDT"));
@@ -548,23 +732,25 @@ mod tests {
             .collect();
         let body =
             serde_json::json!({"leagues": [{"name": "Test League"}], "events": events}).to_string();
-        let (_, lines) = parse_scoreboard(&body).unwrap();
+        let (_, lines) = parse_scoreboard(&body, None).unwrap();
         assert_eq!(lines.len(), MAX_SPORTS_EVENTS);
     }
 
     #[test]
     fn parse_scoreboard_none_on_unparseable_or_missing_events_field() {
-        assert!(parse_scoreboard("not json").is_none());
-        assert!(parse_scoreboard(r#"{"leagues": [{"name": "X"}]}"#).is_none());
+        assert!(parse_scoreboard("not json", None).is_none());
+        assert!(parse_scoreboard(r#"{"leagues": [{"name": "X"}]}"#, None).is_none());
     }
 
     #[test]
     fn parse_scoreboard_none_when_events_field_is_wrong_type() {
         // "events" present but not an array (e.g. a corrupt/hostile response):
         // the shape guard rejects it rather than panicking.
-        assert!(
-            parse_scoreboard(r#"{"leagues": [{"name": "X"}], "events": "not an array"}"#).is_none()
-        );
+        assert!(parse_scoreboard(
+            r#"{"leagues": [{"name": "X"}], "events": "not an array"}"#,
+            None
+        )
+        .is_none());
     }
 
     #[test]
@@ -593,7 +779,7 @@ mod tests {
                 {"team": {"displayName": "Away X"}, "score": 1}
             ]}]}
         ]}"#;
-        let (_, lines) = parse_scoreboard(body).unwrap();
+        let (_, lines) = parse_scoreboard(body, None).unwrap();
         // Only "Float Score Game" has two competitors that both resolve a
         // name; every other event drops out (a wrong-type/missing field or a
         // competitor that fails to resolve leaves fewer than two names).
@@ -608,7 +794,7 @@ mod tests {
         // An off-season slate: valid shape, zero games. The caller (fetch_sports)
         // treats this as a miss, but the pure parser itself returns Some.
         let (league, lines) =
-            parse_scoreboard(r#"{"leagues": [{"name": "X League"}], "events": []}"#).unwrap();
+            parse_scoreboard(r#"{"leagues": [{"name": "X League"}], "events": []}"#, None).unwrap();
         assert_eq!(league, "X League");
         assert!(lines.is_empty());
     }
@@ -626,7 +812,7 @@ mod tests {
                 {"team": {"displayName": "Away Team"}}
             ]}]}
         ]}"#;
-        let (league, lines) = parse_scoreboard(body).unwrap();
+        let (league, lines) = parse_scoreboard(body, None).unwrap();
         assert_eq!(league, "the league");
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("Good Game"));
@@ -681,6 +867,7 @@ mod tests {
             &transport,
             "what's the latest status of the World Cup 2026",
             "2026-07-09",
+            None,
         )
         .await
         .unwrap();
@@ -693,7 +880,7 @@ mod tests {
     async fn fetch_sports_none_when_no_league_matches() {
         let transport = FakeHttpTransport::new();
         assert!(
-            fetch_sports(&transport, "what is photosynthesis", "2026-07-09")
+            fetch_sports(&transport, "what is photosynthesis", "2026-07-09", None)
                 .await
                 .is_none()
         );
@@ -704,9 +891,11 @@ mod tests {
     async fn fetch_sports_none_on_transport_error() {
         // No canned response -> transport error -> None.
         let transport = FakeHttpTransport::new();
-        assert!(fetch_sports(&transport, "nba scores tonight", "2026-07-09")
-            .await
-            .is_none());
+        assert!(
+            fetch_sports(&transport, "nba scores tonight", "2026-07-09", None)
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -720,9 +909,11 @@ mod tests {
                 body: Vec::new(),
             },
         );
-        assert!(fetch_sports(&transport, "nba scores tonight", "2026-07-09")
-            .await
-            .is_none());
+        assert!(
+            fetch_sports(&transport, "nba scores tonight", "2026-07-09", None)
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -736,9 +927,11 @@ mod tests {
                 body: br#"{"leagues": [{"name": "NHL"}], "events": []}"#.to_vec(),
             },
         );
-        assert!(fetch_sports(&transport, "nhl scores tonight", "2026-07-09")
-            .await
-            .is_none());
+        assert!(
+            fetch_sports(&transport, "nhl scores tonight", "2026-07-09", None)
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -752,8 +945,10 @@ mod tests {
                 body: b"<html>not json</html>".to_vec(),
             },
         );
-        assert!(fetch_sports(&transport, "mlb scores tonight", "2026-07-09")
-            .await
-            .is_none());
+        assert!(
+            fetch_sports(&transport, "mlb scores tonight", "2026-07-09", None)
+                .await
+                .is_none()
+        );
     }
 }

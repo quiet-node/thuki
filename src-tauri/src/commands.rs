@@ -796,6 +796,10 @@ async fn run_builtin_search(
         crate::config::defaults::PREPASS_TIMEOUT_S,
     );
     let scorer = crate::websearch::rank::Bm25Scorer;
+    // The device IANA timezone, so the sports vertical can localize scheduled
+    // kickoff times; `None` (unreadable /etc/localtime) degrades to date-only
+    // event lines.
+    let local_zone = zone_label();
     let deps = crate::websearch::orchestrator::SearchDeps {
         prepass: &prepass,
         transport: &transport,
@@ -808,6 +812,7 @@ async fn run_builtin_search(
         // never served to another (see `websearch::cache` module docs).
         cache: crate::websearch::cache::global_search_cache(),
         cache_scope,
+        local_zone: local_zone.as_deref(),
     };
     let status = |phase| on_chunk(StreamChunk::SearchStatus { phase });
     let outcome = crate::websearch::orchestrator::run_search(

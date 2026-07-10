@@ -119,6 +119,14 @@ pub struct SearchDeps<'a> {
     /// the backend's conversation epoch at the start of the turn), so a
     /// cache entry from one conversation is never served to another.
     pub cache_scope: u64,
+    /// The user's device IANA timezone (e.g. `"America/Chicago"`), when known,
+    /// used by the sports vertical to localize scheduled kickoff times. `None`
+    /// falls back to date-only event lines. An environmental value the caller
+    /// snapshots per turn, like `cache_scope`; `today`/`locale` are passed
+    /// positionally to `run_search`, but the zone is only ever read deep in the
+    /// pipeline (the sports tier), so it rides in `deps` rather than threading
+    /// an extra positional argument through every `run_search` call site.
+    pub local_zone: Option<&'a str>,
 }
 
 /// Runs the pipeline for one turn. `chat_system_prompt`, `history`, and
@@ -182,6 +190,9 @@ pub async fn run_search(
                 route: SearchRoute::Web,
                 standalone_question: latest_user.trim().to_string(),
                 queries: vec![latest_user.trim().to_string()],
+                // A classifier infra failure yields no rewrite, so no explicit
+                // look-it-up signal either: run the standard vertical pipeline.
+                explicit_search: false,
             }
         }
     };
@@ -198,6 +209,29 @@ pub async fn run_search(
         standalone_question: decision.standalone_question.clone(),
         queries: decision.queries.clone(),
     });
+    // Explicit "look it up / verify / double-check" request: the user is
+    // telling us the source we just served was insufficient, so re-serving ANY
+    // fast path is forbidden. Skip the cache AND every vertical and go straight
+    // to the scraped engines with the classifier's resolved question/queries.
+    // Forced even over a `No` decision: an explicit look-it-up is a search.
+    if decision.explicit_search {
+        return run_web(
+            deps,
+            chat_system_prompt,
+            history,
+            latest_user,
+            decision.route,
+            &decision.standalone_question,
+            &decision.queries,
+            num_ctx,
+            today,
+            locale,
+            cancel,
+            status,
+            true,
+        )
+        .await;
+    }
     match decision.decision {
         SearchDecision::No => SearchOutcome::NoSearch,
         // An unexpired cache entry for this turn's scope answers instantly,
@@ -229,6 +263,7 @@ pub async fn run_search(
                     locale,
                     cancel,
                     status,
+                    false,
                 )
                 .await
             }
@@ -247,6 +282,7 @@ pub async fn run_search(
                 locale,
                 cancel,
                 status,
+                false,
             )
             .await
         }
@@ -302,6 +338,10 @@ fn resolve_decision(verdict: PreFilterVerdict, classified: PrePassDecision) -> P
                 route: classified.route,
                 standalone_question: classified.standalone_question,
                 queries,
+                // Preserve the explicit look-it-up signal: a ForceWeb turn can
+                // still be an explicit "look it up" request, and dropping it
+                // here would silently re-enable the fast paths it must skip.
+                explicit_search: classified.explicit_search,
             }
         }
         // Ambiguous honours the classifier verbatim; ForceNo never reaches here
@@ -328,6 +368,7 @@ async fn run_web(
     locale: &str,
     cancel: &CancellationToken,
     status: &(dyn Fn(SearchPhase) + Send + Sync),
+    engines_only: bool,
 ) -> SearchOutcome {
     if cancel.is_cancelled() {
         return SearchOutcome::Cancelled;
@@ -340,6 +381,9 @@ async fn run_web(
     // toward recent results, since a needless date filter costs nothing on a
     // stable question but a missing one on a volatile one risks a stale answer.
     let freshness = is_volatile_question(standalone_question);
+    // An explicit look-it-up request (`engines_only`) skips every vertical fast
+    // path: the user already told us a vertical/cache answer was insufficient,
+    // so only the scraped engines are allowed to answer this turn.
     // Vertical tier first: an official keyless API that recognises the question
     // answers it directly and skips the scraped engines entirely (an API cannot
     // bot-block the way SERPs do). A miss falls through with nothing lost.
@@ -348,18 +392,20 @@ async fn run_web(
     // `fetch_weather` self-gates: a non-weather question yields no location and
     // returns `None`), so it is attempted whenever its own signal matches or the
     // classifier routed to weather. Either way a miss continues to the next tier.
-    if let Some(block) = fetch_weather(deps.transport, standalone_question).await {
-        return grounded_answer(
-            deps,
-            "weather",
-            chat_system_prompt,
-            history,
-            latest_user,
-            standalone_question,
-            vec![block],
-            today,
-            locale,
-        );
+    if !engines_only {
+        if let Some(block) = fetch_weather(deps.transport, standalone_question).await {
+            return grounded_answer(
+                deps,
+                "weather",
+                chat_system_prompt,
+                history,
+                latest_user,
+                standalone_question,
+                vec![block],
+                today,
+                locale,
+            );
+        }
     }
     if cancel.is_cancelled() {
         return SearchOutcome::Cancelled;
@@ -382,8 +428,10 @@ async fn run_web(
     // reason. A miss falls through to the news feed / engines.
     let sports_hint = is_sports_intent(standalone_question)
         && matches!(route, SearchRoute::News | SearchRoute::Web);
-    if matches!(route, SearchRoute::Sports) || sports_hint {
-        if let Some(block) = fetch_sports(deps.transport, standalone_question, today).await {
+    if !engines_only && (matches!(route, SearchRoute::Sports) || sports_hint) {
+        if let Some(block) =
+            fetch_sports(deps.transport, standalone_question, today, deps.local_zone).await
+        {
             return grounded_answer(
                 deps,
                 "sports",
@@ -412,7 +460,7 @@ async fn run_web(
     // turn on an empty first result. Queries are biased toward recent results
     // when the standalone question carried a freshness signal.
     let news_hint = is_news_intent(standalone_question) && matches!(route, SearchRoute::Web);
-    if matches!(route, SearchRoute::News) || news_hint {
+    if !engines_only && (matches!(route, SearchRoute::News) || news_hint) {
         for query in queries {
             if let Some(block) = fetch_news(deps.transport, query, freshness).await {
                 return grounded_answer(
@@ -438,7 +486,7 @@ async fn run_web(
     // marker or a present/future year) must never be served from it. The
     // vertical itself applies a second, year-mismatch guard after resolving the
     // article title. A miss or a refusal falls through to the engines.
-    if matches!(route, SearchRoute::Wiki) && !freshness {
+    if !engines_only && matches!(route, SearchRoute::Wiki) && !freshness {
         if let Some(block) = fetch_encyclopedia(deps.transport, standalone_question).await {
             return grounded_answer(
                 deps,
@@ -623,6 +671,7 @@ mod tests {
             route: SearchRoute::Web,
             standalone_question: "when was the treaty of versailles signed in paris".into(),
             queries: queries.into_iter().map(String::from).collect(),
+            explicit_search: false,
         }
     }
 
@@ -699,6 +748,10 @@ mod tests {
             recorder,
             cache,
             cache_scope,
+            // The sports vertical's kickoff-time localization is unit-tested in
+            // `websearch::sports`; the orchestrator only threads the zone
+            // through, so tests here run without one (date-only event lines).
+            local_zone: None,
         }
     }
 
@@ -741,6 +794,7 @@ mod tests {
             route: SearchRoute::Web,
             standalone_question: "tell me a joke".into(),
             queries: vec![],
+            explicit_search: false,
         }));
         let transport = FakeHttpTransport::new();
         let (phases, status) = recorder();
@@ -793,6 +847,7 @@ mod tests {
             route: SearchRoute::Web,
             standalone_question: "when was the treaty of versailles signed in paris".into(),
             queries: vec![],
+            explicit_search: false,
         }));
         let transport = transport_with_serp_and_page();
         let (phases, status) = recorder();
@@ -828,6 +883,7 @@ mod tests {
             route: SearchRoute::News,
             standalone_question: "who won the most recent F1 race".into(),
             queries: vec!["f1 race winner".into()],
+            explicit_search: false,
         }));
         let feed_url = crate::websearch::news::news_request("f1 race winner", true).url;
         let feed = r#"<rss><channel><item><title>Leclerc wins British GP - Formula 1</title><pubDate>Wed, 08 Jul 2026 01:11:35 GMT</pubDate></item></channel></rss>"#;
@@ -871,6 +927,7 @@ mod tests {
             route: SearchRoute::News,
             standalone_question: "who won the game".into(),
             queries: vec![],
+            explicit_search: false,
         }));
         let transport = FakeHttpTransport::new();
         let (_p, status) = recorder();
@@ -899,6 +956,7 @@ mod tests {
             route: SearchRoute::News,
             standalone_question: "who won the race".into(),
             queries: vec!["race winner".into()],
+            explicit_search: false,
         }));
         let cancel = CancellationToken::new();
         let transport = CancelOnSend {
@@ -930,6 +988,7 @@ mod tests {
             route: SearchRoute::News,
             standalone_question: "who won the treaty of versailles game".into(),
             queries: vec!["treaty versailles paris".into()],
+            explicit_search: false,
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -960,6 +1019,7 @@ mod tests {
             route: SearchRoute::News,
             standalone_question: "who won the race".into(),
             queries: vec!["empty first query".into(), "race winner".into()],
+            explicit_search: false,
         }));
         let first_url = crate::websearch::news::news_request("empty first query", false).url;
         let second_url = crate::websearch::news::news_request("race winner", false).url;
@@ -1014,6 +1074,7 @@ mod tests {
             route: SearchRoute::Weather,
             standalone_question: "weather in Tokyo".into(),
             queries: vec!["tokyo weather".into()],
+            explicit_search: false,
         }));
         let geo_url = crate::websearch::weather::geocode_request("Tokyo").url;
         let geo_body = r#"{"results":[{"name":"Tokyo","latitude":35.6895,"longitude":139.69171,"country":"Japan"}]}"#;
@@ -1070,6 +1131,7 @@ mod tests {
             route: SearchRoute::Weather,
             standalone_question: "weather in Xyzzyplace".into(),
             queries: vec!["q".into()],
+            explicit_search: false,
         }));
         let cancel = CancellationToken::new();
         let transport = CancelOnSend {
@@ -1101,6 +1163,7 @@ mod tests {
             route: SearchRoute::Web,
             standalone_question: "weather in Xyzzyplace treaty versailles paris".into(),
             queries: vec!["treaty versailles paris".into()],
+            explicit_search: false,
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -1137,6 +1200,7 @@ mod tests {
             route: SearchRoute::Sports,
             standalone_question: "what's the score of the nba game".into(),
             queries: vec!["nba score".into()],
+            explicit_search: false,
         }));
         let espn_url = crate::websearch::sports::scoreboard_request("basketball", "nba").url;
         let transport = FakeHttpTransport::new().with_response(
@@ -1180,6 +1244,7 @@ mod tests {
             route: SearchRoute::Web,
             standalone_question: "nfl scores this week".into(),
             queries: vec!["nfl scores".into()],
+            explicit_search: false,
         }));
         let espn_url = crate::websearch::sports::scoreboard_request("football", "nfl").url;
         let transport = FakeHttpTransport::new().with_response(
@@ -1207,6 +1272,140 @@ mod tests {
             if sources[0].url == "https://www.espn.com/"));
     }
 
+    // ── explicit search (look-it-up) override ─────────────────────────────────
+
+    #[tokio::test]
+    async fn explicit_search_skips_verticals_and_reaches_engines() {
+        // route=Sports with a matching league keyword WOULD normally answer from
+        // the ESPN scoreboard. An explicit look-it-up request must skip it (and
+        // every other vertical) and go straight to the scraped engines: the user
+        // told us the vertical's answer was insufficient. The ForceWeb prefilter
+        // signal ("score") also exercises resolve_decision's explicit_search
+        // preservation.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Sports,
+            standalone_question: "what's the nba score".into(),
+            queries: vec!["nba score".into()],
+            explicit_search: true,
+        }));
+        let espn_url = crate::websearch::sports::scoreboard_request("basketball", "nba").url;
+        let transport = transport_with_serp_and_page().with_response(
+            &espn_url,
+            HttpResponse {
+                status: 200,
+                final_url: espn_url.clone(),
+                body: ESPN_SCOREBOARD_FIXTURE.as_bytes().to_vec(),
+            },
+        );
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "nba score, can you look it up",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        // The sports vertical was skipped: its scoreboard endpoint was never hit.
+        assert!(
+            !transport.calls().iter().any(|c| c.url == espn_url),
+            "an explicit search must skip the sports vertical"
+        );
+        // The scraped engines ran instead.
+        assert!(
+            transport.calls().iter().any(|c| c.url == DDG_ENDPOINT),
+            "an explicit search must reach the engines"
+        );
+        assert!(matches!(
+            &outcome,
+            SearchOutcome::Answer { .. } | SearchOutcome::Unreachable { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn explicit_search_skips_the_cache_and_re_searches() {
+        // A populated cache would normally answer a `cached` decision instantly.
+        // An explicit look-it-up request must bypass the cache entirely and
+        // re-search from the engines.
+        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600));
+        cache.store(
+            7,
+            CachedSearch {
+                standalone_question: "when was the treaty of versailles signed in paris".into(),
+                sources: vec![SourceBlock {
+                    index: 1,
+                    url: "https://cached.example/".into(),
+                    title: "Cached".into(),
+                    text: "a stale cached answer".into(),
+                }],
+            },
+        );
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Cached,
+            route: SearchRoute::Web,
+            standalone_question: "when was the treaty of versailles signed in paris".into(),
+            queries: vec!["treaty versailles paris".into()],
+            explicit_search: true,
+        }));
+        let transport = transport_with_serp_and_page();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_with_cache(&prepass, &transport, &Bm25Scorer, &bound, &cache, 7),
+            "sys",
+            &[],
+            "look it up please",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        // Answered from the engines (the scraped page), never the cached source.
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources[0].url == "https://match.example/"));
+        assert!(
+            transport.calls().iter().any(|c| c.url == DDG_ENDPOINT),
+            "an explicit search must bypass the cache and re-search"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_search_forces_search_even_over_a_no_decision() {
+        // The classifier returned `no` but flagged explicit_search: an explicit
+        // look-it-up request is always a search, straight from the engines.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::No,
+            route: SearchRoute::Web,
+            standalone_question: "when was the treaty of versailles signed in paris".into(),
+            queries: vec!["treaty versailles paris".into()],
+            explicit_search: true,
+        }));
+        let transport = transport_with_serp_and_page();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "look it up",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources[0].url == "https://match.example/"));
+        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+    }
+
     #[tokio::test]
     async fn sports_tier_wins_over_news_when_both_signals_match() {
         // "game" trips the news intent gate AND "nba" trips the sports keyword
@@ -1218,6 +1417,7 @@ mod tests {
             route: SearchRoute::Web,
             standalone_question: "what's the score of the nba game".into(),
             queries: vec!["nba game score".into()],
+            explicit_search: false,
         }));
         let espn_url = crate::websearch::sports::scoreboard_request("basketball", "nba").url;
         let feed_url = crate::websearch::news::news_request("nba game score", false).url;
@@ -1269,6 +1469,7 @@ mod tests {
             route: SearchRoute::News,
             standalone_question: "what's the score of the nba game".into(),
             queries: vec!["nba game score".into()],
+            explicit_search: false,
         }));
         let feed_url = crate::websearch::news::news_request("nba game score", false).url;
         let transport = FakeHttpTransport::new().with_response(
@@ -1305,6 +1506,7 @@ mod tests {
             route: SearchRoute::Web,
             standalone_question: "nhl scores treaty versailles paris".into(),
             queries: vec!["treaty versailles paris".into()],
+            explicit_search: false,
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -1334,6 +1536,7 @@ mod tests {
             route: SearchRoute::Sports,
             standalone_question: "nba scores tonight".into(),
             queries: vec!["q".into()],
+            explicit_search: false,
         }));
         let cancel = CancellationToken::new();
         let transport = CancelOnSend {
@@ -1367,6 +1570,7 @@ mod tests {
             route: SearchRoute::Wiki,
             standalone_question: "what is photosynthesis".into(),
             queries: vec!["photosynthesis".into()],
+            explicit_search: false,
         }));
         let search_url =
             crate::websearch::encyclopedia::search_request("what is photosynthesis").url;
@@ -1422,6 +1626,7 @@ mod tests {
             route: SearchRoute::Wiki,
             standalone_question: "what is xyzzyplace".into(),
             queries: vec!["q".into()],
+            explicit_search: false,
         }));
         let cancel = CancellationToken::new();
         let transport = CancelOnSend {
@@ -1453,6 +1658,7 @@ mod tests {
             route: SearchRoute::Wiki,
             standalone_question: "what is the treaty of versailles game".into(),
             queries: vec!["treaty versailles paris".into()],
+            explicit_search: false,
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -1488,6 +1694,7 @@ mod tests {
             route: SearchRoute::Sports,
             standalone_question: "who won the championship treaty versailles paris".into(),
             queries: vec!["treaty versailles paris".into()],
+            explicit_search: false,
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -1524,6 +1731,7 @@ mod tests {
             route: SearchRoute::Web,
             standalone_question: "who won the big game tonight".into(),
             queries: vec!["big game result".into()],
+            explicit_search: false,
         }));
         let feed_url = crate::websearch::news::news_request("big game result", false).url;
         let transport = FakeHttpTransport::new().with_response(
@@ -1561,6 +1769,7 @@ mod tests {
             route: SearchRoute::News,
             standalone_question: "what's the nba score tonight".into(),
             queries: vec!["nba score".into()],
+            explicit_search: false,
         }));
         let espn_url = crate::websearch::sports::scoreboard_request("basketball", "nba").url;
         let transport = FakeHttpTransport::new().with_response(
@@ -1605,6 +1814,7 @@ mod tests {
             route: SearchRoute::Wiki,
             standalone_question: "who won the election treaty versailles paris".into(),
             queries: vec!["treaty versailles paris".into()],
+            explicit_search: false,
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -1642,6 +1852,7 @@ mod tests {
                 route: SearchRoute::Weather,
                 standalone_question: "current tokyo weather".into(),
                 queries: vec![],
+                explicit_search: false,
             },
         );
         assert_eq!(out.decision, SearchDecision::Web);
@@ -1657,6 +1868,7 @@ mod tests {
                 route: SearchRoute::News,
                 standalone_question: "q".into(),
                 queries: vec!["a".into(), "b".into()],
+                explicit_search: false,
             },
         );
         assert_eq!(out.decision, SearchDecision::Web);
@@ -1682,6 +1894,7 @@ mod tests {
                 route: SearchRoute::Web,
                 standalone_question: "what's the latest stable rust version".into(),
                 queries: vec!["rust latest stable version".into()],
+                explicit_search: false,
             },
         );
         assert_eq!(out.decision, SearchDecision::Cached);
@@ -1694,6 +1907,7 @@ mod tests {
             route: SearchRoute::Wiki,
             standalone_question: "q".into(),
             queries: vec![],
+            explicit_search: false,
         };
         let out = resolve_decision(PreFilterVerdict::Ambiguous, classified.clone());
         assert_eq!(out, classified);
@@ -1708,6 +1922,7 @@ mod tests {
             route: SearchRoute::Weather,
             standalone_question: "q".into(),
             queries: vec!["a".into()],
+            explicit_search: false,
         };
         let out = resolve_decision(PreFilterVerdict::ForceNo, classified.clone());
         assert_eq!(out, classified);
@@ -1886,6 +2101,7 @@ mod tests {
             route: SearchRoute::Web,
             standalone_question: "quantum chromodynamics lagrangian".into(),
             queries: vec!["q".into()],
+            explicit_search: false,
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -1992,6 +2208,7 @@ mod tests {
             route: SearchRoute::Web,
             standalone_question: "xyzzyplace status report".into(),
             queries: vec!["q one".into(), "q two".into()],
+            explicit_search: false,
         }));
         let cancel = CancellationToken::new();
         let transport = CancelOnSend {
@@ -2026,6 +2243,7 @@ mod tests {
             route: SearchRoute::Web,
             standalone_question: "xyzzyplace status report".into(),
             queries: vec!["q".into()],
+            explicit_search: false,
         }));
         let cancel = CancellationToken::new();
         let transport = CancelOnSend {
@@ -2058,6 +2276,7 @@ mod tests {
             route: SearchRoute::Web,
             standalone_question: "treaty of versailles signed paris".into(),
             queries: vec!["treaty versailles".into()],
+            explicit_search: false,
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -2101,6 +2320,7 @@ mod tests {
             route: SearchRoute::Web,
             standalone_question: "what's the latest stable rust version".into(),
             queries: vec!["rust latest stable version".into()],
+            explicit_search: false,
         }));
         // No canned responses at all: a network call would fail the test by
         // returning a transport error the pipeline would otherwise degrade on.
@@ -2194,6 +2414,7 @@ mod tests {
             route: SearchRoute::Web,
             standalone_question: "treaty of versailles signed paris".into(),
             queries: vec!["treaty versailles".into()],
+            explicit_search: false,
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -2247,6 +2468,7 @@ mod tests {
             route: SearchRoute::Web,
             standalone_question: "treaty of versailles signed paris".into(),
             queries: vec!["treaty versailles".into()],
+            explicit_search: false,
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -2336,6 +2558,7 @@ mod tests {
             route: SearchRoute::News,
             standalone_question: "who won the most recent F1 race".into(),
             queries: vec!["f1 race winner".into()],
+            explicit_search: false,
         }));
         let feed_url = crate::websearch::news::news_request("f1 race winner", true).url;
         let feed = r#"<rss><channel><item><title>Leclerc wins British GP - Formula 1</title><pubDate>Wed, 08 Jul 2026 01:11:35 GMT</pubDate></item></channel></rss>"#;

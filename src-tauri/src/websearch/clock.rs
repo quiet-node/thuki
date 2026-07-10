@@ -74,7 +74,12 @@ pub(crate) fn format_place_time_line(geo: &GeoPlace, now_utc: OffsetDateTime) ->
 /// relative to `/usr/share/zoneinfo`). `None` on any failure: an implausible
 /// or unknown zone name (see [`is_plausible_iana_zone`]), a corrupt system
 /// tzdata entry, or an instant outside the zone's representable range.
-fn resolve_offset(iana_tz: &str, now_utc: OffsetDateTime) -> Option<time::UtcOffset> {
+///
+/// Shared with the sports vertical, which converts each scheduled event's UTC
+/// kickoff into the user's local zone at the event instant (see
+/// [`crate::websearch::sports`]); the DST-correct offset is looked up for that
+/// timestamp, not "now".
+pub(crate) fn resolve_offset(iana_tz: &str, now_utc: OffsetDateTime) -> Option<time::UtcOffset> {
     if !is_plausible_iana_zone(iana_tz) {
         return None;
     }

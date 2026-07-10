@@ -98,6 +98,13 @@ pub struct PrePassDecision {
     pub route: SearchRoute,
     pub standalone_question: String,
     pub queries: Vec<String>,
+    /// The user explicitly asked us to look it up / search / verify / double-
+    /// check (Anthropic search-trigger category (d)). Signals that whatever
+    /// source answered the prior turn was insufficient, so the orchestrator
+    /// must skip the multi-turn cache AND every vertical fast path and answer
+    /// only from the scraped engines (see [`crate::websearch::orchestrator`]).
+    /// Defaults to `false`; set `true` only for a genuine look-it-up request.
+    pub explicit_search: bool,
 }
 
 /// Why a pre-pass inference call failed at the transport level. Distinct from a
@@ -208,7 +215,7 @@ impl PrePass for BuiltinPrePass {
 /// directive: without it the model spends 1000+ chain-of-thought tokens on a
 /// three-way classification and can blow the call timeout (observed live at
 /// ~63 tok/s decode). Inert plain text for every other model family.
-const CLASSIFIER_SYSTEM: &str = "Reasoning: low\n\nYou are a retrieval-routing classifier inside a local AI assistant. Your only job is to decide whether answering the user's latest message needs a fresh web search, to pick which source best answers it, and if so to rewrite it into a standalone search query. You never answer the message itself.\n\nOutput ONLY a JSON object: {\"search\": \"no\"|\"cached\"|\"web\", \"route\": \"weather\"|\"news\"|\"wiki\"|\"sports\"|\"web\", \"standalone_question\": \"...\", \"queries\": [\"...\"]}.\n\nChoose \"search\":\n- \"web\" when a good answer needs information that changes over time or is past your training cutoff: news, prices, weather, sports results, software versions, releases, schedules, who currently holds a role, or any live fact; OR when you are not confident your own knowledge is current and correct.\n- \"cached\" when the assistant already searched the web earlier in this same conversation and those sources still answer this message: a repeat or rephrase of the same question, or a direct follow-up about what those sources covered.\n- \"no\" only when you can answer confidently and correctly from stable general knowledge or from the conversation alone.\nWhen you are unsure whether your knowledge is up to date, choose \"web\": a needless search is far cheaper than a confidently wrong answer.\n\nChoose \"route\" (which source best answers it):\n- \"weather\" for current weather or forecast for a place.\n- \"news\" for current events, elections, and anything asking the latest, current, or recent state of an evolving topic (a conflict, a company, a policy) that is not a live score, fixture, or standings.\n- \"wiki\" for stable definitional or historical facts that do not change from month to month.\n- \"sports\" for live scores, fixtures, or standings for a named competition or team, or the status of an ongoing match or tournament.\n- \"web\" for everything else (software versions, prices, product specs, niche live facts).\nWhen a question is about the present state of an ongoing event, route \"news\" (or \"sports\" for a score/fixture/standings question), never \"wiki\", even if it is phrased like \"what is ...\". Always set a route, even when search is \"no\".\n\n\"standalone_question\": the latest message rewritten as one self-contained question, resolving pronouns and references from the conversation, including entities named in the assistant's previous answers, not only in the user's questions. When the follow-up is an ellipsis like \"how about X?\" or \"what about X?\", keep the SAME question the conversation was already asking and swap in only the new subject X; do not invent a different kind of question.\n\"queries\": 1 to 3 short keyword search queries, not full sentences.\n\nExamples (message -> JSON):\n\"who is the CEO of OpenAI right now\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"who is the current CEO of OpenAI\",\"queries\":[\"openai ceo\"]}\n\"what is the boiling point of water\" -> {\"search\":\"no\",\"route\":\"wiki\",\"standalone_question\":\"what is the boiling point of water\",\"queries\":[\"boiling point of water\"]}\n\"what is photosynthesis\" -> {\"search\":\"web\",\"route\":\"wiki\",\"standalone_question\":\"what is photosynthesis\",\"queries\":[\"photosynthesis\"]}\n\"weather in Paris\" -> {\"search\":\"web\",\"route\":\"weather\",\"standalone_question\":\"what is the current weather in Paris\",\"queries\":[\"paris weather\"]}\n\"what's the latest status of the World Cup 2026\" -> {\"search\":\"web\",\"route\":\"news\",\"standalone_question\":\"what is the current status of the 2026 World Cup\",\"queries\":[\"world cup 2026 status\"]}\n\"who won the most recent F1 race\" -> {\"search\":\"web\",\"route\":\"news\",\"standalone_question\":\"who won the most recent Formula 1 race\",\"queries\":[\"latest f1 race winner\"]}\n\"what's the score of the Lakers game\" -> {\"search\":\"web\",\"route\":\"sports\",\"standalone_question\":\"what is the current score of the Los Angeles Lakers game\",\"queries\":[\"lakers score\"]}\n(you already searched and answered \"what's the latest stable Rust version\" with web sources earlier in this conversation) \"what's the latest stable Rust version\" -> {\"search\":\"cached\",\"route\":\"web\",\"standalone_question\":\"what is the latest stable Rust version\",\"queries\":[\"rust latest stable version\"]}\n\"write a short poem about autumn\" -> {\"search\":\"no\",\"route\":\"web\",\"standalone_question\":\"write a short poem about autumn\",\"queries\":[\"autumn poem\"]}\n(after discussing France) \"and its population?\" -> {\"search\":\"no\",\"route\":\"wiki\",\"standalone_question\":\"what is the population of France\",\"queries\":[\"france population\"]}\n(after discussing the US president) \"what about Argentina?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"who is the current president of Argentina\",\"queries\":[\"argentina president\"]}\n(you just told the user Elon Musk's net worth is about $240 billion) \"How about Donald Trump?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"what is Donald Trump's net worth\",\"queries\":[\"donald trump net worth\"]}\n(your previous answer said Jensen Huang is the CEO of Nvidia) \"how much is he worth?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"what is Jensen Huang's net worth\",\"queries\":[\"jensen huang net worth\"]}";
+const CLASSIFIER_SYSTEM: &str = "Reasoning: low\n\nYou are a retrieval-routing classifier inside a local AI assistant. Your only job is to decide whether answering the user's latest message needs a fresh web search, to pick which source best answers it, and if so to rewrite it into a standalone search query. You never answer the message itself.\n\nOutput ONLY a JSON object: {\"search\": \"no\"|\"cached\"|\"web\", \"route\": \"weather\"|\"news\"|\"wiki\"|\"sports\"|\"web\", \"standalone_question\": \"...\", \"queries\": [\"...\"], \"explicit_search\": true|false}.\n\nChoose \"search\":\n- \"web\" when a good answer needs any of: (a) recent events, news, or announcements; (b) current prices, rates, scores, weather, or statistics; (c) a fact about a specific person, organization, or product that can change after your training cutoff, such as an age, title, role, employer, team, marital status, ownership, net worth, or current status; (d) an explicit request to search or verify; or any release, version, schedule, or other live fact. A present-tense attribute of a person or entity (\"how old is X now\", \"is Z still married\") is a \"web\" turn even with no freshness word: your training is frozen and the date you are given does not refresh what you remember.\n- \"cached\" ONLY when this message repeats or rephrases a question the assistant already searched and answered earlier in this same conversation, and those exact sources still answer it. A follow-up that drills into a NEW detail of the same topic (an exact time, an exact figure, a breakdown) is NOT cached: choose \"web\" with a refined standalone question, because the earlier sources did not carry that detail.\n- \"no\" only for a stable answer you can give confidently: an established or historical fact, math, a science or coding fundamental, a creative or text-transform task, analysis of text already provided, or a greeting or conversational turn.\nWhen you are unsure whether your knowledge is up to date, choose \"web\": a needless search is far cheaper than a confidently wrong answer.\n\nChoose \"route\" (which source best answers it):\n- \"weather\" for current weather or forecast for a place.\n- \"news\" for current events, elections, and anything asking the latest, current, or recent state of an evolving topic (a conflict, a company, a policy) that is not a live score, fixture, or standings.\n- \"wiki\" for stable definitional or historical facts that do not change from month to month.\n- \"sports\" for live scores, fixtures, or standings for a named competition or team, or the status of an ongoing match or tournament.\n- \"web\" for everything else (software versions, prices, product specs, niche live facts).\nWhen a question is about the present state of an ongoing event, route \"news\" (or \"sports\" for a score/fixture/standings question), never \"wiki\", even if it is phrased like \"what is ...\". Always set a route, even when search is \"no\".\n\n\"standalone_question\": the latest message rewritten as one self-contained question, resolving pronouns and references from the conversation, including entities named in the assistant's previous answers, not only in the user's questions. When the follow-up is an ellipsis like \"how about X?\" or \"what about X?\", keep the SAME question the conversation was already asking and swap in only the new subject X; do not invent a different kind of question.\n\"queries\": 1 to 3 short keyword search queries, not full sentences.\n\"explicit_search\": true ONLY when the user explicitly asks you to look it up, search, verify, double-check, or confirm (\"can you look it up\", \"search for it\", \"double-check that\"); otherwise false. When true, also set \"search\":\"web\" and put the FULL topic being looked up into the standalone_question, resolved from the conversation, never the literal words \"look it up\".\n\nExamples (message -> JSON):\n\"who is the CEO of OpenAI right now\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"who is the current CEO of OpenAI\",\"queries\":[\"openai ceo\"]}\n\"what is the boiling point of water\" -> {\"search\":\"no\",\"route\":\"wiki\",\"standalone_question\":\"what is the boiling point of water\",\"queries\":[\"boiling point of water\"]}\n\"what is photosynthesis\" -> {\"search\":\"web\",\"route\":\"wiki\",\"standalone_question\":\"what is photosynthesis\",\"queries\":[\"photosynthesis\"]}\n\"weather in Paris\" -> {\"search\":\"web\",\"route\":\"weather\",\"standalone_question\":\"what is the current weather in Paris\",\"queries\":[\"paris weather\"]}\n\"what's the latest status of the World Cup 2026\" -> {\"search\":\"web\",\"route\":\"news\",\"standalone_question\":\"what is the current status of the 2026 World Cup\",\"queries\":[\"world cup 2026 status\"]}\n\"who won the most recent F1 race\" -> {\"search\":\"web\",\"route\":\"news\",\"standalone_question\":\"who won the most recent Formula 1 race\",\"queries\":[\"latest f1 race winner\"]}\n\"what's the score of the Lakers game\" -> {\"search\":\"web\",\"route\":\"sports\",\"standalone_question\":\"what is the current score of the Los Angeles Lakers game\",\"queries\":[\"lakers score\"]}\n(you already searched and answered \"what's the latest stable Rust version\" with web sources earlier in this conversation) \"what's the latest stable Rust version\" -> {\"search\":\"cached\",\"route\":\"web\",\"standalone_question\":\"what is the latest stable Rust version\",\"queries\":[\"rust latest stable version\"]}\n\"write a short poem about autumn\" -> {\"search\":\"no\",\"route\":\"web\",\"standalone_question\":\"write a short poem about autumn\",\"queries\":[\"autumn poem\"]}\n(after discussing France) \"and its population?\" -> {\"search\":\"no\",\"route\":\"wiki\",\"standalone_question\":\"what is the population of France\",\"queries\":[\"france population\"]}\n(after discussing the US president) \"what about Argentina?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"who is the current president of Argentina\",\"queries\":[\"argentina president\"]}\n(you just told the user Elon Musk's net worth is about $240 billion) \"How about Donald Trump?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"what is Donald Trump's net worth\",\"queries\":[\"donald trump net worth\"]}\n(your previous answer said Jensen Huang is the CEO of Nvidia) \"how much is he worth?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"what is Jensen Huang's net worth\",\"queries\":[\"jensen huang net worth\"]}\n(you just told the user Elon Musk's net worth is about $240 billion) \"and how old is he now?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"how old is Elon Musk\",\"queries\":[\"elon musk age\"],\"explicit_search\":false}\n\"how old is the Pope\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"how old is the current Pope\",\"queries\":[\"pope age\"],\"explicit_search\":false}\n(you told the user the Belgium vs Spain 2026 World Cup match is today but the scoreboard carried no kickoff time) \"can you look it up please?\" -> {\"search\":\"web\",\"route\":\"sports\",\"standalone_question\":\"what time is the Belgium vs Spain 2026 World Cup match today\",\"queries\":[\"belgium spain world cup kickoff time\"],\"explicit_search\":true}\n(you just gave the World Cup match's final score) \"and at what exact time did it kick off?\" -> {\"search\":\"web\",\"route\":\"sports\",\"standalone_question\":\"what time did the Belgium vs Spain World Cup match kick off\",\"queries\":[\"belgium spain world cup kickoff time\"],\"explicit_search\":false}";
 
 /// The trailing instruction on the classifier's user turn, after the optional
 /// conversation block and the latest message.
@@ -232,9 +239,10 @@ pub(crate) fn prepass_schema() -> serde_json::Value {
                 "items": { "type": "string" },
                 "minItems": 1,
                 "maxItems": MAX_QUERIES
-            }
+            },
+            "explicit_search": { "type": "boolean" }
         },
-        "required": ["search", "route", "standalone_question", "queries"],
+        "required": ["search", "route", "standalone_question", "queries", "explicit_search"],
         "additionalProperties": false
     })
 }
@@ -340,6 +348,11 @@ struct PrePassWire {
     standalone_question: String,
     #[serde(default)]
     queries: Vec<String>,
+    /// `#[serde(default)]` so a model that omits the field (or any non-grammar
+    /// caller) parses to `false` rather than hard-failing the whole response;
+    /// the live grammar lists it in `required` so the model always emits it.
+    #[serde(default)]
+    explicit_search: bool,
 }
 
 /// Parses a raw pre-pass response into a normalised decision, or `None` when
@@ -359,6 +372,7 @@ pub(crate) fn parse_prepass(raw: &str) -> Option<PrePassDecision> {
         route: SearchRoute::from_wire(&wire.route),
         standalone_question: wire.standalone_question.trim().to_string(),
         queries: normalize_queries(wire.queries),
+        explicit_search: wire.explicit_search,
     })
 }
 
@@ -376,6 +390,7 @@ pub(crate) fn prepass_or_no(parsed: Option<PrePassDecision>, latest: &str) -> Pr
                 route: SearchRoute::Web,
                 standalone_question: latest.trim().to_string(),
                 queries: Vec::new(),
+                explicit_search: false,
             }
         }
     };
@@ -462,11 +477,17 @@ mod tests {
         assert_eq!(s["properties"]["route"]["enum"][3], "sports");
         assert_eq!(s["properties"]["route"]["enum"][4], "web");
         assert_eq!(s["properties"]["queries"]["maxItems"], MAX_QUERIES);
+        assert_eq!(s["properties"]["explicit_search"]["type"], "boolean");
         assert!(s["required"]
             .as_array()
             .unwrap()
             .iter()
             .any(|r| r == "route"));
+        assert!(s["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == "explicit_search"));
         assert_eq!(s["additionalProperties"], false);
     }
 
@@ -618,6 +639,33 @@ mod tests {
         assert!(CLASSIFIER_SYSTEM.contains("entities named in the assistant's previous answers"));
     }
 
+    #[test]
+    fn classifier_prompt_carries_search_trigger_taxonomy() {
+        // Anthropic search-trigger category (c): entity/person/product
+        // attributes that can change after the training cutoff.
+        assert!(CLASSIFIER_SYSTEM.contains("can change after your training cutoff"));
+        // The present-tense-attribute rule (the observed "how old is he now"
+        // miss): a web turn even with no explicit freshness word.
+        assert!(CLASSIFIER_SYSTEM.contains("even with no freshness word"));
+        // The exact observed miss, resolving the entity from the prior answer.
+        assert!(CLASSIFIER_SYSTEM.contains("and how old is he now?"));
+        assert!(CLASSIFIER_SYSTEM.contains("how old is Elon Musk"));
+    }
+
+    #[test]
+    fn classifier_prompt_carries_explicit_search_and_drilldown_fewshots() {
+        // Explicit look-it-up request: explicit_search true with a fully
+        // resolved standalone question, never the literal "look it up".
+        assert!(CLASSIFIER_SYSTEM.contains("can you look it up please?"));
+        assert!(
+            CLASSIFIER_SYSTEM.contains("what time is the Belgium vs Spain 2026 World Cup match")
+        );
+        assert!(CLASSIFIER_SYSTEM.contains("\"explicit_search\":true"));
+        // Drill-down into a new detail is web, not cached.
+        assert!(CLASSIFIER_SYSTEM.contains("at what exact time did it kick off?"));
+        assert!(CLASSIFIER_SYSTEM.contains("is NOT cached"));
+    }
+
     // ── parse ───────────────────────────────────────────────────────────────
 
     #[test]
@@ -677,6 +725,21 @@ mod tests {
         assert_eq!(d.queries, vec!["A", "B", "C"]);
     }
 
+    #[test]
+    fn parse_reads_explicit_search_flag() {
+        let raw =
+            r#"{"search":"web","standalone_question":"q","queries":["a"],"explicit_search":true}"#;
+        assert!(parse_prepass(raw).unwrap().explicit_search);
+    }
+
+    #[test]
+    fn parse_defaults_explicit_search_false_when_missing() {
+        // The field is absent: serde default keeps the response parseable and
+        // treats it as a non-explicit turn.
+        let raw = r#"{"search":"web","standalone_question":"q","queries":["a"]}"#;
+        assert!(!parse_prepass(raw).unwrap().explicit_search);
+    }
+
     // ── failure policy / backfill ───────────────────────────────────────────
 
     #[test]
@@ -694,6 +757,7 @@ mod tests {
             route: SearchRoute::Web,
             standalone_question: "capital of France".into(),
             queries: vec![],
+            explicit_search: false,
         });
         let d = prepass_or_no(parsed, "and there?");
         assert_eq!(d.decision, SearchDecision::Web);
@@ -707,6 +771,7 @@ mod tests {
             route: SearchRoute::Web,
             standalone_question: "   ".into(),
             queries: vec!["q".into()],
+            explicit_search: false,
         });
         let d = prepass_or_no(parsed, "the real question");
         assert_eq!(d.standalone_question, "the real question");
@@ -720,6 +785,7 @@ mod tests {
             route: SearchRoute::Web,
             standalone_question: "hello".into(),
             queries: vec![],
+            explicit_search: false,
         });
         let d = prepass_or_no(parsed, "hello");
         assert_eq!(d.decision, SearchDecision::No);
@@ -735,6 +801,7 @@ mod tests {
             route: SearchRoute::Web,
             standalone_question: "q".into(),
             queries: vec!["q".into()],
+            explicit_search: false,
         };
         let fake = FakePrePass::returning(Ok(want.clone()));
         let got = fake

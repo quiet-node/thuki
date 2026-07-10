@@ -70,3 +70,22 @@
 {"message": "current time", "label": "no", "category": "clock", "route": "web"}
 {"message": "what's today", "label": "no", "category": "clock", "route": "web"}
 {"message": "what time is it in Tokyo", "label": "no", "category": "clock", "route": "web"}
+{"message": "how old is Elon Musk now", "label": "search", "category": "entity_attribute", "route": "web"}
+{"message": "and how old is he now?", "label": "search", "category": "followup_current"}
+{"message": "who is the CEO of OpenAI now", "label": "search", "category": "entity_attribute", "route": "web"}
+{"message": "is Taylor Swift still married", "label": "search", "category": "entity_attribute", "route": "web"}
+{"message": "what team does LeBron James play for now", "label": "search", "category": "entity_attribute", "route": "web"}
+{"message": "who is the current prime minister of Canada", "label": "search", "category": "entity_attribute", "route": "web"}
+{"message": "what is Jeff Bezos's net worth these days", "label": "search", "category": "entity_attribute", "route": "web"}
+{"message": "who is Tesla's CEO now", "label": "search", "category": "entity_attribute", "route": "web"}
+{"message": "how old was Napoleon when he died", "label": "no", "category": "historical_attribute", "route": "wiki"}
+{"message": "who was the first president of the United States", "label": "no", "category": "historical_attribute", "route": "wiki"}
+{"message": "how old was Einstein when he published the theory of relativity", "label": "no", "category": "historical_attribute", "route": "wiki"}
+{"message": "what year did Queen Elizabeth II die", "label": "no", "category": "historical_attribute", "route": "wiki"}
+{"message": "how many children did Abraham Lincoln have", "label": "no", "category": "historical_attribute", "route": "wiki"}
+{"message": "who wrote the Harry Potter books", "label": "no", "category": "stable_fact", "route": "wiki"}
+{"message": "and at what exact time?", "label": "search", "category": "followup_drilldown"}
+{"message": "what was the exact final score", "label": "search", "category": "followup_drilldown"}
+{"message": "can you look it up please?", "label": "search", "category": "explicit_search"}
+{"message": "double-check that for me", "label": "search", "category": "explicit_search"}
+{"message": "search for the kickoff time", "label": "search", "category": "explicit_search"}

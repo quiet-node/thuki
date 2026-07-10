@@ -49,6 +49,7 @@ impl PrePass for ScriptedPrePass {
             route: self.route,
             standalone_question: self.standalone.to_string(),
             queries: self.queries.iter().map(|q| q.to_string()).collect(),
+            explicit_search: false,
         })
     }
 }
@@ -77,6 +78,7 @@ async fn live_turn(
         recorder: &recorder,
         cache: &cache,
         cache_scope: 1,
+        local_zone: None,
     };
     run_search(
         &deps,
