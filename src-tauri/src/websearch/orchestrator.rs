@@ -52,8 +52,9 @@ use crate::trace::{BoundRecorder, RecorderEvent, RetrievedSource};
 use crate::websearch::assemble::{assemble_context, SourceBlock};
 use crate::websearch::cache::{CachedSearch, SourceCache};
 use crate::websearch::encyclopedia::{fetch_encyclopedia, is_volatile_question};
-use crate::websearch::engine::{web_search, EngineHealth, SearchHit};
+use crate::websearch::engine::{any_engine_available, web_search, EngineHealth, SearchHit};
 use crate::websearch::fetch::fetch_pages;
+use crate::websearch::judge::{SufficiencyJudge, SufficiencyVerdict};
 use crate::websearch::news::{fetch_news, is_news_intent};
 use crate::websearch::prefilter::{prefilter, PreFilterVerdict};
 use crate::websearch::prepass::{
@@ -101,6 +102,12 @@ pub enum SearchOutcome {
 /// The injected effectful dependencies of the pipeline.
 pub struct SearchDeps<'a> {
     pub prepass: &'a dyn PrePass,
+    /// The sufficiency judge run after a keyless vertical answers, deciding
+    /// whether its block actually contains what the question asked before the
+    /// pipeline commits to it. An insufficient block escalates to the scraped
+    /// engines (see [`commit_or_escalate`]). Injected like the other effectful
+    /// dependencies so the escalation branch is tested with a fake judge.
+    pub judge: &'a dyn SufficiencyJudge,
     pub transport: &'a dyn HttpTransport,
     pub scorer: &'a dyn Scorer,
     /// Cross-turn engine block memory; blocked engines sit out their cooldown.
@@ -394,17 +401,23 @@ async fn run_web(
     // classifier routed to weather. Either way a miss continues to the next tier.
     if !engines_only {
         if let Some(block) = fetch_weather(deps.transport, standalone_question).await {
-            return grounded_answer(
+            return commit_or_escalate(
                 deps,
                 "weather",
+                block,
                 chat_system_prompt,
                 history,
                 latest_user,
                 standalone_question,
-                vec![block],
+                queries,
+                num_ctx,
                 today,
                 locale,
-            );
+                freshness,
+                cancel,
+                status,
+            )
+            .await;
         }
     }
     if cancel.is_cancelled() {
@@ -432,17 +445,23 @@ async fn run_web(
         if let Some(block) =
             fetch_sports(deps.transport, standalone_question, today, deps.local_zone).await
         {
-            return grounded_answer(
+            return commit_or_escalate(
                 deps,
                 "sports",
+                block,
                 chat_system_prompt,
                 history,
                 latest_user,
                 standalone_question,
-                vec![block],
+                queries,
+                num_ctx,
                 today,
                 locale,
-            );
+                freshness,
+                cancel,
+                status,
+            )
+            .await;
         }
     }
     if cancel.is_cancelled() {
@@ -463,17 +482,23 @@ async fn run_web(
     if !engines_only && (matches!(route, SearchRoute::News) || news_hint) {
         for query in queries {
             if let Some(block) = fetch_news(deps.transport, query, freshness).await {
-                return grounded_answer(
+                return commit_or_escalate(
                     deps,
                     "news",
+                    block,
                     chat_system_prompt,
                     history,
                     latest_user,
                     standalone_question,
-                    vec![block],
+                    queries,
+                    num_ctx,
                     today,
                     locale,
-                );
+                    freshness,
+                    cancel,
+                    status,
+                )
+                .await;
             }
         }
     }
@@ -488,26 +513,95 @@ async fn run_web(
     // article title. A miss or a refusal falls through to the engines.
     if !engines_only && matches!(route, SearchRoute::Wiki) && !freshness {
         if let Some(block) = fetch_encyclopedia(deps.transport, standalone_question).await {
-            return grounded_answer(
+            return commit_or_escalate(
                 deps,
                 "wiki",
+                block,
                 chat_system_prompt,
                 history,
                 latest_user,
                 standalone_question,
-                vec![block],
+                queries,
+                num_ctx,
                 today,
                 locale,
-            );
+                freshness,
+                cancel,
+                status,
+            )
+            .await;
         }
     }
     if cancel.is_cancelled() {
         return SearchOutcome::Cancelled;
     }
+    // The general scraped-engine tier: the terminal source, so there is nothing
+    // to escalate to and no sufficiency judge runs here (the writer's
+    // graceful-partial contract covers a thin engine result). A miss is the
+    // pipeline's honest could-not-verify disclosure, never a silent stale answer.
+    match run_engine_tier(
+        deps,
+        standalone_question,
+        queries,
+        num_ctx,
+        freshness,
+        cancel,
+        status,
+    )
+    .await
+    {
+        EngineTierOutcome::Cancelled => SearchOutcome::Cancelled,
+        EngineTierOutcome::Empty => SearchOutcome::Unreachable {
+            messages: unreachable_messages(chat_system_prompt, history, latest_user),
+        },
+        EngineTierOutcome::Ranked(sources) => grounded_answer(
+            deps,
+            "engine",
+            chat_system_prompt,
+            history,
+            latest_user,
+            standalone_question,
+            sources,
+            today,
+            locale,
+        ),
+    }
+}
+
+/// What the general scraped-engine tier produced. Distinguishes a user cancel
+/// from an honest empty result so both the normal `web` path and an escalation
+/// from an insufficient vertical can map it to the right outcome.
+enum EngineTierOutcome {
+    /// The user cancelled mid-retrieval.
+    Cancelled,
+    /// Every engine was blocked or empty, or nothing survived ranking: there is
+    /// nothing citable.
+    Empty,
+    /// The budgeted, ranked source blocks ready for the writer.
+    Ranked(Vec<SourceBlock>),
+}
+
+/// Runs the general scraped-engine tier for `queries`: rotate through the
+/// keyless engines (skipping any inside their cooldown), dedupe hits, stop early
+/// once enough are gathered, then fetch, rank, and budget the pages into source
+/// blocks. Shared by the normal `web` path and by [`commit_or_escalate`] when an
+/// insufficient vertical block escalates, so escalation inherits the exact same
+/// cooldown-skip and early-stop volume controls the engines' rate limits
+/// require. Emits [`SearchPhase::Reading`] before the page fetch; the caller
+/// owns the [`SearchPhase::Searching`] phase (already emitted once per turn).
+async fn run_engine_tier(
+    deps: &SearchDeps<'_>,
+    standalone_question: &str,
+    queries: &[String],
+    num_ctx: u32,
+    freshness: bool,
+    cancel: &CancellationToken,
+    status: &(dyn Fn(SearchPhase) + Send + Sync),
+) -> EngineTierOutcome {
     let mut hits: Vec<SearchHit> = Vec::new();
     for query in queries {
         if cancel.is_cancelled() {
-            return SearchOutcome::Cancelled;
+            return EngineTierOutcome::Cancelled;
         }
         hits.extend(web_search(deps.transport, query, deps.health, freshness).await);
         // Early stop: once one query has produced enough hits, further queries
@@ -519,35 +613,184 @@ async fn run_web(
     }
     let hits = dedupe_hits(hits);
     if hits.is_empty() {
-        // The turn wanted the web and got nothing: answer with an explicit
-        // could-not-verify disclosure, never a silent stale answer.
-        return SearchOutcome::Unreachable {
-            messages: unreachable_messages(chat_system_prompt, history, latest_user),
-        };
+        return EngineTierOutcome::Empty;
     }
     if cancel.is_cancelled() {
-        return SearchOutcome::Cancelled;
+        return EngineTierOutcome::Cancelled;
     }
     status(SearchPhase::Reading);
     let pages = fetch_pages(deps.transport, &hits, num_ctx).await;
     let chunks = select_chunks(&pages, standalone_question, deps.scorer);
     let sources = assemble_context(&chunks, num_ctx);
     if sources.is_empty() {
-        return SearchOutcome::Unreachable {
-            messages: unreachable_messages(chat_system_prompt, history, latest_user),
-        };
+        return EngineTierOutcome::Empty;
     }
-    grounded_answer(
+    EngineTierOutcome::Ranked(sources)
+}
+
+/// The judge gate applied to every keyless vertical answer: decide whether the
+/// vertical's `block` actually contains what the question asked, and either
+/// commit it or escalate to the scraped engines.
+///
+/// A vertical returning a block is not the same as the block answering the
+/// question (a scoreboard carries today's fixture, not the full bracket; a news
+/// feed carries headlines, not a specific figure). Before this gate an
+/// irrelevant vertical block was committed unconditionally and the writer, right
+/// to refuse to invent, produced a bare "the sources do not contain that" dead
+/// end. Here the [`SufficiencyJudge`] reads that verdict one call earlier:
+/// - **sufficient** (or a judge failure, which fails toward committing): answer
+///   from the vertical block, exactly as before.
+/// - **insufficient, an engine available**: run the scraped-engine tier and, on
+///   a hit, answer from those sources instead (replace, not merge: the engine
+///   result subsumes the vertical's narrower page and a single clean source set
+///   avoids the mis-citation a merged set invites). On an engine miss, fall back
+///   to the vertical block as a partial answer (the writer caveats what is
+///   missing) rather than a wall.
+/// - **insufficient, every engine cooling**: escalation is futile and, on the
+///   burst that caused the cooldowns, would risk deepening the block, so serve
+///   the vertical block as a partial answer directly.
+///
+/// Every path records a [`RecorderEvent::SearchEscalated`] so a trace shows the
+/// judge's verdict and what the orchestrator did with it.
+#[allow(clippy::too_many_arguments)]
+async fn commit_or_escalate(
+    deps: &SearchDeps<'_>,
+    tier: &str,
+    block: SourceBlock,
+    chat_system_prompt: &str,
+    history: &[ChatMessage],
+    latest_user: &str,
+    standalone_question: &str,
+    queries: &[String],
+    num_ctx: u32,
+    today: &str,
+    locale: &str,
+    freshness: bool,
+    cancel: &CancellationToken,
+    status: &(dyn Fn(SearchPhase) + Send + Sync),
+) -> SearchOutcome {
+    let verdict = match deps
+        .judge
+        .judge(standalone_question, std::slice::from_ref(&block), cancel)
+        .await
+    {
+        Ok(verdict) => verdict,
+        Err(InferenceError::Cancelled) => return SearchOutcome::Cancelled,
+        // A judge infra failure fails toward committing (see the judge module
+        // docs): serve the vertical block rather than stall the user or spend an
+        // engine request on a decision the judge could not actually make.
+        Err(InferenceError::Request(reason)) => {
+            eprintln!("[search] judge error: {reason} -> committing {tier} block");
+            SufficiencyVerdict {
+                sufficient: true,
+                missing: String::new(),
+            }
+        }
+    };
+    if verdict.sufficient {
+        eprintln!("[search] {tier} sufficient -> committing");
+        deps.recorder.record(RecorderEvent::SearchEscalated {
+            from_tier: tier.to_string(),
+            sufficient: true,
+            missing: String::new(),
+            escalated: false,
+            escalation_hit: false,
+        });
+        return grounded_answer(
+            deps,
+            tier,
+            chat_system_prompt,
+            history,
+            latest_user,
+            standalone_question,
+            vec![block],
+            today,
+            locale,
+        );
+    }
+    eprintln!(
+        "[search] {tier} insufficient (missing: {}) -> escalating to engines",
+        verdict.missing
+    );
+    // Every engine cooling: escalation is futile, serve the vertical block as a
+    // partial answer (the writer caveats what is missing) rather than a wall.
+    if !any_engine_available(deps.health) {
+        eprintln!("[search] all engines cooling -> serving {tier} partial");
+        deps.recorder.record(RecorderEvent::SearchEscalated {
+            from_tier: tier.to_string(),
+            sufficient: false,
+            missing: verdict.missing,
+            escalated: false,
+            escalation_hit: false,
+        });
+        return grounded_answer(
+            deps,
+            tier,
+            chat_system_prompt,
+            history,
+            latest_user,
+            standalone_question,
+            vec![block],
+            today,
+            locale,
+        );
+    }
+    match run_engine_tier(
         deps,
-        "engine",
-        chat_system_prompt,
-        history,
-        latest_user,
         standalone_question,
-        sources,
-        today,
-        locale,
+        queries,
+        num_ctx,
+        freshness,
+        cancel,
+        status,
     )
+    .await
+    {
+        EngineTierOutcome::Cancelled => SearchOutcome::Cancelled,
+        // The engines answered: replace the vertical block with their sources.
+        EngineTierOutcome::Ranked(sources) => {
+            deps.recorder.record(RecorderEvent::SearchEscalated {
+                from_tier: tier.to_string(),
+                sufficient: false,
+                missing: verdict.missing,
+                escalated: true,
+                escalation_hit: true,
+            });
+            grounded_answer(
+                deps,
+                "engine",
+                chat_system_prompt,
+                history,
+                latest_user,
+                standalone_question,
+                sources,
+                today,
+                locale,
+            )
+        }
+        // The engines came up empty too: fall back to the vertical block as a
+        // partial answer rather than a wall.
+        EngineTierOutcome::Empty => {
+            deps.recorder.record(RecorderEvent::SearchEscalated {
+                from_tier: tier.to_string(),
+                sufficient: false,
+                missing: verdict.missing,
+                escalated: true,
+                escalation_hit: false,
+            });
+            grounded_answer(
+                deps,
+                tier,
+                chat_system_prompt,
+                history,
+                latest_user,
+                standalone_question,
+                vec![block],
+                today,
+                locale,
+            )
+        }
+    }
 }
 
 /// Records the retrieval tier to the trace, caches a freshly retrieved
@@ -617,6 +860,7 @@ mod tests {
     use super::*;
     use crate::net::transport::{FakeHttpTransport, HttpRequest, HttpResponse, TransportError};
     use crate::websearch::cache::TtlSourceCache;
+    use crate::websearch::judge::FakeSufficiencyJudge;
     use crate::websearch::prepass::{FakePrePass, PrePassDecision};
     use crate::websearch::rank::Bm25Scorer;
     use async_trait::async_trait;
@@ -740,6 +984,12 @@ mod tests {
     ) -> SearchDeps<'a> {
         SearchDeps {
             prepass,
+            // The default path never escalates: a judge that always finds the
+            // vertical block sufficient keeps every existing vertical test
+            // committing its block exactly as before. Escalation tests build
+            // `SearchDeps` directly with a scripted judge and health (see
+            // `deps_for_escalation`).
+            judge: Box::leak(Box::new(FakeSufficiencyJudge::sufficient())),
             transport,
             scorer,
             // Each test gets its own leaked registry so a block marked in one
@@ -751,6 +1001,33 @@ mod tests {
             // The sports vertical's kickoff-time localization is unit-tested in
             // `websearch::sports`; the orchestrator only threads the zone
             // through, so tests here run without one (date-only event lines).
+            local_zone: None,
+        }
+    }
+
+    /// Builds `SearchDeps` for the commit-or-escalate tests with full control of
+    /// the judge verdict and engine health (the two inputs that decide whether a
+    /// vertical answer is committed, escalated, or served as a partial). A fresh
+    /// empty cache and no local zone, like the default helpers.
+    fn deps_for_escalation<'a>(
+        prepass: &'a dyn PrePass,
+        transport: &'a dyn HttpTransport,
+        scorer: &'a dyn Scorer,
+        judge: &'a dyn SufficiencyJudge,
+        health: &'a EngineHealth,
+        recorder: &'a crate::trace::BoundRecorder,
+    ) -> SearchDeps<'a> {
+        SearchDeps {
+            prepass,
+            judge,
+            transport,
+            scorer,
+            health,
+            recorder,
+            cache: Box::leak(Box::new(TtlSourceCache::new(
+                std::time::Duration::from_secs(600),
+            ))),
+            cache_scope: 1,
             local_zone: None,
         }
     }
@@ -2662,5 +2939,261 @@ mod tests {
             RecorderEvent::SearchRetrieved { tier, sources }
             if tier == "engine" && sources.iter().any(|s| s.url == "https://match.example/")
         )));
+    }
+
+    // ── commit_or_escalate: the sufficiency judge on vertical answers ──────────
+
+    /// A News-routed decision whose non-volatile standalone matches the treaty
+    /// fixture page, so an escalation to the engines produces a ranked source.
+    fn news_route_decision() -> PrePassDecision {
+        PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::News,
+            standalone_question: "when was the treaty of versailles signed in paris".into(),
+            queries: vec!["treaty versailles paris".into()],
+            explicit_search: false,
+        }
+    }
+
+    /// The Google News feed response for the escalation tests' query (non-
+    /// volatile, so `freshness` is false), yielding a `news.google.com` block.
+    fn news_feed_response() -> (String, HttpResponse) {
+        let feed_url = crate::websearch::news::news_request("treaty versailles paris", false).url;
+        let resp = HttpResponse {
+            status: 200,
+            final_url: feed_url.clone(),
+            body: br#"<rss><channel><item><title>Treaty of Versailles anniversary marked - History Today</title></item></channel></rss>"#.to_vec(),
+        };
+        (feed_url, resp)
+    }
+
+    /// Transport serving only the News feed: a vertical hit with no engine
+    /// fallback reachable in the transport.
+    fn news_only_transport() -> FakeHttpTransport {
+        let (feed_url, resp) = news_feed_response();
+        FakeHttpTransport::new().with_response(&feed_url, resp)
+    }
+
+    /// Transport serving the News feed plus the SERP + page, so an escalation to
+    /// the engines can rank and replace the vertical block.
+    fn news_and_engine_transport() -> FakeHttpTransport {
+        let (feed_url, resp) = news_feed_response();
+        transport_with_serp_and_page().with_response(&feed_url, resp)
+    }
+
+    /// An insufficient judge verdict with a `missing` phrase.
+    fn insufficient() -> FakeSufficiencyJudge {
+        FakeSufficiencyJudge::returning(Ok(SufficiencyVerdict {
+            sufficient: false,
+            missing: "the treaty terms".into(),
+        }))
+    }
+
+    #[tokio::test]
+    async fn insufficient_vertical_escalates_and_replaces_with_engine_sources() {
+        // The news vertical answers, the judge finds the block insufficient, and
+        // an engine is available: the pipeline escalates and answers from the
+        // engine sources, replacing (not merging) the vertical block.
+        let prepass = FakePrePass::returning(Ok(news_route_decision()));
+        let transport = news_and_engine_transport();
+        let judge = insufficient();
+        let health = EngineHealth::new();
+        let (mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources.len() == 1 && sources[0].url == "https://match.example/"));
+        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert!(events.iter().any(|e| matches!(e,
+            RecorderEvent::SearchEscalated { from_tier, sufficient, escalated, escalation_hit, .. }
+            if from_tier == "news" && !*sufficient && *escalated && *escalation_hit)));
+    }
+
+    #[tokio::test]
+    async fn insufficient_vertical_with_engine_miss_serves_partial() {
+        // Insufficient block, an engine is available but the SERP is unreachable
+        // (no canned response): the engines are tried, come up empty, and the
+        // vertical block is served as a partial answer rather than a wall.
+        let prepass = FakePrePass::returning(Ok(news_route_decision()));
+        let transport = news_only_transport();
+        let judge = insufficient();
+        let health = EngineHealth::new();
+        let (mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources.len() == 1 && sources[0].url == "https://news.google.com/"));
+        // The engines were attempted (and missed) before the fallback.
+        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert!(events.iter().any(|e| matches!(e,
+            RecorderEvent::SearchEscalated { escalated, escalation_hit, .. }
+            if *escalated && !*escalation_hit)));
+    }
+
+    #[tokio::test]
+    async fn insufficient_vertical_with_all_engines_cooling_serves_partial_without_calling_engines()
+    {
+        // Insufficient block, but every engine is inside its cooldown:
+        // escalating is futile (and would risk deepening the block), so the
+        // vertical block is served directly, with no engine request issued.
+        let prepass = FakePrePass::returning(Ok(news_route_decision()));
+        let transport = news_and_engine_transport();
+        let judge = insufficient();
+        let health = EngineHealth::new();
+        health.block_all_for_test();
+        let (mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources.len() == 1 && sources[0].url == "https://news.google.com/"));
+        // No engine was contacted: escalation was skipped as futile.
+        assert!(!transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert!(events.iter().any(|e| matches!(e,
+            RecorderEvent::SearchEscalated { escalated, .. } if !*escalated)));
+    }
+
+    #[tokio::test]
+    async fn judge_infra_failure_commits_the_vertical_block() {
+        // A judge transport failure fails toward committing: the vertical block
+        // is served without spending an engine request on a verdict the judge
+        // could not actually make.
+        let prepass = FakePrePass::returning(Ok(news_route_decision()));
+        let transport = news_and_engine_transport();
+        let judge = FakeSufficiencyJudge::returning(Err(InferenceError::Request("boom".into())));
+        let health = EngineHealth::new();
+        let (_mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources.len() == 1 && sources[0].url == "https://news.google.com/"));
+        assert!(!transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+    }
+
+    #[tokio::test]
+    async fn judge_cancellation_yields_cancelled() {
+        // The user cancelled while the judge was deciding: the pipeline aborts.
+        let prepass = FakePrePass::returning(Ok(news_route_decision()));
+        let transport = news_only_transport();
+        let judge = FakeSufficiencyJudge::returning(Err(InferenceError::Cancelled));
+        let health = EngineHealth::new();
+        let (_mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Cancelled));
+    }
+
+    /// Transport that serves the News feed, then cancels the token on the
+    /// escalation SERP request (returning a parseable SERP), so the engine
+    /// tier's post-retrieval cancellation check fires mid-escalation.
+    struct FeedThenCancelOnSerp {
+        feed_url: String,
+        token: CancellationToken,
+    }
+
+    #[async_trait]
+    impl HttpTransport for FeedThenCancelOnSerp {
+        async fn send(&self, req: &HttpRequest) -> Result<HttpResponse, TransportError> {
+            if req.url == self.feed_url {
+                return Ok(HttpResponse {
+                    status: 200,
+                    final_url: self.feed_url.clone(),
+                    body: br#"<rss><channel><item><title>Treaty of Versailles anniversary - History Today</title></item></channel></rss>"#.to_vec(),
+                });
+            }
+            self.token.cancel();
+            Ok(HttpResponse {
+                status: 200,
+                final_url: DDG_ENDPOINT.into(),
+                body: SERP_HTML.as_bytes().to_vec(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_during_escalation_engine_tier_yields_cancelled() {
+        // The vertical answers, the judge escalates, and the user cancels while
+        // the engine tier retrieves: the escalation aborts with Cancelled.
+        let prepass = FakePrePass::returning(Ok(news_route_decision()));
+        let (feed_url, _resp) = news_feed_response();
+        let cancel = CancellationToken::new();
+        let transport = FeedThenCancelOnSerp {
+            feed_url,
+            token: cancel.clone(),
+        };
+        let judge = insufficient();
+        let health = EngineHealth::new();
+        let (_mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &cancel,
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Cancelled));
     }
 }

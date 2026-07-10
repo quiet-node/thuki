@@ -795,6 +795,16 @@ async fn run_builtin_search(
         model_id.to_string(),
         crate::config::defaults::PREPASS_TIMEOUT_S,
     );
+    // The sufficiency judge shares the warm engine: it decides whether a
+    // vertical's answer actually contains what the question asked before the
+    // pipeline commits to it, escalating an insufficient block to the scraped
+    // engines instead of dead-ending (see `websearch::judge`).
+    let judge = crate::websearch::judge::BuiltinSufficiencyJudge::new(
+        client.clone(),
+        format!("http://127.0.0.1:{port}"),
+        model_id.to_string(),
+        crate::config::defaults::SUFFICIENCY_JUDGE_TIMEOUT_S,
+    );
     let scorer = crate::websearch::rank::Bm25Scorer;
     // The device IANA timezone, so the sports vertical can localize scheduled
     // kickoff times; `None` (unreadable /etc/localtime) degrades to date-only
@@ -802,6 +812,7 @@ async fn run_builtin_search(
     let local_zone = zone_label();
     let deps = crate::websearch::orchestrator::SearchDeps {
         prepass: &prepass,
+        judge: &judge,
         transport: &transport,
         scorer: &scorer,
         health: crate::websearch::engine::global_engine_health(),

@@ -306,6 +306,23 @@ pub enum RecorderEvent {
         tier: String,
         sources: Vec<RetrievedSource>,
     },
+    /// The sufficiency judge's verdict on a vertical's answer, and what the
+    /// orchestrator did with it. Emitted once per turn a keyless vertical
+    /// answered, so a trace shows why a vertical result was committed or
+    /// escalated to the scraped engines. `from_tier` is the vertical judged
+    /// ("weather", "sports", "news", "wiki"); `sufficient` is the verdict;
+    /// `missing` is the judge's short phrase for what the block lacked (empty
+    /// when sufficient); `escalated` is whether the scraped-engine tier was then
+    /// run (only when the block was insufficient AND an engine was not cooling);
+    /// `escalation_hit` is whether that escalation produced sources that
+    /// replaced the vertical block.
+    SearchEscalated {
+        from_tier: String,
+        sufficient: bool,
+        missing: String,
+        escalated: bool,
+        escalation_hit: bool,
+    },
     /// Final event in a chat-domain file. Emitted by the frontend when
     /// the user resets the conversation or by the backend on app quit
     /// (reason = "quit"). Window-hide does NOT emit this event because
@@ -341,6 +358,7 @@ impl RecorderEvent {
             | RecorderEvent::ScreenCaptured { .. }
             | RecorderEvent::SearchDecided { .. }
             | RecorderEvent::SearchRetrieved { .. }
+            | RecorderEvent::SearchEscalated { .. }
             | RecorderEvent::ConversationEnd { .. } => TraceDomain::Chat,
         }
     }
@@ -817,6 +835,20 @@ impl Serialize for RecorderEvent {
                 map.serialize_entry("tier", tier)?;
                 map.serialize_entry("sources", sources)?;
             }
+            RecorderEvent::SearchEscalated {
+                from_tier,
+                sufficient,
+                missing,
+                escalated,
+                escalation_hit,
+            } => {
+                map.serialize_entry("kind", "search_escalated")?;
+                map.serialize_entry("from_tier", from_tier)?;
+                map.serialize_entry("sufficient", sufficient)?;
+                map.serialize_entry("missing", missing)?;
+                map.serialize_entry("escalated", escalated)?;
+                map.serialize_entry("escalation_hit", escalation_hit)?;
+            }
             RecorderEvent::ConversationEnd { reason } => {
                 map.serialize_entry("kind", "conversation_end")?;
                 map.serialize_entry("reason", reason)?;
@@ -1011,6 +1043,13 @@ mod tests {
                     url: "https://news.google.com/".into(),
                     title: "Google News headlines".into(),
                 }],
+            },
+            RecorderEvent::SearchEscalated {
+                from_tier: "sports".into(),
+                sufficient: false,
+                missing: "the full bracket".into(),
+                escalated: true,
+                escalation_hit: true,
             },
             RecorderEvent::ConversationEnd {
                 reason: "quit".into(),
@@ -1341,6 +1380,16 @@ mod tests {
         );
         r.record(
             &cid("conv-chat"),
+            RecorderEvent::SearchEscalated {
+                from_tier: "sports".into(),
+                sufficient: false,
+                missing: "round-of-32 results".into(),
+                escalated: true,
+                escalation_hit: false,
+            },
+        );
+        r.record(
+            &cid("conv-chat"),
             RecorderEvent::ConversationEnd {
                 reason: "quit".into(),
             },
@@ -1358,6 +1407,7 @@ mod tests {
                 "screen_captured",
                 "search_decided",
                 "search_retrieved",
+                "search_escalated",
                 "conversation_end"
             ]
         );
@@ -1371,7 +1421,12 @@ mod tests {
             lines[7]["sources"],
             json!([{"url": "https://en.wikipedia.org/wiki/Photosynthesis", "title": "Photosynthesis"}])
         );
-        assert_eq!(lines[8]["reason"], "quit");
+        assert_eq!(lines[8]["from_tier"], "sports");
+        assert_eq!(lines[8]["sufficient"], false);
+        assert_eq!(lines[8]["missing"], "round-of-32 results");
+        assert_eq!(lines[8]["escalated"], true);
+        assert_eq!(lines[8]["escalation_hit"], false);
+        assert_eq!(lines[9]["reason"], "quit");
     }
 
     #[test]

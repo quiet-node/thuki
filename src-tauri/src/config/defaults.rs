@@ -837,6 +837,34 @@ pub const PREPASS_TIMEOUT_S: u64 = 35;
 /// [`PREPASS_TIMEOUT_S`].
 pub const SEARCH_CACHE_TTL_S: u64 = 600;
 
+/// Token cap for the grammar-constrained sufficiency-judge response. The judge
+/// decides whether a retrieved vertical/cache block actually answers the
+/// specific question before the pipeline commits to it, so an insufficient
+/// fast-path result escalates to the scraped engines instead of dead-ending on
+/// a "the sources do not contain that" refusal. Its JSON (`{sufficient,
+/// missing}`) is tiny, but the same reasoning-family caveat as
+/// [`PREPASS_MAX_TOKENS`] applies: a model that reasons before emitting JSON
+/// must have headroom or the body truncates to empty (which degrades to
+/// "sufficient", i.e. commit the block, the safe default that never burns
+/// engine volume). Sized below the classifier budget because the judge's task
+/// is a bounded yes/no over one small block, not a few-shot classification.
+///
+/// Not user-tunable: part of the judge prompt/parse contract, same rationale as
+/// [`PREPASS_MAX_TOKENS`].
+pub const SUFFICIENCY_JUDGE_MAX_TOKENS: i32 = 1024;
+
+/// Per-call wall-clock timeout for the sufficiency-judge call (seconds). Sized
+/// to fit [`SUFFICIENCY_JUDGE_MAX_TOKENS`] with prefill headroom, the same
+/// reasoning as [`PREPASS_TIMEOUT_S`]: a timeout tighter than the token budget
+/// silently converts a reasoning-heavy judge call into a failure. A judge
+/// failure degrades to "sufficient" (commit the fast-path block), so an
+/// over-tight timeout would only ever suppress an escalation, never wall the
+/// user; the `Reasoning: low` directive in the judge prompt keeps typical calls
+/// well under this.
+///
+/// Not user-tunable: an internal robustness bound.
+pub const SUFFICIENCY_JUDGE_TIMEOUT_S: u64 = 30;
+
 /// Freshness markers that disqualify a question from the Wikipedia vertical even
 /// when the classifier routed it there. Wikipedia's lead summary describes the
 /// stable subject, not its live state, so a question carrying any of these words

@@ -16,8 +16,10 @@
 use thuki_agent_lib::commands::ChatMessage;
 use thuki_agent_lib::net::transport::ReqwestTransport;
 use thuki_agent_lib::trace::{BoundRecorder, ConversationId};
+use thuki_agent_lib::websearch::assemble::SourceBlock;
 use thuki_agent_lib::websearch::cache::TtlSourceCache;
 use thuki_agent_lib::websearch::engine::EngineHealth;
+use thuki_agent_lib::websearch::judge::{SufficiencyJudge, SufficiencyVerdict};
 use thuki_agent_lib::websearch::orchestrator::{run_search, SearchDeps, SearchOutcome};
 use thuki_agent_lib::websearch::prepass::{
     InferenceError, PrePass, PrePassDecision, SearchDecision, SearchRoute,
@@ -54,6 +56,29 @@ impl PrePass for ScriptedPrePass {
     }
 }
 
+/// A scripted sufficiency judge standing in for the live model. This harness
+/// isolates the retrieval path with a stubbed classifier and hand-picked good
+/// queries, so it likewise stubs the judge to always find the vertical answer
+/// sufficient: every vertical hit commits, exactly as before the judge existed.
+/// The judge's live decision quality, like the classifier's, is validated
+/// in-app, not here (there is no resident model in this harness to back it).
+struct AlwaysSufficientJudge;
+
+#[async_trait]
+impl SufficiencyJudge for AlwaysSufficientJudge {
+    async fn judge(
+        &self,
+        _standalone_question: &str,
+        _sources: &[SourceBlock],
+        _cancel: &CancellationToken,
+    ) -> Result<SufficiencyVerdict, InferenceError> {
+        Ok(SufficiencyVerdict {
+            sufficient: true,
+            missing: String::new(),
+        })
+    }
+}
+
 /// Runs one live turn through the production pipeline and returns the outcome.
 async fn live_turn(
     latest_user: &str,
@@ -67,11 +92,13 @@ async fn live_turn(
         standalone,
         queries,
     };
+    let judge = AlwaysSufficientJudge;
     let health = EngineHealth::new();
     let recorder = BoundRecorder::noop_for(ConversationId::new("smoke"));
     let cache = TtlSourceCache::new(std::time::Duration::from_secs(600));
     let deps = SearchDeps {
         prepass: &prepass,
+        judge: &judge,
         transport: &transport,
         scorer: &Bm25Scorer,
         health: &health,

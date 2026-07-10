@@ -19,6 +19,9 @@
 //! - [`engine`] — keyless search-engine scraping with rotation.
 //! - [`weather`], [`sports`], [`news`], [`encyclopedia`] — intent-routed
 //!   keyless verticals tried ahead of the scraped engines.
+//! - [`judge`]: the sufficiency check run after a vertical answers. An
+//!   insufficient vertical block escalates to the scraped engines instead of
+//!   dead-ending on a "the sources do not contain that" refusal.
 //! - [`fetch`] — concurrent page fetch + readability extraction.
 //! - [`rank`] — chunking + BM25 extractive filter behind a `Scorer` seam.
 //! - [`assemble`] — group ranked chunks into budgeted numbered source blocks.
@@ -31,6 +34,7 @@ pub mod clock;
 pub mod encyclopedia;
 pub mod engine;
 pub mod fetch;
+pub mod judge;
 pub mod news;
 pub mod orchestrator;
 pub mod prefilter;

@@ -148,6 +148,19 @@ impl Default for EngineHealth {
     }
 }
 
+#[cfg(test)]
+impl EngineHealth {
+    /// Test-only: force every engine into a long cooldown, so a consumer's test
+    /// (the orchestrator's escalation branch) can construct an
+    /// all-engines-cooling registry without driving live block responses through
+    /// the transport.
+    pub(crate) fn block_all_for_test(&self) {
+        for engine in ENGINES {
+            self.mark_blocked(engine.name, 3600);
+        }
+    }
+}
+
 /// The process-wide [`EngineHealth`] shared by every turn, so a block observed
 /// on one message is remembered on the next. Coverage-excluded: a static
 /// constructor call; the registry's behaviour is tested through instance
@@ -156,6 +169,19 @@ impl Default for EngineHealth {
 pub fn global_engine_health() -> &'static EngineHealth {
     static GLOBAL: std::sync::LazyLock<EngineHealth> = std::sync::LazyLock::new(EngineHealth::new);
     &GLOBAL
+}
+
+/// Whether at least one engine is not currently inside its block cooldown, so
+/// an escalation to the scraped-engine tier has some chance of reaching a live
+/// engine. When every engine is cooling, escalating a vertical's insufficient
+/// answer would only add latency before an inevitable miss (and, on the burst
+/// that caused the cooldowns, risk deepening the block), so the orchestrator
+/// serves the vertical's partial answer instead of escalating (see
+/// `crate::websearch::orchestrator`). Reads through [`EngineHealth::is_cooling`],
+/// which prunes expired entries as it checks, so a lapsed cooldown counts as
+/// available again.
+pub fn any_engine_available(health: &EngineHealth) -> bool {
+    ENGINES.iter().any(|engine| !health.is_cooling(engine.name))
 }
 
 /// Runs a keyless web search for `query`, rotating through [`ENGINES`] until one
@@ -860,6 +886,29 @@ mod tests {
     #[test]
     fn health_default_is_empty() {
         assert!(!EngineHealth::default().is_cooling("duckduckgo"));
+    }
+
+    #[test]
+    fn any_engine_available_true_when_nothing_cooling() {
+        assert!(any_engine_available(&EngineHealth::new()));
+    }
+
+    #[test]
+    fn any_engine_available_true_when_one_engine_still_live() {
+        // One engine cooling, the other free: escalation still has a target.
+        let health = EngineHealth::new();
+        health.mark_blocked("duckduckgo", 3600);
+        assert!(any_engine_available(&health));
+    }
+
+    #[test]
+    fn any_engine_available_false_when_every_engine_cooling() {
+        // All engines cooling: escalation is futile, serve the partial instead.
+        let health = EngineHealth::new();
+        for engine in ENGINES {
+            health.mark_blocked(engine.name, 3600);
+        }
+        assert!(!any_engine_available(&health));
     }
 
     #[tokio::test]
