@@ -427,6 +427,40 @@ fn mark_session_clean_exit(app: &tauri::AppHandle) {
     }
 }
 
+/// Kills the built-in engine sidecar under a bounded timeout (issue #296).
+///
+/// The `sigwait` shutdown thread runs on an ordinary thread and may block, but
+/// it must not block forever: a wedged sidecar would otherwise keep the thread
+/// from re-raising the caught signal, turning a polite `SIGTERM` at macOS
+/// restart into an app that goes unresponsive past the OS kill deadline. Kill
+/// the sidecar under `SHUTDOWN_SIGNAL_ENGINE_KILL_TIMEOUT_SECS`; on timeout the
+/// caller proceeds to re-raise on schedule, and any sidecar that outlived the
+/// bound is reaped at the next launch.
+///
+/// Runs AFTER the durable clean-exit write in the signal thread: that write is
+/// the sole safe-mode input and has no backstop but itself, whereas this
+/// shutdown has the next-launch orphan reaper as its backstop.
+///
+/// Coverage-off: thin runtime/FFI glue (`block_on` + `timeout` over the engine
+/// actor), with no branch logic of its own to test. `block_on` here cannot
+/// deadlock: the actor runs on Tauri's tokio runtime, mirroring `RunEvent::Exit`.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn shutdown_engine_bounded(app: &tauri::AppHandle) {
+    let Some(engine) = app.try_state::<engine::runner::EngineHandle>() else {
+        return;
+    };
+    let engine = engine.inner().clone();
+    tauri::async_runtime::block_on(async move {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(
+                crate::config::defaults::SHUTDOWN_SIGNAL_ENGINE_KILL_TIMEOUT_SECS,
+            ),
+            engine.shutdown(),
+        )
+        .await;
+    });
+}
+
 /// Handles a quit request from the app menu or the tray: warn when a download
 /// would be lost, otherwise quit immediately.
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -2623,9 +2657,24 @@ pub fn run() {
             // leave `clean_exit: false` behind and correctly count as abnormal.
             // Only the polite-stop signals are reclassified as clean, and the
             // clean-exit write stays the single path in `mark_session_clean_exit`.
+            //
+            // why we ALSO shut the engine down here: a polite stop never runs the
+            // Tauri RunEvent handlers, so without this the sidecar would outlive
+            // Ctrl+C and, far more importantly, every macOS restart, reparenting
+            // to launchd and holding ~2 GB (issue #296). The thread runs on an
+            // ordinary thread, so it may block; the shutdown is bounded so a
+            // wedged sidecar can never keep it from re-raising the signal.
+            //
+            // why THIS order (clean-exit write, then engine shutdown): the
+            // clean-exit write is the sole safe-mode input and has no backstop but
+            // itself, so it lands first and unconditionally. The engine shutdown
+            // that follows can hang and is bounded; a sidecar that outlives the
+            // bound is reaped at the next launch, so it is safe to run second and
+            // behind a timeout.
             let signal_app = app.handle().clone();
             startup_guard::spawn_shutdown_signal_thread(move || {
                 mark_session_clean_exit(&signal_app);
+                shutdown_engine_bounded(&signal_app);
             });
 
             // Defense-in-depth on top of the session record: ask macOS not to

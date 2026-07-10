@@ -123,6 +123,16 @@ pub const ENGINE_HEALTH_PROBE_TIMEOUT_SECS: u64 = 5;
 /// minute-scale setting's precision at negligible cost.
 pub const ENGINE_IDLE_CHECK_INTERVAL_SECS: u64 = 30;
 
+/// Timeout (seconds) bounding the built-in engine shutdown the `sigwait` thread
+/// runs on a polite stop (Ctrl+C or the SIGTERM macOS sends every app at restart,
+/// issue #296). The durable clean-exit write always lands first; this only bounds
+/// the sidecar kill, so a wedged engine can never keep the thread from re-raising
+/// the caught signal and leave the app unresponsive past the macOS restart
+/// deadline. A sidecar that outlives the bound is reaped at the next launch. Not
+/// user-tunable: an internal shutdown-path safety valve, and the kill is normally
+/// near-instant (the child dies on an unblockable SIGKILL).
+pub const SHUTDOWN_SIGNAL_ENGINE_KILL_TIMEOUT_SECS: u64 = 3;
+
 /// Capacity of the engine runner command queue. Not user-tunable: bounds
 /// memory under command bursts; 64 slots is ample for all UI-driven traffic
 /// (Ensure, Touch, SetIdleMinutes, Shutdown) with no back-pressure under
