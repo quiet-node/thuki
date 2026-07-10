@@ -34,6 +34,7 @@
 
 pub mod assemble;
 pub mod cache;
+pub mod cite_check;
 pub mod clock;
 pub mod encyclopedia;
 pub mod engine;

@@ -1152,3 +1152,30 @@ pub const CONTEXT_BUDGET_CTX_PERCENT: usize = 40;
 ///
 /// Not user-tunable: an internal estimation constant.
 pub const CHARS_PER_TOKEN: usize = 4;
+
+/// Support-score threshold at or above which a citation is classified
+/// "supported": at least this fraction of the citing sentence's content tokens
+/// appear in the cited source's text. A baked-in heuristic bound for the
+/// post-generation citation audit (a diagnostic that measures how often the
+/// writer's bracket citations are actually backed by the cited source), not a
+/// user preference.
+///
+/// Not user-tunable: an internal audit heuristic bound.
+pub const CITE_SUPPORTED_MIN: f64 = 0.6;
+
+/// Support-score threshold at or above which a citation is classified "weak"
+/// (below [`CITE_SUPPORTED_MIN`]); below this it is "unsupported". A baked-in
+/// heuristic bound for the post-generation citation audit, not a user
+/// preference.
+///
+/// Not user-tunable: an internal audit heuristic bound.
+pub const CITE_WEAK_MIN: f64 = 0.3;
+
+/// Defensive upper bound, in bytes, on an answer the post-generation citation
+/// audit will scan. Real grounded answers are far smaller; this only guards
+/// against a runaway stream so the audit's work can never grow unbounded. An
+/// answer past this size is skipped entirely (logged as skipped) rather than
+/// audited.
+///
+/// Not user-tunable: an internal defensive bound.
+pub const CITE_AUDIT_MAX_ANSWER_BYTES: usize = 262_144;

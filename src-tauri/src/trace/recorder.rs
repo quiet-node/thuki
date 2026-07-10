@@ -323,6 +323,22 @@ pub enum RecorderEvent {
         escalated: bool,
         escalation_hit: bool,
     },
+    /// Post-generation citation audit for a source-grounded chat turn: a purely
+    /// mechanical, zero-model check of how many of the writer's bracket
+    /// citations were actually backed by the source text they point at.
+    /// `cited` is the total citation references seen; `supported`, `weak`, and
+    /// `unsupported` partition them by support strength; `unsupported_indices`
+    /// lists the source numbers judged unsupported (including out-of-range
+    /// numbers). Observability only: emitted once per grounded turn to measure
+    /// the "cites a source it did not really read" failure class, with no
+    /// user-facing effect.
+    CitationAudit {
+        cited: usize,
+        supported: usize,
+        weak: usize,
+        unsupported: usize,
+        unsupported_indices: Vec<usize>,
+    },
     /// Final event in a chat-domain file. Emitted by the frontend when
     /// the user resets the conversation or by the backend on app quit
     /// (reason = "quit"). Window-hide does NOT emit this event because
@@ -359,6 +375,7 @@ impl RecorderEvent {
             | RecorderEvent::SearchDecided { .. }
             | RecorderEvent::SearchRetrieved { .. }
             | RecorderEvent::SearchEscalated { .. }
+            | RecorderEvent::CitationAudit { .. }
             | RecorderEvent::ConversationEnd { .. } => TraceDomain::Chat,
         }
     }
@@ -849,6 +866,20 @@ impl Serialize for RecorderEvent {
                 map.serialize_entry("escalated", escalated)?;
                 map.serialize_entry("escalation_hit", escalation_hit)?;
             }
+            RecorderEvent::CitationAudit {
+                cited,
+                supported,
+                weak,
+                unsupported,
+                unsupported_indices,
+            } => {
+                map.serialize_entry("kind", "citation_audit")?;
+                map.serialize_entry("cited", cited)?;
+                map.serialize_entry("supported", supported)?;
+                map.serialize_entry("weak", weak)?;
+                map.serialize_entry("unsupported", unsupported)?;
+                map.serialize_entry("unsupported_indices", unsupported_indices)?;
+            }
             RecorderEvent::ConversationEnd { reason } => {
                 map.serialize_entry("kind", "conversation_end")?;
                 map.serialize_entry("reason", reason)?;
@@ -1050,6 +1081,13 @@ mod tests {
                 missing: "the full bracket".into(),
                 escalated: true,
                 escalation_hit: true,
+            },
+            RecorderEvent::CitationAudit {
+                cited: 3,
+                supported: 2,
+                weak: 0,
+                unsupported: 1,
+                unsupported_indices: vec![9],
             },
             RecorderEvent::ConversationEnd {
                 reason: "quit".into(),
@@ -1390,6 +1428,16 @@ mod tests {
         );
         r.record(
             &cid("conv-chat"),
+            RecorderEvent::CitationAudit {
+                cited: 4,
+                supported: 3,
+                weak: 0,
+                unsupported: 1,
+                unsupported_indices: vec![9],
+            },
+        );
+        r.record(
+            &cid("conv-chat"),
             RecorderEvent::ConversationEnd {
                 reason: "quit".into(),
             },
@@ -1408,6 +1456,7 @@ mod tests {
                 "search_decided",
                 "search_retrieved",
                 "search_escalated",
+                "citation_audit",
                 "conversation_end"
             ]
         );
@@ -1426,7 +1475,12 @@ mod tests {
         assert_eq!(lines[8]["missing"], "round-of-32 results");
         assert_eq!(lines[8]["escalated"], true);
         assert_eq!(lines[8]["escalation_hit"], false);
-        assert_eq!(lines[9]["reason"], "quit");
+        assert_eq!(lines[9]["cited"], 4);
+        assert_eq!(lines[9]["supported"], 3);
+        assert_eq!(lines[9]["weak"], 0);
+        assert_eq!(lines[9]["unsupported"], 1);
+        assert_eq!(lines[9]["unsupported_indices"], json!([9]));
+        assert_eq!(lines[10]["reason"], "quit");
     }
 
     #[test]

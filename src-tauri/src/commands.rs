@@ -580,7 +580,13 @@ pub(crate) async fn stream_builtin_chat(
 enum BuiltinSearchResult {
     /// Search grounded the answer: stream these writer messages (which already
     /// embed the delimited sources) instead of the plain chat messages.
-    Grounded(Vec<ChatMessage>),
+    /// `sources` carries the resolved citation blocks so the streamed answer can
+    /// be citation-audited afterward; it is empty for an unreachable-search turn
+    /// (grounded messaging, but nothing to cite).
+    Grounded {
+        messages: Vec<ChatMessage>,
+        sources: Vec<crate::websearch::assemble::SourceBlock>,
+    },
     /// No search this turn (a `no` decision, an infra failure, or nothing worth
     /// citing): stream the original plain messages.
     Plain,
@@ -844,16 +850,59 @@ async fn run_builtin_search(
     match outcome {
         crate::websearch::orchestrator::SearchOutcome::Answer { messages, sources } => {
             on_chunk(StreamChunk::SearchSources(source_metas(&sources)));
-            BuiltinSearchResult::Grounded(messages)
+            BuiltinSearchResult::Grounded { messages, sources }
         }
         // Search wanted but unreachable: stream the disclosure-bearing messages
         // (no sources to attach), so the answer names its unverified freshness.
         crate::websearch::orchestrator::SearchOutcome::Unreachable { messages } => {
-            BuiltinSearchResult::Grounded(messages)
+            BuiltinSearchResult::Grounded {
+                messages,
+                sources: Vec::new(),
+            }
         }
         crate::websearch::orchestrator::SearchOutcome::NoSearch => BuiltinSearchResult::Plain,
         crate::websearch::orchestrator::SearchOutcome::Cancelled => BuiltinSearchResult::Cancelled,
     }
+}
+
+/// Runs the post-generation citation audit for a grounded built-in turn and
+/// records it to the trace (observability only, no user-facing effect). Skips
+/// entirely when the turn cited nothing (`sources` empty: a plain or
+/// unreachable turn) or when the answer exceeds
+/// [`crate::config::defaults::CITE_AUDIT_MAX_ANSWER_BYTES`], logging the skip so
+/// a runaway stream can never grow the audit's work unbounded. Coverage-off:
+/// this is thin glue (a size gate plus a record and two `eprintln`s); all audit
+/// logic lives in [`crate::websearch::cite_check::audit_citations`], which is
+/// pure and fully unit-tested.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn audit_answer_citations(
+    answer: &str,
+    sources: &[crate::websearch::assemble::SourceBlock],
+    recorder: &std::sync::Arc<crate::trace::BoundRecorder>,
+) {
+    if sources.is_empty() {
+        return;
+    }
+    if answer.len() > crate::config::defaults::CITE_AUDIT_MAX_ANSWER_BYTES {
+        eprintln!(
+            "[search] citation audit: skipped (answer {} bytes exceeds {} byte cap)",
+            answer.len(),
+            crate::config::defaults::CITE_AUDIT_MAX_ANSWER_BYTES
+        );
+        return;
+    }
+    let audit = crate::websearch::cite_check::audit_citations(answer, sources);
+    recorder.record(crate::trace::RecorderEvent::CitationAudit {
+        cited: audit.cited,
+        supported: audit.supported,
+        weak: audit.weak,
+        unsupported: audit.unsupported,
+        unsupported_indices: audit.unsupported_indices,
+    });
+    eprintln!(
+        "[search] citation audit: cited={} supported={} weak={} unsupported={}",
+        audit.cited, audit.supported, audit.weak, audit.unsupported
+    );
 }
 
 /// Sets `flag` when `chunk` carries reasoning output. The built-in runtime
@@ -1952,9 +2001,14 @@ pub async fn ask_model(
                             String::new()
                         }
                         grounded_or_plain => {
-                            let stream_messages = match grounded_or_plain {
-                                BuiltinSearchResult::Grounded(writer) => writer,
-                                _ => messages,
+                            // Keep the resolved sources (empty on a plain or
+                            // unreachable turn) so the streamed answer can be
+                            // citation-audited after the stream completes.
+                            let (stream_messages, audit_sources) = match grounded_or_plain {
+                                BuiltinSearchResult::Grounded { messages, sources } => {
+                                    (messages, sources)
+                                }
+                                _ => (messages, Vec::new()),
                             };
                             // Observe whether reasoning streamed this turn so the
                             // runtime backstop can mark a model that reasons even
@@ -1989,6 +2043,11 @@ pub async fn ask_model(
                                 think,
                                 reasoning_seen.load(std::sync::atomic::Ordering::Relaxed),
                             );
+                            // Post-generation citation audit (observability
+                            // only): grounded turns with sources. Off the token
+                            // hot path (the stream has completed); all logic
+                            // lives in the pure, fully tested `cite_check` fns.
+                            audit_answer_citations(&content, &audit_sources, &bound_recorder);
                             content
                         }
                     }
