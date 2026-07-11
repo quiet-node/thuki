@@ -1134,6 +1134,55 @@ pub const BM25_B: f64 = 0.75;
 /// Not user-tunable: a retrieval-pipeline diversity bound.
 pub const RANK_MAX_CHUNKS_PER_PAGE: usize = 3;
 
+// ─── Web-search recency-prior fusion ─────────────────────────────────────────
+
+/// Weight given to a source's recency in the freshness-gated fusion score:
+/// `final_score = RECENCY_ALPHA * recency + (1 - RECENCY_ALPHA) * relevance_norm`
+/// (see [`crate::websearch::recency`]). `0.3` lets a clearly newer source
+/// out-rank a marginally more relevant one without letting recency alone
+/// override a strong relevance gap; the pass only ever reorders sources that
+/// already survived credibility filtering and BM25 relevance thresholding, it
+/// never introduces or resurrects one.
+///
+/// Not user-tunable: a corpus-sensitive ranking parameter. This is a
+/// conservative first guess (see arXiv:2509.19376), pending tuning against a
+/// real evaluation corpus rather than a value a user could sensibly set.
+pub const RECENCY_ALPHA: f64 = 0.3;
+
+/// Half-life, in days, of the exponential recency decay
+/// `recency = exp(-ln(2) * age_days / RECENCY_HALF_LIFE_DAYS)`. A source
+/// published exactly one half-life ago scores `0.5`, the same value assigned
+/// to an undated source (see [`RECENCY_NEUTRAL_SCORE`]), so an undated source
+/// is treated exactly as "moderately fresh" rather than favoured or
+/// penalised. 14 days keeps last week's coverage strongly favoured while
+/// still letting a several-week-old primary source compete on relevance.
+///
+/// Not user-tunable: a corpus-sensitive ranking parameter, a conservative
+/// first guess pending tuning against a real evaluation corpus.
+pub const RECENCY_HALF_LIFE_DAYS: f64 = 14.0;
+
+/// Recency score assigned to a source with no extractable published or
+/// modified date. Never `0.0` (an undated source is not evidence of
+/// staleness) and never high enough to look like a fresh cracker: `0.5`
+/// exactly matches the recency of a source published one half-life ago (see
+/// [`RECENCY_HALF_LIFE_DAYS`]), so an undated source competes purely on
+/// relevance instead of being dropped or boosted for a fetch-stage extraction
+/// gap.
+///
+/// Not user-tunable: an algorithm invariant of the fusion formula, not a
+/// tuning knob.
+pub const RECENCY_NEUTRAL_SCORE: f64 = 0.5;
+
+/// Clock-skew tolerance, in hours, applied when validating an extracted
+/// published/modified date against the current time. A date more than this
+/// far in the future is untrustworthy (a misconfigured server clock or a
+/// malformed/hostile timestamp) and is treated as undated rather than
+/// assigned a nonsensical negative age.
+///
+/// Not user-tunable: a defense-in-depth bound on attacker-controlled page
+/// metadata.
+pub const RECENCY_FUTURE_TOLERANCE_HOURS: i64 = 24;
+
 // ─── Web-search context assembly ─────────────────────────────────────────────
 
 /// Hard ceiling on the retrieved-source context injected into the writer call,

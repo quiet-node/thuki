@@ -43,7 +43,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 base64 = "0.22"
 html-escape = "0.2"
 thiserror = "2"
-time = { version = "0.3", features = ["std", "local-offset", "macros"] }
+time = { version = "0.3", features = ["std", "local-offset", "macros", "parsing"] }
 tz-rs = "0.7"
 async-trait = "0.1"
 semver = "1"

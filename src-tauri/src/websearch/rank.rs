@@ -171,6 +171,7 @@ mod tests {
             url: url.into(),
             title: "T".into(),
             text: text.into(),
+            published: None,
         }
     }
 

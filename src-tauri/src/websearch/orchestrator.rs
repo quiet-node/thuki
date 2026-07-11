@@ -72,6 +72,7 @@ use crate::websearch::prepass::{
     InferenceError, PrePass, PrePassDecision, SearchDecision, SearchRoute,
 };
 use crate::websearch::rank::{select_chunks, Scorer};
+use crate::websearch::recency::recency_reorder;
 use crate::websearch::serp_cache::WebCache;
 use crate::websearch::sports::{fetch_sports, is_sports_intent};
 use crate::websearch::weather::fetch_weather;
@@ -721,6 +722,14 @@ async fn run_engine_tier(
     status(SearchPhase::Reading);
     let pages = fetch_pages(deps.transport, &hits, num_ctx, deps.web_cache, bypass_cache).await;
     let chunks = select_chunks(&pages, standalone_question, deps.scorer);
+    // Freshness-gated recency-prior fusion (see `recency::recency_reorder`):
+    // only reorders sources on a turn the freshness signal already flagged, so
+    // a non-fresh turn pays zero extra cost and its ranking is untouched.
+    let chunks = if freshness {
+        recency_reorder(&chunks, &pages, time::OffsetDateTime::now_utc())
+    } else {
+        chunks
+    };
     let sources = assemble_context(&chunks, num_ctx);
     if sources.is_empty() {
         return EngineTierOutcome::Empty;
@@ -1180,6 +1189,8 @@ mod tests {
     use crate::websearch::rank::Bm25Scorer;
     use async_trait::async_trait;
     use std::sync::Mutex;
+    use time::format_description::well_known::Rfc3339;
+    use time::OffsetDateTime;
 
     /// A transport that cancels `token` on every send (after returning the SERP),
     /// so the orchestrator's mid-pipeline cancellation checks are exercised.
@@ -2823,6 +2834,141 @@ mod tests {
                 SearchPhase::Reading
             ]
         );
+    }
+
+    /// Two hits whose extracted article bodies are byte-identical (so BM25
+    /// gives them equal relevance), differing only by URL and an embedded
+    /// JSON-LD `datePublished`, `old` published far further in the past than
+    /// `new`. Used to prove the recency pass actually reorders the engine
+    /// tier's `sources` end to end, gated by the turn's freshness signal.
+    fn transport_with_two_dated_pages(
+        old: OffsetDateTime,
+        new: OffsetDateTime,
+    ) -> FakeHttpTransport {
+        let serp = r#"
+          <div class="result">
+            <a class="result__a" href="https://old.example/">Springfield population</a>
+            <a class="result__snippet">springfield population figures</a>
+          </div>
+          <div class="result">
+            <a class="result__a" href="https://new.example/">Springfield population</a>
+            <a class="result__snippet">springfield population figures</a>
+          </div>
+        "#;
+        let article = |published: OffsetDateTime| {
+            format!(
+                r#"<html><head>
+                  <script type="application/ld+json">{{"datePublished":"{}"}}</script>
+                </head><body><article><h1>Springfield population</h1>
+                <p>Officials released updated population figures for Springfield this
+                week, citing new housing developments and job growth as the main
+                drivers behind the change across the metro region.</p>
+                <p>Local planners expect the population trend to continue as more
+                residents move in seeking affordable housing and employment in the
+                growing local economy of Springfield.</p>
+                </article></body></html>"#,
+                published.format(&Rfc3339).unwrap()
+            )
+        };
+        FakeHttpTransport::new()
+            .with_response(
+                DDG_ENDPOINT,
+                HttpResponse {
+                    status: 200,
+                    final_url: DDG_ENDPOINT.into(),
+                    body: serp.as_bytes().to_vec(),
+                },
+            )
+            .with_response(
+                "https://old.example/",
+                HttpResponse {
+                    status: 200,
+                    final_url: "https://old.example/".into(),
+                    body: article(old).into_bytes(),
+                },
+            )
+            .with_response(
+                "https://new.example/",
+                HttpResponse {
+                    status: 200,
+                    final_url: "https://new.example/".into(),
+                    body: article(new).into_bytes(),
+                },
+            )
+    }
+
+    #[tokio::test]
+    async fn fresh_query_reorders_equally_relevant_sources_by_recency() {
+        // "latest" is a WIKI_VOLATILITY_MARKERS token, so is_volatile_question
+        // (the freshness gate `run_engine_tier` reuses) is true for this
+        // standalone question.
+        let standalone = "what is the latest population of springfield";
+        let now = OffsetDateTime::now_utc();
+        let old = now - time::Duration::days(90);
+        let new = now - time::Duration::days(1);
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: standalone.into(),
+            queries: vec!["springfield population".into()],
+            explicit_search: false,
+        }));
+        let transport = transport_with_two_dated_pages(old, new);
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            standalone,
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        // Both sources are equally relevant (identical article text): the
+        // freshness-gated recency pass must put the newer one first.
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources[0].url == "https://new.example/"
+                && sources[1].url == "https://old.example/"));
+    }
+
+    #[tokio::test]
+    async fn non_fresh_query_leaves_the_same_dated_sources_unreordered() {
+        // Same two dated, equally relevant pages as the fresh-query test
+        // above, but a standalone question carrying no freshness marker: the
+        // recency pass must not run, so the order stays exactly the
+        // relevance/SERP order (old.example first, matching its SERP rank).
+        let standalone = "history of the springfield population";
+        let now = OffsetDateTime::now_utc();
+        let old = now - time::Duration::days(90);
+        let new = now - time::Duration::days(1);
+        assert!(!is_volatile_question(standalone));
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: standalone.into(),
+            queries: vec!["springfield population".into()],
+            explicit_search: false,
+        }));
+        let transport = transport_with_two_dated_pages(old, new);
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            standalone,
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources[0].url == "https://old.example/"
+                && sources[1].url == "https://new.example/"));
     }
 
     #[tokio::test]

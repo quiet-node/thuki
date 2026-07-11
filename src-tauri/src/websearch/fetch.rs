@@ -26,16 +26,27 @@ use crate::config::defaults::{
 };
 use crate::net::transport::{HttpRequest, HttpTransport};
 use crate::websearch::engine::SearchHit;
+use crate::websearch::recency::extract_published_date;
 use crate::websearch::serp_cache::WebCache;
 
 /// A page reduced to what the ranking and writer stages consume: the resolved
 /// URL, a title, and readable body text. On a fetch/extract failure `text` is
 /// the hit's SERP snippet rather than the extracted article.
+///
+/// `published` is the best-effort published/modified date extracted from the
+/// raw HTML on a successful fetch (see [`crate::websearch::recency`]), used
+/// only by the freshness-gated recency fusion. It is `None` for a snippet
+/// fallback, a failed fetch, AND a page cache hit: the page cache stores only
+/// extracted text, not the raw HTML the date lives in, so a warm cache entry
+/// degrades to undated (never zero, never dropped, see
+/// [`crate::config::defaults::RECENCY_NEUTRAL_SCORE`]) rather than paying for
+/// a second fetch just to recover a date.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchedPage {
     pub url: String,
     pub title: String,
     pub text: String,
+    pub published: Option<time::OffsetDateTime>,
 }
 
 /// How many result URLs to fully fetch given the context window and how many
@@ -86,12 +97,19 @@ fn normalize_ws(text: &str) -> String {
 
 /// Builds a [`FetchedPage`] from a hit and the extraction result: the extracted
 /// text when present, otherwise the hit's SERP snippet. URL and title always
-/// come from the hit (the resolved SERP URL).
-pub(crate) fn page_from_parts(hit: &SearchHit, extracted: Option<String>) -> FetchedPage {
+/// come from the hit (the resolved SERP URL). `published` carries through
+/// whatever date, if any, [`extract_published_date`] recovered from the raw
+/// HTML; callers with no raw HTML (snippet-only, cache hit) pass `None`.
+pub(crate) fn page_from_parts(
+    hit: &SearchHit,
+    extracted: Option<String>,
+    published: Option<time::OffsetDateTime>,
+) -> FetchedPage {
     FetchedPage {
         url: hit.url.clone(),
         title: hit.title.clone(),
         text: extracted.unwrap_or_else(|| hit.snippet.clone()),
+        published,
     }
 }
 
@@ -136,7 +154,11 @@ pub async fn fetch_pages(
     .await;
     fetched
         .into_iter()
-        .chain(snippet_only.iter().map(|hit| page_from_parts(hit, None)))
+        .chain(
+            snippet_only
+                .iter()
+                .map(|hit| page_from_parts(hit, None, None)),
+        )
         .collect()
 }
 
@@ -152,6 +174,11 @@ pub async fn fetch_pages(
 /// never cached, so only real article text is ever reused. The cache is read
 /// before and written after the `await`, never across it, so its lock is never
 /// held over I/O.
+///
+/// On a successful fetch, [`extract_published_date`] also runs against the raw
+/// HTML (the same response body `extract_readable` consumes) so the recency
+/// fusion has a date to work with; a cache hit skips this (see
+/// [`FetchedPage::published`]'s doc).
 #[cfg_attr(coverage_nightly, coverage(off))]
 async fn fetch_one(
     transport: &dyn HttpTransport,
@@ -162,26 +189,28 @@ async fn fetch_one(
     if !bypass_cache {
         if let Some(text) = cache.page_get(hit.url.as_str()) {
             eprintln!("[search] page cache hit url={}", hit.url);
-            return page_from_parts(hit, Some(text));
+            return page_from_parts(hit, Some(text), None);
         }
     }
     let request = HttpRequest::get(hit.url.as_str());
-    let extracted = match tokio::time::timeout(
+    let (extracted, published) = match tokio::time::timeout(
         std::time::Duration::from_secs(FETCH_PER_URL_TIMEOUT_S),
         transport.send(&request),
     )
     .await
     {
-        Ok(Ok(response)) if (200..300).contains(&response.status) => extract_readable(
-            &String::from_utf8_lossy(&response.body),
-            &response.final_url,
-        ),
-        _ => None,
+        Ok(Ok(response)) if (200..300).contains(&response.status) => {
+            let html = String::from_utf8_lossy(&response.body);
+            let text = extract_readable(&html, &response.final_url);
+            let published = extract_published_date(&html, time::OffsetDateTime::now_utc());
+            (text, published)
+        }
+        _ => (None, None),
     };
     if let Some(text) = &extracted {
         cache.page_put(hit.url.as_str(), text.clone());
     }
-    page_from_parts(hit, extracted)
+    page_from_parts(hit, extracted, published)
 }
 
 #[cfg(test)]
@@ -282,15 +311,23 @@ mod tests {
 
     #[test]
     fn page_uses_extracted_text_when_present() {
-        let page = page_from_parts(&hit("https://a/", "snip"), Some("full body".into()));
+        let page = page_from_parts(&hit("https://a/", "snip"), Some("full body".into()), None);
         assert_eq!(page.text, "full body");
         assert_eq!(page.url, "https://a/");
+        assert!(page.published.is_none());
     }
 
     #[test]
     fn page_falls_back_to_snippet_when_absent() {
-        let page = page_from_parts(&hit("https://a/", "the snippet"), None);
+        let page = page_from_parts(&hit("https://a/", "the snippet"), None, None);
         assert_eq!(page.text, "the snippet");
+    }
+
+    #[test]
+    fn page_carries_through_a_published_date() {
+        let now = time::OffsetDateTime::now_utc();
+        let page = page_from_parts(&hit("https://a/", "snip"), Some("body".into()), Some(now));
+        assert_eq!(page.published, Some(now));
     }
 
     // ── fetch_pages over the fake transport ───────────────────────────────────

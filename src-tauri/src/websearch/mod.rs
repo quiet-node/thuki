@@ -30,6 +30,9 @@
 //!   dead-ending on a "the sources do not contain that" refusal.
 //! - [`fetch`] — concurrent page fetch + readability extraction.
 //! - [`rank`] — chunking + BM25 extractive filter behind a `Scorer` seam.
+//! - [`recency`] — bounded published-date extraction and the recency-prior
+//!   fusion applied to the engine tier's ranked sources on a freshness-flagged
+//!   turn only.
 //! - [`assemble`] — group ranked chunks into budgeted numbered source blocks.
 //! - [`writer`] — writer prompt assembly with prompt-injection defenses.
 //! - [`orchestrator`] — the fixed pipeline tying the stages together.
@@ -48,6 +51,7 @@ pub mod orchestrator;
 pub mod prefilter;
 pub mod prepass;
 pub mod rank;
+pub mod recency;
 pub mod serp_cache;
 pub mod sports;
 pub mod weather;
