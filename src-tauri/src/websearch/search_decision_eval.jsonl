@@ -95,3 +95,9 @@
 {"message": "how long until new year's eve", "label": "search", "category": "date_arithmetic", "route": "web", "volatility": "fast"}
 {"message": "how many days are in february", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "never"}
 {"message": "how long is a marathon", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "never"}
+{"message": "how old is Tom Cruise", "label": "search", "category": "entity_attribute", "route": "web", "volatility": "slow"}
+{"message": "what age is the current CEO of Tesla", "label": "search", "category": "entity_attribute", "route": "web", "volatility": "slow"}
+{"message": "what is Rihanna's age", "label": "search", "category": "entity_attribute", "route": "web", "volatility": "slow"}
+{"message": "how long ago did the company IPO", "label": "search", "category": "date_arithmetic", "route": "web", "volatility": "fast"}
+{"message": "how old is the universe", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "never"}
+{"message": "how old are the pyramids of Giza", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "never"}

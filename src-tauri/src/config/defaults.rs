@@ -881,17 +881,74 @@ pub const SUFFICIENCY_JUDGE_TIMEOUT_S: u64 = 35;
 /// from a static encyclopedia extract; it falls through to the news / engine
 /// tiers instead. Matched as whole tokens of the lowercased standalone question.
 ///
+/// `anniversary` covers the age/biography class documented on
+/// [`WIKI_VOLATILITY_PHRASES`]: "X years since" a fixed past date is a duration
+/// that changes every year, so it needs the same fresh grounding as an explicit
+/// "latest"/"current" question.
+///
 /// Not user-tunable: a prompt/routing contract guarding a model-routed decision
 /// against a known non-answer failure mode, not a quality knob.
-pub const WIKI_VOLATILITY_MARKERS: &[&str] =
-    &["latest", "current", "status", "today", "recent", "upcoming"];
+pub const WIKI_VOLATILITY_MARKERS: &[&str] = &[
+    "latest",
+    "current",
+    "status",
+    "today",
+    "recent",
+    "upcoming",
+    "anniversary",
+];
 
 /// Multi-word freshness phrases that disqualify the Wikipedia vertical, matched
 /// as whole phrases of the lowercased standalone question. Split out from
 /// [`WIKI_VOLATILITY_MARKERS`] because they span a word boundary.
 ///
+/// `"how old is"`, `"what age is"`, and `"s age"` (the tokenised form of the
+/// possessive `"'s age"`, since tokenisation splits on the apostrophe) are the
+/// age/biography class: a present-tense age question ("how old is Tom Cruise")
+/// is computed from the subject's birth date and the CURRENT date, so it is a
+/// duration that changes every year exactly like an explicit "latest"/"current"
+/// question — the live-smoke regression this addition fixes (2026-07-11:
+/// Tom Cruise's age answered stale/wrong because no freshness signal fired).
+/// `"how long ago"` is the same duration-from-a-fixed-past-date shape.
+///
+/// Two related phrasings are deliberately NOT included, each for a reason
+/// specific to this guard (not a general safety net):
+/// - **Past-tense age** ("how old WAS Napoleon when he died", "what age WAS
+///   Einstein") names a duration between two fixed historical dates, which
+///   never changes; flagging it would wrongly disqualify the Wikipedia vertical
+///   for a question it answers well (see the `historical_attribute` rows in
+///   `search_decision_eval.jsonl`, which exist to keep exactly these turns wiki-
+///   eligible).
+/// - **Birth date itself** ("when was Einstein born") names a fixed historical
+///   date with no yearly-changing component, so it carries no freshness need;
+///   Wikipedia's lead paragraph is the best source for it and should stay
+///   eligible.
+///
+/// A bare `"age of"` is also deliberately excluded rather than added: idiomatic
+/// English overwhelmingly uses it for eternal/historical-era facts ("age of the
+/// universe", "Age of Enlightenment", "age of consent"), not living people, so it
+/// would trigger far more over-matches than the "how old is" pattern it would be
+/// meant to catch.
+///
+/// This module accepts one known over-match without a guard: `"how old is"`
+/// still fires on an eternal-fact subject ("how old is the universe/Earth/the
+/// pyramids"). No cheap deterministic check tells "a person" from "an era"
+/// apart, and building real subject detection is out of scope for a keyword
+/// guard. The cost of firing anyway is bounded and never wrong: it only adds a
+/// mild recency bias to the engine tier (see `DDG_FRESHNESS_DF_VALUE`,
+/// `NEWS_FRESHNESS_OPERATOR`, `RECENCY_ALPHA`) and, when the classifier had
+/// routed to `wiki`, sends the turn to the engines instead of the static
+/// summary — never an incorrect answer, at most a slightly less direct one.
+///
 /// Not user-tunable: same routing-contract rationale as the single-word markers.
-pub const WIKI_VOLATILITY_PHRASES: &[&str] = &["right now", "this year"];
+pub const WIKI_VOLATILITY_PHRASES: &[&str] = &[
+    "right now",
+    "this year",
+    "how old is",
+    "what age is",
+    "s age",
+    "how long ago",
+];
 
 /// Earliest 4-digit year that reads as a present/future freshness signal in a
 /// standalone question, disqualifying the Wikipedia vertical. A year at or above

@@ -65,6 +65,13 @@ pub(crate) struct WikiSummary {
 /// [`WIKI_VOLATILITY_MIN_YEAR`]. Wikipedia's lead summary answers the stable
 /// subject, never its live state, so such a question must fall through to the
 /// news / engine tiers.
+///
+/// This is also the sole freshness signal for the rest of the search pipeline
+/// (see `orchestrator::run_web`'s `freshness` variable): the same `true`/`false`
+/// gates the DuckDuckGo/Google News date-bias operators and the recency-prior
+/// fusion re-ranking, not just the Wikipedia vertical. `WIKI_VOLATILITY_PHRASES`
+/// documents the age/biography patterns in detail, including which related
+/// phrasings are deliberately excluded and why.
 pub(crate) fn is_volatile_question(question: &str) -> bool {
     let lower = question.to_lowercase();
     let tokens: Vec<&str> = lower
@@ -316,6 +323,71 @@ mod tests {
         // "recentralise" contains "recent" as a substring but is not the marker
         // token; whole-token matching must not trip on it.
         assert!(!is_volatile_question("what does recentralise mean"));
+    }
+
+    // ── age/biography patterns (live-smoke fix, 2026-07-11) ──────────────────
+    //
+    // "how old is Tom Cruise" was answered stale (63 instead of the correct 64)
+    // because no freshness signal fired, so recency fusion and the engines'
+    // date-bias never engaged and every retrieved source was a stale
+    // pre-birthday page. These patterns close that gap.
+
+    #[test]
+    fn age_question_present_tense_is_volatile() {
+        assert!(is_volatile_question("how old is Tom Cruise"));
+        assert!(is_volatile_question("what age is the current CEO of Apple"));
+    }
+
+    #[test]
+    fn possessive_age_phrasing_is_volatile() {
+        // Tokenisation splits the apostrophe, so "Cruise's age" reads as the
+        // "s age" phrase.
+        assert!(is_volatile_question("what is Tom Cruise's age"));
+    }
+
+    #[test]
+    fn how_long_ago_is_volatile() {
+        // A duration from a fixed past date to now changes every year.
+        assert!(is_volatile_question("how long ago did the merger happen"));
+    }
+
+    #[test]
+    fn anniversary_marker_is_volatile() {
+        assert!(is_volatile_question("company anniversary announcement"));
+    }
+
+    #[test]
+    fn eternal_fact_age_question_is_a_known_accepted_over_match() {
+        // Documented tradeoff (see WIKI_VOLATILITY_PHRASES rustdoc): no cheap
+        // guard distinguishes a person from an era, so this fires too. That is
+        // accepted because it only ever adds a mild recency bias, never an
+        // incorrect answer.
+        assert!(is_volatile_question("how old is the universe"));
+    }
+
+    #[test]
+    fn past_tense_age_question_is_not_volatile() {
+        // Past-tense age at a fixed historical event never changes; flagging it
+        // would wrongly disqualify the Wikipedia vertical for a question it
+        // answers well (see the `historical_attribute` rows in
+        // search_decision_eval.jsonl).
+        assert!(!is_volatile_question("how old was Napoleon when he died"));
+        assert!(!is_volatile_question(
+            "what age was Einstein when he published the theory of relativity"
+        ));
+    }
+
+    #[test]
+    fn birth_date_question_is_not_volatile() {
+        // A fixed historical date carries no yearly-changing component.
+        assert!(!is_volatile_question("when was Einstein born"));
+    }
+
+    #[test]
+    fn bare_age_of_phrasing_is_not_volatile() {
+        // "age of" is dominated by eternal/historical-era idioms in ordinary
+        // English, so it is deliberately not a marker.
+        assert!(!is_volatile_question("what is the age of enlightenment"));
     }
 
     // ── year-mismatch guard ──────────────────────────────────────────────────
