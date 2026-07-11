@@ -24,6 +24,11 @@ theinteldrop.org
 thepeoplesvoice.tv
 neonnettle.com
 
+# cluster: editorial judgment -- individually verified via live search-trace inspection, 2026-07-11 smoke session (celebrity/net-worth/death-hoax/date-arithmetic queries)
+mediamass.net
+newsunzip.com
+current-affairs.org
+
 # penalize
 
 # cluster: quenhus/uBlock-Origin-dev-filter (dist/duckduckgo/seo_spam.txt) -- Unlicense
@@ -252,6 +257,26 @@ zaizhele.net
 # cluster: editorial judgment -- thin finance/ranking-content aggregators (user-observed offenders; only 2 independently confirmed, category needs expansion -- see report)
 wealthrank.in
 goodreturns.in
+
+# cluster: editorial judgment -- individually verified via live search-trace inspection, 2026-07-11 smoke session (celebrity/net-worth/death-hoax/date-arithmetic queries)
+silverscreen-magazine.com
+biographywallah.com
+spendelonmuskmoney.org
+mediaboss.net
+grizzlybulls.com
+chandiapk.com
+famousbirthsdeaths.com
+willvideoforfood.com
+rickeysmileymorningshow.com
+inchcalculator.com
+datecalc.org
+alltimecalculator.com
+howlongcalc.com
+christmasdaycountdownclock.com
+christmastotal.com
+agecalculator.iamrohit.in
+datetimecalculator.net
+daycalculator.com
 
 # boost
 

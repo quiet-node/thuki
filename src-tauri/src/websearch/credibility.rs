@@ -272,4 +272,29 @@ good.example
         );
         assert!(SETS.boost.len() > 50, "boost list should be populated");
     }
+
+    #[test]
+    fn embedded_file_classifies_live_observed_hoax_and_spam_additions() {
+        // 2026-07-11 smoke-session additions: individually verified via live
+        // search-trace inspection rather than a bulk-imported list. mediamass.net
+        // is listed at the registrable-domain level so the observed subdomain
+        // en.mediamass.net inherits Drop via suffix matching.
+        assert_eq!(classify_domain("en.mediamass.net"), DomainClass::Drop);
+        assert_eq!(classify_domain("mediamass.net"), DomainClass::Drop);
+        assert_eq!(classify_domain("www.newsunzip.com"), DomainClass::Drop);
+        assert_eq!(
+            classify_domain("www.current-affairs.org"),
+            DomainClass::Drop
+        );
+        assert_eq!(classify_domain("grizzlybulls.com"), DomainClass::Penalize);
+        assert_eq!(
+            classify_domain("agecalculator.iamrohit.in"),
+            DomainClass::Penalize
+        );
+        assert_eq!(classify_domain("daycalculator.com"), DomainClass::Penalize);
+        // Explicitly excluded per product-owner review: staleness is handled by
+        // recency ranking, not credibility.
+        assert_eq!(classify_domain("insiderpaper.com"), DomainClass::Neutral);
+        assert_eq!(classify_domain("plisio.net"), DomainClass::Neutral);
+    }
 }
