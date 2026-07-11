@@ -63,8 +63,36 @@ pub(crate) fn domain_of(url: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Normalizes a URL to a dedup *key* so obviously-equivalent variants (a
+/// trailing slash, or `http` vs `https`) collapse onto the same key without
+/// altering any URL actually stored, displayed, or fetched. Two independent
+/// engines scraping the same page frequently disagree on exactly these two
+/// details (one wraps a redirect, the other serves a bare host-root link),
+/// and every exact-string dedup step in the fusion pipeline
+/// ([`engine::rrf_fuse`]'s intra-list and cross-list keys,
+/// [`engine::dedupe_and_cap`]'s final pass, and [`orchestrator::dedupe_hits`]'s
+/// cross-query pass) used the raw URL string as its key, so a same-page
+/// variant slipped through every one of them and only got caught by the
+/// per-domain cap (which allows more than one, by design, for genuinely
+/// distinct pages).
+///
+/// Deliberately not a full canonicalizer: query strings, `www.` prefixes, and
+/// path casing are left untouched, since collapsing those can change page
+/// identity and a wrong collapse would silently drop a distinct source. Only
+/// the two variant classes named above are folded, matching what a fusion
+/// step can safely assume is "the same page" without inspecting content.
+pub(crate) fn canonical_url_key(url: &str) -> String {
+    let no_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    no_scheme.strip_suffix('/').unwrap_or(no_scheme).to_string()
+}
+
 #[cfg(test)]
 mod tests {
+    use super::canonical_url_key;
+
     #[test]
     fn domain_of_extracts_host_or_empty() {
         assert_eq!(
@@ -72,5 +100,35 @@ mod tests {
             "sub.example.com"
         );
         assert_eq!(super::domain_of("not a url"), "");
+    }
+
+    #[test]
+    fn canonical_url_key_folds_scheme_and_trailing_slash() {
+        // https vs http, and a trailing slash vs none: all four collapse to
+        // the same key.
+        let keys = [
+            "https://www.binance.com/en/price/bitcoin",
+            "https://www.binance.com/en/price/bitcoin/",
+            "http://www.binance.com/en/price/bitcoin",
+            "http://www.binance.com/en/price/bitcoin/",
+        ]
+        .map(canonical_url_key);
+        assert!(keys.windows(2).all(|w| w[0] == w[1]));
+    }
+
+    #[test]
+    fn canonical_url_key_keeps_distinct_paths_distinct() {
+        assert_ne!(
+            canonical_url_key("https://example.com/a"),
+            canonical_url_key("https://example.com/b")
+        );
+    }
+
+    #[test]
+    fn canonical_url_key_root_path_matches_bare_host() {
+        assert_eq!(
+            canonical_url_key("https://example.com/"),
+            canonical_url_key("https://example.com")
+        );
     }
 }

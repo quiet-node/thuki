@@ -48,7 +48,7 @@ use tokio_util::sync::CancellationToken;
 use crate::commands::ChatMessage;
 use crate::config::defaults::SERP_EARLY_STOP_HITS;
 use crate::net::transport::HttpTransport;
-use crate::trace::{BoundRecorder, RecorderEvent, RetrievedSource};
+use crate::trace::{BoundRecorder, EngineStat, RecorderEvent, RetrievedSource};
 use crate::websearch::assemble::{assemble_context, SourceBlock};
 use crate::websearch::cache::{CachedSearch, SourceCache};
 use crate::websearch::encyclopedia::{fetch_encyclopedia, is_volatile_question};
@@ -265,6 +265,7 @@ pub async fn run_search(
                 cached.sources,
                 today,
                 locale,
+                Vec::new(),
             ),
             None => {
                 run_web(
@@ -579,7 +580,7 @@ async fn run_web(
         EngineTierOutcome::Empty => SearchOutcome::Unreachable {
             messages: unreachable_messages(chat_system_prompt, history, latest_user),
         },
-        EngineTierOutcome::Ranked(sources) => grounded_answer(
+        EngineTierOutcome::Ranked(sources, engine_stats) => grounded_answer(
             deps,
             "engine",
             chat_system_prompt,
@@ -589,6 +590,7 @@ async fn run_web(
             sources,
             today,
             locale,
+            engine_stats,
         ),
     }
 }
@@ -602,8 +604,11 @@ enum EngineTierOutcome {
     /// Every engine was blocked or empty, or nothing survived ranking: there is
     /// nothing citable.
     Empty,
-    /// The budgeted, ranked source blocks ready for the writer.
-    Ranked(Vec<SourceBlock>),
+    /// The budgeted, ranked source blocks ready for the writer, alongside the
+    /// per-query, per-engine outcome summary (see [`EngineStat`]) collected
+    /// across every [`web_search`] call this tier made, for the caller to
+    /// forward into [`RecorderEvent::SearchRetrieved`].
+    Ranked(Vec<SourceBlock>, Vec<EngineStat>),
 }
 
 /// Runs the general scraped-engine tier for `queries`: for each query race the
@@ -636,21 +641,28 @@ async fn run_engine_tier(
     status: &(dyn Fn(SearchPhase) + Send + Sync),
 ) -> EngineTierOutcome {
     let mut hits: Vec<SearchHit> = Vec::new();
+    // Per-(query, engine) outcome summary accumulated across every web_search
+    // call this tier makes, for the caller to surface in the trace (see
+    // `EngineTierOutcome::Ranked`'s docs). Collected even on a path that ends
+    // up `Empty`-content-wise being discarded with the outcome: only the
+    // `Ranked` arm below actually forwards it, since that is the only path a
+    // `SearchRetrieved` event gets recorded for this tier.
+    let mut engine_stats: Vec<EngineStat> = Vec::new();
     for query in queries {
         if cancel.is_cancelled() {
             return EngineTierOutcome::Cancelled;
         }
-        hits.extend(
-            web_search(
-                deps.transport,
-                query,
-                deps.health,
-                freshness,
-                deps.web_cache,
-                bypass_cache,
-            )
-            .await,
-        );
+        let (query_hits, query_stats) = web_search(
+            deps.transport,
+            query,
+            deps.health,
+            freshness,
+            deps.web_cache,
+            bypass_cache,
+        )
+        .await;
+        hits.extend(query_hits);
+        engine_stats.extend(query_stats);
         // Early stop: once one query has produced enough hits, further queries
         // add third-party burst (the engines' rate limits are volume-triggered)
         // and latency for marginal recall.
@@ -672,7 +684,7 @@ async fn run_engine_tier(
     if sources.is_empty() {
         return EngineTierOutcome::Empty;
     }
-    EngineTierOutcome::Ranked(sources)
+    EngineTierOutcome::Ranked(sources, engine_stats)
 }
 
 /// The judge gate applied to every keyless vertical answer: decide whether the
@@ -753,6 +765,7 @@ async fn commit_or_escalate(
             vec![block],
             today,
             locale,
+            Vec::new(),
         );
     }
     eprintln!(
@@ -780,6 +793,7 @@ async fn commit_or_escalate(
             vec![block],
             today,
             locale,
+            Vec::new(),
         );
     }
     match run_engine_tier(
@@ -800,7 +814,7 @@ async fn commit_or_escalate(
         EngineTierOutcome::Cancelled => SearchOutcome::Cancelled,
         // The engines answered: merge the vertical block with their sources
         // rather than discard it (see `merge_sources`).
-        EngineTierOutcome::Ranked(sources) => {
+        EngineTierOutcome::Ranked(sources, engine_stats) => {
             deps.recorder.record(RecorderEvent::SearchEscalated {
                 from_tier: tier.to_string(),
                 sufficient: false,
@@ -818,6 +832,7 @@ async fn commit_or_escalate(
                 merge_sources(block, sources, num_ctx),
                 today,
                 locale,
+                engine_stats,
             )
         }
         // The engines came up empty too: fall back to the vertical block as a
@@ -840,6 +855,7 @@ async fn commit_or_escalate(
                 vec![block],
                 today,
                 locale,
+                Vec::new(),
             )
         }
     }
@@ -850,7 +866,10 @@ async fn commit_or_escalate(
 /// source-grounded [`SearchOutcome::Answer`]. `tier` is the source that
 /// answered the turn ("weather", "sports", "news", "wiki", "engine", or
 /// "cache"); the recorded URLs are the cited sources', so a trace shows
-/// exactly what grounded the reply.
+/// exactly what grounded the reply. `engine_stats` is the general
+/// scraped-engine tier's per-query, per-engine outcome summary (see
+/// [`EngineStat`]); callers answering from a vertical or the cache pass an
+/// empty vec, since only the engine tier ever races the keyless engines.
 ///
 /// The cache write is skipped for tier `"cache"` itself (an answer served
 /// from the cache is not a new search, so it must not reset the entry's TTL
@@ -866,6 +885,7 @@ fn grounded_answer(
     sources: Vec<SourceBlock>,
     today: &str,
     locale: &str,
+    engine_stats: Vec<EngineStat>,
 ) -> SearchOutcome {
     deps.recorder.record(RecorderEvent::SearchRetrieved {
         tier: tier.to_string(),
@@ -876,6 +896,7 @@ fn grounded_answer(
                 title: s.title.clone(),
             })
             .collect(),
+        engine_stats,
     });
     let is_cache_tier = tier == "cache";
     if !is_cache_tier {
@@ -942,9 +963,14 @@ fn merge_sources(
 
 /// Removes cross-query duplicate hits by URL, preserving first-seen order.
 fn dedupe_hits(hits: Vec<SearchHit>) -> Vec<SearchHit> {
+    // Same canonical-key dedup as `engine::dedupe_and_cap` (see its docs and
+    // `super::canonical_url_key`): each query's hits already went through
+    // that per-query dedup, but this pass merges hits ACROSS the (up to two)
+    // queries one turn can run, so the same trailing-slash/scheme variant
+    // could otherwise slip back in from a second query's results.
     let mut seen = std::collections::HashSet::new();
     hits.into_iter()
-        .filter(|h| seen.insert(h.url.clone()))
+        .filter(|h| seen.insert(super::canonical_url_key(&h.url)))
         .collect()
 }
 
@@ -1194,6 +1220,24 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].url, "https://a/");
         assert_eq!(out[1].url, "https://b/");
+    }
+
+    #[test]
+    fn dedupe_hits_collapses_cross_query_canonical_variants() {
+        // A second query in the same turn can surface a trailing-slash or
+        // http/https variant of a URL the first query already returned; this
+        // cross-query pass must collapse it exactly like the per-query
+        // `engine::dedupe_and_cap` does.
+        let hit = |u: &str| SearchHit {
+            title: "t".into(),
+            url: u.into(),
+            snippet: "s".into(),
+        };
+        let out = dedupe_hits(vec![
+            hit("https://www.binance.com/en/price/bitcoin"),
+            hit("http://www.binance.com/en/price/bitcoin/"),
+        ]);
+        assert_eq!(out.len(), 1);
     }
 
     #[test]
@@ -2911,7 +2955,7 @@ mod tests {
         let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
         assert!(events.iter().any(|e| matches!(
             e,
-            RecorderEvent::SearchRetrieved { tier, sources }
+            RecorderEvent::SearchRetrieved { tier, sources, .. }
             if tier == "cache" && sources == &vec![RetrievedSource {
                 url: "https://blog.rust-lang.org/".into(),
                 title: "Rust 1.90.0".into(),
@@ -3153,7 +3197,7 @@ mod tests {
         // the generic feed homepage URL is uninformative without the title.
         assert!(events.iter().any(|e| matches!(
             e,
-            RecorderEvent::SearchRetrieved { tier, sources }
+            RecorderEvent::SearchRetrieved { tier, sources, .. }
             if tier == "news" && sources == &vec![RetrievedSource {
                 url: "https://news.google.com/".into(),
                 title: "Google News headlines: f1 race winner".into(),
@@ -3213,9 +3257,28 @@ mod tests {
         let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
         assert!(events.iter().any(|e| matches!(
             e,
-            RecorderEvent::SearchRetrieved { tier, sources }
+            RecorderEvent::SearchRetrieved { tier, sources, .. }
             if tier == "engine" && sources.iter().any(|s| s.url == "https://match.example/")
         )));
+        // The engine tier's per-engine outcome summary reaches the trace too:
+        // DuckDuckGo (canned) answered "ok", Mojeek (no canned response, so the
+        // fake transport errors it) shows "transport_error" rather than
+        // silently vanishing from the record.
+        let engine_stats = events
+            .iter()
+            .find_map(|e| match e {
+                RecorderEvent::SearchRetrieved {
+                    tier, engine_stats, ..
+                } if tier == "engine" => Some(engine_stats),
+                _ => None,
+            })
+            .expect("engine SearchRetrieved event recorded");
+        assert!(engine_stats
+            .iter()
+            .any(|s| s.name == "duckduckgo" && s.status == "ok" && s.hit_count > 0));
+        assert!(engine_stats
+            .iter()
+            .any(|s| s.name == "mojeek" && s.status == "transport_error"));
     }
 
     // ── commit_or_escalate: the sufficiency judge on vertical answers ──────────

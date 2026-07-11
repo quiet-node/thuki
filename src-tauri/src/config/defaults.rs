@@ -1001,13 +1001,6 @@ pub const CREDIBILITY_PENALTY_RANK_OFFSET: u32 = 40;
 /// quality knob.
 pub const DDG_FRESHNESS_DF_VALUE: &str = "w";
 
-/// Mojeek search-operator suffix appended to the query when the standalone
-/// question carries a freshness signal. `since:week` is Mojeek's own query
-/// syntax for narrowing results to the past week.
-///
-/// Not user-tunable: a fixed protocol convention of an external service.
-pub const MOJEEK_FRESHNESS_OPERATOR: &str = "since:week";
-
 /// Google News RSS search-operator suffix appended to the query when the
 /// standalone question carries a freshness signal. `when:7d` narrows the feed
 /// to the past 7 days, correcting the feed's default ordering, which otherwise

@@ -39,6 +39,7 @@
 use scraper::{Html, Selector};
 
 use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
+use crate::trace::EngineStat;
 use crate::websearch::credibility::{classify_domain, DomainClass};
 use crate::websearch::serp_cache::WebCache;
 
@@ -64,12 +65,21 @@ pub(crate) enum SerpOutcome {
 }
 
 /// Body substrings that mark a bot-detection interstitial rather than results.
+/// `captcha-wrap` and `altcha-widget` are Mojeek's own Altcha proof-of-work
+/// challenge markup (live-verified: a 200 response carrying `<title>Captcha</title>`
+/// and these two class/tag names, zero parsed result rows). Without them a
+/// captcha'd Mojeek response falls through [`classify_serp`] to
+/// [`SerpOutcome::Empty`] instead of [`SerpOutcome::Blocked`], so the engine is
+/// never marked cooling and gets re-hammered on every subsequent query instead
+/// of backing off.
 const CAPTCHA_MARKERS: &[&str] = &[
     "anomaly-modal",
     "challenge-form",
     "cf-challenge",
     "hcaptcha",
     "recaptcha",
+    "captcha-wrap",
+    "altcha-widget",
 ];
 
 /// Browser User-Agent sent verbatim on every engine request so it is
@@ -223,6 +233,22 @@ enum EngineOutcome {
     TransportError,
 }
 
+/// Maps one engine's raced outcome to the lean status string surfaced in
+/// [`EngineStat`] for the forensic trace (see
+/// [`crate::trace::RecorderEvent::SearchRetrieved`]). Pure and total: every
+/// `EngineOutcome` variant maps to exactly one string. Kept separate from
+/// [`web_search`]'s coverage-excluded async glue so this mapping is
+/// unit-tested directly rather than only exercised indirectly through the
+/// async racing tests below.
+fn outcome_status(outcome: &EngineOutcome) -> &'static str {
+    match outcome {
+        EngineOutcome::Hits(_) => "ok",
+        EngineOutcome::Blocked => "blocked",
+        EngineOutcome::Empty => "empty",
+        EngineOutcome::TransportError => "transport_error",
+    }
+}
+
 /// Runs a keyless web search for `query` by racing every live engine in
 /// [`ENGINES`] concurrently and fusing their ranked lists with Reciprocal Rank
 /// Fusion. Engines inside their block cooldown (see [`EngineHealth`]) are not
@@ -245,8 +271,10 @@ enum EngineOutcome {
 /// returns a usable list the result is empty, so the caller degrades
 /// gracefully rather than hanging or hallucinating. Each engine's outcome logs
 /// to stderr under `[search]`, followed by one fused summary line. `freshness`
-/// is forwarded to each engine's request builder to bias results toward recent
-/// content when the turn's standalone question carried a freshness signal.
+/// is forwarded to every engine's request builder, but only
+/// [`ddg_html_request`] applies it (see [`mojeek_request`] for why Mojeek does
+/// not) to bias results toward recent content when the turn's standalone
+/// question carried a freshness signal.
 ///
 /// `bypass_cache` is the read-bypass, write-through contract for an explicit
 /// user re-search ("look it up again"): the user is telling us the result we
@@ -269,10 +297,18 @@ enum EngineOutcome {
 /// Coverage-excluded: thin async glue over the injectable transport that
 /// delegates every decision to the pure, directly-tested helpers (each engine's
 /// request builder and parser, [`classify_serp`], [`rrf_fuse`],
-/// [`dedupe_and_cap`], [`EngineHealth`]); its racing + fusion behaviour is still
-/// exercised against [`crate::net::transport::FakeHttpTransport`] in the tests
-/// below. Excluded only because parallel async coverage attribution is
-/// nondeterministic.
+/// [`dedupe_and_cap`], [`outcome_status`], [`EngineHealth`]); its racing +
+/// fusion behaviour is still exercised against
+/// [`crate::net::transport::FakeHttpTransport`] in the tests below. Excluded
+/// only because parallel async coverage attribution is nondeterministic.
+///
+/// Returns the fused hit list alongside a lean per-engine outcome summary
+/// (see [`EngineStat`]): one entry per engine actually consulted this call,
+/// whether it was skipped for cooling, served from the SERP cache, or raced
+/// live. The caller (the orchestrator's `run_engine_tier`) forwards these
+/// into [`crate::trace::RecorderEvent::SearchRetrieved`] so a trace shows a
+/// silently-empty or silently-blocked engine even when the overall fused
+/// result looks healthy, instead of only the stderr `[search]` log below.
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn web_search(
     transport: &dyn HttpTransport,
@@ -281,7 +317,7 @@ pub async fn web_search(
     freshness: bool,
     cache: &WebCache,
     bypass_cache: bool,
-) -> Vec<SearchHit> {
+) -> (Vec<SearchHit>, Vec<EngineStat>) {
     if bypass_cache {
         eprintln!("[search] cache bypass (explicit search)");
     }
@@ -291,10 +327,16 @@ pub async fn web_search(
     // `await` (the same discipline `health` follows). `join_all` preserves input
     // order for the raced engines, so the whole path stays deterministic.
     let mut lists: Vec<Vec<SearchHit>> = Vec::new();
+    let mut stats: Vec<EngineStat> = Vec::new();
     let mut tasks = Vec::new();
     for engine in ENGINES {
         if health.is_cooling(engine.name) {
             eprintln!("[search] engine={} cooling -> skipped", engine.name);
+            stats.push(EngineStat {
+                name: engine.name.to_string(),
+                status: "cooling".to_string(),
+                hit_count: 0,
+            });
             continue;
         }
         if !bypass_cache {
@@ -304,6 +346,11 @@ pub async fn web_search(
                     engine.name,
                     hits.len()
                 );
+                stats.push(EngineStat {
+                    name: engine.name.to_string(),
+                    status: "cache_hit".to_string(),
+                    hit_count: hits.len(),
+                });
                 lists.push(hits);
                 continue;
             }
@@ -329,6 +376,21 @@ pub async fn web_search(
     let results = futures_util::future::join_all(tasks).await;
 
     for (name, cooldown_s, outcome) in results {
+        // Status and hit count both derive from the pure `outcome_status`
+        // classification (and a plain length read); this loop only plumbs
+        // the result into the cache, the cooldown registry, and the stats
+        // list, it makes no further decisions of its own.
+        let status = outcome_status(&outcome);
+        let hit_count = if let EngineOutcome::Hits(hits) = &outcome {
+            hits.len()
+        } else {
+            0
+        };
+        stats.push(EngineStat {
+            name: name.to_string(),
+            status: status.to_string(),
+            hit_count,
+        });
         match outcome {
             EngineOutcome::Hits(hits) => {
                 eprintln!("[search] engine={name} ok hits={}", hits.len());
@@ -364,7 +426,7 @@ pub async fn web_search(
         lists.len(),
         capped.len()
     );
-    capped
+    (capped, stats)
 }
 
 /// Fuses per-engine ranked lists into one ranked list with Reciprocal Rank
@@ -422,14 +484,18 @@ fn rrf_fuse_classified(
     let k = crate::config::defaults::RRF_K as f64;
     let penalty = crate::config::defaults::CREDIBILITY_PENALTY_RANK_OFFSET as f64;
     // First-seen order of URLs across all lists; the stable sort below breaks
-    // score ties by this order.
+    // score ties by this order. Both the intra-list dedup set and the score
+    // map key on `canonical_url_key`, not the raw URL string, so a same-page
+    // hit that two engines render with a trailing-slash or http/https
+    // difference is treated as one URL and scores as genuine cross-engine
+    // agreement instead of two separate, weaker single-engine hits.
     let mut order: Vec<SearchHit> = Vec::new();
     let mut scores: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     for list in lists {
         // A URL may appear at most once per engine, at its first (best) rank.
-        let mut seen_in_list: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut seen_in_list: std::collections::HashSet<String> = std::collections::HashSet::new();
         for (idx, hit) in list.iter().enumerate() {
-            if !seen_in_list.insert(hit.url.as_str()) {
+            if !seen_in_list.insert(super::canonical_url_key(&hit.url)) {
                 continue;
             }
             let rank = (idx + 1) as f64;
@@ -441,10 +507,11 @@ fn rrf_fuse_classified(
                 DomainClass::Drop | DomainClass::Neutral => rank,
             };
             let contribution = 1.0 / (k + effective_rank);
-            match scores.get_mut(&hit.url) {
+            let key = super::canonical_url_key(&hit.url);
+            match scores.get_mut(&key) {
                 Some(score) => *score += contribution,
                 None => {
-                    scores.insert(hit.url.clone(), contribution);
+                    scores.insert(key, contribution);
                     order.push(hit.clone());
                 }
             }
@@ -453,8 +520,8 @@ fn rrf_fuse_classified(
     // slice::sort_by is stable, so equal scores keep their first-seen order.
     // Scores are always finite positives, so partial_cmp never returns None.
     order.sort_by(|a, b| {
-        scores[&b.url]
-            .partial_cmp(&scores[&a.url])
+        scores[&super::canonical_url_key(&b.url)]
+            .partial_cmp(&scores[&super::canonical_url_key(&a.url)])
             .expect("fusion scores are finite")
     });
     order
@@ -517,20 +584,24 @@ pub(crate) fn ddg_html_request(query: &str, freshness: bool) -> HttpRequest {
 
 /// Builds the Mojeek `search` GET request. Mojeek takes the query as a `q` URL
 /// parameter and returns lightweight result HTML with direct (non-wrapped)
-/// destination URLs. When `freshness` is set, [`crate::config::defaults::MOJEEK_FRESHNESS_OPERATOR`]
-/// is appended to the query to bias results toward recent content.
-pub(crate) fn mojeek_request(query: &str, freshness: bool) -> HttpRequest {
+/// destination URLs.
+///
+/// `freshness` is accepted (matching [`ddg_html_request`]'s signature, since
+/// both engines share [`Engine::build`]'s `fn(&str, bool) -> HttpRequest`
+/// shape) but is intentionally NOT applied to the query. This used to append
+/// a `since:week` operator, but that value is invalid: Mojeek's own
+/// documented `since:` operator accepts only `YYYYMMDD`, `day`, `month`, or
+/// `year` (no `week`), so every freshness-flagged Mojeek request was sending
+/// malformed operator syntax. There is no valid substitute at week
+/// granularity either (`day` is narrower than the intent, `month` broader),
+/// so rather than guess a value, freshness is left to DuckDuckGo's own
+/// `df=w` filter (see [`ddg_html_request`]) and Mojeek always searches the
+/// plain query, keeping it in the fusion instead of sending it a query shape
+/// it does not support.
+pub(crate) fn mojeek_request(query: &str, _freshness: bool) -> HttpRequest {
     // MOJEEK_ENDPOINT is a compile-time-valid absolute URL.
     let mut url = url::Url::parse(MOJEEK_ENDPOINT).expect("static endpoint");
-    let q = if freshness {
-        format!(
-            "{query} {}",
-            crate::config::defaults::MOJEEK_FRESHNESS_OPERATOR
-        )
-    } else {
-        query.to_string()
-    };
-    url.query_pairs_mut().append_pair("q", &q);
+    url.query_pairs_mut().append_pair("q", query);
     HttpRequest {
         method: HttpMethod::Get,
         url: url.to_string(),
@@ -681,6 +752,13 @@ fn uddg_target(absolute: &str) -> Option<String> {
 
 /// Deduplicates by URL and caps total results and per-domain results,
 /// preserving first-seen order.
+///
+/// Dedup keys on [`super::canonical_url_key`], not the raw URL string, so a
+/// trailing-slash or http/https variant of an already-kept URL is dropped
+/// here rather than surviving as a second, distinct-looking entry that then
+/// fits inside `max_per_domain` right alongside the original (the domain cap
+/// is deliberately allowed to admit more than one DISTINCT page per domain;
+/// it must not admit the same page twice under two spellings).
 pub(crate) fn dedupe_and_cap(
     hits: Vec<SearchHit>,
     max_total: usize,
@@ -693,7 +771,7 @@ pub(crate) fn dedupe_and_cap(
         if out.len() >= max_total {
             break;
         }
-        if !seen_urls.insert(hit.url.clone()) {
+        if !seen_urls.insert(super::canonical_url_key(&hit.url)) {
             continue;
         }
         let count = per_domain.entry(super::domain_of(&hit.url)).or_insert(0);
@@ -875,6 +953,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn classify_blocked_on_mojeek_altcha_challenge() {
+        // Live-captured Mojeek anti-bot response (200 status, zero parseable
+        // result rows, an Altcha proof-of-work challenge in place of results).
+        // Before CAPTCHA_MARKERS recognized "captcha-wrap"/"altcha-widget" this
+        // fell through to SerpOutcome::Empty, so the engine was never marked
+        // cooling and got re-hammered on every subsequent query -- the root
+        // cause of "engine=mojeek empty" on 7/7 live-smoke queries.
+        assert_eq!(
+            classify_serp(200, 0, MOJEEK_CAPTCHA_FIXTURE),
+            SerpOutcome::Blocked
+        );
+    }
+
     // ── dedupe_and_cap ──────────────────────────────────────────────────────
 
     #[test]
@@ -909,6 +1001,34 @@ mod tests {
         assert_eq!(dedupe_and_cap(hits, 10, 5).len(), 10);
     }
 
+    #[test]
+    fn dedupe_collapses_trailing_slash_and_scheme_variants() {
+        // The live bug: DuckDuckGo and Mojeek rendered the same binance.com
+        // page as two different URL strings (trailing slash, http vs https).
+        // Both fit inside the per-domain cap of 2 and both passed the old
+        // exact-string check, so the identical page occupied two of the ten
+        // fused slots. Canonical-key dedup must collapse them to one.
+        let hits = vec![
+            hit("https://www.binance.com/en/price/bitcoin"),
+            hit("http://www.binance.com/en/price/bitcoin/"),
+            hit("https://other.example/"),
+        ];
+        let out = dedupe_and_cap(hits, 10, 5);
+        assert_eq!(out.len(), 2);
+        // The first-seen variant's exact URL text is kept verbatim; dedup
+        // never rewrites the URL that gets fetched.
+        assert_eq!(out[0].url, "https://www.binance.com/en/price/bitcoin");
+    }
+
+    #[test]
+    fn dedupe_still_admits_two_distinct_pages_on_the_same_domain() {
+        // The per-domain cap intentionally allows more than one DISTINCT page
+        // per domain; canonicalization must not collapse genuinely different
+        // paths just because they share a host.
+        let hits = vec![hit("https://example.com/a"), hit("https://example.com/b")];
+        assert_eq!(dedupe_and_cap(hits, 10, 5).len(), 2);
+    }
+
     // ── parse_mojeek_html ───────────────────────────────────────────────────
 
     // Mirrors real Mojeek markup: organic results in `ul.results-standard > li`
@@ -930,6 +1050,29 @@ mod tests {
           <p class="more"><a href="/search?q=x">no title here</a></p>
         </li>
       </ul>
+    "#;
+
+    /// Trimmed reproduction of a live-captured Mojeek Altcha anti-bot
+    /// challenge page (200 status, `<title>Captcha</title>`, a
+    /// `captcha-wrap` box hosting an `altcha-widget`, no `ul.results-standard`
+    /// anywhere). See `classify_blocked_on_mojeek_altcha_challenge` and
+    /// `parse_mojeek_returns_no_rows_for_altcha_challenge_page`.
+    const MOJEEK_CAPTCHA_FIXTURE: &str = r#"
+      <!DOCTYPE html>
+      <html lang="en">
+      <head><title>Captcha</title></head>
+      <body data-theme="light" class="home">
+      <div class="captcha-wrap">
+        <div class="captcha-box">
+          <h1>Verification required</h1>
+          <p>Please complete the challenge to continue.</p>
+          <form id="altcha-form" method="post" action="/captcha/verify">
+            <altcha-widget id="altcha-widget" challenge="/captcha/challenge" name="altcha" theme="default"></altcha-widget>
+          </form>
+        </div>
+      </div>
+      </body>
+      </html>
     "#;
 
     #[test]
@@ -963,6 +1106,15 @@ mod tests {
     #[test]
     fn parse_mojeek_empty_on_junk() {
         assert!(parse_mojeek_html("<html><body>nothing</body></html>").is_empty());
+    }
+
+    #[test]
+    fn parse_mojeek_returns_no_rows_for_altcha_challenge_page() {
+        // The parser was never the bug: a captcha page correctly parses to
+        // zero rows (no `ul.results-standard`). The bug was in classification
+        // treating that zero as "empty query" instead of "blocked" -- see
+        // `classify_blocked_on_mojeek_altcha_challenge`.
+        assert!(parse_mojeek_html(MOJEEK_CAPTCHA_FIXTURE).is_empty());
     }
 
     // ── request builders ────────────────────────────────────────────────────
@@ -1014,15 +1166,14 @@ mod tests {
     }
 
     #[test]
-    fn mojeek_request_appends_since_week_when_fresh() {
-        let req = mojeek_request("rust version", true);
-        assert!(
-            req.url.contains("since%3Aweek") || req.url.contains("since:week"),
-            "expected since:week operator in {}",
-            req.url
-        );
-        // The operator is appended to the query, not replacing it.
-        assert!(req.url.contains("rust") && req.url.contains("version"));
+    fn mojeek_request_ignores_freshness_flag() {
+        // Mojeek's `since:` operator does not support week granularity (see
+        // `mojeek_request`'s rustdoc), so freshness=true must produce the exact
+        // same request as freshness=false: no operator, no query mutation.
+        let fresh = mojeek_request("rust version", true);
+        let plain = mojeek_request("rust version", false);
+        assert_eq!(fresh.url, plain.url);
+        assert!(!fresh.url.contains("since"));
     }
 
     // ── rrf_fuse ────────────────────────────────────────────────────────────
@@ -1085,6 +1236,49 @@ mod tests {
             fused.iter().map(|h| h.url.as_str()).collect::<Vec<_>>(),
             vec!["https://a.example/", "https://b.example/"]
         );
+    }
+
+    #[test]
+    fn rrf_fuse_counts_canonical_duplicate_within_list_once() {
+        // Same as the exact-match case above, but the repeat is a
+        // trailing-slash variant of the first occurrence: still one URL, one
+        // contribution, at the first (best) rank.
+        let list = vec![
+            hit("https://a.example/"),
+            hit("https://b.example/"),
+            hit("https://a.example"),
+        ];
+        let fused = rrf_fuse(std::slice::from_ref(&list));
+        assert_eq!(
+            fused.iter().map(|h| h.url.as_str()).collect::<Vec<_>>(),
+            vec!["https://a.example/", "https://b.example/"]
+        );
+    }
+
+    #[test]
+    fn rrf_fuse_merges_cross_engine_url_variants_as_agreement() {
+        // The live bug's fusion-level counterpart: DDG renders a page with a
+        // trailing slash, Mojeek renders the same page without one (and over
+        // http instead of https). Canonical-key scoring must treat this as
+        // genuine two-engine agreement (one merged entry, boosted score) not
+        // two separate weaker single-engine hits.
+        let ddg = vec![
+            hit("https://other-ddg/"),
+            hit("https://www.binance.com/en/price/bitcoin/"),
+        ];
+        let mojeek = vec![hit("http://www.binance.com/en/price/bitcoin")];
+        let fused = rrf_fuse(&[ddg, mojeek]);
+        let urls: Vec<&str> = fused.iter().map(|h| h.url.as_str()).collect();
+        // One entry, not two, for the shared page.
+        assert_eq!(
+            urls.iter()
+                .filter(|u| u.contains("binance.com/en/price/bitcoin"))
+                .count(),
+            1
+        );
+        // And cross-engine agreement at rank 2 beats a single-engine rank 1:
+        // the merged binance entry outranks the DDG-only "other-ddg" hit.
+        assert_eq!(urls[0], "https://www.binance.com/en/price/bitcoin/");
     }
 
     #[test]
@@ -1232,10 +1426,24 @@ mod tests {
         let transport = FakeHttpTransport::new().with_response(&mojeek_url, ok(&mojeek_url, body));
         let health = EngineHealth::new();
         health.mark_blocked("duckduckgo", 3600);
-        let hits = web_search(&transport, "q", &health, false, &empty_web_cache(), false).await;
+        let (hits, _stats) =
+            web_search(&transport, "q", &health, false, &empty_web_cache(), false).await;
         let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
         assert!(!urls.iter().any(|u| u.contains("now8news")));
         assert!(urls.contains(&"https://legit.example/real"));
+    }
+
+    // ── outcome_status ──────────────────────────────────────────────────────
+
+    #[test]
+    fn outcome_status_maps_every_variant() {
+        assert_eq!(outcome_status(&EngineOutcome::Hits(vec![])), "ok");
+        assert_eq!(outcome_status(&EngineOutcome::Blocked), "blocked");
+        assert_eq!(outcome_status(&EngineOutcome::Empty), "empty");
+        assert_eq!(
+            outcome_status(&EngineOutcome::TransportError),
+            "transport_error"
+        );
     }
 
     // ── web_search racing + fusion over the fake transport ──────────────────
@@ -1283,7 +1491,7 @@ mod tests {
         let transport = FakeHttpTransport::new()
             .with_response(DDG_HTML_ENDPOINT, ok(DDG_HTML_ENDPOINT, DDG_HTML_FIXTURE))
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let hits = web_search(
+        let (hits, stats) = web_search(
             &transport,
             "q",
             &EngineHealth::new(),
@@ -1303,6 +1511,23 @@ mod tests {
             1
         );
         assert_eq!(calls.iter().filter(|c| c.url == mojeek_url).count(), 1);
+        // Both engines' per-query outcome is surfaced for the trace: "ok"
+        // with their real hit counts.
+        assert_eq!(
+            stats,
+            vec![
+                EngineStat {
+                    name: "duckduckgo".into(),
+                    status: "ok".into(),
+                    hit_count: 2,
+                },
+                EngineStat {
+                    name: "mojeek".into(),
+                    status: "ok".into(),
+                    hit_count: 2,
+                },
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1321,12 +1546,30 @@ mod tests {
                 },
             )
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let hits = web_search(&transport, "q", &health, false, &empty_web_cache(), false).await;
+        let (hits, stats) =
+            web_search(&transport, "q", &health, false, &empty_web_cache(), false).await;
         // Blocked engine contributes no list; Mojeek's two hits survive.
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].url, "https://rust-lang.org/tools/install/");
         // And the block was recorded for the next query.
         assert!(health.is_cooling("duckduckgo"));
+        // The trace-facing stats distinguish the blocked engine (zero hits,
+        // status "blocked") from the one that actually answered.
+        assert_eq!(
+            stats,
+            vec![
+                EngineStat {
+                    name: "duckduckgo".into(),
+                    status: "blocked".into(),
+                    hit_count: 0,
+                },
+                EngineStat {
+                    name: "mojeek".into(),
+                    status: "ok".into(),
+                    hit_count: 2,
+                },
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1342,11 +1585,28 @@ mod tests {
                 ok(DDG_HTML_ENDPOINT, "<html><body>no results</body></html>"),
             )
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let hits = web_search(&transport, "q", &health, false, &empty_web_cache(), false).await;
+        let (hits, stats) =
+            web_search(&transport, "q", &health, false, &empty_web_cache(), false).await;
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].url, "https://rust-lang.org/tools/install/");
         // Empty is not a block: DuckDuckGo stays available for the next query.
         assert!(!health.is_cooling("duckduckgo"));
+        // The trace-facing stats show "empty" (not "blocked") with zero hits.
+        assert_eq!(
+            stats,
+            vec![
+                EngineStat {
+                    name: "duckduckgo".into(),
+                    status: "empty".into(),
+                    hit_count: 0,
+                },
+                EngineStat {
+                    name: "mojeek".into(),
+                    status: "ok".into(),
+                    hit_count: 2,
+                },
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1369,6 +1629,7 @@ mod tests {
             false,
         )
         .await
+        .0
         .is_empty());
     }
 
@@ -1376,7 +1637,7 @@ mod tests {
     async fn web_search_empty_when_all_engines_transport_error() {
         // No canned responses -> every engine's send errors -> empty.
         let transport = FakeHttpTransport::new();
-        assert!(web_search(
+        let (hits, stats) = web_search(
             &transport,
             "q",
             &EngineHealth::new(),
@@ -1384,8 +1645,23 @@ mod tests {
             &empty_web_cache(),
             false,
         )
-        .await
-        .is_empty());
+        .await;
+        assert!(hits.is_empty());
+        assert_eq!(
+            stats,
+            vec![
+                EngineStat {
+                    name: "duckduckgo".into(),
+                    status: "transport_error".into(),
+                    hit_count: 0,
+                },
+                EngineStat {
+                    name: "mojeek".into(),
+                    status: "transport_error".into(),
+                    hit_count: 0,
+                },
+            ]
+        );
     }
 
     // ── EngineHealth cooldown ───────────────────────────────────────────────
@@ -1439,13 +1715,31 @@ mod tests {
         let mojeek_url = mojeek_request("q", false).url;
         let transport = FakeHttpTransport::new()
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let hits = web_search(&transport, "q", &health, false, &empty_web_cache(), false).await;
+        let (hits, stats) =
+            web_search(&transport, "q", &health, false, &empty_web_cache(), false).await;
         assert_eq!(hits.len(), 2);
         // Single live engine: fusion is an identity on order, so Mojeek's own
         // ordering is preserved verbatim.
         assert_eq!(hits[0].url, "https://rust-lang.org/tools/install/");
         assert_eq!(hits[1].url, "https://blog.rust-lang.org/");
         assert!(!transport.calls().iter().any(|c| c.url == DDG_HTML_ENDPOINT));
+        // The cooling engine is surfaced in the stats too (status "cooling",
+        // never requested), not silently dropped from the trace.
+        assert_eq!(
+            stats,
+            vec![
+                EngineStat {
+                    name: "duckduckgo".into(),
+                    status: "cooling".into(),
+                    hit_count: 0,
+                },
+                EngineStat {
+                    name: "mojeek".into(),
+                    status: "ok".into(),
+                    hit_count: 2,
+                },
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1492,7 +1786,7 @@ mod tests {
         let transport = FakeHttpTransport::new()
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
         let health = EngineHealth::new();
-        let hits = web_search(&transport, "q", &health, false, &cache, false).await;
+        let (hits, stats) = web_search(&transport, "q", &health, false, &cache, false).await;
         let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
         // Cached DuckDuckGo hit and a live Mojeek hit both survive the fusion.
         assert!(urls.contains(&"https://cached-ddg/"));
@@ -1501,6 +1795,23 @@ mod tests {
         let calls = transport.calls();
         assert_eq!(calls.len(), 1);
         assert!(!calls.iter().any(|c| c.url == DDG_HTML_ENDPOINT));
+        // The cache-served engine is surfaced as "cache_hit" (not "ok"), so a
+        // trace can distinguish a live answer from a replayed one.
+        assert_eq!(
+            stats,
+            vec![
+                EngineStat {
+                    name: "duckduckgo".into(),
+                    status: "cache_hit".into(),
+                    hit_count: 1,
+                },
+                EngineStat {
+                    name: "mojeek".into(),
+                    status: "ok".into(),
+                    hit_count: 2,
+                },
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1546,7 +1857,7 @@ mod tests {
             .with_response(DDG_HTML_ENDPOINT, ok(DDG_HTML_ENDPOINT, DDG_HTML_FIXTURE))
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
         let health = EngineHealth::new();
-        let hits = web_search(&transport, "q", &health, false, &cache, true).await;
+        let (hits, _stats) = web_search(&transport, "q", &health, false, &cache, true).await;
         // The stale cached hit is gone; the freshly fetched DDG fixture hit is
         // there instead.
         let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
@@ -1574,13 +1885,14 @@ mod tests {
         health.mark_blocked("mojeek", 3600);
         let transport = FakeHttpTransport::new()
             .with_response(DDG_HTML_ENDPOINT, ok(DDG_HTML_ENDPOINT, DDG_HTML_FIXTURE));
-        let bypassed = web_search(&transport, "q", &health, false, &cache, true).await;
+        let (bypassed, _stats) = web_search(&transport, "q", &health, false, &cache, true).await;
         assert!(bypassed.iter().any(|h| h.url == "https://example.com/a"));
         // A second, non-bypassing call with a fresh (non-cooling) health
         // registry reads the cache: DuckDuckGo must now be served from the
         // REPLACED (fresh) entry, not the original stale one, with no further
         // DuckDuckGo request.
-        let served = web_search(&transport, "q", &EngineHealth::new(), false, &cache, false).await;
+        let (served, _stats) =
+            web_search(&transport, "q", &EngineHealth::new(), false, &cache, false).await;
         assert!(!served.iter().any(|h| h.url == "https://stale-ddg/"));
         assert!(served.iter().any(|h| h.url == "https://example.com/a"));
         // Exactly one DuckDuckGo request total: the first (bypassing) call
@@ -1606,7 +1918,7 @@ mod tests {
         let transport = FakeHttpTransport::new()
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
         let health = EngineHealth::new();
-        let hits = web_search(&transport, "q", &health, false, &cache, false).await;
+        let (hits, _stats) = web_search(&transport, "q", &health, false, &cache, false).await;
         let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
         assert!(urls.contains(&"https://cached-ddg/"));
         let calls = transport.calls();

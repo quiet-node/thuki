@@ -149,6 +149,25 @@ pub struct RetrievedSource {
     pub title: String,
 }
 
+/// One keyless engine's outcome for a single query, recorded in
+/// [`RecorderEvent::SearchRetrieved`] for the general scraped-engine tier
+/// (`tier == "engine"`). Deliberately lean: name, status, and hit count only,
+/// matching the counts-not-payloads discipline the rest of the forensic
+/// trace's summary fields already follow. Populated by
+/// `crate::websearch::engine::web_search`, one entry per engine actually
+/// consulted, so a trace shows a silently-empty or silently-blocked engine
+/// even when the overall fused result looks healthy, instead of relying on
+/// the stderr `[search]` log alone.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct EngineStat {
+    pub name: String,
+    /// One of "ok", "empty", "blocked", "transport_error", "cache_hit", or
+    /// "cooling" -- mirrors the `[search] engine=... <outcome>` stderr log
+    /// line emitted alongside it.
+    pub status: String,
+    pub hit_count: usize,
+}
+
 /// Forensic trace events emitted by the chat layer or the search pipeline.
 ///
 /// Each variant maps to one JSON-Lines record. Field shapes are
@@ -302,9 +321,16 @@ pub enum RecorderEvent {
     /// (URL + title) it cited. `tier` is one of "weather", "sports", "news",
     /// "wiki", "engine", or "cache". Emitted once when retrieval produces a
     /// grounded answer.
+    ///
+    /// `engine_stats` carries the general scraped-engine tier's per-query,
+    /// per-engine outcome summary (see [`EngineStat`]): populated only when
+    /// `tier == "engine"` (the direct engine-tier answer and the
+    /// vertical-insufficient escalation path both set it), empty for every
+    /// other tier, since those never race the keyless engines.
     SearchRetrieved {
         tier: String,
         sources: Vec<RetrievedSource>,
+        engine_stats: Vec<EngineStat>,
     },
     /// The sufficiency judge's verdict on a vertical's answer, and what the
     /// orchestrator did with it. Emitted once per turn a keyless vertical
@@ -854,10 +880,15 @@ impl Serialize for RecorderEvent {
                 map.serialize_entry("standalone_question", standalone_question)?;
                 map.serialize_entry("queries", queries)?;
             }
-            RecorderEvent::SearchRetrieved { tier, sources } => {
+            RecorderEvent::SearchRetrieved {
+                tier,
+                sources,
+                engine_stats,
+            } => {
                 map.serialize_entry("kind", "search_retrieved")?;
                 map.serialize_entry("tier", tier)?;
                 map.serialize_entry("sources", sources)?;
+                map.serialize_entry("engine_stats", engine_stats)?;
             }
             RecorderEvent::SearchEscalated {
                 from_tier,
@@ -1087,6 +1118,7 @@ mod tests {
                     url: "https://news.google.com/".into(),
                     title: "Google News headlines".into(),
                 }],
+                engine_stats: vec![],
             },
             RecorderEvent::SearchEscalated {
                 from_tier: "sports".into(),
@@ -1430,6 +1462,7 @@ mod tests {
                     url: "https://en.wikipedia.org/wiki/Photosynthesis".into(),
                     title: "Photosynthesis".into(),
                 }],
+                engine_stats: vec![],
             },
         );
         r.record(
@@ -1503,6 +1536,66 @@ mod tests {
         assert_eq!(lines[9]["numeric_matched"], 1);
         assert_eq!(lines[9]["numeric_missing"], 1);
         assert_eq!(lines[10]["reason"], "quit");
+    }
+
+    #[test]
+    fn search_retrieved_serializes_engine_stats() {
+        // The engine tier's per-query, per-engine outcome summary must reach
+        // the JSONL record intact: one silently-blocked engine sitting right
+        // next to a healthy one, exactly the case the trace previously had no
+        // way to show.
+        let root = fresh_dir();
+        let r = FileRecorder::for_conversation(&root, TraceDomain::Search, &cid("conv-engine"));
+        r.record(
+            &cid("conv-engine"),
+            RecorderEvent::SearchRetrieved {
+                tier: "engine".into(),
+                sources: vec![RetrievedSource {
+                    url: "https://example.com/a".into(),
+                    title: "Example".into(),
+                }],
+                engine_stats: vec![
+                    EngineStat {
+                        name: "duckduckgo".into(),
+                        status: "ok".into(),
+                        hit_count: 10,
+                    },
+                    EngineStat {
+                        name: "mojeek".into(),
+                        status: "blocked".into(),
+                        hit_count: 0,
+                    },
+                ],
+            },
+        );
+        let lines = read_lines(r.path());
+        assert_eq!(lines[0]["tier"], "engine");
+        assert_eq!(
+            lines[0]["engine_stats"],
+            json!([
+                {"name": "duckduckgo", "status": "ok", "hit_count": 10},
+                {"name": "mojeek", "status": "blocked", "hit_count": 0},
+            ])
+        );
+    }
+
+    #[test]
+    fn search_retrieved_engine_stats_empty_for_non_engine_tier() {
+        // Verticals and the cache tier never race the keyless engines, so
+        // their SearchRetrieved records must carry an empty engine_stats,
+        // not a stale or default-filled list.
+        let root = fresh_dir();
+        let r = FileRecorder::for_conversation(&root, TraceDomain::Search, &cid("conv-wiki"));
+        r.record(
+            &cid("conv-wiki"),
+            RecorderEvent::SearchRetrieved {
+                tier: "wiki".into(),
+                sources: vec![],
+                engine_stats: vec![],
+            },
+        );
+        let lines = read_lines(r.path());
+        assert_eq!(lines[0]["engine_stats"], json!([]));
     }
 
     #[test]
