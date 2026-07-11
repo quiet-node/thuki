@@ -1167,6 +1167,19 @@ pub const CONTEXT_BUDGET_CTX_PERCENT: usize = 40;
 /// Not user-tunable: an internal estimation constant.
 pub const CHARS_PER_TOKEN: usize = 4;
 
+/// Length, in lowercase hex characters, of the per-request random token that
+/// wraps retrieved web sources in the writer prompt (see
+/// `websearch::writer`). The token is minted fresh from a CSPRNG for every
+/// search turn so an attacker page, authored before the request exists, cannot
+/// know it and therefore cannot forge the closing delimiter to break out of the
+/// quoted untrusted-content region (prompt-injection spotlighting). 32 hex
+/// characters carry the full 122 random bits of a v4 UUID: astronomically
+/// unguessable, and the model never has to reason about the token's contents.
+///
+/// Not user-tunable: a defense-in-depth parameter over attacker-controlled web
+/// content; exposing it could only weaken the delimiter, never help a user.
+pub const SOURCE_DELIMITER_TOKEN_HEX_LEN: usize = 32;
+
 /// Support-score threshold at or above which a citation is classified
 /// "supported": at least this fraction of the citing sentence's content tokens
 /// appear in the cited source's text. A baked-in heuristic bound for the
