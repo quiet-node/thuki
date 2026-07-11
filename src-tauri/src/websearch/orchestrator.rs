@@ -720,7 +720,15 @@ async fn run_engine_tier(
         return EngineTierOutcome::Cancelled;
     }
     status(SearchPhase::Reading);
-    let pages = fetch_pages(deps.transport, &hits, num_ctx, deps.web_cache, bypass_cache).await;
+    let pages = fetch_pages(
+        deps.transport,
+        &hits,
+        num_ctx,
+        freshness,
+        deps.web_cache,
+        bypass_cache,
+    )
+    .await;
     let chunks = select_chunks(&pages, standalone_question, deps.scorer);
     // Freshness-gated recency-prior fusion (see `recency::recency_reorder`):
     // only reorders sources on a turn the freshness signal already flagged, so

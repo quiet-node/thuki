@@ -132,6 +132,12 @@ pub(crate) fn page_from_parts(
 /// but the fresh fetch still refreshes the entry so the next, non-explicit
 /// turn benefits from the up-to-date page instead of re-fetching it too.
 ///
+/// `freshness` gates published-date extraction (see [`fetch_one`]): a
+/// non-fresh turn's [`FetchedPage::published`] is always `None`, so it pays
+/// no extra parse cost for a date the recency fusion will never read (that
+/// pass only runs when `freshness` is set; see
+/// `orchestrator::run_engine_tier`).
+///
 /// Coverage-excluded: async fan-out over the injectable transport and
 /// `tokio::time`. Every decision (how many to fetch, extract-or-snippet,
 /// snippet passthrough) lives in the pure helpers tested above and is
@@ -141,6 +147,7 @@ pub async fn fetch_pages(
     transport: &dyn HttpTransport,
     hits: &[SearchHit],
     num_ctx: u32,
+    freshness: bool,
     cache: &WebCache,
     bypass_cache: bool,
 ) -> Vec<FetchedPage> {
@@ -149,7 +156,7 @@ pub async fn fetch_pages(
     let fetched = futures_util::future::join_all(
         to_fetch
             .iter()
-            .map(|hit| fetch_one(transport, hit, cache, bypass_cache)),
+            .map(|hit| fetch_one(transport, hit, freshness, cache, bypass_cache)),
     )
     .await;
     fetched
@@ -177,12 +184,17 @@ pub async fn fetch_pages(
 ///
 /// On a successful fetch, [`extract_published_date`] also runs against the raw
 /// HTML (the same response body `extract_readable` consumes) so the recency
-/// fusion has a date to work with; a cache hit skips this (see
-/// [`FetchedPage::published`]'s doc).
+/// fusion has a date to work with, but ONLY when `freshness` is set: on a
+/// non-fresh turn the recency pass never runs (see
+/// `orchestrator::run_engine_tier`) and would never read the date, so paying
+/// for a second HTML parse on every fetched page would be pure waste. A cache
+/// hit skips extraction regardless of `freshness` (see [`FetchedPage::published`]'s
+/// doc).
 #[cfg_attr(coverage_nightly, coverage(off))]
 async fn fetch_one(
     transport: &dyn HttpTransport,
     hit: &SearchHit,
+    freshness: bool,
     cache: &WebCache,
     bypass_cache: bool,
 ) -> FetchedPage {
@@ -202,7 +214,9 @@ async fn fetch_one(
         Ok(Ok(response)) if (200..300).contains(&response.status) => {
             let html = String::from_utf8_lossy(&response.body);
             let text = extract_readable(&html, &response.final_url);
-            let published = extract_published_date(&html, time::OffsetDateTime::now_utc());
+            let published = freshness
+                .then(|| extract_published_date(&html, time::OffsetDateTime::now_utc()))
+                .flatten();
             (text, published)
         }
         _ => (None, None),
@@ -238,6 +252,26 @@ mod tests {
         they catch subtle concurrency and memory bugs before the program runs.</p>
       </article>
       <footer>copyright 2026 all rights reserved</footer>
+      </body></html>
+    "#;
+
+    /// [`ARTICLE_HTML`] plus a JSON-LD `datePublished`, so the freshness-gated
+    /// extraction path in [`fetch_one`] has a real date to find.
+    const DATED_ARTICLE_HTML: &str = r#"
+      <!DOCTYPE html><html><head><title>Ownership</title>
+      <script type="application/ld+json">{"datePublished":"2026-07-08T00:00:00Z"}</script>
+      </head><body>
+      <article>
+        <h1>Rust Ownership Explained</h1>
+        <p>Ownership is the most distinctive feature of Rust, and it enables
+        memory safety guarantees without a garbage collector, so understanding
+        how it works matters a great deal. Each value in Rust has a single
+        variable that owns it, and there can only ever be one owner at a time.</p>
+        <p>When the owner goes out of scope, the value is dropped and its memory
+        is freed automatically. This borrow checking happens entirely at compile
+        time, which means there is no runtime cost, and it prevents whole classes
+        of bugs such as use after free and double free errors in your programs.</p>
+      </article>
       </body></html>
     "#;
 
@@ -345,13 +379,47 @@ mod tests {
             hit("https://b.com/", "snippet b"),
         ];
         // Small ctx -> fetch 2, but only a.com has a canned page.
-        let pages = fetch_pages(&transport, &hits, 8192, &empty_web_cache(), false).await;
+        let pages = fetch_pages(&transport, &hits, 8192, false, &empty_web_cache(), false).await;
         assert_eq!(pages.len(), 2);
         assert!(pages[0]
             .text
             .contains("Ownership is the most distinctive feature"));
         // b.com had no canned response -> transport error -> snippet fallback.
         assert_eq!(pages[1].text, "snippet b");
+    }
+
+    // ── freshness-gated date extraction ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_pages_extracts_published_date_when_freshness_is_set() {
+        let resp = HttpResponse {
+            status: 200,
+            final_url: "https://a.com/".into(),
+            body: DATED_ARTICLE_HTML.as_bytes().to_vec(),
+        };
+        let transport = FakeHttpTransport::new().with_response("https://a.com/", resp);
+        let hits = vec![hit("https://a.com/", "snippet a")];
+        let pages = fetch_pages(&transport, &hits, 8192, true, &empty_web_cache(), false).await;
+        assert_eq!(
+            pages[0].published,
+            Some(time::macros::datetime!(2026-07-08 00:00:00 UTC))
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_pages_skips_date_extraction_when_freshness_is_unset() {
+        // Same dated fixture as above, but freshness=false: a non-fresh turn
+        // never reads a source's date (the recency pass never runs for it),
+        // so extraction must not even be attempted.
+        let resp = HttpResponse {
+            status: 200,
+            final_url: "https://a.com/".into(),
+            body: DATED_ARTICLE_HTML.as_bytes().to_vec(),
+        };
+        let transport = FakeHttpTransport::new().with_response("https://a.com/", resp);
+        let hits = vec![hit("https://a.com/", "snippet a")];
+        let pages = fetch_pages(&transport, &hits, 8192, false, &empty_web_cache(), false).await;
+        assert!(pages[0].published.is_none());
     }
 
     #[tokio::test]
@@ -372,7 +440,7 @@ mod tests {
             hit("https://b.com/", "snip b"),
             hit("https://c.com/", "snip c"),
         ];
-        let pages = fetch_pages(&transport, &hits, 8192, &empty_web_cache(), false).await;
+        let pages = fetch_pages(&transport, &hits, 8192, false, &empty_web_cache(), false).await;
         assert_eq!(pages.len(), 3);
         assert_eq!(pages[2].text, "snip c");
         assert_eq!(transport.calls().len(), 2);
@@ -387,7 +455,7 @@ mod tests {
         };
         let transport = FakeHttpTransport::new().with_response("https://a.com/", resp);
         let hits = vec![hit("https://a.com/", "the snippet")];
-        let pages = fetch_pages(&transport, &hits, 8192, &empty_web_cache(), false).await;
+        let pages = fetch_pages(&transport, &hits, 8192, false, &empty_web_cache(), false).await;
         assert_eq!(pages[0].text, "the snippet");
     }
 
@@ -405,13 +473,13 @@ mod tests {
         let transport = FakeHttpTransport::new().with_response("https://a.com/", resp);
         let hits = vec![hit("https://a.com/", "snippet a")];
         let cache = empty_web_cache();
-        let pages1 = fetch_pages(&transport, &hits, 8192, &cache, false).await;
+        let pages1 = fetch_pages(&transport, &hits, 8192, false, &cache, false).await;
         assert!(pages1[0]
             .text
             .contains("Ownership is the most distinctive feature"));
         assert_eq!(transport.calls().len(), 1);
         // Second call hits the cache: same text, still exactly one network call.
-        let pages2 = fetch_pages(&transport, &hits, 8192, &cache, false).await;
+        let pages2 = fetch_pages(&transport, &hits, 8192, false, &cache, false).await;
         assert_eq!(pages2[0].text, pages1[0].text);
         assert_eq!(transport.calls().len(), 1);
     }
@@ -423,7 +491,7 @@ mod tests {
         let transport = FakeHttpTransport::new();
         let hits = vec![hit("https://b.com/", "snippet b")];
         let cache = empty_web_cache();
-        let pages = fetch_pages(&transport, &hits, 8192, &cache, false).await;
+        let pages = fetch_pages(&transport, &hits, 8192, false, &cache, false).await;
         assert_eq!(pages[0].text, "snippet b");
         assert!(cache.page_get("https://b.com/").is_none());
     }
@@ -444,7 +512,7 @@ mod tests {
         let hits = vec![hit("https://a.com/", "snippet a")];
         let cache = empty_web_cache();
         cache.page_put("https://a.com/", "stale cached body".into());
-        let pages = fetch_pages(&transport, &hits, 8192, &cache, true).await;
+        let pages = fetch_pages(&transport, &hits, 8192, false, &cache, true).await;
         // The fresh fetch's extracted text won, not the stale cached body.
         assert!(pages[0]
             .text
@@ -467,14 +535,14 @@ mod tests {
         let hits = vec![hit("https://a.com/", "snippet a")];
         let cache = empty_web_cache();
         cache.page_put("https://a.com/", "stale cached body".into());
-        let bypassed = fetch_pages(&transport, &hits, 8192, &cache, true).await;
+        let bypassed = fetch_pages(&transport, &hits, 8192, false, &cache, true).await;
         assert!(bypassed[0]
             .text
             .contains("Ownership is the most distinctive feature"));
         assert_eq!(transport.calls().len(), 1);
         // A second, non-bypassing fetch reads the cache: it must see the
         // REPLACED entry, not the original stale body, and issue no request.
-        let served = fetch_pages(&transport, &hits, 8192, &cache, false).await;
+        let served = fetch_pages(&transport, &hits, 8192, false, &cache, false).await;
         assert_eq!(served[0].text, bypassed[0].text);
         assert_eq!(transport.calls().len(), 1);
     }
@@ -487,7 +555,7 @@ mod tests {
         let hits = vec![hit("https://a.com/", "snippet a")];
         let cache = empty_web_cache();
         cache.page_put("https://a.com/", "already cached body".into());
-        let pages = fetch_pages(&transport, &hits, 8192, &cache, false).await;
+        let pages = fetch_pages(&transport, &hits, 8192, false, &cache, false).await;
         assert_eq!(pages[0].text, "already cached body");
         assert!(transport.calls().is_empty());
     }
