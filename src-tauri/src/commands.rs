@@ -760,6 +760,28 @@ async fn resolve_clock_place_time(message: &str) -> Option<String> {
         .await
 }
 
+/// Maps a resolved [`crate::websearch::orchestrator::SearchOutcome`] to a short
+/// stable label for the J6 diagnostic stderr line in [`run_builtin_search`].
+/// This is a diagnostic hook for an unreproduced bug (first-turn submissions
+/// completing instantly with zero tokens): the auto-search pre-pass shares the
+/// engine port and cancel token with the writer, so naming which search path
+/// resolved lets a live zero-token occurrence be correlated with the branch
+/// that ran. A cache hit is not distinguished here by design: it resolves into
+/// `Answer` inside the fully-tested `run_search`, so surfacing it would mean
+/// instrumenting a different function. Pure so it stays unit-tested while its
+/// coverage-excluded call site does not.
+fn builtin_search_outcome_label(
+    outcome: &crate::websearch::orchestrator::SearchOutcome,
+) -> &'static str {
+    use crate::websearch::orchestrator::SearchOutcome;
+    match outcome {
+        SearchOutcome::Answer { .. } => "Answer",
+        SearchOutcome::Unreachable { .. } => "Unreachable",
+        SearchOutcome::NoSearch => "NoSearch",
+        SearchOutcome::Cancelled => "Cancelled",
+    }
+}
+
 /// Runs the built-in search pre-pass and, if it fires, the retrieval pipeline
 /// on the warm engine, emitting progress through `on_chunk`. The prompt inputs
 /// MUST be the same strings the plain chat path streams (system prompt, filtered
@@ -847,6 +869,14 @@ async fn run_builtin_search(
         &status,
     )
     .await;
+    // Diagnostic hook for the unreproduced J6 zero-token bug: log which outcome
+    // variant resolved so a live occurrence can be correlated with the search
+    // path that ran. One stderr line per search-turn (not gated to turn 1);
+    // never surfaced to the frontend.
+    eprintln!(
+        "search: run_builtin_search resolved outcome={}",
+        builtin_search_outcome_label(&outcome)
+    );
     match outcome {
         crate::websearch::orchestrator::SearchOutcome::Answer { messages, sources } => {
             on_chunk(StreamChunk::SearchSources(source_metas(&sources)));
@@ -2269,6 +2299,30 @@ mod tests {
     /// `format_datetime_context` test formats.
     fn fixed_utc() -> time::OffsetDateTime {
         time::macros::datetime!(2026-07-10 01:15:30 UTC)
+    }
+
+    #[test]
+    fn builtin_search_outcome_label_covers_all_variants() {
+        use crate::websearch::orchestrator::SearchOutcome;
+        assert_eq!(
+            builtin_search_outcome_label(&SearchOutcome::NoSearch),
+            "NoSearch"
+        );
+        assert_eq!(
+            builtin_search_outcome_label(&SearchOutcome::Cancelled),
+            "Cancelled"
+        );
+        assert_eq!(
+            builtin_search_outcome_label(&SearchOutcome::Answer {
+                messages: vec![],
+                sources: vec![],
+            }),
+            "Answer"
+        );
+        assert_eq!(
+            builtin_search_outcome_label(&SearchOutcome::Unreachable { messages: vec![] }),
+            "Unreachable"
+        );
     }
 
     #[test]
