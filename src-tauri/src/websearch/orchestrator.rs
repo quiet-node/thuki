@@ -371,6 +371,15 @@ fn resolve_decision(verdict: PreFilterVerdict, classified: PrePassDecision) -> P
 /// assemble a budgeted source set, and build the writer prompt. Degrades to
 /// [`SearchOutcome::NoSearch`] when nothing citable survives and to
 /// [`SearchOutcome::Cancelled`] on cancellation.
+///
+/// `engines_only` is `true` exactly when the caller reached this fn via an
+/// explicit look-it-up request (see the `decision.explicit_search` branch in
+/// [`run_search`], its only call site with `true`); besides skipping every
+/// vertical below, it is forwarded to [`run_engine_tier`] as its cache-bypass
+/// signal, so an explicit re-search is never silently re-served a SERP or page
+/// pulled from the in-memory cache within its TTL. The cache is still written
+/// through on a fresh fetch either way, so the entry the user just distrusted
+/// is replaced rather than left to keep answering later, non-explicit turns.
 #[allow(clippy::too_many_arguments)]
 async fn run_web(
     deps: &SearchDeps<'_>,
@@ -555,6 +564,12 @@ async fn run_web(
         queries,
         num_ctx,
         freshness,
+        // `engines_only` is set exactly when this call is reached via an
+        // explicit look-it-up request (see the module-level comment above the
+        // `decision.explicit_search` branch in `run_search`, the only place
+        // `run_web` is ever called with `engines_only = true`), so it doubles
+        // as this tier's cache-bypass signal.
+        engines_only,
         cancel,
         status,
     )
@@ -600,12 +615,23 @@ enum EngineTierOutcome {
 /// cooldown-skip and early-stop volume controls the engines' rate limits
 /// require. Emits [`SearchPhase::Reading`] before the page fetch; the caller
 /// owns the [`SearchPhase::Searching`] phase (already emitted once per turn).
+///
+/// `bypass_cache` is forwarded verbatim to both [`web_search`] and
+/// [`fetch_pages`]: it is the read-bypass, write-through contract for an
+/// explicit user re-search (see their docs). Set only when this tier is
+/// reached because the user explicitly asked to re-check a result (see
+/// [`run_web`]'s `engines_only` parameter, its only source today); a
+/// judge-driven escalation from [`commit_or_escalate`] is not a user distrust
+/// signal, so that call site always passes `false` and a cached-but-fresh
+/// result is fine there.
+#[allow(clippy::too_many_arguments)]
 async fn run_engine_tier(
     deps: &SearchDeps<'_>,
     standalone_question: &str,
     queries: &[String],
     num_ctx: u32,
     freshness: bool,
+    bypass_cache: bool,
     cancel: &CancellationToken,
     status: &(dyn Fn(SearchPhase) + Send + Sync),
 ) -> EngineTierOutcome {
@@ -621,6 +647,7 @@ async fn run_engine_tier(
                 deps.health,
                 freshness,
                 deps.web_cache,
+                bypass_cache,
             )
             .await,
         );
@@ -639,7 +666,7 @@ async fn run_engine_tier(
         return EngineTierOutcome::Cancelled;
     }
     status(SearchPhase::Reading);
-    let pages = fetch_pages(deps.transport, &hits, num_ctx, deps.web_cache).await;
+    let pages = fetch_pages(deps.transport, &hits, num_ctx, deps.web_cache, bypass_cache).await;
     let chunks = select_chunks(&pages, standalone_question, deps.scorer);
     let sources = assemble_context(&chunks, num_ctx);
     if sources.is_empty() {
@@ -761,6 +788,10 @@ async fn commit_or_escalate(
         queries,
         num_ctx,
         freshness,
+        // A judge-driven escalation is not a user distrust signal (the user
+        // never asked to re-check anything this turn), so a cached-but-fresh
+        // result is fine here: never bypass on this path.
+        false,
         cancel,
         status,
     )
@@ -1104,6 +1135,35 @@ mod tests {
                 64,
                 128,
             ))),
+            local_zone: None,
+        }
+    }
+
+    /// Builds `SearchDeps` like [`deps_for_escalation`], but with a
+    /// caller-supplied `web_cache` instead of a fresh one, so the cache-bypass
+    /// tests can pre-warm a SERP entry before the pipeline runs and assert on
+    /// its state (or on the transport's calls) afterward.
+    fn deps_with_web_cache<'a>(
+        prepass: &'a dyn PrePass,
+        transport: &'a dyn HttpTransport,
+        scorer: &'a dyn Scorer,
+        judge: &'a dyn SufficiencyJudge,
+        health: &'a EngineHealth,
+        recorder: &'a crate::trace::BoundRecorder,
+        web_cache: &'a WebCache,
+    ) -> SearchDeps<'a> {
+        SearchDeps {
+            prepass,
+            judge,
+            transport,
+            scorer,
+            health,
+            recorder,
+            cache: Box::leak(Box::new(TtlSourceCache::new(
+                std::time::Duration::from_secs(600),
+            ))),
+            cache_scope: 1,
+            web_cache,
             local_zone: None,
         }
     }
@@ -1823,6 +1883,79 @@ mod tests {
         assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
             if sources[0].url == "https://match.example/"));
         assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+    }
+
+    #[tokio::test]
+    async fn explicit_search_bypasses_a_warm_serp_cache_and_still_requests_the_engine() {
+        // A warm SERP cache entry for the exact query the classifier resolved
+        // would normally be served with zero requests (see
+        // `crate::websearch::engine`'s cache-hit tests). An explicit look-it-up
+        // request must never be silently re-served that entry: the engine tier
+        // is reached with `bypass_cache = true`, so the cache read is skipped
+        // and DuckDuckGo is actually requested.
+        let standalone = "when was the treaty of versailles signed in paris";
+        let query = "treaty versailles paris";
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: standalone.into(),
+            queries: vec![query.into()],
+            explicit_search: true,
+        }));
+        let transport = transport_with_serp_and_page();
+        let web_cache = WebCache::new(
+            std::time::Duration::from_secs(600),
+            std::time::Duration::from_secs(600),
+            64,
+            128,
+        );
+        // Pre-warm the cache with a stale hit that must NOT be what answers
+        // this turn.
+        let freshness = is_volatile_question(standalone);
+        web_cache.serp_put(
+            "duckduckgo",
+            query,
+            freshness,
+            vec![SearchHit {
+                title: "Stale".into(),
+                url: "https://stale.example/".into(),
+                snippet: "a stale cached result".into(),
+            }],
+        );
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let judge = FakeSufficiencyJudge::sufficient();
+        let health = EngineHealth::new();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_with_web_cache(
+                &prepass,
+                &transport,
+                &Bm25Scorer,
+                &judge,
+                &health,
+                &bound,
+                &web_cache,
+            ),
+            "sys",
+            &[],
+            "look it up again",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        // The engine WAS requested despite the warm cache entry.
+        assert!(
+            transport.calls().iter().any(|c| c.url == DDG_ENDPOINT),
+            "an explicit search must bypass the SERP cache and request the engine"
+        );
+        // The stale cached hit never reached the answer; the freshly fetched
+        // page did.
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources.iter().any(|s| s.url == "https://match.example/")
+                && !sources.iter().any(|s| s.url == "https://stale.example/")));
     }
 
     #[tokio::test]
@@ -3168,6 +3301,77 @@ mod tests {
         assert!(events.iter().any(|e| matches!(e,
             RecorderEvent::SearchEscalated { from_tier, sufficient, escalated, escalation_hit, .. }
             if from_tier == "news" && !*sufficient && *escalated && *escalation_hit)));
+    }
+
+    #[tokio::test]
+    async fn escalation_from_an_insufficient_vertical_does_not_bypass_a_warm_serp_cache() {
+        // A judge-driven escalation is not a user distrust signal (the user
+        // never asked to re-check anything), so it must always pass
+        // `bypass_cache = false`: a warm SERP cache entry for the escalation
+        // query is served with NO engine request, unlike the explicit-search
+        // path above.
+        let prepass = FakePrePass::returning(Ok(news_route_decision()));
+        let transport = news_and_engine_transport();
+        let judge = insufficient();
+        let health = EngineHealth::new();
+        let web_cache = WebCache::new(
+            std::time::Duration::from_secs(600),
+            std::time::Duration::from_secs(600),
+            64,
+            128,
+        );
+        // Both raced engines are pre-warmed (freshness = false for this
+        // non-volatile question, matching `news_route_decision`'s query), each
+        // pointing at the fixture page already served by
+        // `news_and_engine_transport`, so the escalation still ranks a source
+        // without ever touching either engine's endpoint.
+        let cached_hit = || SearchHit {
+            title: "Treaty of Versailles".into(),
+            url: "https://match.example/".into(),
+            snippet: "the treaty signed in paris".into(),
+        };
+        web_cache.serp_put(
+            "duckduckgo",
+            "treaty versailles paris",
+            false,
+            vec![cached_hit()],
+        );
+        web_cache.serp_put(
+            "mojeek",
+            "treaty versailles paris",
+            false,
+            vec![cached_hit()],
+        );
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_with_web_cache(
+                &prepass,
+                &transport,
+                &Bm25Scorer,
+                &judge,
+                &health,
+                &bound,
+                &web_cache,
+            ),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources.iter().any(|s| s.url == "https://match.example/")));
+        // Neither engine's SERP endpoint was ever contacted: both were served
+        // from the warm cache.
+        let mojeek_url =
+            crate::websearch::engine::mojeek_request("treaty versailles paris", false).url;
+        assert!(!transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+        assert!(!transport.calls().iter().any(|c| c.url == mojeek_url));
     }
 
     #[tokio::test]

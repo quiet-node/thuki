@@ -227,30 +227,44 @@ enum EngineOutcome {
 /// [`ENGINES`] concurrently and fusing their ranked lists with Reciprocal Rank
 /// Fusion. Engines inside their block cooldown (see [`EngineHealth`]) are not
 /// requested at all. Each remaining engine is first checked against the
-/// in-memory SERP cache (`cache`): a cache hit contributes its stored list to
-/// the fusion WITHOUT issuing a request (the strongest burst-reduction there is,
-/// since a repeat query costs the engine nothing), and only the cache-missing
-/// engines are actually raced. Every raced engine gets exactly one request. A
-/// bot challenge or rate-limit response marks that engine blocked for its
-/// cooldown window and is NOT cached (a block must never be replayed as truth);
-/// an empty SERP or transport/SSRF error contributes nothing without marking
-/// (an empty page is a bad query, not a ban) and is not cached either; only a
-/// successfully-parsed (Ok) list is written to the cache. The surviving lists are
-/// fused ([`rrf_fuse`]), then deduped and capped ([`dedupe_and_cap`]) so the
-/// final length still honours [`crate::config::defaults::SERP_MAX_RESULTS_PER_QUERY`].
-/// When no engine returns a usable list the result is empty, so the caller
-/// degrades gracefully rather than hanging or hallucinating. Each engine's
-/// outcome logs to stderr under `[search]`, followed by one fused summary line.
-/// `freshness` is forwarded to each engine's request builder to bias results
-/// toward recent content when the turn's standalone question carried a freshness
-/// signal.
+/// in-memory SERP cache (`cache`), UNLESS `bypass_cache` is set: a cache hit
+/// contributes its stored list to the fusion WITHOUT issuing a request (the
+/// strongest burst-reduction there is, since a repeat query costs the engine
+/// nothing), and only the cache-missing engines are actually raced. Every
+/// raced engine gets exactly one request. A bot challenge or rate-limit
+/// response marks that engine blocked for its cooldown window and is NOT
+/// cached (a block must never be replayed as truth); an empty SERP or
+/// transport/SSRF error contributes nothing without marking (an empty page is
+/// a bad query, not a ban) and is not cached either; only a
+/// successfully-parsed (Ok) list is written to the cache, REGARDLESS of
+/// `bypass_cache` (a fresh fetch always refreshes the entry, so the very next
+/// normal turn benefits instead of re-serving what this call bypassed). The
+/// surviving lists are fused ([`rrf_fuse`]), then deduped and capped
+/// ([`dedupe_and_cap`]) so the final length still honours
+/// [`crate::config::defaults::SERP_MAX_RESULTS_PER_QUERY`]. When no engine
+/// returns a usable list the result is empty, so the caller degrades
+/// gracefully rather than hanging or hallucinating. Each engine's outcome logs
+/// to stderr under `[search]`, followed by one fused summary line. `freshness`
+/// is forwarded to each engine's request builder to bias results toward recent
+/// content when the turn's standalone question carried a freshness signal.
+///
+/// `bypass_cache` is the read-bypass, write-through contract for an explicit
+/// user re-search ("look it up again"): the user is telling us the result we
+/// just served (possibly straight from this same cache, within its TTL) was
+/// not trusted, so replaying it would silently re-serve exactly what they are
+/// asking us to re-check. Setting it skips every engine's cache READ for this
+/// call only (every live engine races as if cold); it does not disable the
+/// cache, which still gets a fresh write below so the stale entry is replaced
+/// rather than left to keep answering the next, non-explicit turn. Logged once
+/// per call (not per engine) via `[search] cache bypass (explicit search)`.
 ///
 /// Burst safety: this sends AT MOST ONE request per engine per query, exactly as
 /// the old sequential path did on its failure branch. DuckDuckGo's block is
 /// volume-triggered, and racing does not raise DuckDuckGo volume (still one DDG
 /// request per query); it only issues the Mojeek request concurrently instead of
 /// only-on-DDG-failure. So the change trades latency (`sum` -> `max`) and adds
-/// fusion quality without adding any per-engine request volume.
+/// fusion quality without adding any per-engine request volume. A cache-bypassing
+/// call is no exception: it still sends at most one request per live engine.
 ///
 /// Coverage-excluded: thin async glue over the injectable transport that
 /// delegates every decision to the pure, directly-tested helpers (each engine's
@@ -266,7 +280,11 @@ pub async fn web_search(
     health: &EngineHealth,
     freshness: bool,
     cache: &WebCache,
+    bypass_cache: bool,
 ) -> Vec<SearchHit> {
+    if bypass_cache {
+        eprintln!("[search] cache bypass (explicit search)");
+    }
     // Cache-hit lists (served without a request) plus the tasks for the engines
     // that must actually be raced. The SERP cache is read here, before the race,
     // never inside the async tasks, so the cache lock is never held across an
@@ -279,14 +297,16 @@ pub async fn web_search(
             eprintln!("[search] engine={} cooling -> skipped", engine.name);
             continue;
         }
-        if let Some(hits) = cache.serp_get(engine.name, query, freshness) {
-            eprintln!(
-                "[search] engine={} serp cache hit hits={}",
-                engine.name,
-                hits.len()
-            );
-            lists.push(hits);
-            continue;
+        if !bypass_cache {
+            if let Some(hits) = cache.serp_get(engine.name, query, freshness) {
+                eprintln!(
+                    "[search] engine={} serp cache hit hits={}",
+                    engine.name,
+                    hits.len()
+                );
+                lists.push(hits);
+                continue;
+            }
         }
         let request = (engine.build)(query, freshness);
         tasks.push(async move {
@@ -1212,7 +1232,7 @@ mod tests {
         let transport = FakeHttpTransport::new().with_response(&mojeek_url, ok(&mojeek_url, body));
         let health = EngineHealth::new();
         health.mark_blocked("duckduckgo", 3600);
-        let hits = web_search(&transport, "q", &health, false, &empty_web_cache()).await;
+        let hits = web_search(&transport, "q", &health, false, &empty_web_cache(), false).await;
         let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
         assert!(!urls.iter().any(|u| u.contains("now8news")));
         assert!(urls.contains(&"https://legit.example/real"));
@@ -1240,6 +1260,7 @@ mod tests {
             &EngineHealth::new(),
             true,
             &empty_web_cache(),
+            false,
         )
         .await;
         let call = transport
@@ -1268,6 +1289,7 @@ mod tests {
             &EngineHealth::new(),
             false,
             &empty_web_cache(),
+            false,
         )
         .await;
         let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
@@ -1299,7 +1321,7 @@ mod tests {
                 },
             )
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let hits = web_search(&transport, "q", &health, false, &empty_web_cache()).await;
+        let hits = web_search(&transport, "q", &health, false, &empty_web_cache(), false).await;
         // Blocked engine contributes no list; Mojeek's two hits survive.
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].url, "https://rust-lang.org/tools/install/");
@@ -1320,7 +1342,7 @@ mod tests {
                 ok(DDG_HTML_ENDPOINT, "<html><body>no results</body></html>"),
             )
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let hits = web_search(&transport, "q", &health, false, &empty_web_cache()).await;
+        let hits = web_search(&transport, "q", &health, false, &empty_web_cache(), false).await;
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].url, "https://rust-lang.org/tools/install/");
         // Empty is not a block: DuckDuckGo stays available for the next query.
@@ -1343,7 +1365,8 @@ mod tests {
             "q",
             &EngineHealth::new(),
             false,
-            &empty_web_cache()
+            &empty_web_cache(),
+            false,
         )
         .await
         .is_empty());
@@ -1358,7 +1381,8 @@ mod tests {
             "q",
             &EngineHealth::new(),
             false,
-            &empty_web_cache()
+            &empty_web_cache(),
+            false,
         )
         .await
         .is_empty());
@@ -1415,7 +1439,7 @@ mod tests {
         let mojeek_url = mojeek_request("q", false).url;
         let transport = FakeHttpTransport::new()
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let hits = web_search(&transport, "q", &health, false, &empty_web_cache()).await;
+        let hits = web_search(&transport, "q", &health, false, &empty_web_cache(), false).await;
         assert_eq!(hits.len(), 2);
         // Single live engine: fusion is an identity on order, so Mojeek's own
         // ordering is preserved verbatim.
@@ -1442,8 +1466,8 @@ mod tests {
             )
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
         let cache = empty_web_cache();
-        let _ = web_search(&transport, "q", &health, false, &cache).await;
-        let _ = web_search(&transport, "q", &health, false, &cache).await;
+        let _ = web_search(&transport, "q", &health, false, &cache, false).await;
+        let _ = web_search(&transport, "q", &health, false, &cache, false).await;
         let ddg_posts = transport
             .calls()
             .into_iter()
@@ -1468,7 +1492,7 @@ mod tests {
         let transport = FakeHttpTransport::new()
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
         let health = EngineHealth::new();
-        let hits = web_search(&transport, "q", &health, false, &cache).await;
+        let hits = web_search(&transport, "q", &health, false, &cache, false).await;
         let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
         // Cached DuckDuckGo hit and a live Mojeek hit both survive the fusion.
         assert!(urls.contains(&"https://cached-ddg/"));
@@ -1494,8 +1518,8 @@ mod tests {
             },
         );
         let cache = empty_web_cache();
-        let _ = web_search(&transport, "q", &EngineHealth::new(), false, &cache).await;
-        let _ = web_search(&transport, "q", &EngineHealth::new(), false, &cache).await;
+        let _ = web_search(&transport, "q", &EngineHealth::new(), false, &cache, false).await;
+        let _ = web_search(&transport, "q", &EngineHealth::new(), false, &cache, false).await;
         let ddg_posts = transport
             .calls()
             .into_iter()
@@ -1505,5 +1529,88 @@ mod tests {
             ddg_posts, 2,
             "a blocked engine must not be served from cache"
         );
+    }
+
+    // ── cache bypass (explicit re-search) ───────────────────────────────────
+
+    #[tokio::test]
+    async fn web_search_bypass_cache_requests_engine_despite_warm_serp_cache() {
+        // A warm SERP cache entry would normally be served without a request
+        // (see `web_search_serp_cache_hit_skips_request_and_still_fuses`).
+        // `bypass_cache=true` must skip that read and still issue the request,
+        // exactly as an explicit user re-search demands.
+        let mojeek_url = mojeek_request("q", false).url;
+        let cache = empty_web_cache();
+        cache.serp_put("duckduckgo", "q", false, vec![hit("https://stale-ddg/")]);
+        let transport = FakeHttpTransport::new()
+            .with_response(DDG_HTML_ENDPOINT, ok(DDG_HTML_ENDPOINT, DDG_HTML_FIXTURE))
+            .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
+        let health = EngineHealth::new();
+        let hits = web_search(&transport, "q", &health, false, &cache, true).await;
+        // The stale cached hit is gone; the freshly fetched DDG fixture hit is
+        // there instead.
+        let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
+        assert!(!urls.contains(&"https://stale-ddg/"));
+        assert!(urls.contains(&"https://example.com/a"));
+        // Both engines were actually requested: the cache read was skipped.
+        let calls = transport.calls();
+        assert_eq!(
+            calls.iter().filter(|c| c.url == DDG_HTML_ENDPOINT).count(),
+            1
+        );
+        assert_eq!(calls.iter().filter(|c| c.url == mojeek_url).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn web_search_bypass_cache_replaces_the_stale_entry() {
+        // The fresh result from a bypassing call must overwrite the cache, so
+        // the very next NON-bypassing call is served the refreshed list rather
+        // than the stale one the user just distrusted. Mojeek is forced cooling
+        // for the first (bypassing) call so its outcome is deterministic
+        // (DuckDuckGo alone), isolating the DuckDuckGo cache-write behaviour.
+        let cache = empty_web_cache();
+        cache.serp_put("duckduckgo", "q", false, vec![hit("https://stale-ddg/")]);
+        let health = EngineHealth::new();
+        health.mark_blocked("mojeek", 3600);
+        let transport = FakeHttpTransport::new()
+            .with_response(DDG_HTML_ENDPOINT, ok(DDG_HTML_ENDPOINT, DDG_HTML_FIXTURE));
+        let bypassed = web_search(&transport, "q", &health, false, &cache, true).await;
+        assert!(bypassed.iter().any(|h| h.url == "https://example.com/a"));
+        // A second, non-bypassing call with a fresh (non-cooling) health
+        // registry reads the cache: DuckDuckGo must now be served from the
+        // REPLACED (fresh) entry, not the original stale one, with no further
+        // DuckDuckGo request.
+        let served = web_search(&transport, "q", &EngineHealth::new(), false, &cache, false).await;
+        assert!(!served.iter().any(|h| h.url == "https://stale-ddg/"));
+        assert!(served.iter().any(|h| h.url == "https://example.com/a"));
+        // Exactly one DuckDuckGo request total: the first (bypassing) call
+        // fetched and wrote through; the second call was served entirely from
+        // the refreshed cache entry.
+        assert_eq!(
+            transport
+                .calls()
+                .iter()
+                .filter(|c| c.url == DDG_HTML_ENDPOINT)
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn web_search_bypass_cache_false_keeps_serp_cache_hit_behavior() {
+        // bypass_cache=false must behave exactly like the pre-existing
+        // cache-hit path: a warm entry is served with zero requests.
+        let cache = empty_web_cache();
+        cache.serp_put("duckduckgo", "q", false, vec![hit("https://cached-ddg/")]);
+        let mojeek_url = mojeek_request("q", false).url;
+        let transport = FakeHttpTransport::new()
+            .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
+        let health = EngineHealth::new();
+        let hits = web_search(&transport, "q", &health, false, &cache, false).await;
+        let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
+        assert!(urls.contains(&"https://cached-ddg/"));
+        let calls = transport.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(!calls.iter().any(|c| c.url == DDG_HTML_ENDPOINT));
     }
 }

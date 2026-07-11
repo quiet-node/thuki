@@ -102,10 +102,17 @@ pub(crate) fn page_from_parts(hit: &SearchHit, extracted: Option<String>) -> Fet
 /// per-URL bound.
 ///
 /// `cache` is the in-memory page cache: each fetched URL is looked up before the
-/// network fetch (a hit skips the fetch entirely), and a successful extraction is
-/// written back so a later turn reuses it. Only the fetched slice consults the
-/// cache; snippet-only hits beyond the fetch budget were never going to hit the
-/// network and stay snippet-only.
+/// network fetch (a hit skips the fetch entirely), UNLESS `bypass_cache` is set,
+/// and a successful extraction is written back so a later turn reuses it
+/// REGARDLESS of `bypass_cache` (a fresh fetch always refreshes the entry).
+/// Only the fetched slice consults the cache; snippet-only hits beyond the
+/// fetch budget were never going to hit the network and stay snippet-only.
+///
+/// `bypass_cache` carries the same read-bypass, write-through contract as
+/// [`crate::websearch::engine::web_search`]'s `bypass_cache`: an explicit user
+/// re-search must not be re-served a page pulled from cache within its TTL,
+/// but the fresh fetch still refreshes the entry so the next, non-explicit
+/// turn benefits from the up-to-date page instead of re-fetching it too.
 ///
 /// Coverage-excluded: async fan-out over the injectable transport and
 /// `tokio::time`. Every decision (how many to fetch, extract-or-snippet,
@@ -117,12 +124,16 @@ pub async fn fetch_pages(
     hits: &[SearchHit],
     num_ctx: u32,
     cache: &WebCache,
+    bypass_cache: bool,
 ) -> Vec<FetchedPage> {
     let n = pages_to_fetch(num_ctx, hits.len());
     let (to_fetch, snippet_only) = hits.split_at(n);
-    let fetched =
-        futures_util::future::join_all(to_fetch.iter().map(|hit| fetch_one(transport, hit, cache)))
-            .await;
+    let fetched = futures_util::future::join_all(
+        to_fetch
+            .iter()
+            .map(|hit| fetch_one(transport, hit, cache, bypass_cache)),
+    )
+    .await;
     fetched
         .into_iter()
         .chain(snippet_only.iter().map(|hit| page_from_parts(hit, None)))
@@ -133,9 +144,11 @@ pub async fn fetch_pages(
 /// failure (timeout, transport/SSRF error, non-2xx, unreadable) degrades to the
 /// hit's SERP snippet.
 ///
-/// Consults `cache` first: a cached extracted body for this URL skips the network
-/// fetch entirely. On a fresh, successful extraction the body is written back to
-/// the cache; a snippet fallback (no extractable text) and any failed fetch are
+/// Consults `cache` first, UNLESS `bypass_cache` is set: a cached extracted body
+/// for this URL skips the network fetch entirely when reading is allowed. On a
+/// fresh, successful extraction the body is written back to the cache
+/// regardless of `bypass_cache` (a bypassing fetch still refreshes a stale
+/// entry); a snippet fallback (no extractable text) and any failed fetch are
 /// never cached, so only real article text is ever reused. The cache is read
 /// before and written after the `await`, never across it, so its lock is never
 /// held over I/O.
@@ -144,10 +157,13 @@ async fn fetch_one(
     transport: &dyn HttpTransport,
     hit: &SearchHit,
     cache: &WebCache,
+    bypass_cache: bool,
 ) -> FetchedPage {
-    if let Some(text) = cache.page_get(hit.url.as_str()) {
-        eprintln!("[search] page cache hit url={}", hit.url);
-        return page_from_parts(hit, Some(text));
+    if !bypass_cache {
+        if let Some(text) = cache.page_get(hit.url.as_str()) {
+            eprintln!("[search] page cache hit url={}", hit.url);
+            return page_from_parts(hit, Some(text));
+        }
     }
     let request = HttpRequest::get(hit.url.as_str());
     let extracted = match tokio::time::timeout(
@@ -292,7 +308,7 @@ mod tests {
             hit("https://b.com/", "snippet b"),
         ];
         // Small ctx -> fetch 2, but only a.com has a canned page.
-        let pages = fetch_pages(&transport, &hits, 8192, &empty_web_cache()).await;
+        let pages = fetch_pages(&transport, &hits, 8192, &empty_web_cache(), false).await;
         assert_eq!(pages.len(), 2);
         assert!(pages[0]
             .text
@@ -319,7 +335,7 @@ mod tests {
             hit("https://b.com/", "snip b"),
             hit("https://c.com/", "snip c"),
         ];
-        let pages = fetch_pages(&transport, &hits, 8192, &empty_web_cache()).await;
+        let pages = fetch_pages(&transport, &hits, 8192, &empty_web_cache(), false).await;
         assert_eq!(pages.len(), 3);
         assert_eq!(pages[2].text, "snip c");
         assert_eq!(transport.calls().len(), 2);
@@ -334,7 +350,7 @@ mod tests {
         };
         let transport = FakeHttpTransport::new().with_response("https://a.com/", resp);
         let hits = vec![hit("https://a.com/", "the snippet")];
-        let pages = fetch_pages(&transport, &hits, 8192, &empty_web_cache()).await;
+        let pages = fetch_pages(&transport, &hits, 8192, &empty_web_cache(), false).await;
         assert_eq!(pages[0].text, "the snippet");
     }
 
@@ -352,13 +368,13 @@ mod tests {
         let transport = FakeHttpTransport::new().with_response("https://a.com/", resp);
         let hits = vec![hit("https://a.com/", "snippet a")];
         let cache = empty_web_cache();
-        let pages1 = fetch_pages(&transport, &hits, 8192, &cache).await;
+        let pages1 = fetch_pages(&transport, &hits, 8192, &cache, false).await;
         assert!(pages1[0]
             .text
             .contains("Ownership is the most distinctive feature"));
         assert_eq!(transport.calls().len(), 1);
         // Second call hits the cache: same text, still exactly one network call.
-        let pages2 = fetch_pages(&transport, &hits, 8192, &cache).await;
+        let pages2 = fetch_pages(&transport, &hits, 8192, &cache, false).await;
         assert_eq!(pages2[0].text, pages1[0].text);
         assert_eq!(transport.calls().len(), 1);
     }
@@ -370,8 +386,72 @@ mod tests {
         let transport = FakeHttpTransport::new();
         let hits = vec![hit("https://b.com/", "snippet b")];
         let cache = empty_web_cache();
-        let pages = fetch_pages(&transport, &hits, 8192, &cache).await;
+        let pages = fetch_pages(&transport, &hits, 8192, &cache, false).await;
         assert_eq!(pages[0].text, "snippet b");
         assert!(cache.page_get("https://b.com/").is_none());
+    }
+
+    // ── cache bypass (explicit re-search) ───────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_pages_bypass_cache_refetches_despite_warm_page_cache() {
+        // A warm page cache entry would normally be served with no network call
+        // (see `fetch_pages_caches_extracted_page_and_reuses_it`). With
+        // `bypass_cache=true` the read is skipped and the page is fetched again.
+        let resp = HttpResponse {
+            status: 200,
+            final_url: "https://a.com/".into(),
+            body: ARTICLE_HTML.as_bytes().to_vec(),
+        };
+        let transport = FakeHttpTransport::new().with_response("https://a.com/", resp);
+        let hits = vec![hit("https://a.com/", "snippet a")];
+        let cache = empty_web_cache();
+        cache.page_put("https://a.com/", "stale cached body".into());
+        let pages = fetch_pages(&transport, &hits, 8192, &cache, true).await;
+        // The fresh fetch's extracted text won, not the stale cached body.
+        assert!(pages[0]
+            .text
+            .contains("Ownership is the most distinctive feature"));
+        assert_ne!(pages[0].text, "stale cached body");
+        assert_eq!(transport.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn fetch_pages_bypass_cache_refreshes_the_stale_entry() {
+        // The fresh page from a bypassing fetch must overwrite the cache, so the
+        // very next NON-bypassing fetch is served the refreshed body rather
+        // than the stale one the user just distrusted, with no further request.
+        let resp = HttpResponse {
+            status: 200,
+            final_url: "https://a.com/".into(),
+            body: ARTICLE_HTML.as_bytes().to_vec(),
+        };
+        let transport = FakeHttpTransport::new().with_response("https://a.com/", resp);
+        let hits = vec![hit("https://a.com/", "snippet a")];
+        let cache = empty_web_cache();
+        cache.page_put("https://a.com/", "stale cached body".into());
+        let bypassed = fetch_pages(&transport, &hits, 8192, &cache, true).await;
+        assert!(bypassed[0]
+            .text
+            .contains("Ownership is the most distinctive feature"));
+        assert_eq!(transport.calls().len(), 1);
+        // A second, non-bypassing fetch reads the cache: it must see the
+        // REPLACED entry, not the original stale body, and issue no request.
+        let served = fetch_pages(&transport, &hits, 8192, &cache, false).await;
+        assert_eq!(served[0].text, bypassed[0].text);
+        assert_eq!(transport.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn fetch_pages_bypass_cache_false_keeps_page_cache_hit_behavior() {
+        // bypass_cache=false must behave exactly like the pre-existing
+        // cache-hit path: a warm entry is served with zero network calls.
+        let transport = FakeHttpTransport::new();
+        let hits = vec![hit("https://a.com/", "snippet a")];
+        let cache = empty_web_cache();
+        cache.page_put("https://a.com/", "already cached body".into());
+        let pages = fetch_pages(&transport, &hits, 8192, &cache, false).await;
+        assert_eq!(pages[0].text, "already cached body");
+        assert!(transport.calls().is_empty());
     }
 }
