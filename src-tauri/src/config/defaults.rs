@@ -1377,6 +1377,20 @@ pub const CITE_WEAK_MIN: f64 = 0.3;
 /// Not user-tunable: an internal defensive bound.
 pub const CITE_AUDIT_MAX_ANSWER_BYTES: usize = 262_144;
 
+/// Minimum byte length a cited source's fetched text must reach before the
+/// post-generation citation audit will score a claim against it. Below this
+/// (including a source whose text is empty), there is not enough substantive
+/// content to run a meaningful lexical or numeric check, so the citation is
+/// classified "unverifiable" rather than "unsupported": this is the
+/// live-observed shape of a JS-widget single-page-app result (a Binance or
+/// MEXC price page, for example), whose readable-text extraction succeeds but
+/// collapses to a short loading placeholder or an empty SERP-snippet
+/// fallback, never real content to check a claim against.
+///
+/// Not user-tunable: a defense-in-depth bound over externally fetched web
+/// content, not a user preference.
+pub const CITE_UNVERIFIABLE_MIN_SOURCE_BYTES: usize = 20;
+
 /// Attached letter magnitude suffixes the citation audit's numeric-consistency
 /// guard recognizes directly after a digit run (`615B`, `1.2mn`), paired with
 /// the power-of-ten exponent each one adds. Checked in this order, but order

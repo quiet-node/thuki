@@ -865,23 +865,24 @@ async fn run_builtin_search(
     }
 }
 
-/// Runs the post-generation citation audit for a grounded built-in turn and
-/// records it to the trace (observability only, no user-facing effect). Skips
-/// entirely when the turn cited nothing (`sources` empty: a plain or
-/// unreachable turn) or when the answer exceeds
+/// Runs the post-generation citation audit for a grounded built-in turn,
+/// records it to the trace, and returns the answer-facing hedge note (if any)
+/// for the caller to append before releasing the withheld `Done` chunk (see
+/// [`finalize_builtin_stream`]). Skips entirely when the turn cited nothing
+/// (`sources` empty: a plain or unreachable turn) or when the answer exceeds
 /// [`crate::config::defaults::CITE_AUDIT_MAX_ANSWER_BYTES`], logging the skip so
-/// a runaway stream can never grow the audit's work unbounded. Coverage-off:
-/// this is thin glue (a size gate plus a record and two `eprintln`s); all audit
-/// logic lives in [`crate::websearch::cite_check::audit_citations`], which is
-/// pure and fully unit-tested.
+/// a runaway stream can never grow the audit's work unbounded; both skip paths
+/// return `None`. Coverage-off: this is thin glue (a size gate plus a record
+/// and two `eprintln`s); all audit and hedge-wording logic lives in
+/// [`crate::websearch::cite_check`], which is pure and fully unit-tested.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn audit_answer_citations(
     answer: &str,
     sources: &[crate::websearch::assemble::SourceBlock],
     recorder: &std::sync::Arc<crate::trace::BoundRecorder>,
-) {
+) -> Option<String> {
     if sources.is_empty() {
-        return;
+        return None;
     }
     if answer.len() > crate::config::defaults::CITE_AUDIT_MAX_ANSWER_BYTES {
         eprintln!(
@@ -889,9 +890,10 @@ fn audit_answer_citations(
             answer.len(),
             crate::config::defaults::CITE_AUDIT_MAX_ANSWER_BYTES
         );
-        return;
+        return None;
     }
     let audit = crate::websearch::cite_check::audit_citations(answer, sources);
+    let hedge = crate::websearch::cite_check::hedge_line(&audit);
     recorder.record(crate::trace::RecorderEvent::CitationAudit {
         cited: audit.cited,
         supported: audit.supported,
@@ -901,17 +903,55 @@ fn audit_answer_citations(
         numeric_checked: audit.numeric_checked,
         numeric_matched: audit.numeric_matched,
         numeric_missing: audit.numeric_missing,
+        unverifiable: audit.unverifiable,
     });
     eprintln!(
-        "[search] citation audit: cited={} supported={} weak={} unsupported={} numeric_checked={} numeric_matched={} numeric_missing={}",
+        "[search] citation audit: cited={} supported={} weak={} unsupported={} unverifiable={} numeric_checked={} numeric_matched={} numeric_missing={}",
         audit.cited,
         audit.supported,
         audit.weak,
         audit.unsupported,
+        audit.unverifiable,
         audit.numeric_checked,
         audit.numeric_matched,
         audit.numeric_missing
     );
+    hedge
+}
+
+/// Decides the final persisted answer content and the terminal chunk(s) to
+/// emit once a built-in turn's token stream has finished, given whether the
+/// underlying stream actually reached its own terminal `Done` and the
+/// citation audit's hedge note, if any.
+///
+/// `done_pending` is `false` when the stream ended by cancellation or error
+/// instead of `Done` (the caller withholds the real `Done` chunk from the
+/// frontend specifically so this decision can run before it, appending a
+/// hedge to the visible answer one line too late otherwise); in that case
+/// nothing is appended and no terminal chunk is emitted here, since the
+/// frontend already left its streaming state on the `Cancelled`/`Error` chunk
+/// sent earlier. Otherwise the hedge (if any) is appended to `content` and
+/// the returned chunks are the hedge as a `Token` followed by the real
+/// `Done`, in emission order; with no hedge, only `Done` is emitted.
+fn finalize_builtin_stream(
+    content: String,
+    done_pending: bool,
+    hedge: Option<String>,
+) -> (String, Vec<StreamChunk>) {
+    if !done_pending {
+        return (content, Vec::new());
+    }
+    match hedge {
+        Some(note) => {
+            let hedge_chunk = format!("\n\n{note}");
+            let final_content = format!("{content}{hedge_chunk}");
+            (
+                final_content,
+                vec![StreamChunk::Token(hedge_chunk), StreamChunk::Done],
+            )
+        }
+        None => (content, vec![StreamChunk::Done]),
+    }
 }
 
 /// Sets `flag` when `chunk` carries reasoning output. The built-in runtime
@@ -2027,8 +2067,22 @@ pub async fn ask_model(
                                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                             let seen_for_pump = std::sync::Arc::clone(&reasoning_seen);
                             let backstop_model_id = model_id.clone();
+                            // Withhold the terminal `Done` chunk here: the
+                            // citation audit below may need to append a hedge
+                            // note to the answer, and telling the frontend the
+                            // stream is done before that would be one line too
+                            // early. Every other chunk, including `Cancelled`
+                            // and `Error`, still forwards immediately.
+                            let done_pending =
+                                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                            let done_pending_for_pump = std::sync::Arc::clone(&done_pending);
                             let builtin_pump = move |chunk: StreamChunk| {
                                 observe_reasoning_chunk(&chunk, &seen_for_pump);
+                                if matches!(chunk, StreamChunk::Done) {
+                                    done_pending_for_pump
+                                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                                    return;
+                                }
                                 pump(chunk);
                             };
                             let content = stream_builtin_chat(
@@ -2052,11 +2106,25 @@ pub async fn ask_model(
                                 think,
                                 reasoning_seen.load(std::sync::atomic::Ordering::Relaxed),
                             );
-                            // Post-generation citation audit (observability
-                            // only): grounded turns with sources. Off the token
-                            // hot path (the stream has completed); all logic
-                            // lives in the pure, fully tested `cite_check` fns.
-                            audit_answer_citations(&content, &audit_sources, &bound_recorder);
+                            // Post-generation citation audit: grounded turns
+                            // with sources. Off the token hot path (the stream
+                            // has completed); all classification and wording
+                            // logic lives in the pure, fully tested
+                            // `cite_check` fns. A flagged unsupported citation
+                            // earns a hedge note appended to the answer before
+                            // the withheld `Done` is released; `unverifiable`
+                            // citations (thin/empty source text) never trigger
+                            // it.
+                            let hedge =
+                                audit_answer_citations(&content, &audit_sources, &bound_recorder);
+                            let (content, terminal_chunks) = finalize_builtin_stream(
+                                content,
+                                done_pending.load(std::sync::atomic::Ordering::Relaxed),
+                                hedge,
+                            );
+                            for chunk in terminal_chunks {
+                                pump(chunk);
+                            }
                             content
                         }
                     }
@@ -4089,6 +4157,42 @@ mod tests {
         );
         assert_eq!(counter.load(Ordering::Relaxed), 0);
         assert_eq!(mock.snapshot().len(), 0);
+    }
+
+    #[test]
+    fn finalize_builtin_stream_no_done_pending_never_emits_or_appends() {
+        // Cancelled/error paths: the frontend already left its streaming
+        // state on the earlier terminal chunk, so nothing more is emitted and
+        // the content is returned unmodified, even if a hedge was computed.
+        let (content, chunks) = finalize_builtin_stream(
+            "partial answer".to_string(),
+            false,
+            Some("*Note: should never appear.*".to_string()),
+        );
+        assert_eq!(content, "partial answer");
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn finalize_builtin_stream_done_pending_no_hedge_emits_plain_done() {
+        let (content, chunks) = finalize_builtin_stream("The answer [1].".to_string(), true, None);
+        assert_eq!(content, "The answer [1].");
+        assert_eq!(chunks.len(), 1);
+        assert!(matches!(chunks[0], StreamChunk::Done));
+    }
+
+    #[test]
+    fn finalize_builtin_stream_done_pending_with_hedge_appends_and_emits_both() {
+        let note = "*Note: the figure cited to [1] could not be verified against that source.*";
+        let (content, chunks) =
+            finalize_builtin_stream("The answer [1].".to_string(), true, Some(note.to_string()));
+        assert_eq!(content, format!("The answer [1].\n\n{note}"));
+        assert_eq!(chunks.len(), 2);
+        assert!(matches!(
+            &chunks[0],
+            StreamChunk::Token(t) if t == &format!("\n\n{note}")
+        ));
+        assert!(matches!(chunks[1], StreamChunk::Done));
     }
 
     #[test]

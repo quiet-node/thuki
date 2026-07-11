@@ -30,10 +30,18 @@
 //! unsupported, or float an exact numeric match that lexical overlap missed
 //! up to at least weak. See [`classify_with_numeric_guard`] for the exact
 //! combination rule.
+//!
+//! A citation whose source text is too thin to check anything against (empty,
+//! or below [`CITE_UNVERIFIABLE_MIN_SOURCE_BYTES`], the live-observed shape of
+//! a JS-widget single-page-app result) is classified "unverifiable" instead of
+//! "unsupported": there is no evidence the claim is wrong, only that it could
+//! not be checked, so it is scored and treated separately (see
+//! [`CiteClass::Unverifiable`]) and never counted toward the answer-facing
+//! hedge note built by [`hedge_line`].
 
 use crate::config::defaults::{
     CITE_MAGNITUDE_ABBREVIATIONS, CITE_MAGNITUDE_WORDS, CITE_MONTH_NAMES, CITE_SUPPORTED_MIN,
-    CITE_WEAK_MIN,
+    CITE_UNVERIFIABLE_MIN_SOURCE_BYTES, CITE_WEAK_MIN,
 };
 use crate::websearch::assemble::SourceBlock;
 use std::collections::HashSet;
@@ -56,6 +64,12 @@ pub struct CitationAudit {
     pub weak: usize,
     /// References with little or no backing, plus out-of-range numbers.
     pub unsupported: usize,
+    /// References whose cited source had too little text to check anything
+    /// against (empty or below [`CITE_UNVERIFIABLE_MIN_SOURCE_BYTES`]).
+    /// Never counted in `unsupported` and never named in
+    /// `unsupported_indices`: there is no evidence of a wrong claim here,
+    /// just an unverifiable one.
+    pub unverifiable: usize,
     /// The 1-based source numbers classified unsupported, in first-seen order.
     pub unsupported_indices: Vec<usize>,
     /// Total claim numbers and dates checked by the numeric-consistency
@@ -93,8 +107,12 @@ struct CitationRef {
 /// found in the cited source's text (case-insensitive), and the score is
 /// bucketed by the audit thresholds. An index that matches no source counts as
 /// unsupported and is recorded in `unsupported_indices`. A claim with no content
-/// tokens at all counts as supported (there is nothing to contradict). Pure and
-/// total: malformed text degrades gracefully and never panics.
+/// tokens at all counts as supported (there is nothing to contradict). A
+/// source whose text is empty or below [`CITE_UNVERIFIABLE_MIN_SOURCE_BYTES`]
+/// is never scored at all: the citation is classified unverifiable instead,
+/// since neither the lexical scorer nor the numeric guard has anything
+/// substantive to check the claim against. Pure and total: malformed text
+/// degrades gracefully and never panics.
 pub fn audit_citations(answer_text: &str, sources: &[SourceBlock]) -> CitationAudit {
     let refs = find_citation_refs(answer_text);
     let sentences = sentence_spans(answer_text);
@@ -104,6 +122,7 @@ pub fn audit_citations(answer_text: &str, sources: &[SourceBlock]) -> CitationAu
         supported: 0,
         weak: 0,
         unsupported: 0,
+        unverifiable: 0,
         unsupported_indices: Vec::new(),
         numeric_checked: 0,
         numeric_matched: 0,
@@ -116,6 +135,12 @@ pub fn audit_citations(answer_text: &str, sources: &[SourceBlock]) -> CitationAu
         let class = match source {
             // Out-of-range citation: no source to back it, so unsupported.
             None => CiteClass::Unsupported,
+            // Too little source text to check anything against: neither
+            // score nor guard can say anything meaningful, so this is
+            // unverifiable rather than unsupported.
+            Some(source) if source.text.len() < CITE_UNVERIFIABLE_MIN_SOURCE_BYTES => {
+                CiteClass::Unverifiable
+            }
             Some(source) => {
                 let claim = claim_text(answer_text, &sentences, &cref);
                 let lexical_class = classify(support_score(&claim, &source.text));
@@ -142,10 +167,49 @@ pub fn audit_citations(answer_text: &str, sources: &[SourceBlock]) -> CitationAu
                 audit.unsupported += 1;
                 audit.unsupported_indices.push(cref.index);
             }
+            CiteClass::Unverifiable => audit.unverifiable += 1,
         }
     }
 
     audit
+}
+
+/// Builds the deterministic, answer-facing hedge note for a [`CitationAudit`],
+/// or `None` when nothing was flagged. Fires whenever `unsupported_indices` is
+/// non-empty: a purely lexical mismatch and a numeric-consistency-guard cap
+/// (fabricated or absent figure, wrong date) both land in that list, so both
+/// trigger the same note. `unverifiable` citations never reach this list (see
+/// [`CiteClass::Unverifiable`]) and so never trigger it: there is no evidence
+/// of a wrong claim there, only an unchecked one.
+///
+/// The source numbers are de-duplicated (a source cited more than once, and
+/// flagged more than once, is still named a single time) while preserving
+/// first-seen order, then rendered as `[N]` bracket markers matching the
+/// answer's own citation style. Wording is singular or plural depending on
+/// how many distinct sources are named, so the note always reads as a
+/// grammatical sentence. Pure and total: an empty or malformed audit simply
+/// yields `None`.
+pub fn hedge_line(audit: &CitationAudit) -> Option<String> {
+    let mut seen = HashSet::new();
+    let mut distinct = Vec::new();
+    for &index in &audit.unsupported_indices {
+        if seen.insert(index) {
+            distinct.push(index);
+        }
+    }
+    if distinct.is_empty() {
+        return None;
+    }
+    let markers = distinct
+        .iter()
+        .map(|i| format!("[{i}]"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(if distinct.len() == 1 {
+        format!("*Note: the figure cited to {markers} could not be verified against that source.*")
+    } else {
+        format!("*Note: figures cited to {markers} could not be verified against those sources.*")
+    })
 }
 
 /// The support buckets a citation's score falls into.
@@ -157,6 +221,10 @@ enum CiteClass {
     Weak,
     /// Score below [`CITE_WEAK_MIN`], or an out-of-range citation.
     Unsupported,
+    /// The cited source's text is empty or below
+    /// [`CITE_UNVERIFIABLE_MIN_SOURCE_BYTES`]: nothing substantive to score
+    /// the claim against, so the citation is neither trusted nor accused.
+    Unverifiable,
 }
 
 /// Buckets a support score into a [`CiteClass`] using the baked-in thresholds.
@@ -1109,6 +1177,7 @@ mod tests {
                 supported: 0,
                 weak: 0,
                 unsupported: 0,
+                unverifiable: 0,
                 unsupported_indices: vec![],
                 numeric_checked: 0,
                 numeric_matched: 0,
@@ -1512,5 +1581,129 @@ mod tests {
         assert_eq!(audit.numeric_checked, 1);
         assert_eq!(audit.numeric_matched, 0);
         assert_eq!(audit.numeric_missing, 1);
+    }
+
+    // ── unverifiable outcome (thin/empty source text) ───────────────────────
+
+    #[test]
+    fn empty_source_text_is_unverifiable_not_unsupported() {
+        let src = source(1, "");
+        let answer = "The company earned $500 million last year [1].";
+        let audit = audit_citations(answer, &[src]);
+        assert_eq!(audit.cited, 1);
+        assert_eq!(audit.unverifiable, 1);
+        assert_eq!(audit.unsupported, 0);
+        assert!(audit.unsupported_indices.is_empty());
+        // Nothing to check the claim's figure against, so the numeric guard
+        // is never even attempted.
+        assert_eq!(audit.numeric_checked, 0);
+    }
+
+    #[test]
+    fn source_text_below_byte_threshold_is_unverifiable() {
+        // One byte short of the threshold: still unverifiable regardless of
+        // any accidental lexical overlap with the claim.
+        let thin_text = "x".repeat(CITE_UNVERIFIABLE_MIN_SOURCE_BYTES - 1);
+        assert_eq!(thin_text.len(), CITE_UNVERIFIABLE_MIN_SOURCE_BYTES - 1);
+        let src = source(1, &thin_text);
+        let answer = "Some claim about this page [1].";
+        let audit = audit_citations(answer, &[src]);
+        assert_eq!(audit.cited, 1);
+        assert_eq!(audit.unverifiable, 1);
+        assert_eq!(audit.unsupported, 0);
+    }
+
+    #[test]
+    fn source_text_at_exact_byte_threshold_is_scored_normally() {
+        // Exactly at the threshold: no longer "below" it, so the citation
+        // falls through to ordinary lexical/numeric scoring instead of being
+        // classified unverifiable, regardless of what that scoring decides.
+        let boundary_text = "x".repeat(CITE_UNVERIFIABLE_MIN_SOURCE_BYTES);
+        assert_eq!(boundary_text.len(), CITE_UNVERIFIABLE_MIN_SOURCE_BYTES);
+        let src = source(1, &boundary_text);
+        let answer = "Some claim about this page [1].";
+        let audit = audit_citations(answer, &[src]);
+        assert_eq!(audit.cited, 1);
+        assert_eq!(audit.unverifiable, 0);
+    }
+
+    #[test]
+    fn unverifiable_citation_never_drives_the_hedge_note() {
+        // The end-to-end path: a source too thin to verify must not surface
+        // as an answer-facing hedge, only as its own separate outcome.
+        let src = source(1, "");
+        let answer = "The company earned $500 million last year [1].";
+        let audit = audit_citations(answer, &[src]);
+        assert_eq!(hedge_line(&audit), None);
+    }
+
+    // ── hedge_line ───────────────────────────────────────────────────────────
+
+    /// Builds a minimal audit carrying exactly the given (possibly
+    /// duplicate) unsupported source numbers, for testing `hedge_line` in
+    /// isolation from the rest of the audit pipeline.
+    fn audit_with_unsupported_indices(indices: Vec<usize>) -> CitationAudit {
+        CitationAudit {
+            cited: indices.len(),
+            supported: 0,
+            weak: 0,
+            unsupported: indices.len(),
+            unverifiable: 0,
+            unsupported_indices: indices,
+            numeric_checked: 0,
+            numeric_matched: 0,
+            numeric_missing: 0,
+        }
+    }
+
+    #[test]
+    fn hedge_line_none_when_nothing_unsupported() {
+        assert_eq!(hedge_line(&audit_with_unsupported_indices(vec![])), None);
+    }
+
+    #[test]
+    fn hedge_line_singular_wording_for_one_index() {
+        assert_eq!(
+            hedge_line(&audit_with_unsupported_indices(vec![2])),
+            Some(
+                "*Note: the figure cited to [2] could not be verified against that source.*"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn hedge_line_plural_wording_matches_spec_example() {
+        assert_eq!(
+            hedge_line(&audit_with_unsupported_indices(vec![2, 5])),
+            Some(
+                "*Note: figures cited to [2], [5] could not be verified against those sources.*"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn hedge_line_dedupes_repeated_index_down_to_singular_wording() {
+        // The same source flagged unsupported in three different sentences
+        // still names once, and reads as singular.
+        assert_eq!(
+            hedge_line(&audit_with_unsupported_indices(vec![2, 2, 2])),
+            Some(
+                "*Note: the figure cited to [2] could not be verified against that source.*"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn hedge_line_dedupes_while_preserving_first_seen_order() {
+        assert_eq!(
+            hedge_line(&audit_with_unsupported_indices(vec![5, 2, 5, 9, 2])),
+            Some(
+                "*Note: figures cited to [5], [2], [9] could not be verified against those sources.*"
+                    .to_string()
+            )
+        );
     }
 }
