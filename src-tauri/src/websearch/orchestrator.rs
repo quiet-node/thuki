@@ -65,7 +65,7 @@ use crate::websearch::cache::{CachedSearch, SourceCache};
 use crate::websearch::encyclopedia::{fetch_encyclopedia, is_volatile_question};
 use crate::websearch::engine::{any_engine_available, web_search, EngineHealth, SearchHit};
 use crate::websearch::fetch::{fetch_pages, FetchedPage};
-use crate::websearch::judge::{SufficiencyJudge, SufficiencyVerdict};
+use crate::websearch::judge::{deterministic_sufficiency, SufficiencyJudge, SufficiencyVerdict};
 use crate::websearch::news::{fetch_news, is_news_intent};
 use crate::websearch::prefilter::{prefilter, PreFilterVerdict};
 use crate::websearch::prepass::{
@@ -281,6 +281,8 @@ pub async fn run_search(
                 today,
                 locale,
                 Vec::new(),
+                // A cache hit is never a conflict commit: no fresh judge ran.
+                false,
             ),
             None => {
                 run_web(
@@ -629,7 +631,7 @@ async fn run_web(
             .await
             {
                 EngineJudgeOutcome::Cancelled => SearchOutcome::Cancelled,
-                EngineJudgeOutcome::Sources(sources, requery_stats) => {
+                EngineJudgeOutcome::Sources(sources, requery_stats, conflict) => {
                     let mut engine_stats = engine_stats;
                     engine_stats.extend(requery_stats);
                     grounded_answer(
@@ -643,6 +645,7 @@ async fn run_web(
                         today,
                         locale,
                         engine_stats,
+                        conflict,
                     )
                 }
             }
@@ -822,23 +825,29 @@ async fn commit_or_escalate(
     cancel: &CancellationToken,
     status: &(dyn Fn(SearchPhase) + Send + Sync),
 ) -> SearchOutcome {
-    let verdict = match deps
-        .judge
-        .judge(standalone_question, std::slice::from_ref(&block), cancel)
-        .await
-    {
-        Ok(verdict) => verdict,
-        Err(InferenceError::Cancelled) => return SearchOutcome::Cancelled,
-        // A judge infra failure fails toward committing (see the judge module
-        // docs): serve the vertical block rather than stall the user or spend an
-        // engine request on a decision the judge could not actually make.
-        Err(InferenceError::Request(reason)) => {
-            eprintln!("[search] judge error: {reason} -> committing {tier} block");
-            SufficiencyVerdict {
-                sufficient: true,
-                missing: String::new(),
+    // Deterministic pre-check first (see `judge::deterministic_sufficiency`): an
+    // empty vertical block is mechanically insufficient and a populated weather
+    // block is mechanically sufficient, both decided in pure code with no model
+    // call. Only the ambiguous middle (a populated scoreboard, news feed, or wiki
+    // summary) falls through to the LLM judge, so the pre-check REPLACES the
+    // judge call rather than adding one: the per-turn LLM-call budget never rises.
+    let verdict = match deterministic_sufficiency(tier, &block) {
+        Some(verdict) => verdict,
+        None => match deps
+            .judge
+            .judge(standalone_question, std::slice::from_ref(&block), cancel)
+            .await
+        {
+            Ok(verdict) => verdict,
+            Err(InferenceError::Cancelled) => return SearchOutcome::Cancelled,
+            // A judge infra failure fails toward committing (see the judge module
+            // docs): serve the vertical block rather than stall the user or spend
+            // an engine request on a decision the judge could not actually make.
+            Err(InferenceError::Request(reason)) => {
+                eprintln!("[search] judge error: {reason} -> committing {tier} block");
+                SufficiencyVerdict::commit()
             }
-        }
+        },
     };
     if verdict.sufficient {
         eprintln!("[search] {tier} sufficient -> committing");
@@ -860,6 +869,8 @@ async fn commit_or_escalate(
             today,
             locale,
             Vec::new(),
+            // The vertical judge (single block) never yields a conflict verdict.
+            false,
         );
     }
     eprintln!(
@@ -888,6 +899,8 @@ async fn commit_or_escalate(
             today,
             locale,
             Vec::new(),
+            // The vertical judge (single block) never yields a conflict verdict.
+            false,
         );
     }
     match run_engine_tier(
@@ -942,7 +955,7 @@ async fn commit_or_escalate(
             .await
             {
                 EngineJudgeOutcome::Cancelled => SearchOutcome::Cancelled,
-                EngineJudgeOutcome::Sources(sources, requery_stats) => {
+                EngineJudgeOutcome::Sources(sources, requery_stats, conflict) => {
                     let mut engine_stats = engine_stats;
                     engine_stats.extend(requery_stats);
                     grounded_answer(
@@ -956,6 +969,7 @@ async fn commit_or_escalate(
                         today,
                         locale,
                         engine_stats,
+                        conflict,
                     )
                 }
             }
@@ -981,6 +995,8 @@ async fn commit_or_escalate(
                 today,
                 locale,
                 Vec::new(),
+                // Engine-miss fallback to the vertical block: no conflict verdict.
+                false,
             )
         }
     }
@@ -999,6 +1015,12 @@ async fn commit_or_escalate(
 /// The cache write is skipped for tier `"cache"` itself (an answer served
 /// from the cache is not a new search, so it must not reset the entry's TTL
 /// or overwrite it with the same sources).
+///
+/// `conflict` is forwarded to the writer prompt (see
+/// [`crate::websearch::writer::writer_messages`]): `true` only on the engine
+/// tier's conflict commit (see [`judge_and_requery`]), where the judge found the
+/// sources disagree on the asked value, so the writer presents the spread rather
+/// than hedging. Every other caller passes `false`.
 #[allow(clippy::too_many_arguments)]
 fn grounded_answer(
     deps: &SearchDeps<'_>,
@@ -1011,6 +1033,7 @@ fn grounded_answer(
     today: &str,
     locale: &str,
     engine_stats: Vec<EngineStat>,
+    conflict: bool,
 ) -> SearchOutcome {
     deps.recorder.record(RecorderEvent::SearchRetrieved {
         tier: tier.to_string(),
@@ -1046,6 +1069,7 @@ fn grounded_answer(
         today,
         locale,
         is_cache_tier,
+        conflict,
     );
     SearchOutcome::Answer { messages, sources }
 }
@@ -1161,14 +1185,21 @@ enum EngineJudgeOutcome {
     /// The user cancelled mid-judge or mid-requery.
     Cancelled,
     /// The sources to answer from, paired with the per-query, per-engine outcome
-    /// summary of the one requery this call may have fired (see [`EngineStat`]).
+    /// summary of the one requery this call may have fired (see [`EngineStat`]),
+    /// and a conflict flag.
+    ///
     /// The sources are `sources` unchanged (a sufficient verdict, a judge
-    /// failure, an empty `missing` phrase, or a requery that found no new URLs)
-    /// or merged with the one requery's new sources; the stats are that
-    /// requery's engines, empty on every path where no requery ran, for the
-    /// caller to fold into the primary query's [`RecorderEvent::SearchRetrieved`]
+    /// failure, an empty `missing` phrase, a conflict verdict, or a requery that
+    /// found no new URLs) or merged with the one requery's new sources; the stats
+    /// are that requery's engines, empty on every path where no requery ran, for
+    /// the caller to fold into the primary query's [`RecorderEvent::SearchRetrieved`]
     /// so one retrieval record shows both rounds' engines.
-    Sources(Vec<SourceBlock>, Vec<EngineStat>),
+    ///
+    /// The final `bool` is the conflict flag: `true` only when the judge returned
+    /// an insufficient-because-conflicting verdict (see [`judge_and_requery`]), so
+    /// the caller forwards it to [`grounded_answer`] and the writer presents the
+    /// disagreement rather than hedging. `false` on every other path.
+    Sources(Vec<SourceBlock>, Vec<EngineStat>, bool),
 }
 
 /// Round one's ranked chunks and fetched pages, supplied only by the
@@ -1191,8 +1222,18 @@ struct RequeryRerank {
 /// Runs whenever the general engine tier itself produced `sources`: both
 /// [`run_web`]'s terminal engine-tier branch and [`commit_or_escalate`]'s
 /// escalation-merge branch reach here, since either path ends in a freshly
-/// assembled engine-tier block no prior judge call (if any) ever saw. On a
-/// confident insufficient verdict naming what is missing, this records
+/// assembled engine-tier block no prior judge call (if any) ever saw.
+///
+/// A `conflicting` verdict (see [`crate::websearch::judge::InsufficiencyReason`])
+/// short-circuits before the requery: the sources already hold the asked value,
+/// they just disagree on it, and a requery searches for a value that is not
+/// missing, so it cannot resolve the disagreement (observed live wasting 28.5s).
+/// The sources are committed unchanged with the conflict flag set on
+/// [`EngineJudgeOutcome::Sources`], so the writer presents the spread. This is
+/// why the per-turn LLM-call budget cannot rise: the conflict path spends fewer
+/// calls, never more.
+///
+/// On a confident insufficient verdict naming what is missing, this records
 /// `sources` as a round-one [`RecorderEvent::SearchRetrieved`] (`round:
 /// Some(1)`, see its docs) before firing exactly one requery: the standalone
 /// question with the missing phrase appended (capped to
@@ -1250,9 +1291,22 @@ async fn judge_and_requery(
         Err(InferenceError::Cancelled) => return EngineJudgeOutcome::Cancelled,
         Err(InferenceError::Request(reason)) => {
             eprintln!("[search] engine-tier judge error: {reason} -> committing round-one sources");
-            return EngineJudgeOutcome::Sources(sources, Vec::new());
+            return EngineJudgeOutcome::Sources(sources, Vec::new(), false);
         }
     };
+    // Conflict: the sources DO hold the asked value but disagree on it (see
+    // `judge::InsufficiencyReason::Conflicting`). A requery searches for a value
+    // that is not missing, so it cannot resolve a disagreement (observed live
+    // wasting 28.5s doing exactly that); commit round one's sources and raise the
+    // conflict flag so the writer presents the spread instead of re-searching. No
+    // requery ran, so the engine-stats companion is empty.
+    if verdict.conflicting() {
+        eprintln!(
+            "[search] engine tier conflicting (missing: {}) -> committing, flagging writer",
+            verdict.missing
+        );
+        return EngineJudgeOutcome::Sources(sources, Vec::new(), true);
+    }
     // Sufficient, or insufficient with nothing to search for: commit
     // round-one's sources. `ENGINE_REQUERY_MAX == 0` also lands here (the
     // requery is disabled outright), since the flow has no loop back into
@@ -1262,7 +1316,7 @@ async fn judge_and_requery(
         || verdict.missing.is_empty()
         || crate::config::defaults::ENGINE_REQUERY_MAX == 0
     {
-        return EngineJudgeOutcome::Sources(sources, Vec::new());
+        return EngineJudgeOutcome::Sources(sources, Vec::new(), false);
     }
     if cancel.is_cancelled() {
         return EngineJudgeOutcome::Cancelled;
@@ -1315,7 +1369,7 @@ async fn judge_and_requery(
     .await;
     let new_hits = new_urls_only(hits, &sources);
     if new_hits.is_empty() {
-        return EngineJudgeOutcome::Sources(sources, requery_stats);
+        return EngineJudgeOutcome::Sources(sources, requery_stats, false);
     }
     if cancel.is_cancelled() {
         return EngineJudgeOutcome::Cancelled;
@@ -1386,7 +1440,7 @@ async fn judge_and_requery(
             merge_sources(sources, new_sources, num_ctx)
         }
     };
-    EngineJudgeOutcome::Sources(merged, requery_stats)
+    EngineJudgeOutcome::Sources(merged, requery_stats, false)
 }
 
 #[cfg(test)]
@@ -1394,7 +1448,7 @@ mod tests {
     use super::*;
     use crate::net::transport::{FakeHttpTransport, HttpRequest, HttpResponse, TransportError};
     use crate::websearch::cache::TtlSourceCache;
-    use crate::websearch::judge::FakeSufficiencyJudge;
+    use crate::websearch::judge::{FakeSufficiencyJudge, InsufficiencyReason};
     use crate::websearch::prepass::{FakePrePass, PrePassDecision};
     use crate::websearch::rank::Bm25Scorer;
     use async_trait::async_trait;
@@ -3101,6 +3155,47 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn conflicting_engine_verdict_flags_writer_and_skips_requery() {
+        // End-to-end seam for item (a): a conflicting engine-tier verdict must
+        // reach the writer prompt as the conflict directive, and must NOT fire a
+        // requery (a disagreement is not searchable). Drives the full run_search
+        // engine path with a judge that returns reason=Conflicting, proving the
+        // judge_and_requery -> grounded_answer -> writer_messages forwarding.
+        let prepass = FakePrePass::returning(Ok(web_decision(vec!["treaty versailles paris"])));
+        let transport = transport_with_serp_and_page();
+        let judge = FakeSufficiencyJudge::returning(Ok(SufficiencyVerdict {
+            sufficient: false,
+            missing: "the exact figure".into(),
+            reason: InsufficiencyReason::Conflicting,
+        }));
+        let health = EngineHealth::new();
+        let (mock, bound) = mock_recorder();
+        let (_phases, status) = recorder();
+        let outcome = run_search(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            "sys",
+            &[],
+            "when signed",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        // The writer prompt carries the conflict directive alongside the
+        // untrusted-source region: the forwarded flag survived every hop.
+        assert!(matches!(&outcome, SearchOutcome::Answer { messages, .. }
+            if messages.last().is_some_and(|m| m.content.contains("The sources disagree on a value")
+                && m.content.contains("UNTRUSTED_WEB_CONTENT"))));
+        // No requery fired: a conflict commits directly, so no SearchRequeried.
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, RecorderEvent::SearchRequeried { .. })));
+    }
+
     /// Two hits whose extracted article bodies are byte-identical (so BM25
     /// gives them equal relevance), differing only by URL and an embedded
     /// JSON-LD `datePublished`, `old` published far further in the past than
@@ -3933,6 +4028,7 @@ mod tests {
         FakeSufficiencyJudge::returning(Ok(SufficiencyVerdict {
             sufficient: false,
             missing: "the treaty terms".into(),
+            reason: InsufficiencyReason::Missing,
         }))
     }
 
@@ -3976,10 +4072,12 @@ mod tests {
             first: SufficiencyVerdict {
                 sufficient: false,
                 missing: "the treaty terms".into(),
+                reason: InsufficiencyReason::Missing,
             },
             second: SufficiencyVerdict {
                 sufficient: true,
                 missing: String::new(),
+                reason: InsufficiencyReason::Missing,
             },
         }
     }
@@ -4369,7 +4467,7 @@ mod tests {
             &CancellationToken::new(),
         )
         .await;
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _) if s == &sources));
+        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _) if s == &sources));
         assert!(
             transport.calls().is_empty(),
             "a sufficient verdict must never requery"
@@ -4405,7 +4503,7 @@ mod tests {
             &CancellationToken::new(),
         )
         .await;
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _)
+        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
             if s.len() == 2
                 && s[0].url == "https://match.example/"
                 && s[0].index == 1
@@ -4464,6 +4562,7 @@ mod tests {
         let judge = FakeSufficiencyJudge::returning(Ok(SufficiencyVerdict {
             sufficient: false,
             missing: long_missing.into(),
+            reason: InsufficiencyReason::Missing,
         }));
         let health = EngineHealth::new();
         let (mock, bound) = mock_recorder();
@@ -4536,7 +4635,7 @@ mod tests {
             &CancellationToken::new(),
         )
         .await;
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _) if s == &sources));
+        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _) if s == &sources));
         assert!(!transport
             .calls()
             .iter()
@@ -4576,12 +4675,52 @@ mod tests {
             &CancellationToken::new(),
         )
         .await;
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _) if s == &sources));
+        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _) if s == &sources));
         assert!(transport.calls().is_empty());
         let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
         assert!(
             events.is_empty(),
             "no requery fired, so nothing is recorded"
+        );
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_conflict_commits_without_requery() {
+        // A conflicting verdict: the sources hold the asked value but disagree on
+        // it. A requery cannot resolve a disagreement, so round one's sources are
+        // committed unchanged with the conflict flag raised, and NO requery
+        // fires. The conflict branch returns before the round-one record, so a
+        // trace records nothing (no requery ran).
+        let prepass = dummy_prepass();
+        let transport = FakeHttpTransport::new();
+        let judge = FakeSufficiencyJudge::returning(Ok(SufficiencyVerdict {
+            sufficient: false,
+            missing: "attendance figure".into(),
+            reason: InsufficiencyReason::Conflicting,
+        }));
+        let health = EngineHealth::new();
+        let (mock, bound) = mock_recorder();
+        let sources = round_one_sources();
+        let outcome = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            sources.clone(),
+            None,
+            16384,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        // Sources unchanged, conflict flag raised, so the writer presents the
+        // spread rather than re-searching.
+        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, true) if s == &sources));
+        // No requery fired: a disagreement is not searchable.
+        assert!(transport.calls().is_empty());
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert!(
+            events.is_empty(),
+            "conflict commits without a requery, so nothing is recorded"
         );
     }
 
@@ -4697,7 +4836,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&outcome, EngineJudgeOutcome::Sources(s, _) if s == &sources),
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _) if s == &sources),
             "the oversized requery source must be dropped, leaving round-one sources unchanged"
         );
     }
@@ -4757,7 +4896,7 @@ mod tests {
             &CancellationToken::new(),
         )
         .await;
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _)
+        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
             if s.iter().any(|b| b.url == "https://cached-requery.example/")));
         assert!(!transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
         let mojeek_url = crate::websearch::engine::mojeek_request(&requery_text, false).url;
@@ -4811,7 +4950,7 @@ mod tests {
         // The network's hit (requery.example), not the stale cached one, made
         // it through: the cache read was genuinely skipped, not
         // coincidentally equal.
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _)
+        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
             if s.iter().any(|b| b.url == "https://requery.example/")
                 && !s.iter().any(|b| b.url == "https://cached-requery.example/")));
         assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
@@ -4895,7 +5034,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&outcome, EngineJudgeOutcome::Sources(s, _)
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
                 if s.len() == 2
                     && s[0].url == "https://requery.example/"
                     && s[0].index == 1
@@ -4940,7 +5079,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&outcome, EngineJudgeOutcome::Sources(s, _)
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
                 if s.first().map(|b| b.url.as_str()) == Some("https://requery.example/")),
             "the fresher round-two source must be recency-reordered ahead of the ancient round one"
         );
@@ -4981,7 +5120,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&outcome, EngineJudgeOutcome::Sources(s, _)
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
                 if s.iter().any(|b| b.url == "https://requery.example/")
                     && !s.iter().any(|b| b.url == "https://round-one.example/")),
             "the fused tail (weak, oversized round one) must be dropped, not round two"
@@ -5077,7 +5216,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&outcome, EngineJudgeOutcome::Sources(s, _)
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
                 if s.len() == 3
                     && s[0].url == "https://match.example/"
                     && s[1].url == "https://newer.example/"
@@ -5140,6 +5279,7 @@ mod tests {
                 Ok(SufficiencyVerdict {
                     sufficient: false,
                     missing: "the treaty terms".into(),
+                    reason: InsufficiencyReason::Missing,
                 })
             } else {
                 Err(InferenceError::Cancelled)

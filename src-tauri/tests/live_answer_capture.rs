@@ -31,7 +31,9 @@ use thuki_agent_lib::trace::{BoundRecorder, ConversationId};
 use thuki_agent_lib::websearch::assemble::SourceBlock;
 use thuki_agent_lib::websearch::cache::TtlSourceCache;
 use thuki_agent_lib::websearch::engine::EngineHealth;
-use thuki_agent_lib::websearch::judge::{SufficiencyJudge, SufficiencyVerdict};
+use thuki_agent_lib::websearch::judge::{
+    InsufficiencyReason, SufficiencyJudge, SufficiencyVerdict,
+};
 use thuki_agent_lib::websearch::orchestrator::{run_search, SearchDeps, SearchOutcome};
 use thuki_agent_lib::websearch::prepass::{
     InferenceError, PrePass, PrePassDecision, SearchDecision, SearchRoute,
@@ -90,6 +92,7 @@ impl SufficiencyJudge for AlwaysSufficientJudge {
         Ok(SufficiencyVerdict {
             sufficient: true,
             missing: String::new(),
+            reason: InsufficiencyReason::Missing,
         })
     }
 }
