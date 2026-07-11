@@ -12,6 +12,13 @@
 //! once a second engine disagrees). Adding a third engine later is one [`ENGINES`]
 //! entry with no control-flow change.
 //!
+//! Fusion also consults a static, compiled-in domain-credibility list (see
+//! [`super::credibility`]): individually verified hoax domains are hard-dropped
+//! before fusion, bulk-imported spam and copycat domains take a soft rank
+//! penalty, and encyclopedic and primary-reference domains are promoted. The
+//! penalty and boost are rank offsets tuned so cross-engine agreement still wins,
+//! so the list biases ranking without ever overriding a genuine two-engine hit.
+//!
 //! A tripped bot challenge (empirically IP-scoped and multi-hour on DuckDuckGo,
 //! per the T1 spike) classifies as [`SerpOutcome::Blocked`] and marks that
 //! engine cooling for its cooldown window; the other engines' results still fuse
@@ -32,6 +39,7 @@
 use scraper::{Html, Selector};
 
 use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
+use crate::websearch::credibility::{classify_domain, DomainClass};
 use crate::websearch::serp_cache::WebCache;
 
 /// One search-engine result row.
@@ -320,6 +328,11 @@ pub async fn web_search(
         }
     }
 
+    // Hard-remove credibility drop-class hits (individually verified hoax and
+    // impostor domains) from every engine's list before fusion. Engine count is
+    // preserved (an emptied list still counts), so the fused summary line below is
+    // unaffected.
+    let lists: Vec<Vec<SearchHit>> = lists.into_iter().map(drop_incredible).collect();
     let fused = rrf_fuse(&lists);
     let capped = dedupe_and_cap(
         fused,
@@ -351,8 +364,43 @@ pub async fn web_search(
 /// list is an identity on order (every score is monotonic in rank), so the
 /// one-live-engine case degrades to that engine's own ordering. Empty input
 /// yields an empty list.
+///
+/// Fusion also consults the compiled-in domain-credibility list (see
+/// [`crate::websearch::credibility`]): a boost-class URL is scored as if it were
+/// rank 1 in every list it appears on, and a penalize-class URL's rank is pushed
+/// down by [`crate::config::defaults::CREDIBILITY_PENALTY_RANK_OFFSET`]. Both are
+/// tuning-free safety ceilings: the maximum single-list boosted score
+/// `1 / (60 + 1) = 0.01639` is strictly below a dual-engine rank-10 page's
+/// `0.02857`, so a boosted-but-irrelevant page can never beat a genuinely
+/// relevant unboosted one on the boost alone, and the penalty offset keeps a
+/// single-engine spam hit below a dual-engine legitimate one without dropping it.
 pub(crate) fn rrf_fuse(lists: &[Vec<SearchHit>]) -> Vec<SearchHit> {
+    rrf_fuse_classified(lists, &|url| classify_domain(&super::domain_of(url)))
+}
+
+/// The credibility-aware fusion core behind [`rrf_fuse`], with the domain
+/// classifier injected so the scoring math is testable independently of the real
+/// embedded credibility list (tests pass a synthetic classifier; the public
+/// [`rrf_fuse`] passes the real [`classify_domain`] over the URL's host). Boost
+/// URLs use an effective rank of 1 in each list; penalize URLs add the offset
+/// [`crate::config::defaults::CREDIBILITY_PENALTY_RANK_OFFSET`] to their rank;
+/// drop and neutral URLs use their native rank (drop-class URLs are already
+/// removed upstream by [`drop_incredible`], so they never reach this step). All
+/// other semantics (first-seen tiebreak, intra-list dedup, stable sort) match
+/// [`rrf_fuse`].
+///
+/// The classifier is taken as `&dyn Fn` rather than a generic `impl Fn` so this
+/// core compiles to a single instantiation. A generic bound monomorphizes once
+/// per closure type (the real classifier plus each test's synthetic one), and
+/// per-instantiation coverage attribution then flags match arms that a given
+/// monomorphization never exercises; one shared instantiation keeps the fusion
+/// math deterministic to measure and dynamic dispatch is free on this cold path.
+fn rrf_fuse_classified(
+    lists: &[Vec<SearchHit>],
+    classify: &dyn Fn(&str) -> DomainClass,
+) -> Vec<SearchHit> {
     let k = crate::config::defaults::RRF_K as f64;
+    let penalty = crate::config::defaults::CREDIBILITY_PENALTY_RANK_OFFSET as f64;
     // First-seen order of URLs across all lists; the stable sort below breaks
     // score ties by this order.
     let mut order: Vec<SearchHit> = Vec::new();
@@ -364,7 +412,15 @@ pub(crate) fn rrf_fuse(lists: &[Vec<SearchHit>]) -> Vec<SearchHit> {
             if !seen_in_list.insert(hit.url.as_str()) {
                 continue;
             }
-            let contribution = 1.0 / (k + (idx + 1) as f64);
+            let rank = (idx + 1) as f64;
+            // Boost pins the effective rank to 1; penalize pushes the rank down by
+            // a fixed offset; drop and neutral keep the native rank.
+            let effective_rank = match classify(&hit.url) {
+                DomainClass::Boost => 1.0,
+                DomainClass::Penalize => rank + penalty,
+                DomainClass::Drop | DomainClass::Neutral => rank,
+            };
+            let contribution = 1.0 / (k + effective_rank);
             match scores.get_mut(&hit.url) {
                 Some(score) => *score += contribution,
                 None => {
@@ -382,6 +438,27 @@ pub(crate) fn rrf_fuse(lists: &[Vec<SearchHit>]) -> Vec<SearchHit> {
             .expect("fusion scores are finite")
     });
     order
+}
+
+/// Removes hits whose host classifies as [`DomainClass::Drop`] from one engine's
+/// parsed list before fusion, logging each removal under the `[search]` prefix.
+/// Drop-class domains are the individually verified hoax and impostor sources, so
+/// hard removal is intended rather than the soft rank penalty applied to the
+/// bulk-imported penalize set. Pure apart from the stderr log and total: a list
+/// with no drop-class hits is returned unchanged.
+fn drop_incredible(list: Vec<SearchHit>) -> Vec<SearchHit> {
+    list.into_iter()
+        .filter(|hit| {
+            let dropped = matches!(
+                classify_domain(&super::domain_of(&hit.url)),
+                DomainClass::Drop
+            );
+            if dropped {
+                eprintln!("[search] credibility drop url={}", hit.url);
+            }
+            !dropped
+        })
+        .collect()
 }
 
 /// Builds the DuckDuckGo `html` POST request with browser headers and the
@@ -1009,6 +1086,136 @@ mod tests {
         );
         // q is on both engines (ranks 2 and 1) -> highest score -> first.
         assert_eq!(first[0].url, "https://q.example/");
+    }
+
+    // ── credibility-aware fusion ────────────────────────────────────────────
+
+    #[test]
+    fn drop_incredible_removes_drop_class_and_keeps_others() {
+        // now8news.com is a real drop-class entry in the embedded list; the other
+        // host is neutral and survives. Covers both filter branches.
+        let list = vec![
+            hit("https://now8news.com/hoax"),
+            hit("https://example.com/ok"),
+        ];
+        let kept = drop_incredible(list);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].url, "https://example.com/ok");
+    }
+
+    #[test]
+    fn rrf_fuse_penalizes_below_neutral_dual_engine() {
+        // A penalized rank-1 single-engine hit must rank below a neutral page that
+        // two engines agree on at rank 10:
+        //   spam:  1 / (60 + 1 + 40) = 1/101 ≈ 0.009901
+        //   legit: 1/(60+10) + 1/(60+10) = 2/70 ≈ 0.028571
+        // 0.0099 < 0.0286, so the soft penalty does not erase the hit, it just
+        // seats a lone spam page below cross-engine agreement.
+        let classify = |url: &str| {
+            if url == "https://spam/" {
+                DomainClass::Penalize
+            } else {
+                DomainClass::Neutral
+            }
+        };
+        let mut list_a = vec![hit("https://spam/")];
+        for i in 1..=8 {
+            list_a.push(hit(&format!("https://a{i}/")));
+        }
+        list_a.push(hit("https://legit/")); // rank 10 in list A
+        let mut list_b = Vec::new();
+        for i in 1..=9 {
+            list_b.push(hit(&format!("https://b{i}/")));
+        }
+        list_b.push(hit("https://legit/")); // rank 10 in list B
+        let fused = rrf_fuse_classified(&[list_a, list_b], &classify);
+        let pos = |u: &str| fused.iter().position(|h| h.url == u).expect("present");
+        assert!(pos("https://legit/") < pos("https://spam/"));
+    }
+
+    #[test]
+    fn rrf_fuse_boost_beats_same_rank_neutral_but_not_dual_engine() {
+        // A boosted hit is scored as rank 1 in its list, so it outranks a neutral
+        // hit sitting at the same native rank, yet the tuning-free ceiling holds:
+        //   boost@5    = 1 / (60 + 1) = 0.016393
+        //   neutral5@5 = 1 / (60 + 5) = 0.015385   -> boost > neutral5
+        //   dual@10 x2 = 2 / (60 + 10) = 0.028571   -> dual > boost
+        // so a boosted-but-thin page can never beat genuine cross-engine agreement.
+        let classify = |url: &str| {
+            if url == "https://boost/" {
+                DomainClass::Boost
+            } else {
+                DomainClass::Neutral
+            }
+        };
+        let list_a = vec![
+            hit("https://a1/"),
+            hit("https://a2/"),
+            hit("https://a3/"),
+            hit("https://a4/"),
+            hit("https://boost/"), // rank 5
+            hit("https://a6/"),
+            hit("https://a7/"),
+            hit("https://a8/"),
+            hit("https://a9/"),
+            hit("https://dual/"), // rank 10
+        ];
+        let list_b = vec![
+            hit("https://b1/"),
+            hit("https://b2/"),
+            hit("https://b3/"),
+            hit("https://b4/"),
+            hit("https://neutral5/"), // rank 5
+            hit("https://b6/"),
+            hit("https://b7/"),
+            hit("https://b8/"),
+            hit("https://b9/"),
+            hit("https://dual/"), // rank 10
+        ];
+        let fused = rrf_fuse_classified(&[list_a, list_b], &classify);
+        let pos = |u: &str| fused.iter().position(|h| h.url == u).expect("present");
+        assert!(pos("https://boost/") < pos("https://neutral5/"));
+        assert!(pos("https://dual/") < pos("https://boost/"));
+    }
+
+    #[test]
+    fn rrf_fuse_classified_is_deterministic() {
+        // Same inputs and classifier -> identical output order, every time.
+        let classify = |url: &str| {
+            if url == "https://b/" {
+                DomainClass::Boost
+            } else {
+                DomainClass::Neutral
+            }
+        };
+        let list = vec![hit("https://a/"), hit("https://b/")];
+        let first = rrf_fuse_classified(std::slice::from_ref(&list), &classify);
+        let second = rrf_fuse_classified(std::slice::from_ref(&list), &classify);
+        assert_eq!(
+            first.iter().map(|h| &h.url).collect::<Vec<_>>(),
+            second.iter().map(|h| &h.url).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn web_search_drops_incredible_domain_from_results() {
+        // An end-to-end check that a drop-class hit vanishes from the fused output.
+        // DuckDuckGo is forced cooling so only Mojeek runs, keeping the result
+        // deterministic; its list carries one hoax domain and one legitimate one.
+        let mojeek_url = mojeek_request("q", false).url;
+        let body = r#"
+          <ul class="results-standard">
+            <li><h2><a class="title" href="https://now8news.com/hoax">Hoax</a></h2></li>
+            <li><h2><a class="title" href="https://legit.example/real">Real</a></h2></li>
+          </ul>
+        "#;
+        let transport = FakeHttpTransport::new().with_response(&mojeek_url, ok(&mojeek_url, body));
+        let health = EngineHealth::new();
+        health.mark_blocked("duckduckgo", 3600);
+        let hits = web_search(&transport, "q", &health, false, &empty_web_cache()).await;
+        let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
+        assert!(!urls.iter().any(|u| u.contains("now8news")));
+        assert!(urls.contains(&"https://legit.example/real"));
     }
 
     // ── web_search racing + fusion over the fake transport ──────────────────

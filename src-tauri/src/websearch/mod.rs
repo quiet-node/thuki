@@ -21,6 +21,8 @@
 //!   from memory instead of re-hitting a keyless engine (cuts latency and the
 //!   engines' volume-triggered rate limits).
 //! - [`engine`] — keyless search-engine scraping with rotation.
+//! - [`credibility`] — static, compiled-in domain-credibility list (drop /
+//!   penalize / boost) consulted by the engine tier's rank fusion.
 //! - [`weather`], [`sports`], [`news`], [`encyclopedia`] — intent-routed
 //!   keyless verticals tried ahead of the scraped engines.
 //! - [`judge`]: the sufficiency check run after a vertical answers. An
@@ -36,6 +38,7 @@ pub mod assemble;
 pub mod cache;
 pub mod cite_check;
 pub mod clock;
+pub mod credibility;
 pub mod encyclopedia;
 pub mod engine;
 pub mod fetch;

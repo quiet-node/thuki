@@ -975,6 +975,20 @@ pub const SERP_EARLY_STOP_HITS: usize = 8;
 /// algorithm constant, not a quality knob a user would ever benefit from turning.
 pub const RRF_K: u32 = 60;
 
+/// Rank offset added to a credibility-penalized URL's position in RRF fusion, so
+/// a listed spam or copycat domain contributes `1 / (RRF_K + rank + this)` per
+/// list instead of `1 / (RRF_K + rank)`. RRF at `k = 60` is nearly flat at the
+/// top, so a score multiplier would do almost nothing; a rank offset is the sound
+/// lever. This is a soft penalty, not a drop, because the penalize set is
+/// bulk-imported and unaudited: a false-positive domain must still surface when
+/// it is the only real answer. At `40` a rank-1 spam page (`1 / (60 + 1 + 40) =
+/// 0.0099`) sits below a rank-10 page agreed on by two engines (`2 / (60 + 10) =
+/// 0.0286`), so cross-engine agreement always beats a single-engine penalized hit.
+///
+/// Not user-tunable: an algorithm constant of the fusion step, tuned against the
+/// RRF math, not a latency or quality knob.
+pub const CREDIBILITY_PENALTY_RANK_OFFSET: u32 = 40;
+
 // ─── Web-search freshness operators ──────────────────────────────────────────
 
 /// DuckDuckGo `df` (date filter) value applied to the POST form and mirrored as
