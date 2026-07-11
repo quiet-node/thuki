@@ -327,10 +327,22 @@ pub enum RecorderEvent {
     /// `tier == "engine"` (the direct engine-tier answer and the
     /// vertical-insufficient escalation path both set it), empty for every
     /// other tier, since those never race the keyless engines.
+    ///
+    /// `round` distinguishes the two records a requeried turn produces (see
+    /// `crate::websearch::orchestrator::judge_and_requery`): `Some(1)` marks
+    /// round one's sources, recorded just before the requery fires so they
+    /// stay auditable in the trace even though they are about to be merged
+    /// away and superseded. The terminal record for a turn (the only round,
+    /// or the post-merge result that follows a round-one record and a
+    /// `SearchRequeried` event) always carries `None`, the same shape this
+    /// event had before `round` existed. `round` is omitted from the
+    /// serialized JSON entirely when `None`, so no existing trace record's
+    /// shape changes.
     SearchRetrieved {
         tier: String,
         sources: Vec<RetrievedSource>,
         engine_stats: Vec<EngineStat>,
+        round: Option<u8>,
     },
     /// The sufficiency judge's verdict on a vertical's answer, and what the
     /// orchestrator did with it. Emitted once per turn a keyless vertical
@@ -385,9 +397,11 @@ pub enum RecorderEvent {
     /// sources for the standalone question, see
     /// `crate::websearch::orchestrator::judge_and_requery`) found the
     /// result insufficient and fired its one bounded requery. `missing`
-    /// is the judge's short phrase for the gap; `requery` is the
-    /// standalone question with that phrase appended, the exact string
-    /// searched. Emitted at most once per turn
+    /// is the judge's full, uncapped phrase for the gap; `requery` is the
+    /// standalone question with that phrase appended and capped to
+    /// `crate::config::defaults::REQUERY_MISSING_MAX_CHARS` at a word
+    /// boundary, the exact string searched (so `requery` can carry less of
+    /// `missing` than `missing` itself shows). Emitted at most once per turn
     /// (`crate::config::defaults::ENGINE_REQUERY_MAX`); a sufficient
     /// verdict, a judge failure, or an empty `missing` phrase never
     /// emits this event.
@@ -896,11 +910,18 @@ impl Serialize for RecorderEvent {
                 tier,
                 sources,
                 engine_stats,
+                round,
             } => {
                 map.serialize_entry("kind", "search_retrieved")?;
                 map.serialize_entry("tier", tier)?;
                 map.serialize_entry("sources", sources)?;
                 map.serialize_entry("engine_stats", engine_stats)?;
+                // Omitted (not `null`) when `None`, so a non-requery turn's
+                // record is byte-for-byte the same JSON it was before `round`
+                // existed (see the variant's rustdoc).
+                if let Some(round) = round {
+                    map.serialize_entry("round", round)?;
+                }
             }
             RecorderEvent::SearchEscalated {
                 from_tier,
@@ -1136,6 +1157,7 @@ mod tests {
                     title: "Google News headlines".into(),
                 }],
                 engine_stats: vec![],
+                round: None,
             },
             RecorderEvent::SearchEscalated {
                 from_tier: "sports".into(),
@@ -1484,6 +1506,7 @@ mod tests {
                     title: "Photosynthesis".into(),
                 }],
                 engine_stats: vec![],
+                round: None,
             },
         );
         r.record(
@@ -1587,6 +1610,7 @@ mod tests {
                         hit_count: 0,
                     },
                 ],
+                round: None,
             },
         );
         let lines = read_lines(r.path());
@@ -1598,6 +1622,50 @@ mod tests {
                 {"name": "mojeek", "status": "blocked", "hit_count": 0},
             ])
         );
+    }
+
+    #[test]
+    fn search_retrieved_round_one_serializes_the_round_field() {
+        // A round-one pre-requery record must carry an explicit `round: 1` so
+        // a trace consumer can tell it apart from the turn's terminal
+        // (post-requery) record.
+        let root = fresh_dir();
+        let r = FileRecorder::for_conversation(&root, TraceDomain::Search, &cid("conv-round1"));
+        r.record(
+            &cid("conv-round1"),
+            RecorderEvent::SearchRetrieved {
+                tier: "engine".into(),
+                sources: vec![RetrievedSource {
+                    url: "https://round-one.example/".into(),
+                    title: "Round One".into(),
+                }],
+                engine_stats: vec![],
+                round: Some(1),
+            },
+        );
+        let lines = read_lines(r.path());
+        assert_eq!(lines[0]["round"], json!(1));
+    }
+
+    #[test]
+    fn search_retrieved_final_omits_the_round_key_entirely() {
+        // A terminal (non-round-tagged) record must not carry a `round` key
+        // at all, not even a `null` one: the exact same JSON shape this event
+        // had before the field existed, so no existing trace consumer's
+        // schema check needs updating.
+        let root = fresh_dir();
+        let r = FileRecorder::for_conversation(&root, TraceDomain::Search, &cid("conv-final"));
+        r.record(
+            &cid("conv-final"),
+            RecorderEvent::SearchRetrieved {
+                tier: "engine".into(),
+                sources: vec![],
+                engine_stats: vec![],
+                round: None,
+            },
+        );
+        let lines = read_lines(r.path());
+        assert!(lines[0].as_object().unwrap().get("round").is_none());
     }
 
     #[test]
@@ -1613,6 +1681,7 @@ mod tests {
                 tier: "wiki".into(),
                 sources: vec![],
                 engine_stats: vec![],
+                round: None,
             },
         );
         let lines = read_lines(r.path());

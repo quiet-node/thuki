@@ -1022,6 +1022,11 @@ fn grounded_answer(
             })
             .collect(),
         engine_stats,
+        // Always the turn's terminal record (see `RecorderEvent::SearchRetrieved`'s
+        // rustdoc): the only round, or the post-merge result that follows a
+        // round-one record `judge_and_requery` emits itself when a requery
+        // fires (see its docs).
+        round: None,
     });
     let is_cache_tier = tier == "cache";
     if !is_cache_tier {
@@ -1115,6 +1120,40 @@ fn new_urls_only(hits: Vec<SearchHit>, existing: &[SourceBlock]) -> Vec<SearchHi
         .collect()
 }
 
+/// Truncates the sufficiency judge's `missing` phrase to at most `max_chars`
+/// characters before [`judge_and_requery`] appends it to the standalone
+/// question, cutting at the last whitespace boundary at or before the cap so
+/// the text a requery actually searches never ends mid-word. `missing` is
+/// free-form model prose (see `crate::websearch::judge`) and can run to a
+/// full sentence; a long tail of prose degrades keyless-engine SERP quality
+/// far more than a whole trailing word dropped does (see
+/// [`crate::config::defaults::REQUERY_MISSING_MAX_CHARS`]).
+///
+/// Counts by `char`, not byte, so a multi-byte codepoint is never split; a
+/// `missing` with no whitespace before the cap (a single run longer than
+/// `max_chars`) falls back to a hard cut on that same char boundary, since no
+/// better split exists. `missing` at or under the cap is returned unchanged.
+fn truncate_missing(missing: &str, max_chars: usize) -> &str {
+    let mut cut_at = None;
+    let mut last_boundary = None;
+    for (count, (byte_idx, ch)) in missing.char_indices().enumerate() {
+        if count == max_chars {
+            cut_at = Some(byte_idx);
+            break;
+        }
+        if ch.is_whitespace() {
+            last_boundary = Some(byte_idx);
+        }
+    }
+    let Some(cut_at) = cut_at else {
+        return missing;
+    };
+    match last_boundary {
+        Some(boundary) => &missing[..boundary],
+        None => &missing[..cut_at],
+    }
+}
+
 /// What [`judge_and_requery`] resolved to: the user cancelling mid-judge or
 /// mid-requery, or the final source list to answer from paired with the
 /// requery's per-engine outcome summary.
@@ -1153,12 +1192,20 @@ struct RequeryRerank {
 /// [`run_web`]'s terminal engine-tier branch and [`commit_or_escalate`]'s
 /// escalation-merge branch reach here, since either path ends in a freshly
 /// assembled engine-tier block no prior judge call (if any) ever saw. On a
-/// confident insufficient verdict naming what is missing, this fires exactly
-/// one requery: the standalone question with the missing phrase appended,
-/// through the normal engine path (`web_search` then `fetch_pages`, so cache
-/// read/write and `bypass_cache` behave exactly as they do for any other
-/// engine-tier call). Its hits are deduped by URL against `sources`
-/// ([`new_urls_only`]) so only genuinely new pages are fetched and ranked.
+/// confident insufficient verdict naming what is missing, this records
+/// `sources` as a round-one [`RecorderEvent::SearchRetrieved`] (`round:
+/// Some(1)`, see its docs) before firing exactly one requery: the standalone
+/// question with the missing phrase appended (capped to
+/// [`crate::config::defaults::REQUERY_MISSING_MAX_CHARS`] at a word boundary,
+/// see [`truncate_missing`]), through the normal engine path (`web_search`
+/// then `fetch_pages`, so cache read/write and `bypass_cache` behave exactly
+/// as they do for any other engine-tier call). Its hits are deduped by URL
+/// against `sources` ([`new_urls_only`]) so only genuinely new pages are
+/// fetched and ranked. The round-one record is emitted whenever the requery
+/// fires, even when it turns up nothing new, so a trace always shows what
+/// round one held right before the merge below may change it; the caller's
+/// own [`RecorderEvent::SearchRetrieved`] (`round: None`) then records the
+/// turn's terminal result, unchanged whether or not a requery ran.
 ///
 /// How round two is merged depends on `rerank`, which encodes the two callers'
 /// different merge contracts:
@@ -1220,7 +1267,31 @@ async fn judge_and_requery(
     if cancel.is_cancelled() {
         return EngineJudgeOutcome::Cancelled;
     }
-    let requery = format!("{standalone_question} {}", verdict.missing);
+    // Round one's assembled sources, recorded now (round=1) so a trace can
+    // audit exactly what round one held, including whatever detail the judge
+    // found insufficient, before it is merged away below: the FINAL
+    // `SearchRetrieved` this call's caller emits only shows the post-requery
+    // merged set. `engine_stats` stays empty here; round one's own per-engine
+    // stats are the caller's to fold into that final event alongside the
+    // requery's (see `EngineJudgeOutcome::Sources`'s docs), so repeating them
+    // here would double-count them in the trace.
+    deps.recorder.record(RecorderEvent::SearchRetrieved {
+        tier: "engine".to_string(),
+        sources: sources
+            .iter()
+            .map(|s| RetrievedSource {
+                url: s.url.clone(),
+                title: s.title.clone(),
+            })
+            .collect(),
+        engine_stats: Vec::new(),
+        round: Some(1),
+    });
+    let missing_capped = truncate_missing(
+        &verdict.missing,
+        crate::config::defaults::REQUERY_MISSING_MAX_CHARS,
+    );
+    let requery = format!("{standalone_question} {missing_capped}");
     eprintln!(
         "[search] engine tier insufficient (missing: {}) -> requerying once: {requery}",
         verdict.missing
@@ -1647,6 +1718,61 @@ mod tests {
             .map(|b| crate::websearch::assemble::estimate_tokens(&b.text))
             .sum();
         assert!(spent <= budget);
+    }
+
+    // ── truncate_missing ──────────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_missing_leaves_short_text_unchanged() {
+        let missing = "the treaty terms";
+        assert_eq!(truncate_missing(missing, 80), missing);
+    }
+
+    #[test]
+    fn truncate_missing_returns_unchanged_at_exactly_the_cap() {
+        // Exactly `max_chars` characters: the loop never sees `count ==
+        // max_chars`, so this must take the same unchanged path as text
+        // strictly shorter than the cap.
+        let missing = "a".repeat(80);
+        assert_eq!(truncate_missing(&missing, 80), missing);
+    }
+
+    #[test]
+    fn truncate_missing_cuts_at_the_last_word_boundary_within_the_cap() {
+        // 105 characters; the 80-char cap falls inside "settlement", so the
+        // cut must back up to the last space before it rather than split the
+        // word mid-way.
+        let missing = "the full territorial and financial terms and conditions of the treaty \
+                        settlement and reparations schedule";
+        assert_eq!(missing.chars().count(), 105);
+        let truncated = truncate_missing(missing, 80);
+        assert_eq!(
+            truncated,
+            "the full territorial and financial terms and conditions of the treaty"
+        );
+        assert!(truncated.chars().count() <= 80);
+        assert!(!truncated.ends_with(' '));
+    }
+
+    #[test]
+    fn truncate_missing_hard_cuts_a_single_word_with_no_whitespace() {
+        // No whitespace anywhere before the cap: there is no better split, so
+        // this falls back to a hard cut on the char boundary at `max_chars`.
+        let missing = "a".repeat(100);
+        let truncated = truncate_missing(&missing, 80);
+        assert_eq!(truncated.chars().count(), 80);
+        assert_eq!(truncated, "a".repeat(80));
+    }
+
+    #[test]
+    fn truncate_missing_never_panics_on_multibyte_text_with_no_whitespace() {
+        // A run of 4-byte codepoints (emoji) longer than the cap, with no
+        // whitespace: the hard-cut fallback must land on a char boundary, not
+        // split a codepoint, panicking on the byte-slice.
+        let missing = "🎉".repeat(100);
+        let truncated = truncate_missing(&missing, 80);
+        assert_eq!(truncated.chars().count(), 80);
+        assert_eq!(truncated, "🎉".repeat(80));
     }
 
     // ── run_search: decision branches ─────────────────────────────────────────
@@ -4221,12 +4347,14 @@ mod tests {
     #[tokio::test]
     async fn judge_and_requery_sufficient_skips_requery() {
         // A sufficient verdict on round-one's own sources must never trigger
-        // the requery: the transport sees no calls at all.
+        // the requery: the transport sees no calls at all, and nothing is
+        // recorded either (the round-one `SearchRetrieved` only exists to
+        // audit a round the requery is about to fire).
         let prepass = dummy_prepass();
         let transport = FakeHttpTransport::new();
         let judge = FakeSufficiencyJudge::sufficient();
         let health = EngineHealth::new();
-        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let (mock, bound) = mock_recorder();
         let sources = round_one_sources();
         let outcome = judge_and_requery(
             &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
@@ -4245,6 +4373,11 @@ mod tests {
         assert!(
             transport.calls().is_empty(),
             "a sufficient verdict must never requery"
+        );
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert!(
+            events.is_empty(),
+            "no requery fired, so nothing is recorded"
         );
     }
 
@@ -4292,6 +4425,78 @@ mod tests {
             RecorderEvent::SearchRequeried { missing, requery }
             if missing == "the treaty terms"
                 && requery == "when was the treaty of versailles signed in paris the treaty terms")));
+        // A requery fired, so round-one's own (pre-merge) sources must be
+        // auditable in the trace: one `SearchRetrieved` tagged `round: Some(1)`
+        // carrying exactly round-one's source, recorded before the requery's
+        // `SearchRequeried` above.
+        let round_one_index = events
+            .iter()
+            .position(|e| {
+                matches!(e,
+                RecorderEvent::SearchRetrieved { tier, sources, round: Some(1), .. }
+                if tier == "engine" && sources == &vec![RetrievedSource {
+                    url: "https://match.example/".into(),
+                    title: "Treaty of Versailles".into(),
+                }])
+            })
+            .expect("round-one SearchRetrieved must be recorded when a requery fires");
+        let requeried_index = events
+            .iter()
+            .position(|e| matches!(e, RecorderEvent::SearchRequeried { .. }))
+            .expect("SearchRequeried must be recorded");
+        assert!(
+            round_one_index < requeried_index,
+            "round-one's SearchRetrieved must be recorded before SearchRequeried"
+        );
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_caps_a_long_missing_phrase_at_a_word_boundary() {
+        // The judge's `missing` can run to a full prose sentence; the text
+        // actually searched must be capped to
+        // `REQUERY_MISSING_MAX_CHARS` at a word boundary, while the trace's
+        // `SearchRequeried::missing` field keeps the judge's full phrase.
+        let long_missing = "the full territorial and financial terms and conditions of the treaty \
+                             settlement and reparations schedule";
+        assert_eq!(long_missing.chars().count(), 105);
+        let prepass = dummy_prepass();
+        let transport = requery_transport();
+        let judge = FakeSufficiencyJudge::returning(Ok(SufficiencyVerdict {
+            sufficient: false,
+            missing: long_missing.into(),
+        }));
+        let health = EngineHealth::new();
+        let (mock, bound) = mock_recorder();
+        let sources = round_one_sources();
+        let _ = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            sources,
+            None,
+            16384,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        let capped = "the full territorial and financial terms and conditions of the treaty";
+        let expected_requery = format!("{REQUERY_QUESTION} {capped}");
+        let ddg_call = transport
+            .calls()
+            .into_iter()
+            .find(|c| c.url == DDG_ENDPOINT)
+            .expect("the requery must hit DDG");
+        assert!(
+            ddg_call
+                .form
+                .iter()
+                .any(|(k, v)| k == "q" && v == &expected_requery),
+            "the requery's search text must be capped at a word boundary"
+        );
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert!(events.iter().any(|e| matches!(e,
+            RecorderEvent::SearchRequeried { missing, requery }
+            if missing == long_missing && requery == &expected_requery)));
     }
 
     #[tokio::test]
@@ -4316,7 +4521,7 @@ mod tests {
         );
         let judge = insufficient();
         let health = EngineHealth::new();
-        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let (mock, bound) = mock_recorder();
         let sources = round_one_sources();
         let outcome = judge_and_requery(
             &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
@@ -4336,18 +4541,27 @@ mod tests {
             .calls()
             .iter()
             .any(|c| c.url == "https://match.example/"));
+        // The requery still fired (the judge found round one insufficient),
+        // even though it turned up no genuinely new URL: round-one's
+        // SearchRetrieved must still exist, so a trace shows what was judged
+        // insufficient even on this no-new-sources outcome.
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, RecorderEvent::SearchRetrieved { round: Some(1), .. })));
     }
 
     #[tokio::test]
     async fn judge_and_requery_judge_failure_commits_round_one() {
         // A judge transport failure fails toward committing, the same
         // posture the vertical judge takes: round-one's sources are served
-        // without spending a requery on a verdict the judge could not make.
+        // without spending a requery on a verdict the judge could not make,
+        // and nothing is recorded (no requery fired).
         let prepass = dummy_prepass();
         let transport = FakeHttpTransport::new();
         let judge = FakeSufficiencyJudge::returning(Err(InferenceError::Request("boom".into())));
         let health = EngineHealth::new();
-        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let (mock, bound) = mock_recorder();
         let sources = round_one_sources();
         let outcome = judge_and_requery(
             &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
@@ -4364,6 +4578,11 @@ mod tests {
         .await;
         assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _) if s == &sources));
         assert!(transport.calls().is_empty());
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert!(
+            events.is_empty(),
+            "no requery fired, so nothing is recorded"
+        );
     }
 
     #[tokio::test]
@@ -4395,12 +4614,14 @@ mod tests {
     async fn judge_and_requery_cancelled_before_firing_yields_cancelled() {
         // The user cancelled right after the judge returned insufficient,
         // before the requery's network calls: caught by the post-verdict
-        // cancellation check, never reaching the transport.
+        // cancellation check, never reaching the transport, and never
+        // reaching the round-one `SearchRetrieved` record either (that
+        // record and `SearchRequeried` sit on the far side of this check).
         let prepass = dummy_prepass();
         let transport = FakeHttpTransport::new();
         let judge = insufficient();
         let health = EngineHealth::new();
-        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let (mock, bound) = mock_recorder();
         let cancel = CancellationToken::new();
         cancel.cancel();
         let outcome = judge_and_requery(
@@ -4418,6 +4639,8 @@ mod tests {
         .await;
         assert!(matches!(outcome, EngineJudgeOutcome::Cancelled));
         assert!(transport.calls().is_empty());
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert!(events.is_empty(), "a pre-firing cancel must record nothing");
     }
 
     #[tokio::test]

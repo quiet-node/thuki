@@ -1377,3 +1377,17 @@ pub const CITE_MONTH_NAMES: [(&str, u32); 12] = [
 ///
 /// Not user-tunable: fixed LLM-call budget per turn is a product invariant.
 pub const ENGINE_REQUERY_MAX: usize = 1;
+
+/// Maximum characters of the sufficiency judge's `missing` phrase appended to
+/// the standalone question when `judge_and_requery` builds its one bounded
+/// requery. `missing` is free-form model prose and can run to a full
+/// sentence; a long tail of prose degrades keyless-engine SERP quality far
+/// more than a whole trailing word left out does, so the appended text is
+/// truncated at the last word boundary within this cap
+/// (`crate::websearch::orchestrator::truncate_missing`). The trace's
+/// `RecorderEvent::SearchRequeried::missing` field still carries the judge's
+/// full, uncapped phrase; only the text actually searched is capped.
+///
+/// Not user-tunable: engine query hygiene is a pipeline-shape constant, not a
+/// preference.
+pub const REQUERY_MISSING_MAX_CHARS: usize = 80;
