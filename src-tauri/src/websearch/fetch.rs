@@ -31,6 +31,7 @@
 use std::time::Duration;
 
 use futures_util::stream::{FuturesUnordered, StreamExt};
+use futures_util::FutureExt;
 
 use crate::config::defaults::{
     FETCH_FIRST_K_COMPLETIONS, FETCH_LARGE_CTX_THRESHOLD, FETCH_MAX_ELEMENTS_TO_PARSE,
@@ -204,13 +205,16 @@ pub async fn fetch_pages(
 
 /// Races the fetch of every hit in `to_fetch` and returns as soon as either
 /// [`FETCH_FIRST_K_COMPLETIONS`] of them have completed or
-/// [`FETCH_SOFT_DEADLINE_MS`] elapses, whichever comes first. Whatever has not
-/// completed by then is abandoned mid-flight: dropping the [`FuturesUnordered`]
-/// cancels its remaining futures, and each abandoned hit degrades to its SERP
-/// snippet via [`page_from_parts`], the identical fallback a genuine per-URL
-/// failure already takes (a straggler's information is never dropped, only
-/// its extracted-text upgrade). The returned vector preserves `to_fetch`'s
-/// order regardless of completion order.
+/// [`FETCH_SOFT_DEADLINE_MS`] elapses, whichever comes first. Before giving up
+/// on the rest, one non-blocking pass claims any OTHER fetch that also
+/// finished by that point but had not yet been drained (all `N` racing far
+/// ahead of a small `K`, for instance): only fetches still genuinely in
+/// flight are abandoned. Dropping the [`FuturesUnordered`] then cancels those
+/// remaining futures, and each abandoned hit degrades to its SERP snippet via
+/// [`page_from_parts`], the identical fallback a genuine per-URL failure
+/// already takes (its information is never dropped, only its extracted-text
+/// upgrade). The returned vector preserves `to_fetch`'s order regardless of
+/// completion order.
 ///
 /// This bounds the fetch stage's tail latency: without it, one slow host
 /// among the budgeted pages holds up the whole turn until its own
@@ -273,6 +277,14 @@ async fn fetch_first_k(
                 None => break,
             },
         }
+    }
+    // Claims any fetch that ALSO finished by now but was not drained above
+    // (e.g. every one of a large N raced ahead of a small K): each `next()`
+    // here is polled once and only ever returns a value already sitting
+    // ready, never waits, so this can only recover completed work, never
+    // delay returning past what the loop above already decided.
+    while let Some(Some((index, page))) = in_flight.next().now_or_never() {
+        results[index] = Some(page);
     }
     // Cancels every still-in-flight fetch: FuturesUnordered drops its
     // remaining futures here, which drops fetch_one's in-progress work
@@ -781,6 +793,40 @@ mod tests {
     }
 
     // ── first-K-of-N completion / soft deadline ───────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_pages_first_k_recovers_all_fetches_that_finish_in_time() {
+        // Large ctx -> budget of 5, but all 5 resolve instantly (a fast
+        // network): reaching FETCH_FIRST_K_COMPLETIONS (3) must not discard
+        // the other 2 as snippets just because they were not among the first
+        // 3 drained. The post-loop non-blocking drain must recover them too,
+        // since real extracted text already exists for every one of them.
+        let resp = |url: &str| HttpResponse {
+            status: 200,
+            final_url: url.into(),
+            body: ARTICLE_HTML.as_bytes().to_vec(),
+        };
+        let transport = FakeHttpTransport::new()
+            .with_response("https://a.com/", resp("https://a.com/"))
+            .with_response("https://b.com/", resp("https://b.com/"))
+            .with_response("https://c.com/", resp("https://c.com/"))
+            .with_response("https://d.com/", resp("https://d.com/"))
+            .with_response("https://e.com/", resp("https://e.com/"));
+        let hits = vec![
+            hit("https://a.com/", "snip a"),
+            hit("https://b.com/", "snip b"),
+            hit("https://c.com/", "snip c"),
+            hit("https://d.com/", "snip d"),
+            hit("https://e.com/", "snip e"),
+        ];
+        let pages = fetch_pages(&transport, &hits, 32768, false, &empty_web_cache(), false).await;
+        assert_eq!(pages.len(), 5);
+        for page in &pages {
+            assert!(page
+                .text
+                .contains("Ownership is the most distinctive feature"));
+        }
+    }
 
     #[tokio::test]
     async fn fetch_pages_first_k_completes_without_waiting_on_stragglers() {
