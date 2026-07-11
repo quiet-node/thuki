@@ -5,9 +5,11 @@
 //!
 //! - [`PreFilterVerdict::ForceWeb`] when the message carries an unambiguous
 //!   freshness or temporal signal ("latest", "weather", "who won", a current or
-//!   future year, an explicit "search"/URL). These are the questions small local
-//!   models most reliably get wrong by answering from stale parametric memory,
-//!   so the decision is taken away from the model here.
+//!   future year, an explicit "search"/URL), or a relative-date-arithmetic
+//!   intent ("how many days until Christmas", "how many weeks since"). These
+//!   are the questions small local models most reliably get wrong by
+//!   answering from stale parametric memory or freehand date math, so the
+//!   decision is taken away from the model here.
 //! - [`PreFilterVerdict::ForceNo`] when the message is a self-contained turn that
 //!   provably needs no web: a greeting or acknowledgement, a pure arithmetic
 //!   expression, or a creative/transform request over text the user supplied.
@@ -107,6 +109,48 @@ const FORCE_WEB_PHRASES: &[&str] = &[
     "stock price",
     "exchange rate",
     "box office",
+];
+
+/// Relative-date-arithmetic phrases: "how far until/since a date" intent.
+/// Matched the same way as [`FORCE_WEB_PHRASES`] (whole-phrase, space-padded
+/// substring), and folded into the same scan in [`has_force_web_signal`].
+///
+/// Product contract: models do language, code does computation. Small local
+/// models freehand relative-date arithmetic ("how many days until
+/// Christmas") from their own notion of "today", baked in at training time,
+/// and get it wrong; a retrieved calculator/countdown page grounds the
+/// answer in the real current date instead. Kept as its own constant (not
+/// folded directly into `FORCE_WEB_PHRASES`) because the rationale is
+/// distinct: this is a computation-grounding rule, not a plain freshness
+/// rule, and letting an LLM classifier decide it turn-by-turn was the bug
+/// (see the live-smoke regression this constant fixes: "how many days until
+/// christmas" answered 166 freehand instead of the correct 167).
+///
+/// Every entry pairs a day/week/month unit with an explicit directional
+/// token (until/till/since/before/left/to) or is the "how long
+/// until/till"/"countdown to" idiom, so a bare quantity question with no
+/// direction ("how many days are in February") or a bare duration question
+/// with no "until"/"till" ("how long is a marathon") never matches.
+const DATE_ARITHMETIC_PHRASES: &[&str] = &[
+    "days until",
+    "days till",
+    "days since",
+    "days before",
+    "days left",
+    "days to",
+    "weeks until",
+    "weeks till",
+    "weeks since",
+    "weeks before",
+    "weeks left",
+    "months until",
+    "months till",
+    "months since",
+    "months before",
+    "months left",
+    "how long until",
+    "how long till",
+    "countdown to",
 ];
 
 /// Greeting, acknowledgement, and filler tokens. A message whose every token is
@@ -399,9 +443,11 @@ fn to_normalised(bounded: &str) -> String {
         .collect()
 }
 
-/// Whether the message carries any freshness or explicit-retrieval signal: a URL,
-/// a current-or-future year, a single-token signal, or a multi-word phrase.
-/// `bounded` is the raw lowercased prefix (punctuation intact, for URL matching);
+/// Whether the message carries any freshness, explicit-retrieval, or
+/// relative-date-arithmetic signal: a URL, a current-or-future year, a
+/// single-token signal, or a multi-word phrase from either
+/// [`FORCE_WEB_PHRASES`] or [`DATE_ARITHMETIC_PHRASES`]. `bounded` is the raw
+/// lowercased prefix (punctuation intact, for URL matching);
 /// `normalised`/`tokens` are its punctuation-stripped forms.
 fn has_force_web_signal(bounded: &str, normalised: &str, tokens: &[&str], today: &str) -> bool {
     if contains_url(bounded) {
@@ -418,6 +464,7 @@ fn has_force_web_signal(bounded: &str, normalised: &str, tokens: &[&str], today:
     let padded = format!(" {normalised} ");
     FORCE_WEB_PHRASES
         .iter()
+        .chain(DATE_ARITHMETIC_PHRASES.iter())
         .any(|phrase| padded.contains(&format!(" {phrase} ")))
 }
 
@@ -617,6 +664,56 @@ mod tests {
         assert_eq!(
             verdict("summarize the latest news on the merger"),
             PreFilterVerdict::ForceWeb
+        );
+    }
+
+    // ── relative-date-arithmetic signals ──────────────────────────────────────
+    //
+    // Live-smoke regression (2026-07-11): "how many days until christmas" fell
+    // to Ambiguous, the classifier said No, and the model freehanded the date
+    // math wrong (166 instead of the correct 167). These patterns must resolve
+    // to ForceWeb without ever reaching the classifier, so a retrieved
+    // calculator page grounds the arithmetic instead.
+
+    #[test]
+    fn smoke_failure_days_until_christmas_forces_web() {
+        assert_eq!(
+            verdict("how many days until christmas"),
+            PreFilterVerdict::ForceWeb
+        );
+    }
+
+    #[test]
+    fn date_arithmetic_phrases_force_web() {
+        for m in [
+            "how many days until christmas",
+            "how many days till christmas",
+            "how many days since I started this job",
+            "how many days before the deadline",
+            "how many days left until the trip",
+            "how many weeks until my birthday",
+            "how many weeks since january 1st",
+            "how many months until the wedding",
+            "how long until new year's eve",
+            "how long till the concert",
+            "days until my flight on august 5th",
+            "countdown to launch",
+        ] {
+            assert_eq!(verdict(m), PreFilterVerdict::ForceWeb, "{m}");
+        }
+    }
+
+    #[test]
+    fn bare_day_count_questions_are_not_forced_web() {
+        // No directional token ("until"/"since"/"before"/"left"/"to"), so these
+        // are stable calendar/duration facts, not relative-date arithmetic.
+        assert_eq!(
+            verdict("how many days are in february"),
+            PreFilterVerdict::Ambiguous
+        );
+        assert_eq!(
+            verdict("how long is a marathon"),
+            PreFilterVerdict::Ambiguous
         );
     }
 

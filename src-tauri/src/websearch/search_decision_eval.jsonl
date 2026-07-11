@@ -89,3 +89,9 @@
 {"message": "can you look it up please?", "label": "search", "category": "explicit_search", "volatility": "fast"}
 {"message": "double-check that for me", "label": "search", "category": "explicit_search", "volatility": "fast"}
 {"message": "search for the kickoff time", "label": "search", "category": "explicit_search", "volatility": "fast"}
+{"message": "how many days until christmas", "label": "search", "category": "date_arithmetic", "route": "web", "volatility": "fast"}
+{"message": "how many days until my flight on august 5th", "label": "search", "category": "date_arithmetic", "route": "web", "volatility": "fast"}
+{"message": "how many weeks since january 1st", "label": "search", "category": "date_arithmetic", "route": "web", "volatility": "fast"}
+{"message": "how long until new year's eve", "label": "search", "category": "date_arithmetic", "route": "web", "volatility": "fast"}
+{"message": "how many days are in february", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "never"}
+{"message": "how long is a marathon", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "never"}
