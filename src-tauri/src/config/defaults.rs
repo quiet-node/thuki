@@ -1222,6 +1222,30 @@ pub const BM25_B: f64 = 0.75;
 /// Not user-tunable: a retrieval-pipeline diversity bound.
 pub const RANK_MAX_CHUNKS_PER_PAGE: usize = 3;
 
+/// Deterministic BM25 score nudge added to a chunk from a credibility-boosted
+/// reference-grade domain when the chunk also carries a quote or an inline
+/// statistic. GEO (arXiv:2311.09735) found LLM answer synthesis preferentially
+/// cites quote- and statistic-bearing passages; without this nudge a reference
+/// domain's plainer prose can lose a close BM25 tie to a distractor chunk that
+/// happens to phrase the same fact more citably. Additive and only applied to
+/// a chunk that already scored above zero (a real term match), so it can never
+/// resurrect an irrelevant chunk, only tip an already-relevant one higher.
+/// Moderate relative to typical query-matched BM25 scores so it tips ties
+/// without overriding a genuinely stronger relevance match elsewhere.
+///
+/// Not user-tunable: a ranking-algorithm constant.
+pub const QUOTE_STAT_SCORE_NUDGE: f64 = 0.5;
+
+/// Minimum run of consecutive ASCII digits that counts as an inline statistic
+/// for [`QUOTE_STAT_SCORE_NUDGE`] (a count, year, or other reported figure;
+/// `%`-suffixed figures are recognized separately regardless of digit count).
+/// Three digits excludes single- and double-digit incidental numbers (list
+/// markers, small counts) while still catching years, percentages written
+/// without a `%`, and larger reported figures.
+///
+/// Not user-tunable: a ranking-algorithm heuristic bound.
+pub const STATISTIC_MIN_DIGIT_RUN: usize = 3;
+
 // ─── Web-search recency-prior fusion ─────────────────────────────────────────
 
 /// Weight given to a source's recency in the freshness-gated fusion score:
@@ -1296,6 +1320,22 @@ pub const CONTEXT_BUDGET_CTX_PERCENT: usize = 40;
 ///
 /// Not user-tunable: an internal estimation constant.
 pub const CHARS_PER_TOKEN: usize = 4;
+
+/// Maximum chunks a domain absent from the credibility list ("unlisted") may
+/// contribute to the assembled context once a credibility-boosted
+/// reference-grade domain has already contributed at least one chunk.
+/// Realistic-RAG research (arXiv:2505.15561) found that distracting passages
+/// admitted into the top-K context, not their rank position, are what drive an
+/// LLM to cite junk over a reference source sitting right beside it; capping a
+/// thin unlisted aggregator's share once a reference is present keeps it from
+/// crowding out that reference without discarding the aggregator outright (it
+/// still contributes up to this many chunks). The cap never fires on a result
+/// set with no boosted domain, since there is no reference chunk yet to
+/// protect.
+///
+/// Not user-tunable: a retrieval-pipeline diversity bound conditioned on an
+/// upstream credibility signal, not a user preference.
+pub const UNLISTED_DOMAIN_CHUNK_CAP: usize = 2;
 
 /// Length, in lowercase hex characters, of the per-request random token that
 /// wraps retrieved web sources in the writer prompt (see

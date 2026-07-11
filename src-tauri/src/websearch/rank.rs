@@ -9,7 +9,12 @@
 //! module's shape — the trait is the seam. Everything here is pure CPU over its
 //! inputs, so it is unit-tested directly with no model or network.
 
-use crate::config::defaults::{BM25_B, BM25_K1, CHUNK_TARGET_WORDS, RANK_MAX_CHUNKS_PER_PAGE};
+use crate::config::defaults::{
+    BM25_B, BM25_K1, CHUNK_TARGET_WORDS, QUOTE_STAT_SCORE_NUDGE, RANK_MAX_CHUNKS_PER_PAGE,
+    STATISTIC_MIN_DIGIT_RUN,
+};
+use crate::websearch::credibility::{classify_domain, DomainClass};
+use crate::websearch::domain_of;
 use crate::websearch::fetch::FetchedPage;
 
 /// A page chunk that survived ranking, carrying the provenance the citation
@@ -47,6 +52,50 @@ pub(crate) fn chunk_text(text: &str, target_words: usize) -> Vec<String> {
         .chunks(target_words.max(1))
         .map(|c| c.join(" "))
         .collect()
+}
+
+/// True when `text` carries a quoted phrase or an inline statistic: the two
+/// content shapes GEO (arXiv:2311.09735) found LLM answer synthesis
+/// preferentially cites. Used to decide whether [`QUOTE_STAT_SCORE_NUDGE`]
+/// applies to a chunk from a boosted domain. Pure char scan, no regex crate,
+/// bounded `O(len(text))`.
+fn has_quote_or_statistic(text: &str) -> bool {
+    has_quoted_phrase(text) || has_inline_statistic(text)
+}
+
+/// True when `text` contains a paired quotation mark: two or more straight
+/// double quotes, or a curly opening/closing pair. A single stray mark (an
+/// apostrophe-like straight quote, or an unmatched curly quote from a
+/// truncated extraction) does not count, since it is not evidence of an
+/// actual quoted phrase.
+fn has_quoted_phrase(text: &str) -> bool {
+    text.matches('"').count() >= 2 || (text.contains('\u{201c}') && text.contains('\u{201d}'))
+}
+
+/// True when `text` contains an inline statistic: a `%`-suffixed figure
+/// (counted regardless of digit run length) or a run of at least
+/// [`STATISTIC_MIN_DIGIT_RUN`] consecutive ASCII digits (a count, year, or
+/// other reported figure).
+fn has_inline_statistic(text: &str) -> bool {
+    text.contains('%') || has_digit_run(text, STATISTIC_MIN_DIGIT_RUN)
+}
+
+/// True when `text` contains a run of at least `min_run` consecutive ASCII
+/// digits. Split out of [`has_inline_statistic`] so the run-length threshold
+/// is independently testable.
+fn has_digit_run(text: &str, min_run: usize) -> bool {
+    let mut run = 0usize;
+    for c in text.chars() {
+        if c.is_ascii_digit() {
+            run += 1;
+            if run >= min_run {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
 }
 
 /// Lowercased alphanumeric terms of `text`, splitting on any non-alphanumeric
@@ -113,7 +162,10 @@ pub(crate) fn bm25_scores(query: &str, chunks: &[String], k1: f64, b: f64) -> Ve
 /// Chunks each page, scores its chunks against `query` through the injected
 /// [`Scorer`], keeps the top [`RANK_MAX_CHUNKS_PER_PAGE`] chunks scoring above
 /// zero per page, and returns them all best-first. A page whose chunks all
-/// score zero contributes nothing.
+/// score zero contributes nothing. A chunk from a credibility-boosted
+/// reference-grade domain that also carries a quote or inline statistic gets
+/// [`QUOTE_STAT_SCORE_NUDGE`] added to its score before ranking (see
+/// [`has_quote_or_statistic`]'s rustdoc for why).
 pub fn select_chunks(pages: &[FetchedPage], query: &str, scorer: &dyn Scorer) -> Vec<ScoredChunk> {
     select_chunks_sized(pages, query, scorer, CHUNK_TARGET_WORDS)
 }
@@ -133,6 +185,22 @@ fn select_chunks_sized(
             continue;
         }
         let scores = scorer.score(query, &chunks);
+        // Nudge is domain-level (one classification per page, not per chunk)
+        // and only ever applied to a chunk that already scored above zero, so
+        // it tips an already-relevant boosted-domain chunk higher and can
+        // never resurrect an irrelevant one.
+        let is_boosted_domain = classify_domain(&domain_of(&page.url)) == DomainClass::Boost;
+        let scores: Vec<f64> = scores
+            .into_iter()
+            .zip(chunks.iter())
+            .map(|(score, text)| {
+                if is_boosted_domain && score > 0.0 && has_quote_or_statistic(text) {
+                    score + QUOTE_STAT_SCORE_NUDGE
+                } else {
+                    score
+                }
+            })
+            .collect();
         let mut kept: Vec<ScoredChunk> = chunks
             .into_iter()
             .zip(scores)
@@ -230,6 +298,41 @@ mod tests {
         );
     }
 
+    // ── has_quote_or_statistic ────────────────────────────────────────────────
+
+    #[test]
+    fn has_quoted_phrase_needs_a_pair() {
+        assert!(has_quoted_phrase(r#"she said "hello there" to him"#));
+        assert!(has_quoted_phrase("curly \u{201c}quoted\u{201d} phrase"));
+        assert!(!has_quoted_phrase("no quotes here"));
+        // A single stray straight quote (e.g. a truncated extraction) is not a
+        // quoted phrase.
+        assert!(!has_quoted_phrase(r#"it was 6' tall"#));
+    }
+
+    #[test]
+    fn has_inline_statistic_matches_percent_and_digit_run() {
+        assert!(has_inline_statistic("inflation rose 4%"));
+        assert!(has_inline_statistic("population is 2024 residents"));
+        assert!(!has_inline_statistic("no numbers at all"));
+        // Two digits is below the run threshold and carries no `%`.
+        assert!(!has_inline_statistic("chapter 12 begins"));
+    }
+
+    #[test]
+    fn has_digit_run_resets_on_non_digit() {
+        assert!(!has_digit_run("1 2 3", 3)); // never 3 consecutive digits
+        assert!(has_digit_run("123", 3));
+        assert!(has_digit_run("a123b", 3));
+    }
+
+    #[test]
+    fn has_quote_or_statistic_is_true_if_either_matches() {
+        assert!(has_quote_or_statistic(r#""a direct quote""#));
+        assert!(has_quote_or_statistic("42% of respondents"));
+        assert!(!has_quote_or_statistic("plain unremarkable prose"));
+    }
+
     // ── bm25_scores ───────────────────────────────────────────────────────────
 
     #[test]
@@ -312,5 +415,54 @@ mod tests {
         let out = select_chunks(&pages, "treaty paris 1919", &Bm25Scorer);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].url, "https://match/");
+    }
+
+    // ── quote/statistic score nudge ──────────────────────────────────────────
+
+    #[test]
+    fn nudge_applies_only_to_boosted_domain_quote_or_stat_chunk() {
+        // Same base score (1.0) and same statistic-bearing text on both pages;
+        // only the wikipedia.org page is on the credibility-boost list, so
+        // only its chunk should carry the nudge.
+        let pages = vec![
+            page(
+                "https://en.wikipedia.org/wiki/Test",
+                "population is 2024 residents",
+            ),
+            page("https://example.com/page", "population is 2024 residents"),
+        ];
+        let scorer = FakeScorer(vec![1.0]);
+        let out = select_chunks_sized(&pages, "q", &scorer, 100);
+        let boosted = out.iter().find(|c| c.url.contains("wikipedia")).unwrap();
+        let neutral = out.iter().find(|c| c.url.contains("example")).unwrap();
+        assert_eq!(boosted.score, 1.0 + QUOTE_STAT_SCORE_NUDGE);
+        assert_eq!(neutral.score, 1.0);
+    }
+
+    #[test]
+    fn nudge_not_applied_without_quote_or_statistic() {
+        // Boosted domain, but the chunk carries no quote or statistic: score
+        // is left untouched.
+        let pages = vec![page(
+            "https://en.wikipedia.org/wiki/Test",
+            "a plain unremarkable sentence",
+        )];
+        let scorer = FakeScorer(vec![1.0]);
+        let out = select_chunks_sized(&pages, "q", &scorer, 100);
+        assert_eq!(out[0].score, 1.0);
+    }
+
+    #[test]
+    fn nudge_never_resurrects_a_zero_score_chunk() {
+        // Boosted domain, quote-bearing text, but the underlying relevance
+        // score is zero (no query term matched): the nudge must not lift it
+        // above zero and admit an irrelevant chunk.
+        let pages = vec![page(
+            "https://en.wikipedia.org/wiki/Test",
+            r#""a direct quote" with 2024 in it"#,
+        )];
+        let scorer = FakeScorer(vec![0.0]);
+        let out = select_chunks_sized(&pages, "q", &scorer, 100);
+        assert!(out.is_empty());
     }
 }

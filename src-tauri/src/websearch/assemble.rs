@@ -10,8 +10,13 @@
 //! block to cite. Pure over its inputs; the delimiter-wrapping and prompt
 //! framing happen later in the writer stage.
 
-use crate::config::defaults::{CHARS_PER_TOKEN, CONTEXT_BUDGET_CTX_PERCENT, CONTEXT_MAX_TOKENS};
+use crate::config::defaults::{
+    CHARS_PER_TOKEN, CONTEXT_BUDGET_CTX_PERCENT, CONTEXT_MAX_TOKENS, UNLISTED_DOMAIN_CHUNK_CAP,
+};
+use crate::websearch::credibility::{classify_domain, DomainClass};
+use crate::websearch::domain_of;
 use crate::websearch::rank::ScoredChunk;
+use std::collections::HashMap;
 
 /// One numbered source in the assembled context: the `[n]` a citation refers
 /// to, its origin, and the (possibly multi-chunk, possibly truncated) text.
@@ -47,16 +52,62 @@ fn truncate_to_tokens(text: &str, max_tokens: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
+/// Caps how many chunks a domain absent from the credibility list ("unlisted")
+/// may contribute, but only once a credibility-boosted reference-grade domain
+/// has already contributed at least one chunk to the candidate set. Realistic-
+/// RAG research (arXiv:2505.15561) found that distracting passages admitted
+/// into the top-K context, not their rank position, are what drive an LLM to
+/// cite junk over a reference source sitting right beside it: this keeps a
+/// thin unlisted aggregator's chunks from crowding out the reference once one
+/// is present, while an unlisted domain still contributes up to
+/// [`UNLISTED_DOMAIN_CHUNK_CAP`] chunks (retrieved information is never
+/// discarded wholesale). A candidate set with no boosted domain is returned
+/// unchanged, since there is no reference chunk yet to protect. Input order is
+/// preserved; only chunks past the cap for an over-threshold unlisted domain
+/// are dropped, so the ordering [`assemble_context`] groups by stays
+/// best-first.
+fn cap_unlisted_domain_chunks(chunks: &[ScoredChunk]) -> Vec<ScoredChunk> {
+    let has_boosted_reference = chunks
+        .iter()
+        .any(|c| classify_domain(&domain_of(&c.url)) == DomainClass::Boost);
+    if !has_boosted_reference {
+        return chunks.to_vec();
+    }
+    let mut kept_per_domain: HashMap<String, usize> = HashMap::new();
+    chunks
+        .iter()
+        .filter(|c| {
+            let domain = domain_of(&c.url);
+            if classify_domain(&domain) != DomainClass::Neutral {
+                // The cap targets only domains absent from the credibility
+                // list; a classified domain (boost, penalize, or drop) is
+                // unaffected here, since credibility already governs it
+                // upstream in fusion.
+                return true;
+            }
+            let count = kept_per_domain.entry(domain).or_insert(0);
+            *count += 1;
+            *count <= UNLISTED_DOMAIN_CHUNK_CAP
+        })
+        .cloned()
+        .collect()
+}
+
 /// Groups best-first chunks into numbered source blocks under the `num_ctx`
 /// budget. Chunks are grouped by URL (first appearance sets the order, which is
 /// best-first since the ranker sorted the input); whole sources are admitted
 /// until the budget is reached; the first source is truncated if it alone
 /// overflows. Returns 1-based indexed blocks in citation order.
+///
+/// Before grouping, [`cap_unlisted_domain_chunks`] trims chunks from
+/// credibility-unlisted domains once a boosted reference domain is present in
+/// the candidate set (see its rustdoc for the distractor-crowding rationale).
 pub fn assemble_context(chunks: &[ScoredChunk], num_ctx: u32) -> Vec<SourceBlock> {
+    let chunks = cap_unlisted_domain_chunks(chunks);
     // Group by URL, preserving first-seen (best-first) order.
     let mut order: Vec<(String, String, Vec<String>)> = Vec::new();
     let mut position: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for chunk in chunks {
+    for chunk in &chunks {
         match position.get(&chunk.url) {
             Some(&i) => order[i].2.push(chunk.text.clone()),
             None => {
@@ -140,6 +191,58 @@ mod tests {
     fn truncate_keeps_short_and_cuts_long() {
         assert_eq!(truncate_to_tokens("abc", 10), "abc");
         assert_eq!(truncate_to_tokens("abcdefghij", 1), "abcd"); // 1 token = 4 chars
+    }
+
+    // ── cap_unlisted_domain_chunks ────────────────────────────────────────────
+
+    #[test]
+    fn cap_inactive_without_a_boosted_domain() {
+        // No boosted (credibility-listed) domain anywhere in the set: the cap
+        // never fires and every chunk from the thin domain survives.
+        let chunks: Vec<ScoredChunk> = (0..5)
+            .map(|i| chunk(&format!("https://aggregator.example/{i}"), "text"))
+            .collect();
+        let out = cap_unlisted_domain_chunks(&chunks);
+        assert_eq!(out.len(), 5);
+    }
+
+    #[test]
+    fn cap_active_and_at_boundary_when_boosted_domain_present() {
+        // A boosted reference chunk plus five chunks from an unlisted domain:
+        // exactly UNLISTED_DOMAIN_CHUNK_CAP of the unlisted domain's chunks
+        // survive (boundary), the rest are dropped, and the boosted chunk is
+        // untouched.
+        let mut chunks = vec![chunk("https://en.wikipedia.org/wiki/Test", "reference")];
+        chunks.extend((0..5).map(|i| chunk(&format!("https://aggregator.example/{i}"), "text")));
+        let out = cap_unlisted_domain_chunks(&chunks);
+        let boosted_count = out.iter().filter(|c| c.url.contains("wikipedia")).count();
+        let unlisted_count = out.iter().filter(|c| c.url.contains("aggregator")).count();
+        assert_eq!(boosted_count, 1);
+        assert_eq!(unlisted_count, UNLISTED_DOMAIN_CHUNK_CAP);
+    }
+
+    #[test]
+    fn cap_leaves_penalized_domains_untouched() {
+        // A classified-but-not-boost domain (penalize) is not the cap's
+        // target: credibility fusion already governs it upstream, and this
+        // stage only shapes unlisted-domain crowding.
+        let mut chunks = vec![chunk("https://en.wikipedia.org/wiki/Test", "reference")];
+        chunks.extend((0..5).map(|i| chunk(&format!("https://9to5answer.com/{i}"), "text")));
+        let out = cap_unlisted_domain_chunks(&chunks);
+        let penalized_count = out.iter().filter(|c| c.url.contains("9to5answer")).count();
+        assert_eq!(penalized_count, 5);
+    }
+
+    #[test]
+    fn assemble_context_applies_unlisted_domain_cap_when_boost_present() {
+        // End-to-end: the capped candidate chunks feed the URL grouping, so
+        // the aggregator's dropped chunks mean its source blocks disappear
+        // too, while retrieved information is never discarded wholesale (the
+        // aggregator still contributes up to the cap).
+        let mut chunks = vec![chunk("https://en.wikipedia.org/wiki/Test", "reference")];
+        chunks.extend((0..5).map(|i| chunk(&format!("https://aggregator.example/{i}"), "text")));
+        let blocks = assemble_context(&chunks, 16384);
+        assert_eq!(blocks.len(), 1 + UNLISTED_DOMAIN_CHUNK_CAP);
     }
 
     // ── assemble_context ──────────────────────────────────────────────────────
