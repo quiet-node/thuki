@@ -313,6 +313,7 @@ pub(crate) fn recency_reorder(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::websearch::fetch::page_from_parts;
 
     /// A fixed instant so date-math tests are deterministic.
     fn now() -> OffsetDateTime {
@@ -741,5 +742,84 @@ mod tests {
         let out = recency_reorder(&chunks, &pages, now());
         assert_eq!(out[0].url, "https://new/");
         assert_eq!(out[1].url, "https://old/");
+    }
+
+    // ── cross-feature: soft-deadline-degraded fetch set into recency fusion ──
+
+    /// A minimal [`SearchHit`] carrying just the snippet the degraded-fetch
+    /// fallback ([`page_from_parts`] with no extracted text) hands through.
+    fn hit(url: &str, snippet: &str) -> crate::websearch::engine::SearchHit {
+        crate::websearch::engine::SearchHit {
+            title: "T".into(),
+            url: url.into(),
+            snippet: snippet.into(),
+        }
+    }
+
+    /// The J2 first-K fetch stage can abandon a slow fetch at its soft deadline
+    /// and degrade that hit to its SERP snippet with no extracted date
+    /// (`published: None`, see [`page_from_parts`]). This asserts such a
+    /// snippet-degraded page flows through J1's freshness-gated recency fusion
+    /// intact: it is scored at the neutral midpoint rather than as stale, never
+    /// dropped for being undated, and it never panics the fusion. The pages are
+    /// built through the real [`page_from_parts`] so the two features compose on
+    /// the exact shape the fetch stage emits, not a hand-forged stand-in.
+    #[test]
+    fn soft_deadline_degraded_pages_reach_recency_fusion_at_neutral_score() {
+        // One page fetched fresh (recent date), one fetched stale (old date),
+        // and one abandoned at the soft deadline: snippet fallback, undated.
+        let fresh = page_from_parts(
+            &hit("https://fresh/", "fresh snippet"),
+            Some("full fresh article text".into()),
+            Some(now() - time::Duration::days(1)),
+        );
+        let stale = page_from_parts(
+            &hit("https://stale/", "stale snippet"),
+            Some("full stale article text".into()),
+            Some(now() - time::Duration::days(90)),
+        );
+        let degraded = page_from_parts(&hit("https://degraded/", "degraded snippet"), None, None);
+
+        // The degradation contract the fusion relies on: the abandoned fetch
+        // kept its snippet as text and carries no date, while the completed
+        // fetches carry theirs.
+        assert_eq!(degraded.text, "degraded snippet");
+        assert_eq!(degraded.published, None);
+        assert!(fresh.published.is_some());
+        assert!(stale.published.is_some());
+
+        // An undated page must score exactly the neutral midpoint, the same
+        // value a page dated at one half-life earns: neither stale nor fresh.
+        assert_eq!(
+            recency_score(degraded.published, now()),
+            RECENCY_NEUTRAL_SCORE
+        );
+
+        // Equal relevance across all three isolates the recency prior: the fresh
+        // page (recency ~1) leads, the degraded undated page (neutral 0.5) sits
+        // in the middle, and the stale page (recency ~0) trails.
+        let chunks = vec![
+            chunk("https://fresh/", 5.0),
+            chunk("https://degraded/", 5.0),
+            chunk("https://stale/", 5.0),
+        ];
+        let pages = vec![fresh, degraded, stale];
+        let out = recency_reorder(&chunks, &pages, now());
+
+        // Nothing is dropped and no URL is invented: the exact input set
+        // survives, snippet-degraded page included.
+        assert_eq!(out.len(), chunks.len());
+        let mut got: Vec<&str> = out.iter().map(|c| c.url.as_str()).collect();
+        got.sort_unstable();
+        assert_eq!(
+            got,
+            ["https://degraded/", "https://fresh/", "https://stale/"]
+        );
+
+        // The undated page ranks above the stale one (0.5 > ~0) and below the
+        // fresh one (0.5 < ~1), confirming the neutral-score placement.
+        assert_eq!(out[0].url, "https://fresh/");
+        assert_eq!(out[1].url, "https://degraded/");
+        assert_eq!(out[2].url, "https://stale/");
     }
 }

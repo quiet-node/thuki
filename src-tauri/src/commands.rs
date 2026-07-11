@@ -4249,6 +4249,72 @@ mod tests {
         assert!(matches!(chunks[1], StreamChunk::Done));
     }
 
+    /// Cross-feature: a single grounded turn where the sufficiency judge flagged
+    /// the sources as conflicting (J1) AND the post-generation citation audit
+    /// flagged a fabricated figure (J3) must carry BOTH signals. The conflict
+    /// verdict routes through the same `conflicting()` predicate the
+    /// orchestrator uses to set the writer's `conflict` flag, so the writer
+    /// appendix gains its conflict directive; and the audit's hedge still
+    /// appends to the finished answer. Neither feature suppresses the other:
+    /// the conflict directive shapes generation, the hedge annotates the
+    /// result. No single branch exercised the two together.
+    #[test]
+    fn conflicting_verdict_and_audit_hedge_compose_in_one_grounded_turn() {
+        use crate::websearch::assemble::SourceBlock;
+        use crate::websearch::cite_check::{audit_citations, hedge_line};
+        use crate::websearch::judge::{InsufficiencyReason, SufficiencyVerdict};
+        use crate::websearch::writer::build_writer_appendix;
+
+        // A conflict verdict drives the writer's conflict flag through the exact
+        // predicate the orchestrator's judge_and_requery branch uses.
+        let verdict = SufficiencyVerdict {
+            sufficient: false,
+            missing: "the two sources report different revenue figures".into(),
+            reason: InsufficiencyReason::Conflicting,
+        };
+        assert!(verdict.conflicting());
+
+        let source = SourceBlock {
+            index: 1,
+            url: "https://example.test/report".into(),
+            title: "Quarterly report".into(),
+            text: "The company announced a new phone at its event with several colours.".into(),
+        };
+        let blocks = [source.clone()];
+
+        // The conflict flag appends the conflict directive to the writer prompt;
+        // a non-conflicting turn over the same sources never does.
+        let conflict_appendix = build_writer_appendix(
+            &blocks,
+            "2026-07-10",
+            "en-US",
+            "deadbeef",
+            false, /* is_cache_tier */
+            verdict.conflicting(),
+        );
+        let plain_appendix =
+            build_writer_appendix(&blocks, "2026-07-10", "en-US", "deadbeef", false, false);
+        assert!(conflict_appendix.contains("The sources disagree on a value the question asks for"));
+        assert!(!plain_appendix.contains("The sources disagree on a value the question asks for"));
+
+        // The writer then produced an answer citing a figure absent from the
+        // source: the audit flags source [1], and the hedge fires.
+        let answer = "The phone costs 499 dollars launching in 2027 quarter [1].";
+        let audit = audit_citations(answer, &blocks);
+        assert_eq!(audit.unsupported_indices, vec![1]);
+        let hedge = hedge_line(&audit).expect("a flagged figure yields a hedge note");
+
+        // finalize_builtin_stream appends that hedge to the completed answer and
+        // emits the hedge token before the withheld Done, unchanged by the
+        // conflict path that shaped the answer upstream.
+        let (content, chunks) =
+            finalize_builtin_stream(answer.to_string(), true, Some(hedge.clone()));
+        assert_eq!(content, format!("{answer}\n\n{hedge}"));
+        assert_eq!(chunks.len(), 2);
+        assert!(matches!(&chunks[0], StreamChunk::Token(t) if t == &format!("\n\n{hedge}")));
+        assert!(matches!(chunks[1], StreamChunk::Done));
+    }
+
     #[test]
     fn record_conversation_start_if_first_turn_emits_when_true() {
         let (bound, mock) = mock_bound_recorder("conv-start");
