@@ -1206,3 +1206,58 @@ pub const CITE_WEAK_MIN: f64 = 0.3;
 ///
 /// Not user-tunable: an internal defensive bound.
 pub const CITE_AUDIT_MAX_ANSWER_BYTES: usize = 262_144;
+
+/// Attached letter magnitude suffixes the citation audit's numeric-consistency
+/// guard recognizes directly after a digit run (`615B`, `1.2mn`), paired with
+/// the power-of-ten exponent each one adds. Checked in this order, but order
+/// does not affect correctness: a truncated match (matching `b` when the
+/// text is actually `bn`) always fails its own word-boundary check and falls
+/// through to the longer entry.
+///
+/// Not user-tunable: fixed English financial-shorthand vocabulary for a
+/// parsing guard, not a preference. Editing it would silently change which
+/// figures the guard recognizes as matching.
+pub const CITE_MAGNITUDE_ABBREVIATIONS: [(&str, u32); 7] = [
+    ("bn", 9),
+    ("mn", 6),
+    ("tn", 12),
+    ("b", 9),
+    ("m", 6),
+    ("t", 12),
+    ("k", 3),
+];
+
+/// Spelled-out magnitude words the citation audit's numeric-consistency guard
+/// recognizes after a digit run and whitespace (`615 billion`), paired with
+/// the power-of-ten exponent each one adds.
+///
+/// Not user-tunable: fixed English magnitude vocabulary for a parsing guard,
+/// same rationale as [`CITE_MAGNITUDE_ABBREVIATIONS`].
+pub const CITE_MAGNITUDE_WORDS: [(&str, u32); 4] = [
+    ("thousand", 3),
+    ("million", 6),
+    ("billion", 9),
+    ("trillion", 12),
+];
+
+/// English month names, lowercase, paired with their calendar month number.
+/// Used by the citation audit's numeric-consistency guard to recognize a
+/// `July 9, 2026`-style date mention alongside the numeric `M/D/YYYY` and
+/// ISO `YYYY-MM-DD` forms.
+///
+/// Not user-tunable: fixed English calendar vocabulary for a parsing guard,
+/// same rationale as [`CITE_MAGNITUDE_ABBREVIATIONS`].
+pub const CITE_MONTH_NAMES: [(&str, u32); 12] = [
+    ("january", 1),
+    ("february", 2),
+    ("march", 3),
+    ("april", 4),
+    ("may", 5),
+    ("june", 6),
+    ("july", 7),
+    ("august", 8),
+    ("september", 9),
+    ("october", 10),
+    ("november", 11),
+    ("december", 12),
+];

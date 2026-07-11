@@ -329,8 +329,12 @@ pub enum RecorderEvent {
     /// `cited` is the total citation references seen; `supported`, `weak`, and
     /// `unsupported` partition them by support strength; `unsupported_indices`
     /// lists the source numbers judged unsupported (including out-of-range
-    /// numbers). Observability only: emitted once per grounded turn to measure
-    /// the "cites a source it did not really read" failure class, with no
+    /// numbers). `numeric_checked`, `numeric_matched`, and `numeric_missing`
+    /// report the numeric-consistency guard's own counts (claim money
+    /// figures, numbers, and dates checked against the cited source, and how
+    /// many were absent), summed across every citation in the turn.
+    /// Observability only: emitted once per grounded turn to measure the
+    /// "cites a source it did not really read" failure class, with no
     /// user-facing effect.
     CitationAudit {
         cited: usize,
@@ -338,6 +342,9 @@ pub enum RecorderEvent {
         weak: usize,
         unsupported: usize,
         unsupported_indices: Vec<usize>,
+        numeric_checked: usize,
+        numeric_matched: usize,
+        numeric_missing: usize,
     },
     /// Final event in a chat-domain file. Emitted by the frontend when
     /// the user resets the conversation or by the backend on app quit
@@ -872,6 +879,9 @@ impl Serialize for RecorderEvent {
                 weak,
                 unsupported,
                 unsupported_indices,
+                numeric_checked,
+                numeric_matched,
+                numeric_missing,
             } => {
                 map.serialize_entry("kind", "citation_audit")?;
                 map.serialize_entry("cited", cited)?;
@@ -879,6 +889,9 @@ impl Serialize for RecorderEvent {
                 map.serialize_entry("weak", weak)?;
                 map.serialize_entry("unsupported", unsupported)?;
                 map.serialize_entry("unsupported_indices", unsupported_indices)?;
+                map.serialize_entry("numeric_checked", numeric_checked)?;
+                map.serialize_entry("numeric_matched", numeric_matched)?;
+                map.serialize_entry("numeric_missing", numeric_missing)?;
             }
             RecorderEvent::ConversationEnd { reason } => {
                 map.serialize_entry("kind", "conversation_end")?;
@@ -1088,6 +1101,9 @@ mod tests {
                 weak: 0,
                 unsupported: 1,
                 unsupported_indices: vec![9],
+                numeric_checked: 1,
+                numeric_matched: 0,
+                numeric_missing: 1,
             },
             RecorderEvent::ConversationEnd {
                 reason: "quit".into(),
@@ -1434,6 +1450,9 @@ mod tests {
                 weak: 0,
                 unsupported: 1,
                 unsupported_indices: vec![9],
+                numeric_checked: 2,
+                numeric_matched: 1,
+                numeric_missing: 1,
             },
         );
         r.record(
@@ -1480,6 +1499,9 @@ mod tests {
         assert_eq!(lines[9]["weak"], 0);
         assert_eq!(lines[9]["unsupported"], 1);
         assert_eq!(lines[9]["unsupported_indices"], json!([9]));
+        assert_eq!(lines[9]["numeric_checked"], 2);
+        assert_eq!(lines[9]["numeric_matched"], 1);
+        assert_eq!(lines[9]["numeric_missing"], 1);
         assert_eq!(lines[10]["reason"], "quit");
     }
 

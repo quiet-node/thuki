@@ -898,10 +898,19 @@ fn audit_answer_citations(
         weak: audit.weak,
         unsupported: audit.unsupported,
         unsupported_indices: audit.unsupported_indices,
+        numeric_checked: audit.numeric_checked,
+        numeric_matched: audit.numeric_matched,
+        numeric_missing: audit.numeric_missing,
     });
     eprintln!(
-        "[search] citation audit: cited={} supported={} weak={} unsupported={}",
-        audit.cited, audit.supported, audit.weak, audit.unsupported
+        "[search] citation audit: cited={} supported={} weak={} unsupported={} numeric_checked={} numeric_matched={} numeric_missing={}",
+        audit.cited,
+        audit.supported,
+        audit.weak,
+        audit.unsupported,
+        audit.numeric_checked,
+        audit.numeric_matched,
+        audit.numeric_missing
     );
 }
 

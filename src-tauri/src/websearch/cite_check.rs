@@ -15,9 +15,28 @@
 //! thresholds in [`crate::config::defaults`]. Nothing here calls a model or the
 //! network; every function is pure over its inputs and never panics on
 //! malformed text.
+//!
+//! A second, independent layer runs alongside the lexical score: a
+//! numeric-consistency guard that extracts money figures, plain numbers,
+//! percentages, and dates from the claim and checks each one against the
+//! cited source's own numeric mentions, normalizing formatting differences
+//! ("$615B" and "615 billion" and "615,000,000,000" all read as the same
+//! value) so a real match is never missed on formatting alone. This exists
+//! because token overlap alone cannot tell a swapped digit from a real
+//! match: a sentence can be almost entirely correct wording with one
+//! fabricated figure and still score high on lexical overlap. The guard
+//! cannot raise a citation past what the lexical score already earned; it
+//! can only cap a citation with a fabricated or absent figure down to
+//! unsupported, or float an exact numeric match that lexical overlap missed
+//! up to at least weak. See [`classify_with_numeric_guard`] for the exact
+//! combination rule.
 
-use crate::config::defaults::{CITE_SUPPORTED_MIN, CITE_WEAK_MIN};
+use crate::config::defaults::{
+    CITE_MAGNITUDE_ABBREVIATIONS, CITE_MAGNITUDE_WORDS, CITE_MONTH_NAMES, CITE_SUPPORTED_MIN,
+    CITE_WEAK_MIN,
+};
 use crate::websearch::assemble::SourceBlock;
+use std::collections::HashSet;
 
 /// The outcome of auditing one answer's citations against its sources.
 ///
@@ -39,6 +58,16 @@ pub struct CitationAudit {
     pub unsupported: usize,
     /// The 1-based source numbers classified unsupported, in first-seen order.
     pub unsupported_indices: Vec<usize>,
+    /// Total claim numbers and dates checked by the numeric-consistency
+    /// guard, summed across every citation that had both a resolvable
+    /// source and at least one numeric or date mention in its claim.
+    pub numeric_checked: usize,
+    /// Of `numeric_checked`, how many were found in their cited source.
+    pub numeric_matched: usize,
+    /// Of `numeric_checked`, how many were absent from their cited source.
+    /// Each one caps its citation's classification at unsupported; see
+    /// [`classify_with_numeric_guard`].
+    pub numeric_missing: usize,
 }
 
 /// One citation reference extracted from the answer: the 1-based source number
@@ -76,6 +105,9 @@ pub fn audit_citations(answer_text: &str, sources: &[SourceBlock]) -> CitationAu
         weak: 0,
         unsupported: 0,
         unsupported_indices: Vec::new(),
+        numeric_checked: 0,
+        numeric_matched: 0,
+        numeric_missing: 0,
     };
 
     for cref in refs {
@@ -86,7 +118,21 @@ pub fn audit_citations(answer_text: &str, sources: &[SourceBlock]) -> CitationAu
             None => CiteClass::Unsupported,
             Some(source) => {
                 let claim = claim_text(answer_text, &sentences, &cref);
-                classify(support_score(&claim, &source.text))
+                let lexical_class = classify(support_score(&claim, &source.text));
+                let claim_facts = extract_numeric_facts(&claim);
+                // Only scan the (potentially large) source text when the
+                // claim actually has a number or date to check against it.
+                let (checked, missing) =
+                    if claim_facts.numbers.is_empty() && claim_facts.dates.is_empty() {
+                        (0, 0)
+                    } else {
+                        let source_facts = extract_numeric_facts(&source.text);
+                        numeric_guard(&claim_facts, &source_facts)
+                    };
+                audit.numeric_checked += checked;
+                audit.numeric_missing += missing;
+                audit.numeric_matched += checked - missing;
+                classify_with_numeric_guard(lexical_class, checked, missing)
             }
         };
         match class {
@@ -379,6 +425,481 @@ fn push_token(tokens: &mut Vec<String>, current: &mut String) {
     }
 }
 
+/// The numeric and date mentions extracted from a span of text: money
+/// figures, plain numbers, percentages, and magnitude-suffixed forms are all
+/// normalized into `numbers`; calendar dates (ISO, `M/D/YYYY`, or an English
+/// month name) are normalized into `dates`. Used by the numeric-consistency
+/// guard in [`audit_citations`] to check a claim's figures against its cited
+/// source without relying on lexical token overlap, which cannot tell a
+/// swapped digit from a real match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NumericFacts {
+    /// Canonical value strings for every number, money, or percentage
+    /// mention, in first-seen order. A percentage's canonical form carries a
+    /// trailing `%` so it never collides with a plain number of the same
+    /// magnitude.
+    numbers: Vec<String>,
+    /// Canonical `YYYY-MM-DD` strings for every date mention, in first-seen
+    /// order.
+    dates: Vec<String>,
+}
+
+/// Extracts every numeric and date mention from `text` for the citation
+/// audit's numeric-consistency guard. Citation markers (`[6]`, `[1, 2]`) are
+/// located first via [`find_citation_refs`] and excluded from the scan so a
+/// bracket's own digits are never read as claim or source content; a date
+/// pattern is then matched before a bare number at the same position so a
+/// date's day and year are not also counted as separate plain numbers. Pure
+/// and total: every scan only ever advances forward, so malformed or hostile
+/// input still terminates.
+fn extract_numeric_facts(text: &str) -> NumericFacts {
+    let bytes = text.as_bytes();
+    let marker_spans: Vec<(usize, usize)> = find_citation_refs(text)
+        .into_iter()
+        .map(|r| (r.span_start, r.span_end))
+        .collect();
+    let date_spans = find_date_spans(text, bytes);
+    let mut exclude = marker_spans;
+    exclude.extend(date_spans.iter().map(|&(s, e, _)| (s, e)));
+    let numbers = find_number_spans(text, bytes, &exclude);
+    let dates = date_spans.into_iter().map(|(_, _, canon)| canon).collect();
+    NumericFacts { numbers, dates }
+}
+
+/// True if byte offset `i` falls inside any of `spans` (half-open ranges).
+/// Used to keep the number scan from re-reading digits already claimed by a
+/// citation marker or a date match.
+fn in_excluded(i: usize, spans: &[(usize, usize)]) -> bool {
+    spans.iter().any(|&(s, e)| i >= s && i < e)
+}
+
+/// Finds every calendar-date mention in `text`: an ISO `YYYY-MM-DD` date, a
+/// `M/D/YYYY` or `MM/DD/YYYY` date, or an English month name followed by a
+/// day and a 4-digit year (`July 9, 2026` or `July 9 2026`). Returns each
+/// match's byte span and its canonical `YYYY-MM-DD` string. Only attempts a
+/// match at the start of a digit or letter run (the byte before the start is
+/// neither a digit nor a letter, as appropriate), so a date is never matched
+/// starting mid-token.
+fn find_date_spans(text: &str, bytes: &[u8]) -> Vec<(usize, usize, String)> {
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() && (i == 0 || !bytes[i - 1].is_ascii_digit()) {
+            if let Some((end, canon)) = try_iso_date(bytes, i) {
+                spans.push((i, end, canon));
+                i = end;
+                continue;
+            }
+            if let Some((end, canon)) = try_slash_date(bytes, i) {
+                spans.push((i, end, canon));
+                i = end;
+                continue;
+            }
+        } else if bytes[i].is_ascii_alphabetic() && (i == 0 || !bytes[i - 1].is_ascii_alphabetic())
+        {
+            if let Some((end, canon)) = try_month_name_date(text, bytes, i) {
+                spans.push((i, end, canon));
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    spans
+}
+
+/// Parses a short run of already-validated ASCII digit bytes into a `u32`.
+/// Callers only ever pass slices they have already confirmed are all
+/// digits, so this never needs to handle a non-digit byte.
+fn digits_to_u32(digits: &[u8]) -> u32 {
+    digits
+        .iter()
+        .fold(0u32, |acc, &b| acc * 10 + (b - b'0') as u32)
+}
+
+/// Matches an ISO `YYYY-MM-DD` date starting at `start` (an ASCII digit).
+/// Requires exactly 4 digits, `-`, 2 digits, `-`, 2 digits, with the month
+/// and day in valid calendar ranges, and no digit immediately after the
+/// match (so a longer digit run is never misread as a date's leading
+/// fragment; the caller already guarantees no digit immediately precedes
+/// it). Returns the byte offset just past the match and its canonical form
+/// (the match itself, already `YYYY-MM-DD`).
+fn try_iso_date(bytes: &[u8], start: usize) -> Option<(usize, String)> {
+    let end = start + 10;
+    if end > bytes.len() {
+        return None;
+    }
+    let g = &bytes[start..end];
+    let all_digits = |r: &[u8]| r.iter().all(u8::is_ascii_digit);
+    if !all_digits(&g[0..4])
+        || g[4] != b'-'
+        || !all_digits(&g[5..7])
+        || g[7] != b'-'
+        || !all_digits(&g[8..10])
+    {
+        return None;
+    }
+    if end < bytes.len() && bytes[end].is_ascii_digit() {
+        return None;
+    }
+    let month = digits_to_u32(&g[5..7]);
+    let day = digits_to_u32(&g[8..10]);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    // `g` is entirely ASCII digits and `-`, so this is always valid UTF-8.
+    Some((end, std::str::from_utf8(g).unwrap().to_string()))
+}
+
+/// Reads an ASCII digit run of `min..=max` digits starting at `start` and
+/// returns its end offset and parsed value, or `None` if the run at `start`
+/// is shorter than `min` digits or immediately followed by more than `max`
+/// digits (so, for example, a 3-digit run is correctly rejected as a 1-2
+/// digit month or day group, and a 5-digit run is rejected as a 4-digit
+/// year).
+fn digit_group(bytes: &[u8], start: usize, min: usize, max: usize) -> Option<(usize, u32)> {
+    let mut end = start;
+    while end < bytes.len() && bytes[end].is_ascii_digit() && end - start < max {
+        end += 1;
+    }
+    if end - start < min {
+        return None;
+    }
+    if end < bytes.len() && bytes[end].is_ascii_digit() {
+        return None;
+    }
+    Some((end, digits_to_u32(&bytes[start..end])))
+}
+
+/// Matches a `M/D/YYYY` or `MM/DD/YYYY` date starting at `start` (an ASCII
+/// digit, guaranteed by the caller not to be preceded by another digit). The
+/// month and day groups are 1 or 2 digits each; the year group must be
+/// exactly 4 digits. Validates the month and day are in calendar range.
+/// Returns the byte offset just past the match and its canonical
+/// `YYYY-MM-DD` form.
+fn try_slash_date(bytes: &[u8], start: usize) -> Option<(usize, String)> {
+    let (month_end, month) = digit_group(bytes, start, 1, 2)?;
+    if bytes.get(month_end) != Some(&b'/') {
+        return None;
+    }
+    let (day_end, day) = digit_group(bytes, month_end + 1, 1, 2)?;
+    if bytes.get(day_end) != Some(&b'/') {
+        return None;
+    }
+    let (year_end, year) = digit_group(bytes, day_end + 1, 4, 4)?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some((year_end, format!("{year:04}-{month:02}-{day:02}")))
+}
+
+/// Matches an English month name followed by a day and a 4-digit year
+/// (`July 9, 2026` or `July 9 2026`, the comma is optional) starting at
+/// `start`, which must index the first letter of the month word (the caller
+/// already guarantees no letter immediately precedes it). Matching is
+/// case-insensitive against [`CITE_MONTH_NAMES`]. Requires at least one
+/// whitespace byte between each part. Returns the byte offset just past the
+/// year and the canonical `YYYY-MM-DD` form.
+fn try_month_name_date(text: &str, bytes: &[u8], start: usize) -> Option<(usize, String)> {
+    let mut word_end = start;
+    while word_end < bytes.len() && bytes[word_end].is_ascii_alphabetic() && word_end - start < 12 {
+        word_end += 1;
+    }
+    if word_end < bytes.len() && bytes[word_end].is_ascii_alphabetic() {
+        return None; // Longer than any month name: not a month word.
+    }
+    let word = text[start..word_end].to_ascii_lowercase();
+    let month = CITE_MONTH_NAMES.iter().find(|entry| entry.0 == word)?.1;
+
+    let mut i = word_end;
+    let ws_start = i;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i == ws_start {
+        return None;
+    }
+    let (day_end, day) = digit_group(bytes, i, 1, 2)?;
+    if !(1..=31).contains(&day) {
+        return None;
+    }
+    i = day_end;
+    if bytes.get(i) == Some(&b',') {
+        i += 1;
+    }
+    let ws2_start = i;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i == ws2_start {
+        return None;
+    }
+    let (year_end, year) = digit_group(bytes, i, 4, 4)?;
+    Some((year_end, format!("{year:04}-{month:02}-{day:02}")))
+}
+
+/// Finds every plain number, money figure, percentage, and
+/// magnitude-suffixed number in `text`, skipping any byte offset inside
+/// `exclude` (citation-marker spans and already-matched date spans, so a
+/// date's day and year are never double-counted as separate bare numbers
+/// and a marker's digits are never read as content). Returns each mention's
+/// canonical value string, in first-seen order.
+fn find_number_spans(text: &str, bytes: &[u8], exclude: &[(usize, usize)]) -> Vec<String> {
+    let mut numbers = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if in_excluded(i, exclude) {
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'$'
+            && i + 1 < bytes.len()
+            && bytes[i + 1].is_ascii_digit()
+            && !in_excluded(i + 1, exclude)
+        {
+            let (end, canon) = parse_number_literal(text, bytes, i + 1);
+            numbers.push(canon);
+            i = end;
+            continue;
+        }
+        if bytes[i].is_ascii_digit() && (i == 0 || !bytes[i - 1].is_ascii_digit()) {
+            let (end, canon) = parse_number_literal(text, bytes, i);
+            numbers.push(canon);
+            i = end;
+            continue;
+        }
+        i += 1;
+    }
+    numbers
+}
+
+/// Reads a numeric literal's digits starting at `start`: a required leading
+/// digit group, any number of comma-grouped digit groups immediately
+/// following (a comma is only consumed when a digit follows it directly, so
+/// a sentence comma like "3, 2, 1" is never pulled into the number), and an
+/// optional decimal point plus digit group. Returns the byte offset just
+/// past the literal, the digits with the commas and point removed, and how
+/// many of those digits belong to the integer part (so the caller can
+/// reinsert the point after a magnitude shift).
+///
+/// Precondition: `bytes[start]` is an ASCII digit. Both call sites (via
+/// [`parse_number_literal`]) only ever invoke this after already checking
+/// that byte, so the leading digit group can never come up empty; there is
+/// no error case left to report, which is why this returns a plain tuple
+/// rather than an `Option`.
+fn parse_digits(bytes: &[u8], start: usize) -> (usize, String, usize) {
+    let mut i = start;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    // The run is ASCII digits only, so this is always valid UTF-8.
+    let mut digits = std::str::from_utf8(&bytes[start..i]).unwrap().to_string();
+    while i < bytes.len()
+        && bytes[i] == b','
+        && i + 1 < bytes.len()
+        && bytes[i + 1].is_ascii_digit()
+    {
+        let group_start = i + 1;
+        let mut j = group_start;
+        while j < bytes.len() && bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        digits.push_str(std::str::from_utf8(&bytes[group_start..j]).unwrap());
+        i = j;
+    }
+    let point_at = digits.len();
+    if i < bytes.len() && bytes[i] == b'.' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+        let frac_start = i + 1;
+        let mut j = frac_start;
+        while j < bytes.len() && bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        digits.push_str(std::str::from_utf8(&bytes[frac_start..j]).unwrap());
+        i = j;
+    }
+    (i, digits, point_at)
+}
+
+/// Parses one numeric literal starting at `start` (an ASCII digit, the same
+/// precondition as [`parse_digits`]) via `parse_digits`, then looks for, in
+/// order, an attached letter suffix (`B`, `bn`, ...), a trailing `%`, or a
+/// following word suffix (`billion`, ...), folding whichever is found into
+/// the canonical value via [`shift_point`]. Returns the byte offset just
+/// past the full match (literal plus any suffix) and the canonical value
+/// string.
+fn parse_number_literal(text: &str, bytes: &[u8], start: usize) -> (usize, String) {
+    let (mut end, digits, point_at) = parse_digits(bytes, start);
+    if let Some((sfx_end, exp)) = match_magnitude_abbrev(bytes, end) {
+        return (sfx_end, shift_point(&digits, point_at, exp));
+    }
+    if bytes.get(end) == Some(&b'%') {
+        end += 1;
+        return (end, format!("{}%", shift_point(&digits, point_at, 0)));
+    }
+    if let Some((w_end, exp)) = match_word_magnitude(text, bytes, end) {
+        return (w_end, shift_point(&digits, point_at, exp));
+    }
+    (end, shift_point(&digits, point_at, 0))
+}
+
+/// Matches an attached magnitude-abbreviation letter suffix (`B`, `bn`, `M`,
+/// `mn`, `T`, `tn`, `K`) case-insensitively at `pos`, requiring the byte
+/// right after the suffix to not be alphanumeric (so `615Bob` is never
+/// misread as `615B` plus a stray word). Tries every entry in
+/// [`CITE_MAGNITUDE_ABBREVIATIONS`]; entry order does not affect
+/// correctness because a truncated match (matching `b` when the text is
+/// actually `bn`) always fails its own boundary check and simply falls
+/// through to try the next entry.
+fn match_magnitude_abbrev(bytes: &[u8], pos: usize) -> Option<(usize, u32)> {
+    for &(abbr, exp) in CITE_MAGNITUDE_ABBREVIATIONS.iter() {
+        let len = abbr.len();
+        if pos + len > bytes.len() {
+            continue;
+        }
+        if bytes[pos..pos + len].eq_ignore_ascii_case(abbr.as_bytes()) {
+            let after = pos + len;
+            if after >= bytes.len() || !bytes[after].is_ascii_alphanumeric() {
+                return Some((after, exp));
+            }
+        }
+    }
+    None
+}
+
+/// Matches a following word-form magnitude suffix (`thousand`, `million`,
+/// `billion`, `trillion`) at `pos`: at least one whitespace byte, then a
+/// case-insensitive whole-word match against [`CITE_MAGNITUDE_WORDS`].
+/// Returns the byte offset just past the matched word and its exponent, or
+/// `None` if there is no leading whitespace or the following word does not
+/// match, in which case the caller's scan position is left untouched so no
+/// text is wrongly consumed on a failed attempt.
+fn match_word_magnitude(text: &str, bytes: &[u8], pos: usize) -> Option<(usize, u32)> {
+    let mut i = pos;
+    let ws_start = i;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i == ws_start {
+        return None;
+    }
+    let word_start = i;
+    while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+        i += 1;
+    }
+    if i == word_start {
+        return None;
+    }
+    let word = text[word_start..i].to_ascii_lowercase();
+    CITE_MAGNITUDE_WORDS
+        .iter()
+        .find(|entry| entry.0 == word)
+        .map(|entry| (i, entry.1))
+}
+
+/// Moves the decimal point in `digits` (a string of decimal digits with no
+/// separators) right by `exp` places: the way this module folds a magnitude
+/// suffix ("615" plus billion's 9 zeros) or a plain decimal ("917.3" with a
+/// 0 shift) into one directly comparable value string. `point_at` is how
+/// many of `digits`' characters belong to the integer part before the
+/// shift. Implemented as pure string manipulation, with no integer or float
+/// arithmetic, specifically so an arbitrarily long digit run can never
+/// overflow or lose precision: it can only ever grow the string. Leading
+/// zeros are trimmed from the integer part (at least one digit is kept) and
+/// trailing zeros are trimmed from any remaining fractional part, so "3.40"
+/// and "3.4" and "3.400" all normalize to the same "3.4".
+///
+/// A claim's "$917.3 billion" and a source's "917 billion" are deliberately
+/// kept distinct here (they canonicalize to different strings): this only
+/// normalizes representation, not precision, so a rounded figure never
+/// silently passes as an exact match. Adding tolerance for that kind of
+/// rounding is a possible future refinement, not something this guard
+/// attempts.
+fn shift_point(digits: &str, point_at: usize, exp: u32) -> String {
+    let new_point = point_at + exp as usize;
+    let mut d = digits.to_string();
+    if new_point > d.len() {
+        d.extend(std::iter::repeat_n('0', new_point - d.len()));
+    }
+    let split = new_point.min(d.len());
+    let (int_part, frac_part) = d.split_at(split);
+    let int_trimmed = int_part.trim_start_matches('0');
+    let int_final = if int_trimmed.is_empty() {
+        "0"
+    } else {
+        int_trimmed
+    };
+    let frac_trimmed = frac_part.trim_end_matches('0');
+    if frac_trimmed.is_empty() {
+        int_final.to_string()
+    } else {
+        format!("{int_final}.{frac_trimmed}")
+    }
+}
+
+/// Checks a claim's numeric and date mentions against its cited source's,
+/// folding each source date's year into the source's number set first (so a
+/// claim's bare year, "in 2026", counts as present when the source only
+/// carries a full date containing that year, like "July 9, 2026", rather
+/// than the year as its own standalone token; keeping this fold one-directional,
+/// source dates into the number set rather than trying to match a claim's
+/// bare year against a source date's substring directly, keeps the check a
+/// simple set-membership test). Returns how many claim mentions were checked
+/// in total and how many of those were absent from the source. A claim with
+/// no numeric or date content is reported as nothing to check.
+fn numeric_guard(claim: &NumericFacts, source: &NumericFacts) -> (usize, usize) {
+    if claim.numbers.is_empty() && claim.dates.is_empty() {
+        return (0, 0);
+    }
+    let mut source_numbers: HashSet<&str> = source.numbers.iter().map(String::as_str).collect();
+    let source_dates: HashSet<&str> = source.dates.iter().map(String::as_str).collect();
+    let source_years: Vec<String> = source.dates.iter().map(|d| d[..4].to_string()).collect();
+    for y in &source_years {
+        source_numbers.insert(y.as_str());
+    }
+    let missing_numbers = claim
+        .numbers
+        .iter()
+        .filter(|n| !source_numbers.contains(n.as_str()))
+        .count();
+    let missing_dates = claim
+        .dates
+        .iter()
+        .filter(|d| !source_dates.contains(d.as_str()))
+        .count();
+    let checked = claim.numbers.len() + claim.dates.len();
+    (checked, missing_numbers + missing_dates)
+}
+
+/// Combines the lexical support score's bucket with the numeric-consistency
+/// guard's verdict. A claim with no numeric content (`checked == 0`) is
+/// unaffected: the lexical bucket stands as-is. Otherwise: any claim number
+/// or date absent from the source caps the result at unsupported, since a
+/// fabricated figure must never pass on prose overlap alone; when every
+/// claim number and date is present, the result is floored at weak, so an
+/// exact numeric match can no longer be buried by token-formatting noise,
+/// but it still only reaches supported if the lexical score clears
+/// [`CITE_SUPPORTED_MIN`] on its own. The guard only ever adds a floor and a
+/// cap; it never manufactures a "supported" verdict by itself, which is the
+/// simpler of the two combination rules the design considered (the other
+/// being: also promote straight to supported when every number matches and
+/// the claim is majority-numeric).
+fn classify_with_numeric_guard(
+    lexical_class: CiteClass,
+    checked: usize,
+    missing: usize,
+) -> CiteClass {
+    if checked == 0 {
+        return lexical_class;
+    }
+    if missing > 0 {
+        return CiteClass::Unsupported;
+    }
+    match lexical_class {
+        CiteClass::Unsupported => CiteClass::Weak,
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,6 +1110,9 @@ mod tests {
                 weak: 0,
                 unsupported: 0,
                 unsupported_indices: vec![],
+                numeric_checked: 0,
+                numeric_matched: 0,
+                numeric_missing: 0,
             }
         );
     }
@@ -717,5 +1241,276 @@ mod tests {
         assert_eq!(audit.supported, 3);
         assert_eq!(audit.weak, 0);
         assert_eq!(audit.unsupported, 0);
+    }
+
+    // ── numeric-consistency guard ───────────────────────────────────────────
+
+    fn numbers_in(s: &str) -> Vec<String> {
+        extract_numeric_facts(s).numbers
+    }
+
+    fn dates_in(s: &str) -> Vec<String> {
+        extract_numeric_facts(s).dates
+    }
+
+    #[test]
+    fn numeric_normalization_matrix_matches_across_formats() {
+        // "$615B" == "615 billion" == "615,000,000,000".
+        assert_eq!(numbers_in("$615B"), vec!["615000000000"]);
+        assert_eq!(numbers_in("615 billion"), vec!["615000000000"]);
+        assert_eq!(numbers_in("615,000,000,000"), vec!["615000000000"]);
+        // "3.4T".
+        assert_eq!(numbers_in("3.4T"), vec!["3400000000000"]);
+        // "12%".
+        assert_eq!(numbers_in("12%"), vec!["12%"]);
+        // "$1,053,000,000,000" == "1.053 trillion".
+        assert_eq!(numbers_in("$1,053,000,000,000"), vec!["1053000000000"]);
+        assert_eq!(numbers_in("1.053 trillion"), vec!["1053000000000"]);
+    }
+
+    #[test]
+    fn date_normalization_matches_across_formats() {
+        assert_eq!(dates_in("2026-07-09"), vec!["2026-07-09"]);
+        assert_eq!(dates_in("7/9/2026"), vec!["2026-07-09"]);
+        assert_eq!(dates_in("07/09/2026"), vec!["2026-07-09"]);
+        assert_eq!(dates_in("July 9, 2026"), vec!["2026-07-09"]);
+        assert_eq!(dates_in("July 9 2026"), vec!["2026-07-09"]);
+    }
+
+    #[test]
+    fn citation_marker_digits_are_never_read_as_numbers() {
+        let facts = extract_numeric_facts("Revenue was 50 [12] this year.");
+        assert_eq!(facts.numbers, vec!["50"]);
+    }
+
+    #[test]
+    fn magnitude_abbreviation_requires_word_boundary() {
+        // "615Bob" is a stray word, not "615" plus a billion suffix.
+        assert_eq!(numbers_in("615Bob"), vec!["615"]);
+    }
+
+    #[test]
+    fn plain_number_without_magnitude_word_stays_plain() {
+        assert_eq!(numbers_in("500 apples"), vec!["500"]);
+    }
+
+    #[test]
+    fn shift_point_trims_leading_int_zeros_and_trailing_frac_zeros() {
+        assert_eq!(shift_point("00615", 5, 0), "615");
+        assert_eq!(shift_point("340", 1, 0), "3.4");
+        assert_eq!(shift_point("000", 3, 0), "0");
+    }
+
+    #[test]
+    fn shift_point_keeps_fractional_remainder_when_exponent_is_small() {
+        // "3.4567" shifted by 2 (hundred) is 345.67.
+        assert_eq!(shift_point("34567", 1, 2), "345.67");
+    }
+
+    #[test]
+    fn iso_date_rejects_when_a_digit_immediately_follows() {
+        // "2026-07-091" has an 11th digit right after an otherwise valid
+        // ISO date, so it is not a clean 10-character match.
+        let text = "2026-07-091";
+        assert_eq!(try_iso_date(text.as_bytes(), 0), None);
+    }
+
+    #[test]
+    fn slash_date_rejects_out_of_range_month_with_valid_group_shapes() {
+        // Every group parses as a well-formed 2/2/4-digit date, but month
+        // 13 is not a real calendar month.
+        let text = "13/09/2026";
+        assert_eq!(try_slash_date(text.as_bytes(), 0), None);
+    }
+
+    #[test]
+    fn month_name_date_rejects_a_word_longer_than_any_month_name() {
+        let text = "Extraordinarily 9, 2026";
+        assert_eq!(try_month_name_date(text, text.as_bytes(), 0), None);
+    }
+
+    #[test]
+    fn month_name_date_rejects_missing_whitespace_after_month() {
+        let text = "July9, 2026";
+        assert_eq!(try_month_name_date(text, text.as_bytes(), 0), None);
+    }
+
+    #[test]
+    fn month_name_date_rejects_out_of_range_day() {
+        let text = "July 45, 2026";
+        assert_eq!(try_month_name_date(text, text.as_bytes(), 0), None);
+    }
+
+    #[test]
+    fn month_name_date_rejects_missing_whitespace_before_year() {
+        let text = "July 9,2026";
+        assert_eq!(try_month_name_date(text, text.as_bytes(), 0), None);
+    }
+
+    #[test]
+    fn numeric_guard_folds_source_date_year_for_bare_year_claims() {
+        // A bare year in the claim counts as present when the source only
+        // carries a full date containing that year.
+        let claim = NumericFacts {
+            numbers: vec!["2026".to_string()],
+            dates: vec![],
+        };
+        let source = NumericFacts {
+            numbers: vec![],
+            dates: vec!["2026-07-09".to_string()],
+        };
+        assert_eq!(numeric_guard(&claim, &source), (1, 0));
+    }
+
+    #[test]
+    fn numeric_guard_flags_bare_year_absent_from_source() {
+        let claim = NumericFacts {
+            numbers: vec!["2030".to_string()],
+            dates: vec![],
+        };
+        let source = NumericFacts {
+            numbers: vec![],
+            dates: vec!["2026-07-09".to_string()],
+        };
+        assert_eq!(numeric_guard(&claim, &source), (1, 1));
+    }
+
+    #[test]
+    fn numeric_guard_no_claim_numbers_is_nothing_to_check() {
+        let claim = NumericFacts {
+            numbers: vec![],
+            dates: vec![],
+        };
+        let source = NumericFacts {
+            numbers: vec!["1".to_string()],
+            dates: vec![],
+        };
+        assert_eq!(numeric_guard(&claim, &source), (0, 0));
+    }
+
+    #[test]
+    fn classify_with_numeric_guard_covers_all_branches() {
+        // No numeric content: lexical bucket passes through unchanged.
+        assert_eq!(
+            classify_with_numeric_guard(CiteClass::Supported, 0, 0),
+            CiteClass::Supported
+        );
+        // Any missing number caps at unsupported, even from supported.
+        assert_eq!(
+            classify_with_numeric_guard(CiteClass::Supported, 2, 1),
+            CiteClass::Unsupported
+        );
+        // All present floors an unsupported lexical score up to weak.
+        assert_eq!(
+            classify_with_numeric_guard(CiteClass::Unsupported, 1, 0),
+            CiteClass::Weak
+        );
+        // All present never downgrades an already-weak or supported score.
+        assert_eq!(
+            classify_with_numeric_guard(CiteClass::Weak, 1, 0),
+            CiteClass::Weak
+        );
+        assert_eq!(
+            classify_with_numeric_guard(CiteClass::Supported, 1, 0),
+            CiteClass::Supported
+        );
+    }
+
+    #[test]
+    fn numeric_guard_counts_aggregate_across_citations() {
+        let s1 = source(1, "Revenue reached $64,123 in the period.");
+        let s2 = source(2, "Nothing numeric here at all.");
+        let answer = "* $64,123 [1]\n* mostly words here [2]";
+        let audit = audit_citations(answer, &[s1, s2]);
+        // Only citation 1's claim has a number to check.
+        assert_eq!(audit.numeric_checked, 1);
+        assert_eq!(audit.numeric_matched, 1);
+        assert_eq!(audit.numeric_missing, 0);
+    }
+
+    #[test]
+    fn numeric_extraction_hostile_input_never_panics() {
+        let text = "\u{1F600} $ % / - [1,2] 99999999999999999999999999999999 \
+                     [ [999] 3/45/6 2026-13-99 [broken \u{4e2d}\u{6587}";
+        let facts = extract_numeric_facts(text);
+        let _ = facts.numbers.len();
+        let _ = facts.dates.len();
+        let src = source(1, text);
+        let _ = audit_citations(&format!("claim {text} [1]"), &[src]);
+    }
+
+    // ── live-smoke regressions (2026-07-11) ─────────────────────────────────
+    //
+    // The four failure cases from the live-smoke forensics: token overlap
+    // alone flagged an exact numeric match as unsupported (formatting noise
+    // hid the match) and passed two fabricated figures and a wrong date
+    // (a swapped digit hid inside an otherwise-matching sentence). The
+    // numeric-consistency guard fixes all four without touching the lexical
+    // scorer.
+
+    #[test]
+    fn live_smoke_exact_numeric_match_rescued_to_weak() {
+        // Claim and source both name $615 billion, but the claim spells it
+        // out while the source abbreviates it ("$615B"), so the tokens never
+        // literally match and the lexical score alone comes back 0 (fully
+        // unsupported). The numeric guard recognizes the two forms as the
+        // same value and floors the citation at weak.
+        let src = source(1, "# 1 Elon Musk / $615B / net worth as of 7/9/2026");
+        let answer = "It totals $615 billion at last check [1].";
+        let audit = audit_citations(answer, &[src]);
+        assert_eq!(audit.cited, 1);
+        assert_eq!(audit.unsupported, 0);
+        assert_eq!(audit.weak, 1);
+        assert_eq!(audit.numeric_checked, 1);
+        assert_eq!(audit.numeric_matched, 1);
+        assert_eq!(audit.numeric_missing, 0);
+    }
+
+    #[test]
+    fn live_smoke_fabricated_money_figure_capped_unsupported() {
+        // The sentence is otherwise a near-identical paraphrase of the
+        // source (high lexical overlap), but the claim's figure ($951.9B)
+        // does not match the source's ($917.3B): a swapped-digit fabrication
+        // the lexical scorer alone would have passed as supported.
+        let src = source(1, "Net worth is $917.3 billion currently, per filings.");
+        let answer = "Net worth is $951.9 billion currently [1].";
+        let audit = audit_citations(answer, &[src]);
+        assert_eq!(audit.cited, 1);
+        assert_eq!(audit.unsupported, 1);
+        assert_eq!(audit.numeric_checked, 1);
+        assert_eq!(audit.numeric_matched, 0);
+        assert_eq!(audit.numeric_missing, 1);
+    }
+
+    #[test]
+    fn live_smoke_absent_bloomberg_figure_capped_unsupported() {
+        // Mirrors the live-smoke case where a "$957 billion" figure
+        // attributed to a named source appeared nowhere in the cited page
+        // (the page had a different figure entirely). High word overlap
+        // around the figure would have passed this as supported without the
+        // numeric guard.
+        let src = source(1, "The figure reached $945 billion, per Bloomberg.");
+        let answer = "The figure reached $957 billion [1].";
+        let audit = audit_citations(answer, &[src]);
+        assert_eq!(audit.cited, 1);
+        assert_eq!(audit.unsupported, 1);
+        assert_eq!(audit.numeric_checked, 1);
+        assert_eq!(audit.numeric_matched, 0);
+        assert_eq!(audit.numeric_missing, 1);
+    }
+
+    #[test]
+    fn live_smoke_date_only_mismatch_detected() {
+        // Same wording, one digit off in the date (July 9 claimed, source
+        // says July 10): a date-only fabrication the lexical scorer alone
+        // would have passed as supported.
+        let src = source(1, "It was published on July 10, 2026, per staff.");
+        let answer = "It was published on July 9, 2026 [1].";
+        let audit = audit_citations(answer, &[src]);
+        assert_eq!(audit.cited, 1);
+        assert_eq!(audit.unsupported, 1);
+        assert_eq!(audit.numeric_checked, 1);
+        assert_eq!(audit.numeric_matched, 0);
+        assert_eq!(audit.numeric_missing, 1);
     }
 }
