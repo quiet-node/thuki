@@ -1144,19 +1144,50 @@ pub const FETCH_MAX_PAGES_SMALL_CTX: usize = 2;
 /// Not user-tunable: derived pipeline shape gated by `num_ctx`.
 pub const FETCH_MAX_PAGES_LARGE_CTX: usize = 5;
 
-/// Per-URL wall-clock timeout for a single page fetch (seconds). The page
-/// fetches race concurrently and each is capped here, so the whole fan-out
-/// completes within roughly this bound: per-URL-bounded concurrency is itself
-/// the global fetch deadline, no separate (and lossy) outer timeout needed. A
-/// URL that misses it degrades to its SERP snippet.
+/// Per-URL wall-clock timeout for a single page fetch (seconds). Each of the
+/// budgeted page fetches is capped here; a URL that misses it degrades to its
+/// SERP snippet. This is the hard backstop on any one fetch: [`FETCH_SOFT_DEADLINE_MS`]
+/// can end the fan-out sooner, but nothing extends a single fetch past this.
 ///
 /// Not user-tunable: an internal latency bound on the fetch fan-out.
 pub const FETCH_PER_URL_TIMEOUT_S: u64 = 5;
 
-/// Hard cap on DOM elements the readability extractor will parse from one page.
-/// Defense-in-depth beyond [`MAX_HTTP_RESPONSE_BYTES`]: the byte cap bounds
-/// download size, this bounds parse-time work so a pathological but small DOM
-/// cannot burn CPU. 9 000 covers real articles with wide margin.
+/// Number of budgeted page fetches that must complete before the fetch stage
+/// proceeds to ranking, out of up to [`FETCH_MAX_PAGES_LARGE_CTX`] raced
+/// concurrently. Waiting on every one of them means one slow host holds up
+/// the whole turn even though [`FETCH_PER_URL_TIMEOUT_S`] already bounds how
+/// slow "slow" can be; racing to the first few completions instead bounds tail
+/// latency on the common case where most hosts answer quickly. Whichever
+/// hits fewer complete first (see [`FETCH_SOFT_DEADLINE_MS`]) applies; a
+/// smaller fetch budget (`FETCH_MAX_PAGES_SMALL_CTX`) is capped by
+/// `to_fetch.len()` at the call site, so this never blocks on more pages than
+/// are actually being fetched.
+///
+/// Not user-tunable: an internal latency bound on the fetch fan-out.
+pub const FETCH_FIRST_K_COMPLETIONS: usize = 3;
+
+/// Soft aggregate deadline (milliseconds) for the whole page-fetch fan-out.
+/// Once this elapses the fetch stage proceeds with whatever has completed so
+/// far, regardless of [`FETCH_FIRST_K_COMPLETIONS`]; still-in-flight fetches
+/// are abandoned and degrade to their SERP snippet exactly like a genuine
+/// per-URL failure. This only ever shortens the wait: [`FETCH_PER_URL_TIMEOUT_S`]
+/// remains the hard cap on any single fetch, so this soft deadline never
+/// extends it.
+///
+/// Not user-tunable: an internal latency bound on the fetch fan-out.
+pub const FETCH_SOFT_DEADLINE_MS: u64 = 2000;
+
+/// Hard cap on DOM elements the readability extractor will parse from one page,
+/// also reused as the cheap pre-parse element-count estimate that gates BOTH
+/// the readability extraction and the freshness-gated published-date parse
+/// (see `websearch::fetch::estimate_element_count`) before either pays for a
+/// real parse. Defense-in-depth beyond [`MAX_HTTP_RESPONSE_BYTES`]: the byte
+/// cap bounds download size (up to several MB), but a pathological page well
+/// within that size can still contain far more elements than a real article,
+/// and building a DOM tree at all (readability's own internal check only
+/// stops the post-build algorithm, not the initial parse) is the expensive
+/// step this cap is meant to avoid paying for twice. 9 000 covers real
+/// articles with wide margin.
 ///
 /// Not user-tunable: a defense-in-depth bound on attacker-controlled page
 /// structure.

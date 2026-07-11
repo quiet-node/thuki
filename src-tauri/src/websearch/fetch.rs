@@ -9,20 +9,33 @@
 //! hit's SERP snippet, so the stage never hangs and never drops a result.
 //! Hits beyond the fetch budget contribute their snippet directly.
 //!
-//! **The per-URL bound is the global deadline.** The page fetches race in
-//! parallel and each is capped at [`FETCH_PER_URL_TIMEOUT_S`], so the whole
-//! fan-out finishes within roughly that bound. A separate outer timeout over
-//! the join would be redundant and, worse, lossy (it would discard pages that
-//! already completed), so it is deliberately omitted.
+//! **[`FETCH_PER_URL_TIMEOUT_S`] is the hard backstop on any one fetch; [`FETCH_SOFT_DEADLINE_MS`]
+//! bounds the fan-out as a whole.** The budgeted page fetches race
+//! concurrently, but the stage does not wait for every one of them: it
+//! proceeds to ranking once [`FETCH_FIRST_K_COMPLETIONS`] have completed or
+//! the soft deadline elapses, whichever comes first (see [`fetch_first_k`]).
+//! A page still in flight at that point is abandoned, never awaited further,
+//! and degrades to its SERP snippet exactly like a genuine per-URL failure;
+//! no fetch is ever allowed to run past its own per-URL timeout, since the
+//! soft deadline can only end the wait sooner, never later.
 //!
 //! Extraction is pure CPU over the fetched HTML, so it is covered directly with
 //! fixture pages; only the async fan-out over the transport and `tokio::time`
 //! is coverage-excluded, and its behaviour is still exercised against
-//! [`crate::net::transport::FakeHttpTransport`].
+//! [`crate::net::transport::FakeHttpTransport`]. Because that CPU work runs
+//! synchronously inside the fan-out, no timeout can preempt it once started;
+//! [`estimate_element_count`] instead gates it up front on attacker-controlled
+//! HTML, so a hostile page cannot burn parse time before either timeout gets
+//! a chance to apply.
+
+use std::time::Duration;
+
+use futures_util::stream::{FuturesUnordered, StreamExt};
 
 use crate::config::defaults::{
-    FETCH_LARGE_CTX_THRESHOLD, FETCH_MAX_ELEMENTS_TO_PARSE, FETCH_MAX_PAGES_LARGE_CTX,
-    FETCH_MAX_PAGES_SMALL_CTX, FETCH_PER_URL_TIMEOUT_S,
+    FETCH_FIRST_K_COMPLETIONS, FETCH_LARGE_CTX_THRESHOLD, FETCH_MAX_ELEMENTS_TO_PARSE,
+    FETCH_MAX_PAGES_LARGE_CTX, FETCH_MAX_PAGES_SMALL_CTX, FETCH_PER_URL_TIMEOUT_S,
+    FETCH_SOFT_DEADLINE_MS,
 };
 use crate::net::transport::{HttpRequest, HttpTransport};
 use crate::websearch::engine::SearchHit;
@@ -95,6 +108,31 @@ fn normalize_ws(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Cheap upper-bound estimate of the number of elements raw HTML would parse
+/// into, counting `<` bytes immediately followed by an ASCII letter (a start
+/// tag). Closing tags (`</`), comments (`<!--`), and `<!DOCTYPE>` are excluded
+/// by the letter check, so the count tracks actual element count closely
+/// enough to gate on the same [`FETCH_MAX_ELEMENTS_TO_PARSE`] bound the real
+/// parsers use.
+///
+/// This is a single linear byte scan with no allocation and no DOM
+/// construction, run BEFORE either [`extract_readable`] or
+/// [`extract_published_date`] touch the page: both of those hand `html` to a
+/// real HTML parser (`dom_smoothie`'s readability, `scraper`'s `html5ever`)
+/// that builds a full DOM tree before their own element-count checks run, so
+/// neither cap actually prevents the expensive parse on a pathological page,
+/// only the more expensive algorithm work after it. `html` is fully
+/// attacker-controlled (any page on the web), so this estimate is the actual
+/// DoS defense: it is cheap enough to always run, and it can only ever be
+/// pessimistic (never undercounts a real tag as zero), so it never lets a
+/// hostile page through by accident.
+pub(crate) fn estimate_element_count(html: &str) -> usize {
+    html.as_bytes()
+        .windows(2)
+        .filter(|pair| pair[0] == b'<' && pair[1].is_ascii_alphabetic())
+        .count()
+}
+
 /// Builds a [`FetchedPage`] from a hit and the extraction result: the extracted
 /// text when present, otherwise the hit's SERP snippet. URL and title always
 /// come from the hit (the resolved SERP URL). `published` carries through
@@ -140,8 +178,8 @@ pub(crate) fn page_from_parts(
 ///
 /// Coverage-excluded: async fan-out over the injectable transport and
 /// `tokio::time`. Every decision (how many to fetch, extract-or-snippet,
-/// snippet passthrough) lives in the pure helpers tested above and is
-/// additionally exercised here against [`FakeHttpTransport`].
+/// snippet passthrough, first-K-or-deadline) lives in the pure helpers tested
+/// above and is additionally exercised here against [`FakeHttpTransport`].
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn fetch_pages(
     transport: &dyn HttpTransport,
@@ -153,12 +191,7 @@ pub async fn fetch_pages(
 ) -> Vec<FetchedPage> {
     let n = pages_to_fetch(num_ctx, hits.len());
     let (to_fetch, snippet_only) = hits.split_at(n);
-    let fetched = futures_util::future::join_all(
-        to_fetch
-            .iter()
-            .map(|hit| fetch_one(transport, hit, freshness, cache, bypass_cache)),
-    )
-    .await;
+    let fetched = fetch_first_k(transport, to_fetch, freshness, cache, bypass_cache).await;
     fetched
         .into_iter()
         .chain(
@@ -166,6 +199,90 @@ pub async fn fetch_pages(
                 .iter()
                 .map(|hit| page_from_parts(hit, None, None)),
         )
+        .collect()
+}
+
+/// Races the fetch of every hit in `to_fetch` and returns as soon as either
+/// [`FETCH_FIRST_K_COMPLETIONS`] of them have completed or
+/// [`FETCH_SOFT_DEADLINE_MS`] elapses, whichever comes first. Whatever has not
+/// completed by then is abandoned mid-flight: dropping the [`FuturesUnordered`]
+/// cancels its remaining futures, and each abandoned hit degrades to its SERP
+/// snippet via [`page_from_parts`], the identical fallback a genuine per-URL
+/// failure already takes (a straggler's information is never dropped, only
+/// its extracted-text upgrade). The returned vector preserves `to_fetch`'s
+/// order regardless of completion order.
+///
+/// This bounds the fetch stage's tail latency: without it, one slow host
+/// among the budgeted pages holds up the whole turn until its own
+/// [`FETCH_PER_URL_TIMEOUT_S`] elapses, even though the rest already
+/// answered. That per-URL timeout remains the hard backstop on any single
+/// fetch; this soft deadline can only end the overall wait sooner, never
+/// later, and never touches an individual fetch's own timeout.
+///
+/// Coverage-excluded: async fan-out over the injectable transport and
+/// `tokio::time`, same rationale as [`fetch_pages`] and [`fetch_one`]; its
+/// early-exit, soft-deadline, and straggler-degradation behaviour is
+/// exercised against [`FakeHttpTransport`] in the test module below.
+#[cfg_attr(coverage_nightly, coverage(off))]
+async fn fetch_first_k(
+    transport: &dyn HttpTransport,
+    to_fetch: &[SearchHit],
+    freshness: bool,
+    cache: &WebCache,
+    bypass_cache: bool,
+) -> Vec<FetchedPage> {
+    if to_fetch.is_empty() {
+        return Vec::new();
+    }
+    // Never wait on more completions than there are fetches: a small-ctx
+    // budget (fewer hits than FETCH_FIRST_K_COMPLETIONS) must still wait for
+    // all of them, not hang forever short of an unreachable target.
+    let needed = FETCH_FIRST_K_COMPLETIONS.min(to_fetch.len());
+    let mut results: Vec<Option<FetchedPage>> = vec![None; to_fetch.len()];
+    let mut in_flight: FuturesUnordered<_> = to_fetch
+        .iter()
+        .enumerate()
+        .map(|(index, hit)| async move {
+            (
+                index,
+                fetch_one(transport, hit, freshness, cache, bypass_cache).await,
+            )
+        })
+        .collect();
+
+    let deadline = tokio::time::sleep(Duration::from_millis(FETCH_SOFT_DEADLINE_MS));
+    tokio::pin!(deadline);
+
+    let mut completed = 0usize;
+    while completed < needed {
+        tokio::select! {
+            _ = &mut deadline => break,
+            next = in_flight.next() => match next {
+                Some((index, page)) => {
+                    results[index] = Some(page);
+                    completed += 1;
+                }
+                // `in_flight` starts with exactly `to_fetch.len()` futures and
+                // only completed ones are ever removed, so it cannot be
+                // exhausted (yield `None`) while `completed < needed <=
+                // to_fetch.len()`: reaching `None` here would mean every
+                // future already completed, which is `completed ==
+                // to_fetch.len() >= needed`, contradicting the loop guard.
+                // Kept as a safe break rather than an unreachable!() because
+                // this is attacker-adjacent async plumbing, not pure logic.
+                None => break,
+            },
+        }
+    }
+    // Cancels every still-in-flight fetch: FuturesUnordered drops its
+    // remaining futures here, which drops fetch_one's in-progress work
+    // (including the underlying transport call) without awaiting it further.
+    drop(in_flight);
+
+    to_fetch
+        .iter()
+        .zip(results)
+        .map(|(hit, page)| page.unwrap_or_else(|| page_from_parts(hit, None, None)))
         .collect()
 }
 
@@ -190,6 +307,14 @@ pub async fn fetch_pages(
 /// for a second HTML parse on every fetched page would be pure waste. A cache
 /// hit skips extraction regardless of `freshness` (see [`FetchedPage::published`]'s
 /// doc).
+///
+/// Before either parse runs, [`estimate_element_count`] gates the raw HTML
+/// against [`FETCH_MAX_ELEMENTS_TO_PARSE`]: a page over the cap skips BOTH
+/// [`extract_readable`] and [`extract_published_date`] entirely and degrades
+/// to the snippet fallback below, the same outcome either parser would
+/// eventually reach on its own, but without paying for the DOM build first
+/// (see [`estimate_element_count`]'s doc for why the parsers' own internal
+/// caps do not already prevent that cost).
 #[cfg_attr(coverage_nightly, coverage(off))]
 async fn fetch_one(
     transport: &dyn HttpTransport,
@@ -213,11 +338,15 @@ async fn fetch_one(
     {
         Ok(Ok(response)) if (200..300).contains(&response.status) => {
             let html = String::from_utf8_lossy(&response.body);
-            let text = extract_readable(&html, &response.final_url);
-            let published = freshness
-                .then(|| extract_published_date(&html, time::OffsetDateTime::now_utc()))
-                .flatten();
-            (text, published)
+            if estimate_element_count(&html) > FETCH_MAX_ELEMENTS_TO_PARSE {
+                (None, None)
+            } else {
+                let text = extract_readable(&html, &response.final_url);
+                let published = freshness
+                    .then(|| extract_published_date(&html, time::OffsetDateTime::now_utc()))
+                    .flatten();
+                (text, published)
+            }
         }
         _ => (None, None),
     };
@@ -230,7 +359,48 @@ async fn fetch_one(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::transport::{FakeHttpTransport, HttpResponse};
+    use crate::net::transport::{FakeHttpTransport, HttpResponse, TransportError};
+
+    /// Test-only transport that resolves canned URLs instantly and hangs
+    /// forever (never resolves) on any other URL, simulating a straggling
+    /// host. Used only to drive [`fetch_first_k`]'s early-exit, soft-deadline,
+    /// and cancellation behaviour deterministically; kept local to this
+    /// module rather than added to [`FakeHttpTransport`] (owned by
+    /// `net::transport`, shared by other test suites this task does not
+    /// touch).
+    struct StragglerTransport {
+        fast: std::collections::HashMap<String, HttpResponse>,
+    }
+
+    impl StragglerTransport {
+        /// An empty transport: every URL hangs forever until registered via
+        /// [`Self::with_fast_response`].
+        fn new() -> Self {
+            Self {
+                fast: std::collections::HashMap::new(),
+            }
+        }
+
+        /// Registers an instantly-resolving canned response for `url`; any
+        /// URL not registered hangs forever when fetched.
+        fn with_fast_response(mut self, url: &str, resp: HttpResponse) -> Self {
+            self.fast.insert(url.to_string(), resp);
+            self
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for StragglerTransport {
+        async fn send(&self, req: &HttpRequest) -> Result<HttpResponse, TransportError> {
+            match self.fast.get(&req.url) {
+                Some(resp) => Ok(resp.clone()),
+                // Never resolves: the only way `fetch_first_k` moves past
+                // this hit is by reaching its first-K count or soft deadline
+                // and cancelling this future via drop.
+                None => std::future::pending().await,
+            }
+        }
+    }
 
     /// A fixture page with enough article density that readability extracts it.
     const ARTICLE_HTML: &str = r#"
@@ -332,6 +502,30 @@ mod tests {
         // A 1-element cap against the multi-element article makes the parser
         // bail (DoS bound), which degrades to None like any unreadable page.
         assert!(extract_with_limit(ARTICLE_HTML, "https://x.example/", 1).is_none());
+    }
+
+    // ── estimate_element_count ─────────────────────────────────────────────────
+
+    #[test]
+    fn estimate_element_count_counts_start_tags_only() {
+        // "<p" is a start tag (counts); "</p" is a close tag ('/' is not a
+        // letter, so it does not).
+        assert_eq!(estimate_element_count("<p>hi</p>"), 1);
+        assert_eq!(estimate_element_count("<div><span>x</span></div>"), 2);
+    }
+
+    #[test]
+    fn estimate_element_count_ignores_doctype_and_comments() {
+        assert_eq!(
+            estimate_element_count("<!DOCTYPE html><!-- comment --><p>x</p>"),
+            1
+        );
+    }
+
+    #[test]
+    fn estimate_element_count_zero_on_empty_or_tagless_text() {
+        assert_eq!(estimate_element_count(""), 0);
+        assert_eq!(estimate_element_count("no tags here"), 0);
     }
 
     // ── normalize_ws ──────────────────────────────────────────────────────────
@@ -558,5 +752,127 @@ mod tests {
         let pages = fetch_pages(&transport, &hits, 8192, false, &cache, false).await;
         assert_eq!(pages[0].text, "already cached body");
         assert!(transport.calls().is_empty());
+    }
+
+    // ── extraction CPU cap (hostile page) ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_pages_extraction_cap_degrades_hostile_page_to_snippet() {
+        // Far more start tags than FETCH_MAX_ELEMENTS_TO_PARSE allows: a
+        // hostile/pathological DOM. estimate_element_count gates it before
+        // either parse runs, so even a 200 response degrades to the SERP
+        // snippet exactly like a genuinely unreadable page would.
+        let hostile_html = "<i>x</i>".repeat(FETCH_MAX_ELEMENTS_TO_PARSE + 1);
+        let resp = HttpResponse {
+            status: 200,
+            final_url: "https://hostile.example/".into(),
+            body: hostile_html.into_bytes(),
+        };
+        let transport = FakeHttpTransport::new().with_response("https://hostile.example/", resp);
+        let hits = vec![hit("https://hostile.example/", "hostile snippet")];
+        let cache = empty_web_cache();
+        // freshness=true so a pass would also prove the date parse was
+        // skipped, not just the readability extraction.
+        let pages = fetch_pages(&transport, &hits, 8192, true, &cache, false).await;
+        assert_eq!(pages[0].text, "hostile snippet");
+        assert!(pages[0].published.is_none());
+        // Gated pages are not real extracted text, so nothing is cached.
+        assert!(cache.page_get("https://hostile.example/").is_none());
+    }
+
+    // ── first-K-of-N completion / soft deadline ───────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_pages_first_k_completes_without_waiting_on_stragglers() {
+        // Large ctx -> budget of 5. The first 3 (FETCH_FIRST_K_COMPLETIONS)
+        // resolve instantly; the other 2 never resolve at all. Reaching the
+        // first-K count must let the stage proceed without ever waiting on
+        // the stragglers' own per-URL timeout.
+        let resp = |url: &str| HttpResponse {
+            status: 200,
+            final_url: url.into(),
+            body: ARTICLE_HTML.as_bytes().to_vec(),
+        };
+        let transport = StragglerTransport::new()
+            .with_fast_response("https://a.com/", resp("https://a.com/"))
+            .with_fast_response("https://b.com/", resp("https://b.com/"))
+            .with_fast_response("https://c.com/", resp("https://c.com/"));
+        let hits = vec![
+            hit("https://a.com/", "snip a"),
+            hit("https://b.com/", "snip b"),
+            hit("https://c.com/", "snip c"),
+            hit("https://d.com/", "snip d"),
+            hit("https://e.com/", "snip e"),
+        ];
+        let pages = fetch_pages(&transport, &hits, 32768, false, &empty_web_cache(), false).await;
+        assert_eq!(pages.len(), 5);
+        for page in &pages[..3] {
+            assert!(page
+                .text
+                .contains("Ownership is the most distinctive feature"));
+        }
+        // Order is preserved even though d/e never completed: they degrade
+        // to their own SERP snippet, exactly like a genuine per-URL failure.
+        assert_eq!(pages[3].text, "snip d");
+        assert_eq!(pages[4].text, "snip e");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fetch_pages_soft_deadline_returns_partial_results() {
+        // Large ctx -> budget of 5. Only 2 resolve instantly, short of
+        // FETCH_FIRST_K_COMPLETIONS (3); the other 3 never resolve. The soft
+        // deadline (shorter than any straggler's own per-URL timeout) must
+        // still let the stage proceed with the 2 that did complete.
+        let resp = |url: &str| HttpResponse {
+            status: 200,
+            final_url: url.into(),
+            body: ARTICLE_HTML.as_bytes().to_vec(),
+        };
+        let transport = StragglerTransport::new()
+            .with_fast_response("https://a.com/", resp("https://a.com/"))
+            .with_fast_response("https://b.com/", resp("https://b.com/"));
+        let hits = vec![
+            hit("https://a.com/", "snip a"),
+            hit("https://b.com/", "snip b"),
+            hit("https://c.com/", "snip c"),
+            hit("https://d.com/", "snip d"),
+            hit("https://e.com/", "snip e"),
+        ];
+        let pages = fetch_pages(&transport, &hits, 32768, false, &empty_web_cache(), false).await;
+        assert_eq!(pages.len(), 5);
+        assert!(pages[0]
+            .text
+            .contains("Ownership is the most distinctive feature"));
+        assert!(pages[1]
+            .text
+            .contains("Ownership is the most distinctive feature"));
+        assert_eq!(pages[2].text, "snip c");
+        assert_eq!(pages[3].text, "snip d");
+        assert_eq!(pages[4].text, "snip e");
+    }
+
+    #[tokio::test]
+    async fn fetch_pages_first_k_needed_never_exceeds_available_fetches() {
+        // Small ctx -> budget of 2, below FETCH_FIRST_K_COMPLETIONS (3): both
+        // must still be waited on rather than the target being unreachable.
+        let resp = |url: &str| HttpResponse {
+            status: 200,
+            final_url: url.into(),
+            body: ARTICLE_HTML.as_bytes().to_vec(),
+        };
+        let transport = FakeHttpTransport::new()
+            .with_response("https://a.com/", resp("https://a.com/"))
+            .with_response("https://b.com/", resp("https://b.com/"));
+        let hits = vec![
+            hit("https://a.com/", "snip a"),
+            hit("https://b.com/", "snip b"),
+        ];
+        let pages = fetch_pages(&transport, &hits, 8192, false, &empty_web_cache(), false).await;
+        assert_eq!(pages.len(), 2);
+        for page in &pages {
+            assert!(page
+                .text
+                .contains("Ownership is the most distinctive feature"));
+        }
     }
 }
