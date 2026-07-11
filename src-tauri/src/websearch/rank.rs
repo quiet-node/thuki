@@ -152,6 +152,18 @@ fn select_chunks_sized(
     out
 }
 
+/// Re-establishes global best-first (descending score) order over an owned
+/// chunk set and returns it. Used by the engine-tier requery merge to fuse
+/// round-one and round-two chunks into one relevance ranking, so a stronger
+/// round-two chunk can outrank a weaker round-one one rather than the two
+/// rounds' separately-sorted chunks staying in append order. Ties keep their
+/// relative order (a stable sort), so within-round order is preserved on
+/// equal scores.
+pub(crate) fn rerank_by_score(mut chunks: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
+    sort_by_score_desc(&mut chunks);
+    chunks
+}
+
 /// Sorts scored chunks by descending score. Ties keep their relative order
 /// (stable), and any non-comparable score is treated as equal.
 fn sort_by_score_desc(chunks: &mut [ScoredChunk]) {

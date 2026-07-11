@@ -64,14 +64,14 @@ use crate::websearch::assemble::{assemble_context, SourceBlock};
 use crate::websearch::cache::{CachedSearch, SourceCache};
 use crate::websearch::encyclopedia::{fetch_encyclopedia, is_volatile_question};
 use crate::websearch::engine::{any_engine_available, web_search, EngineHealth, SearchHit};
-use crate::websearch::fetch::fetch_pages;
+use crate::websearch::fetch::{fetch_pages, FetchedPage};
 use crate::websearch::judge::{SufficiencyJudge, SufficiencyVerdict};
 use crate::websearch::news::{fetch_news, is_news_intent};
 use crate::websearch::prefilter::{prefilter, PreFilterVerdict};
 use crate::websearch::prepass::{
     InferenceError, PrePass, PrePassDecision, SearchDecision, SearchRoute,
 };
-use crate::websearch::rank::{select_chunks, Scorer};
+use crate::websearch::rank::{rerank_by_score, select_chunks, ScoredChunk, Scorer};
 use crate::websearch::recency::recency_reorder;
 use crate::websearch::serp_cache::WebCache;
 use crate::websearch::sports::{fetch_sports, is_sports_intent};
@@ -597,17 +597,30 @@ async fn run_web(
         EngineTierOutcome::Empty => SearchOutcome::Unreachable {
             messages: unreachable_messages(chat_system_prompt, history, latest_user),
         },
-        EngineTierOutcome::Ranked(sources, engine_stats) => {
+        EngineTierOutcome::Ranked {
+            sources,
+            engine_stats,
+            chunks,
+            pages,
+        } => {
             // Round one produced sources: run the engine tier's own sufficiency
             // judge and one bounded requery over them (see `judge_and_requery`)
             // before answering. The requery, when it fires, races the keyless
             // engines again, so its per-engine outcomes are folded into the same
             // `SearchRetrieved` trace `engine_stats` the primary query populated
             // (additive, so one retrieval record shows both rounds' engines).
+            //
+            // This is the engine-tier requery merge: pass round one's chunks and
+            // pages so the merge re-ranks round one and round two together by
+            // fused score (`Some` rerank) rather than pinning round one ahead.
             match judge_and_requery(
                 deps,
                 standalone_question,
                 sources,
+                Some(RequeryRerank {
+                    round_one_chunks: chunks,
+                    round_one_pages: pages,
+                }),
                 num_ctx,
                 freshness,
                 engines_only,
@@ -646,11 +659,26 @@ enum EngineTierOutcome {
     /// Every engine was blocked or empty, or nothing survived ranking: there is
     /// nothing citable.
     Empty,
-    /// The budgeted, ranked source blocks ready for the writer, alongside the
-    /// per-query, per-engine outcome summary (see [`EngineStat`]) collected
-    /// across every [`web_search`] call this tier made, for the caller to
-    /// forward into [`RecorderEvent::SearchRetrieved`].
-    Ranked(Vec<SourceBlock>, Vec<EngineStat>),
+    /// The budgeted, ranked source blocks ready for the writer, plus the
+    /// byproducts a downstream requery merge needs.
+    Ranked {
+        /// The budgeted, ranked source blocks ready for the writer.
+        sources: Vec<SourceBlock>,
+        /// The per-query, per-engine outcome summary (see [`EngineStat`])
+        /// collected across every [`web_search`] call this tier made, for the
+        /// caller to forward into [`RecorderEvent::SearchRetrieved`].
+        engine_stats: Vec<EngineStat>,
+        /// The ranked chunks `sources` was assembled from, kept so the
+        /// engine-tier requery merge can re-rank round one and round two
+        /// together by fused score instead of pinning round one ahead (see
+        /// [`judge_and_requery`]'s [`RequeryRerank`]). The vertical-escalation
+        /// caller ignores it (its merge stays vertical-first pinned).
+        chunks: Vec<ScoredChunk>,
+        /// The fetched pages `chunks` came from, kept for their extracted
+        /// publish dates so the requery merge's freshness-gated recency fusion
+        /// can score round-one URLs, not just round-two ones.
+        pages: Vec<FetchedPage>,
+    },
 }
 
 /// Runs the general scraped-engine tier for `queries`: for each query race the
@@ -742,7 +770,15 @@ async fn run_engine_tier(
     if sources.is_empty() {
         return EngineTierOutcome::Empty;
     }
-    EngineTierOutcome::Ranked(sources, engine_stats)
+    // `chunks` and `pages` ride along so the engine-tier requery merge can fuse
+    // round one and round two by score (see `judge_and_requery`); the
+    // vertical-escalation caller drops them.
+    EngineTierOutcome::Ranked {
+        sources,
+        engine_stats,
+        chunks,
+        pages,
+    }
 }
 
 /// The judge gate applied to every keyless vertical answer: decide whether the
@@ -874,7 +910,14 @@ async fn commit_or_escalate(
         // rather than discard it (see `merge_sources`), then run the
         // engine-tier's own sufficiency judge and bounded requery over the
         // merged result (see `judge_and_requery`).
-        EngineTierOutcome::Ranked(sources, engine_stats) => {
+        // The engines' own chunks and pages are ignored here: this merge pins
+        // the vertical block ahead of the engines (contract locked), so it never
+        // takes the engine-tier requery merge's fused re-rank (`None` rerank).
+        EngineTierOutcome::Ranked {
+            sources,
+            engine_stats,
+            ..
+        } => {
             deps.recorder.record(RecorderEvent::SearchEscalated {
                 from_tier: tier.to_string(),
                 sufficient: false,
@@ -887,6 +930,7 @@ async fn commit_or_escalate(
                 deps,
                 standalone_question,
                 merged,
+                None,
                 num_ctx,
                 freshness,
                 // A judge-driven escalation is not a user distrust signal, the
@@ -1088,6 +1132,19 @@ enum EngineJudgeOutcome {
     Sources(Vec<SourceBlock>, Vec<EngineStat>),
 }
 
+/// Round one's ranked chunks and fetched pages, supplied only by the
+/// engine-tier requery caller so [`judge_and_requery`] can fuse round one and
+/// round two into one score-ranked set instead of pinning round one ahead (see
+/// its docs' "how round two is merged" contract).
+struct RequeryRerank {
+    /// Round one's ranked chunks (carrying their relevance scores), fused with
+    /// round two's before re-budgeting.
+    round_one_chunks: Vec<ScoredChunk>,
+    /// Round one's fetched pages, kept for their extracted publish dates so the
+    /// freshness-gated recency fusion scores round-one URLs, not just round-two.
+    round_one_pages: Vec<FetchedPage>,
+}
+
 /// The engine tier's own sufficiency judge, plus the one bounded requery it
 /// can trigger (see the module docs and
 /// [`crate::config::defaults::ENGINE_REQUERY_MAX`]).
@@ -1101,8 +1158,24 @@ enum EngineJudgeOutcome {
 /// through the normal engine path (`web_search` then `fetch_pages`, so cache
 /// read/write and `bypass_cache` behave exactly as they do for any other
 /// engine-tier call). Its hits are deduped by URL against `sources`
-/// ([`new_urls_only`]) so only genuinely new pages are fetched, ranked, and
-/// merged in with `sources` kept whole ([`merge_sources`]).
+/// ([`new_urls_only`]) so only genuinely new pages are fetched and ranked.
+///
+/// How round two is merged depends on `rerank`, which encodes the two callers'
+/// different merge contracts:
+/// - `Some` (the [`run_web`] engine-tier caller): round one and round two are
+///   fused into one set and re-ranked by fused score before the token
+///   re-budget, so a stronger round-two source can outrank a weak round-one one
+///   and the budget truncation drops the fused tail rather than categorically
+///   round two. The re-rank reuses the exact ranking the pipeline already
+///   produces: [`recency_reorder`] over the combined chunks when the turn is
+///   fresh, a plain relevance ([`rerank_by_score`]) sort otherwise, then
+///   [`assemble_context`]. This is cleaner than teaching [`merge_sources`] a
+///   score order, since [`SourceBlock`] carries no score to sort on.
+/// - `None` (the [`commit_or_escalate`] vertical-escalation caller): round one
+///   (the vertical block ahead of the engines) is pinned whole and only round
+///   two is dropped for budget ([`merge_sources`]); its vertical-block-rides-
+///   first contract is locked, so it never takes the fused re-rank. Round two
+///   is still recency-reordered on a fresh turn before the merge.
 ///
 /// NO second judge ever runs on the requeried result: a judge error, timeout,
 /// or unparseable body (surfaced as [`InferenceError::Request`]) fails toward
@@ -1110,10 +1183,12 @@ enum EngineJudgeOutcome {
 /// takes on a vertical judge failure; a [`InferenceError::Cancelled`] or an
 /// observed cancellation before the requery's network calls yields
 /// [`EngineJudgeOutcome::Cancelled`] instead.
+#[allow(clippy::too_many_arguments)]
 async fn judge_and_requery(
     deps: &SearchDeps<'_>,
     standalone_question: &str,
     sources: Vec<SourceBlock>,
+    rerank: Option<RequeryRerank>,
     num_ctx: u32,
     freshness: bool,
     bypass_cache: bool,
@@ -1178,13 +1253,69 @@ async fn judge_and_requery(
         deps.transport,
         &new_hits,
         num_ctx,
+        // Fix A: the recency merge added `freshness` to `fetch_pages` (it gates
+        // publish-date extraction). Thread the turn's signal through so the
+        // requery's pages carry dates on a fresh turn, feeding the fusion below.
+        freshness,
         deps.web_cache,
         bypass_cache,
     )
     .await;
-    let chunks = select_chunks(&pages, standalone_question, deps.scorer);
-    let new_sources = assemble_context(&chunks, num_ctx);
-    EngineJudgeOutcome::Sources(merge_sources(sources, new_sources, num_ctx), requery_stats)
+    // Sampled once so both merge branches age publish dates against a single
+    // consistent instant (the plain-relevance branch ignores it).
+    let now = time::OffsetDateTime::now_utc();
+    let merged = match rerank {
+        // Engine-tier requery merge (fix D, contract in this fn's docs): round
+        // one and round two are fused at chunk level and re-ranked as one set,
+        // so a stronger round-two source can outrank a weak round-one one and
+        // the token budget truncates the fused tail rather than categorically
+        // round two. Round one's `SourceBlock`s are rebuilt from its chunks here
+        // (a `SourceBlock` carries no score to sort on), so the assembled set is
+        // ordered by fused score, not by round-one-then-round-two append order.
+        Some(RequeryRerank {
+            round_one_chunks,
+            round_one_pages,
+        }) => {
+            // Round two's own chunks, scored against the same standalone question
+            // and scorer as round one, so the two rounds' scores are directly
+            // comparable once fused.
+            let round_two_chunks = select_chunks(&pages, standalone_question, deps.scorer);
+            let mut combined_chunks = round_one_chunks;
+            combined_chunks.extend(round_two_chunks);
+            // Both rounds' pages, so the freshness-gated recency pass can read a
+            // publish date for round-one URLs too, not only round-two ones.
+            let mut combined_pages = round_one_pages;
+            combined_pages.extend(pages);
+            // Fix C over the fused set: freshness-gated recency ordering, the
+            // recency-prior fusion on a fresh turn (identical to
+            // `run_engine_tier`'s), a plain relevance sort otherwise. Either way
+            // every chunk is kept and only reordered; `assemble_context` is the
+            // one place the tail is dropped, and only for the token budget.
+            let ordered = if freshness {
+                recency_reorder(&combined_chunks, &combined_pages, now)
+            } else {
+                rerank_by_score(combined_chunks)
+            };
+            assemble_context(&ordered, num_ctx)
+        }
+        // Vertical-escalation merge (contract locked): the vertical block stays
+        // pinned ahead of the engines (`merge_sources`), so round two is not
+        // fused into round one here. Fix C still applies to round two among
+        // itself: it is recency-reordered on a fresh turn before the merge,
+        // matching `run_engine_tier`, so the requeried engine sources are never
+        // the one path that skips recency ranking.
+        None => {
+            let chunks = select_chunks(&pages, standalone_question, deps.scorer);
+            let chunks = if freshness {
+                recency_reorder(&chunks, &pages, now)
+            } else {
+                chunks
+            };
+            let new_sources = assemble_context(&chunks, num_ctx);
+            merge_sources(sources, new_sources, num_ctx)
+        }
+    };
+    EngineJudgeOutcome::Sources(merged, requery_stats)
 }
 
 #[cfg(test)]
@@ -4101,6 +4232,9 @@ mod tests {
             &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
             REQUERY_QUESTION,
             sources.clone(),
+            // Vertical-escalation merge contract (round-one pinned,
+            // `merge_sources`), byte-identical to this test's pre-fix behaviour.
+            None,
             16384,
             false,
             false,
@@ -4129,6 +4263,9 @@ mod tests {
             &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
             REQUERY_QUESTION,
             sources,
+            // Vertical-escalation merge contract (round-one pinned,
+            // `merge_sources`), byte-identical to this test's pre-fix behaviour.
+            None,
             16384,
             false,
             false,
@@ -4185,6 +4322,9 @@ mod tests {
             &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
             REQUERY_QUESTION,
             sources.clone(),
+            // Vertical-escalation merge contract (round-one pinned,
+            // `merge_sources`), byte-identical to this test's pre-fix behaviour.
+            None,
             16384,
             false,
             false,
@@ -4213,6 +4353,9 @@ mod tests {
             &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
             REQUERY_QUESTION,
             sources.clone(),
+            // Vertical-escalation merge contract (round-one pinned,
+            // `merge_sources`), byte-identical to this test's pre-fix behaviour.
+            None,
             16384,
             false,
             false,
@@ -4236,6 +4379,9 @@ mod tests {
             &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
             REQUERY_QUESTION,
             round_one_sources(),
+            // Vertical-escalation merge contract (round-one pinned,
+            // `merge_sources`), byte-identical to this test's pre-fix behaviour.
+            None,
             16384,
             false,
             false,
@@ -4261,6 +4407,9 @@ mod tests {
             &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
             REQUERY_QUESTION,
             round_one_sources(),
+            // Vertical-escalation merge contract (round-one pinned,
+            // `merge_sources`), byte-identical to this test's pre-fix behaviour.
+            None,
             16384,
             false,
             false,
@@ -4288,6 +4437,9 @@ mod tests {
             &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
             REQUERY_QUESTION,
             round_one_sources(),
+            // Vertical-escalation merge contract (round-one pinned,
+            // `merge_sources`), byte-identical to this test's pre-fix behaviour.
+            None,
             16384,
             false,
             false,
@@ -4312,6 +4464,9 @@ mod tests {
             &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
             REQUERY_QUESTION,
             sources.clone(),
+            // Vertical-escalation merge contract (round-one pinned,
+            // `merge_sources`), byte-identical to this test's pre-fix behaviour.
+            None,
             100,
             false,
             false,
@@ -4370,6 +4525,9 @@ mod tests {
             ),
             REQUERY_QUESTION,
             round_one_sources(),
+            // Vertical-escalation merge contract (round-one pinned,
+            // `merge_sources`), byte-identical to this test's pre-fix behaviour.
+            None,
             16384,
             false,
             false,
@@ -4418,6 +4576,9 @@ mod tests {
             ),
             REQUERY_QUESTION,
             round_one_sources(),
+            // Vertical-escalation merge contract (round-one pinned,
+            // `merge_sources`), byte-identical to this test's pre-fix behaviour.
+            None,
             16384,
             false,
             true,
@@ -4431,6 +4592,275 @@ mod tests {
             if s.iter().any(|b| b.url == "https://requery.example/")
                 && !s.iter().any(|b| b.url == "https://cached-requery.example/")));
         assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+    }
+
+    // ── engine-tier requery merge (fix D): fused chunk-level re-rank ───────────
+
+    /// A scorer that assigns the same fixed score to every chunk, so a test can
+    /// control round two's relevance exactly (round one's chunks carry their own
+    /// injected scores) and assert on the fused ordering without depending on
+    /// BM25's corpus-sensitive output.
+    struct ConstScorer(f64);
+    impl Scorer for ConstScorer {
+        fn score(&self, _query: &str, chunks: &[String]) -> Vec<f64> {
+            vec![self.0; chunks.len()]
+        }
+    }
+
+    /// Round-one byproducts (`sources`, plus the `RequeryRerank` chunks and
+    /// pages) for a URL distinct from the requery's `requery.example`, so the
+    /// engine-tier fusion path has a genuine round one to fuse round two against.
+    /// `score` is round one's injected relevance and `published` its extracted
+    /// date (the two signals the fused re-rank reads).
+    fn round_one_rerank(
+        score: f64,
+        text: &str,
+        published: Option<OffsetDateTime>,
+    ) -> (Vec<SourceBlock>, RequeryRerank) {
+        let url = "https://round-one.example/";
+        let sources = vec![SourceBlock {
+            index: 1,
+            url: url.into(),
+            title: "Round One".into(),
+            text: text.into(),
+        }];
+        let rerank = RequeryRerank {
+            round_one_chunks: vec![ScoredChunk {
+                url: url.into(),
+                title: "Round One".into(),
+                text: text.into(),
+                score,
+            }],
+            round_one_pages: vec![FetchedPage {
+                url: url.into(),
+                title: "Round One".into(),
+                text: text.into(),
+                published,
+            }],
+        };
+        (sources, rerank)
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_engine_tier_fuses_stronger_round_two_ahead_of_weak_round_one() {
+        // Engine-tier requery merge (`Some` rerank), non-fresh turn: round two's
+        // chunks score 10.0 and round one's a weak 0.5, so the fused re-rank must
+        // put the stronger round-two source FIRST rather than pinning round one
+        // ahead the way the vertical-escalation (`None`) contract would.
+        let prepass = dummy_prepass();
+        let transport = requery_transport();
+        let judge = insufficient();
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let (sources, rerank) = round_one_rerank(0.5, "round one is weakly relevant here", None);
+        let outcome = judge_and_requery(
+            &deps_for_escalation(
+                &prepass,
+                &transport,
+                &ConstScorer(10.0),
+                &judge,
+                &health,
+                &bound,
+            ),
+            REQUERY_QUESTION,
+            sources,
+            Some(rerank),
+            16384,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _)
+                if s.len() == 2
+                    && s[0].url == "https://requery.example/"
+                    && s[0].index == 1
+                    && s[1].url == "https://round-one.example/"
+                    && s[1].index == 2),
+            "the stronger round-two source must outrank the weak round-one one"
+        );
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_engine_tier_recency_reorders_fused_sources_when_fresh() {
+        // Engine-tier requery merge on a FRESH turn: round one and round two
+        // carry the SAME relevance (5.0), but round one's page is ancient while
+        // round two's is undated (neutral, still fresher than an ancient date).
+        // Without the recency pass the equal scores would leave round one first
+        // (stable append order); a round-two-first result therefore proves the
+        // freshness-gated recency fusion ran over the combined set.
+        let prepass = dummy_prepass();
+        let transport = requery_transport();
+        let judge = insufficient();
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let ancient = time::macros::datetime!(2000-01-01 00:00:00 UTC);
+        let (sources, rerank) =
+            round_one_rerank(5.0, "round one is equally relevant here", Some(ancient));
+        let outcome = judge_and_requery(
+            &deps_for_escalation(
+                &prepass,
+                &transport,
+                &ConstScorer(5.0),
+                &judge,
+                &health,
+                &bound,
+            ),
+            REQUERY_QUESTION,
+            sources,
+            Some(rerank),
+            16384,
+            true,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _)
+                if s.first().map(|b| b.url.as_str()) == Some("https://requery.example/")),
+            "the fresher round-two source must be recency-reordered ahead of the ancient round one"
+        );
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_engine_tier_budget_truncation_drops_the_fused_tail_not_round_two() {
+        // Engine-tier requery merge, tiny budget (num_ctx 2048 -> 819 tokens):
+        // round two scores 10.0 and is small; round one scores a weak 0.1 and is
+        // huge. Fused best-first, round two leads and fits, so the weak oversized
+        // round-one source is the fused TAIL that overflows and is dropped. The
+        // old round-one-pinned merge would instead have kept round one and
+        // dropped round two, so a result carrying round two but NOT round one
+        // proves truncation follows fused score, not round order.
+        let prepass = dummy_prepass();
+        let transport = requery_transport();
+        let judge = insufficient();
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let huge = "round one padding ".repeat(400); // ~7200 chars, far over budget
+        let (sources, rerank) = round_one_rerank(0.1, &huge, None);
+        let outcome = judge_and_requery(
+            &deps_for_escalation(
+                &prepass,
+                &transport,
+                &ConstScorer(10.0),
+                &judge,
+                &health,
+                &bound,
+            ),
+            REQUERY_QUESTION,
+            sources,
+            Some(rerank),
+            2048,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _)
+                if s.iter().any(|b| b.url == "https://requery.example/")
+                    && !s.iter().any(|b| b.url == "https://round-one.example/")),
+            "the fused tail (weak, oversized round one) must be dropped, not round two"
+        );
+    }
+
+    /// A round-two SERP with two organic results, both distinct from round one's
+    /// `match.example`, so the requery has two genuinely new sources to order.
+    const TWO_RESULT_REQUERY_SERP_HTML: &str = r#"
+      <div class="result">
+        <a class="result__a" href="https://newer.example/">Newer Terms</a>
+        <a class="result__snippet">the exact terms of the treaty</a>
+      </div>
+      <div class="result">
+        <a class="result__a" href="https://older.example/">Older Terms</a>
+        <a class="result__snippet">the exact terms of the treaty</a>
+      </div>
+    "#;
+
+    /// A dense, readability-extractable requery article carrying `date_iso` as
+    /// its JSON-LD publish date, so a fresh-turn fetch extracts a real date for
+    /// the recency pass to sort on.
+    fn dated_requery_page(date_iso: &str) -> String {
+        format!(
+            r#"<html><head>
+            <script type="application/ld+json">{{"datePublished":"{date_iso}"}}</script>
+            </head><body><article><h1>Treaty of Versailles Terms</h1>
+            <p>The financial and territorial terms of the Treaty of Versailles required
+            Germany to accept responsibility for the war and pay substantial reparations
+            to the Allied powers over a period of decades, alongside major territorial
+            concessions signed in paris and across Europe.</p>
+            <p>Military restrictions, including strict caps on army size and a ban on
+            maintaining an air force, were imposed as part of the same 1919 settlement,
+            reshaping the postwar balance of power for a generation of European diplomacy
+            that followed the signing of the treaty of versailles.</p>
+            </article></body></html>"#
+        )
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_vertical_escalation_recency_reorders_round_two_when_fresh() {
+        // Vertical-escalation merge (`None` rerank) on a FRESH turn: round one
+        // (the vertical block) stays pinned first, but the two requeried round-
+        // two sources must be recency-reordered among themselves before the merge
+        // (`fix C` on the `None` path), so the newer precedes the older.
+        let prepass = dummy_prepass();
+        let newer = dated_requery_page("2026-07-01T00:00:00Z");
+        let older = dated_requery_page("2001-01-01T00:00:00Z");
+        let transport = FakeHttpTransport::new()
+            .with_response(
+                DDG_ENDPOINT,
+                HttpResponse {
+                    status: 200,
+                    final_url: DDG_ENDPOINT.into(),
+                    body: TWO_RESULT_REQUERY_SERP_HTML.as_bytes().to_vec(),
+                },
+            )
+            .with_response(
+                "https://newer.example/",
+                HttpResponse {
+                    status: 200,
+                    final_url: "https://newer.example/".into(),
+                    body: newer.into_bytes(),
+                },
+            )
+            .with_response(
+                "https://older.example/",
+                HttpResponse {
+                    status: 200,
+                    final_url: "https://older.example/".into(),
+                    body: older.into_bytes(),
+                },
+            );
+        let judge = insufficient();
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let outcome = judge_and_requery(
+            &deps_for_escalation(
+                &prepass,
+                &transport,
+                &ConstScorer(5.0),
+                &judge,
+                &health,
+                &bound,
+            ),
+            REQUERY_QUESTION,
+            round_one_sources(),
+            None,
+            16384,
+            true,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _)
+                if s.len() == 3
+                    && s[0].url == "https://match.example/"
+                    && s[1].url == "https://newer.example/"
+                    && s[2].url == "https://older.example/"),
+            "round one stays pinned first; round two is recency-reordered newer-before-older"
+        );
     }
 
     // ── full-pipeline coverage of judge_and_requery's Cancelled branch at
