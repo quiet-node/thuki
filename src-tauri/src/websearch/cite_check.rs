@@ -197,36 +197,99 @@ fn parse_marker(bytes: &[u8], start: usize) -> Option<(Vec<usize>, usize)> {
     }
 }
 
-/// Byte ranges of the sentences in `text`, split on sentence-ending punctuation
-/// (`.`, `!`, `?`) followed by ASCII whitespace. The trailing sentence (no
-/// terminator, or terminator at end of input) is included. Empty input yields a
-/// single empty span so lookups always resolve. Kept deliberately simple: this
-/// is a claim-scoping heuristic, not a linguistic sentence splitter.
+/// Byte ranges of the claim-scope spans in `text`.
+///
+/// A newline is always a hard span boundary, split first: each line (a
+/// markdown bullet item, a plain prose line, ...) becomes its own claim
+/// scope before any punctuation-based splitting runs. This matters because
+/// the model's usual multi-source answer format is a period-free bullet
+/// list (`* $64,123 [3]`); without a newline boundary, a whole list with no
+/// terminal punctuation collapses into one sentence span, and every
+/// citation in it gets scored against every other bullet's text as noise. A
+/// CRLF line ending has its trailing `\r` trimmed from the emitted span so
+/// it never reads as line content; a lone `\r` with no following `\n` is
+/// left as ordinary text. Within each line, the existing rule still
+/// applies: `.`, `!`, or `?` followed by ASCII whitespace still closes a
+/// sentence, so a multi-sentence prose line still yields multiple spans. A
+/// blank line yields one trivial empty span. Empty input yields a single
+/// empty span so lookups always resolve. Kept deliberately simple: this is
+/// a claim-scoping heuristic, not a linguistic sentence splitter or a
+/// markdown parser.
 fn sentence_spans(text: &str) -> Vec<(usize, usize)> {
     let bytes = text.as_bytes();
     let mut spans = Vec::new();
-    let mut start = 0;
-    let mut i = 0;
-    while i < bytes.len() {
+    let mut line_start = 0;
+    loop {
+        let newline_at = bytes[line_start..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|rel| line_start + rel);
+        let raw_line_end = newline_at.unwrap_or(bytes.len());
+        // Trim a trailing '\r' so a CRLF ending is never read as line
+        // content. Only trim when an actual '\n' was found: a lone '\r' at
+        // the very end of the text (no following '\n') is ordinary text.
+        let line_end = if newline_at.is_some()
+            && raw_line_end > line_start
+            && bytes[raw_line_end - 1] == b'\r'
+        {
+            raw_line_end - 1
+        } else {
+            raw_line_end
+        };
+        split_line_into_sentences(text, line_start, line_end, &mut spans);
+        match newline_at {
+            // Resume just past the '\n'; the next line's own scan starts fresh.
+            Some(n) => line_start = n + 1,
+            None => break,
+        }
+    }
+    spans
+}
+
+/// Splits one newline-delimited line, `text[start..end]`, into sentence spans
+/// on `.`, `!`, or `?` followed by ASCII whitespace, appending them to `spans`.
+/// A blank line (`start == end`) still contributes its own empty span so
+/// every line maps to at least one span. The whitespace-skip bound
+/// (`i + 1 < end`) keeps a terminator at the very end of a line from being
+/// treated as "followed by whitespace": that whitespace, if any, belongs to
+/// the next line's boundary handling, not this one's.
+fn split_line_into_sentences(
+    text: &str,
+    start: usize,
+    end: usize,
+    spans: &mut Vec<(usize, usize)>,
+) {
+    let bytes = text.as_bytes();
+    let mut seg_start = start;
+    let mut i = start;
+    while i < end {
         let b = bytes[i];
         let is_end = b == b'.' || b == b'!' || b == b'?';
-        let next_is_ws = bytes.get(i + 1).is_some_and(|n| n.is_ascii_whitespace());
+        let next_is_ws = i + 1 < end && bytes[i + 1].is_ascii_whitespace();
         if is_end && next_is_ws {
-            spans.push((start, i + 1));
+            spans.push((seg_start, i + 1));
             // Advance past the terminator and the following whitespace run.
             i += 1;
-            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            while i < end && bytes[i].is_ascii_whitespace() {
                 i += 1;
             }
-            start = i;
+            seg_start = i;
         } else {
             i += 1;
         }
     }
-    if start < bytes.len() || spans.is_empty() {
-        spans.push((start, bytes.len()));
+    if seg_start < end {
+        // Leftover content after the last split (or the whole line, if no
+        // split happened at all).
+        spans.push((seg_start, end));
+    } else if start == end {
+        // A genuinely blank line: still its own trivial empty span.
+        spans.push((start, end));
     }
-    spans
+    // Otherwise the line's trailing terminator + whitespace already closed
+    // the last span exactly at `end`; no empty tail to add (mirrors the
+    // pre-existing rule that a terminator right before trailing whitespace
+    // does not spawn an extra empty sentence).
 }
 
 /// Returns the claim text for a citation: the sentence containing the marker,
@@ -413,6 +476,64 @@ mod tests {
     }
 
     #[test]
+    fn bullet_list_without_periods_splits_one_span_per_line() {
+        // The regression itself: a period-free markdown list must not
+        // collapse into a single sentence span.
+        let text = "* first item\n* second item\n* third item";
+        let spans = sentence_spans(text);
+        let lines: Vec<&str> = spans.iter().map(|&(s, e)| &text[s..e]).collect();
+        assert_eq!(lines, vec!["* first item", "* second item", "* third item"]);
+    }
+
+    #[test]
+    fn blank_lines_get_their_own_trivial_span() {
+        let text = "first\n\nthird";
+        let spans = sentence_spans(text);
+        let lines: Vec<&str> = spans.iter().map(|&(s, e)| &text[s..e]).collect();
+        assert_eq!(lines, vec!["first", "", "third"]);
+    }
+
+    #[test]
+    fn crlf_line_endings_split_and_trim_trailing_cr() {
+        let text = "* first [1]\r\n* second [2]\r\n";
+        let spans = sentence_spans(text);
+        let lines: Vec<&str> = spans.iter().map(|&(s, e)| &text[s..e]).collect();
+        // Trailing '\r' is trimmed from each line; the final '\r\n' also
+        // opens a trailing blank line, same as a bare trailing '\n' would.
+        assert_eq!(lines, vec!["* first [1]", "* second [2]", ""]);
+    }
+
+    #[test]
+    fn mixed_prose_and_list_keeps_period_splitting_within_a_line() {
+        let text =
+            "Prices vary widely across regions. Here is the breakdown:\n* $10 [1]\n* $20 [2]";
+        let spans = sentence_spans(text);
+        let chunks: Vec<&str> = spans.iter().map(|&(s, e)| &text[s..e]).collect();
+        assert_eq!(
+            chunks,
+            vec![
+                "Prices vary widely across regions.",
+                "Here is the breakdown:",
+                "* $10 [1]",
+                "* $20 [2]",
+            ]
+        );
+    }
+
+    #[test]
+    fn utf8_heavy_and_hostile_input_never_panics() {
+        let text =
+            "\u{1F600}\u{1F525} caf\u{e9}. na\u{ef}ve\r\n\n[1] \u{4e2d}\u{6587}\u{884c} [2]\r broken [ [999999999999999999999999] \n\n\n";
+        let spans = sentence_spans(text);
+        // Every span must be a valid, in-bounds, char-boundary-safe slice.
+        for &(s, e) in &spans {
+            assert!(s <= e && e <= text.len());
+            let _ = &text[s..e];
+        }
+        let _ = audit_citations(text, &[]);
+    }
+
+    #[test]
     fn claim_text_excises_marker_and_scopes_to_sentence() {
         let text = "Alpha beta [1] gamma. Delta epsilon.";
         let refs = find_citation_refs(text);
@@ -559,5 +680,42 @@ mod tests {
         let audit = audit_citations(answer, &[src]);
         assert_eq!(audit.cited, 1);
         assert_eq!(audit.supported, 1);
+    }
+
+    #[test]
+    fn newline_scopes_each_citation_to_its_own_line() {
+        // Regression guard: if newline splitting regressed, citation 2 would
+        // be scored against the merged blob (line 1's 8 tokens plus its own
+        // 2), diluting its score from weak (0.5, correctly scoped) down to
+        // unsupported (~0.09, merged) even though nothing about its own
+        // line's overlap changed.
+        let s1 = source(1, "alpha bravo charlie delta echo foxtrot golf hotel");
+        let s2 = source(2, "juliet only, nothing else here");
+        let answer = "alpha bravo charlie delta echo foxtrot golf hotel [1]\nindia juliet [2]";
+        let audit = audit_citations(answer, &[s1, s2]);
+        assert_eq!(audit.cited, 2);
+        assert_eq!(audit.supported, 1);
+        assert_eq!(audit.weak, 1);
+        assert_eq!(audit.unsupported, 0);
+    }
+
+    #[test]
+    fn bullet_list_regression_from_live_smoke_all_supported() {
+        // The exact failure class from the 2026-07-11 smoke: a bullet list
+        // of per-source figures (`* $64,123 [3]`-style lines), each line's
+        // own number present verbatim in its own cited source. Before the
+        // newline fix, all three lines merged into one sentence span, so
+        // every citation was scored against the other two lines' numbers as
+        // noise and came back diluted below the support thresholds. Scoped
+        // per line, all three are cleanly supported.
+        let s1 = source(1, "Total revenue reached $64,123 in the reported period.");
+        let s2 = source(2, "The measured metric was $58,000 across all regions.");
+        let s3 = source(3, "Final tally came to $71,500 for the fiscal year.");
+        let answer = "* $64,123 [1]\n* $58,000 [2]\n* $71,500 [3]";
+        let audit = audit_citations(answer, &[s1, s2, s3]);
+        assert_eq!(audit.cited, 3);
+        assert_eq!(audit.supported, 3);
+        assert_eq!(audit.weak, 0);
+        assert_eq!(audit.unsupported, 0);
     }
 }
