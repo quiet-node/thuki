@@ -381,6 +381,17 @@ pub enum RecorderEvent {
     /// Late events arriving after `ConversationEnd` are tolerated; see
     /// the module-level "Late-event tolerance" doc.
     ConversationEnd { reason: String },
+    /// The engine tier's own sufficiency judge (run after it assembles
+    /// sources for the standalone question, see
+    /// `crate::websearch::orchestrator::judge_and_requery`) found the
+    /// result insufficient and fired its one bounded requery. `missing`
+    /// is the judge's short phrase for the gap; `requery` is the
+    /// standalone question with that phrase appended, the exact string
+    /// searched. Emitted at most once per turn
+    /// (`crate::config::defaults::ENGINE_REQUERY_MAX`); a sufficient
+    /// verdict, a judge failure, or an empty `missing` phrase never
+    /// emits this event.
+    SearchRequeried { missing: String, requery: String },
 }
 
 impl RecorderEvent {
@@ -409,7 +420,8 @@ impl RecorderEvent {
             | RecorderEvent::SearchRetrieved { .. }
             | RecorderEvent::SearchEscalated { .. }
             | RecorderEvent::CitationAudit { .. }
-            | RecorderEvent::ConversationEnd { .. } => TraceDomain::Chat,
+            | RecorderEvent::ConversationEnd { .. }
+            | RecorderEvent::SearchRequeried { .. } => TraceDomain::Chat,
         }
     }
 
@@ -928,6 +940,11 @@ impl Serialize for RecorderEvent {
                 map.serialize_entry("kind", "conversation_end")?;
                 map.serialize_entry("reason", reason)?;
             }
+            RecorderEvent::SearchRequeried { missing, requery } => {
+                map.serialize_entry("kind", "search_requeried")?;
+                map.serialize_entry("missing", missing)?;
+                map.serialize_entry("requery", requery)?;
+            }
         }
         map.end()
     }
@@ -1139,6 +1156,10 @@ mod tests {
             },
             RecorderEvent::ConversationEnd {
                 reason: "quit".into(),
+            },
+            RecorderEvent::SearchRequeried {
+                missing: "the treaty terms".into(),
+                requery: "when signed the treaty terms".into(),
             },
         ];
         for e in cases {
@@ -1596,6 +1617,25 @@ mod tests {
         );
         let lines = read_lines(r.path());
         assert_eq!(lines[0]["engine_stats"], json!([]));
+    }
+
+    #[test]
+    fn file_recorder_serializes_search_requeried() {
+        let root = fresh_dir();
+        let r = FileRecorder::for_conversation(&root, TraceDomain::Chat, &cid("conv-requery"));
+        r.record(
+            &cid("conv-requery"),
+            RecorderEvent::SearchRequeried {
+                missing: "the treaty terms".into(),
+                requery: "when signed the treaty terms".into(),
+            },
+        );
+        let lines = read_lines(r.path());
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["kind"], "search_requeried");
+        assert_eq!(lines[0]["missing"], "the treaty terms");
+        assert_eq!(lines[0]["requery"], "when signed the treaty terms");
+        assert_eq!(lines[0]["domain"], "chat");
     }
 
     #[test]

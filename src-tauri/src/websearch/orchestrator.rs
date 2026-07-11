@@ -42,6 +42,17 @@
 //! expired or empty cache falls back to the same `web` retrieval a `web`
 //! decision runs, using the classifier's route, standalone rewrite, and
 //! queries exactly as today.
+//!
+//! Whenever the general engine tier itself assembles sources (whether reached
+//! directly or via a vertical's escalation, see [`commit_or_escalate`]), one
+//! extra sufficiency-judge call checks the result against the standalone
+//! question ([`judge_and_requery`]). An insufficient verdict naming what is
+//! missing fires exactly one bounded requery
+//! ([`crate::config::defaults::ENGINE_REQUERY_MAX`]); its new sources merge
+//! with round one's rather than replace them, and no second judge ever runs.
+//! A judge failure, timeout, or unparseable body fails toward committing
+//! round one's sources unchanged, the same posture [`commit_or_escalate`]
+//! takes on a vertical judge failure.
 
 use tokio_util::sync::CancellationToken;
 
@@ -103,11 +114,14 @@ pub enum SearchOutcome {
 /// The injected effectful dependencies of the pipeline.
 pub struct SearchDeps<'a> {
     pub prepass: &'a dyn PrePass,
-    /// The sufficiency judge run after a keyless vertical answers, deciding
-    /// whether its block actually contains what the question asked before the
-    /// pipeline commits to it. An insufficient block escalates to the scraped
-    /// engines (see [`commit_or_escalate`]). Injected like the other effectful
-    /// dependencies so the escalation branch is tested with a fake judge.
+    /// The sufficiency judge, run both after a keyless vertical answers (see
+    /// [`commit_or_escalate`]) and after the general engine tier assembles its
+    /// own sources (see [`judge_and_requery`]), deciding whether the block in
+    /// hand actually contains what the question asked before the pipeline
+    /// commits to it. A vertical's insufficient block escalates to the
+    /// scraped engines; an insufficient engine-tier block gets one bounded
+    /// requery. Injected like the other effectful dependencies so both
+    /// branches are tested with a fake judge.
     pub judge: &'a dyn SufficiencyJudge,
     pub transport: &'a dyn HttpTransport,
     pub scorer: &'a dyn Scorer,
@@ -555,10 +569,12 @@ async fn run_web(
     if cancel.is_cancelled() {
         return SearchOutcome::Cancelled;
     }
-    // The general scraped-engine tier: the terminal source, so there is nothing
-    // to escalate to and no sufficiency judge runs here (the writer's
-    // graceful-partial contract covers a thin engine result). A miss is the
-    // pipeline's honest could-not-verify disclosure, never a silent stale answer.
+    // The general scraped-engine tier: the terminal source, so there is
+    // nothing further to escalate to. Its own sufficiency judge still runs on
+    // a Ranked result (see `judge_and_requery`), with one bounded requery on
+    // an insufficient verdict; the writer's graceful-partial contract covers
+    // whatever the result still lacks after that. A miss is the pipeline's
+    // honest could-not-verify disclosure, never a silent stale answer.
     match run_engine_tier(
         deps,
         standalone_question,
@@ -580,18 +596,43 @@ async fn run_web(
         EngineTierOutcome::Empty => SearchOutcome::Unreachable {
             messages: unreachable_messages(chat_system_prompt, history, latest_user),
         },
-        EngineTierOutcome::Ranked(sources, engine_stats) => grounded_answer(
-            deps,
-            "engine",
-            chat_system_prompt,
-            history,
-            latest_user,
-            standalone_question,
-            sources,
-            today,
-            locale,
-            engine_stats,
-        ),
+        EngineTierOutcome::Ranked(sources, engine_stats) => {
+            // Round one produced sources: run the engine tier's own sufficiency
+            // judge and one bounded requery over them (see `judge_and_requery`)
+            // before answering. The requery, when it fires, races the keyless
+            // engines again, so its per-engine outcomes are folded into the same
+            // `SearchRetrieved` trace `engine_stats` the primary query populated
+            // (additive, so one retrieval record shows both rounds' engines).
+            match judge_and_requery(
+                deps,
+                standalone_question,
+                sources,
+                num_ctx,
+                freshness,
+                engines_only,
+                cancel,
+            )
+            .await
+            {
+                EngineJudgeOutcome::Cancelled => SearchOutcome::Cancelled,
+                EngineJudgeOutcome::Sources(sources, requery_stats) => {
+                    let mut engine_stats = engine_stats;
+                    engine_stats.extend(requery_stats);
+                    grounded_answer(
+                        deps,
+                        "engine",
+                        chat_system_prompt,
+                        history,
+                        latest_user,
+                        standalone_question,
+                        sources,
+                        today,
+                        locale,
+                        engine_stats,
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -813,7 +854,9 @@ async fn commit_or_escalate(
     {
         EngineTierOutcome::Cancelled => SearchOutcome::Cancelled,
         // The engines answered: merge the vertical block with their sources
-        // rather than discard it (see `merge_sources`).
+        // rather than discard it (see `merge_sources`), then run the
+        // engine-tier's own sufficiency judge and bounded requery over the
+        // merged result (see `judge_and_requery`).
         EngineTierOutcome::Ranked(sources, engine_stats) => {
             deps.recorder.record(RecorderEvent::SearchEscalated {
                 from_tier: tier.to_string(),
@@ -822,18 +865,39 @@ async fn commit_or_escalate(
                 escalated: true,
                 escalation_hit: true,
             });
-            grounded_answer(
+            let merged = merge_sources(vec![block], sources, num_ctx);
+            match judge_and_requery(
                 deps,
-                "engine",
-                chat_system_prompt,
-                history,
-                latest_user,
                 standalone_question,
-                merge_sources(block, sources, num_ctx),
-                today,
-                locale,
-                engine_stats,
+                merged,
+                num_ctx,
+                freshness,
+                // A judge-driven escalation is not a user distrust signal, the
+                // same rationale as the `run_engine_tier` call above: never
+                // bypass the cache on this path.
+                false,
+                cancel,
             )
+            .await
+            {
+                EngineJudgeOutcome::Cancelled => SearchOutcome::Cancelled,
+                EngineJudgeOutcome::Sources(sources, requery_stats) => {
+                    let mut engine_stats = engine_stats;
+                    engine_stats.extend(requery_stats);
+                    grounded_answer(
+                        deps,
+                        "engine",
+                        chat_system_prompt,
+                        history,
+                        latest_user,
+                        standalone_question,
+                        sources,
+                        today,
+                        locale,
+                        engine_stats,
+                    )
+                }
+            }
         }
         // The engines came up empty too: fall back to the vertical block as a
         // partial answer rather than a wall.
@@ -920,34 +984,39 @@ fn grounded_answer(
     SearchOutcome::Answer { messages, sources }
 }
 
-/// Merges an insufficient vertical's `block` with the engine tier's `sources`,
-/// vertical first, and re-assigns contiguous 1-based indices across the
-/// combined list.
+/// Merges two source-block lists, `first` kept whole and ahead of `second`,
+/// and re-assigns contiguous 1-based indices across the combined list.
 ///
-/// An insufficient verdict means the block does not fully answer the
-/// question, not that it is irrelevant: it can still carry a fact the engines
-/// miss (observed live: a sports block with the exact kickoff time the judge
-/// still flagged insufficient, while the replacement engine sources omitted
-/// it). Discarding retrieved information on escalation throws that away, so
-/// escalation merges instead of replaces.
+/// `first`'s blocks are never dropped for budget reasons; only `second`'s can
+/// be. Two call sites rely on that asymmetry: [`commit_or_escalate`] passes an
+/// insufficient vertical's single judged-relevant block as `first` (an
+/// insufficient verdict means the block does not fully answer the question,
+/// not that it is irrelevant: it can still carry a fact the engines miss,
+/// observed live with a sports block's exact kickoff time, so escalation
+/// merges instead of replaces), and [`judge_and_requery`] passes round-one's
+/// already-assembled engine-tier sources as `first` (the product invariant
+/// that retrieved information is never discarded applies just as much to a
+/// requery as to an escalation).
 ///
 /// The merged list is re-budgeted to the same token allowance the engine tier
 /// was assembled under (`assemble::budget_tokens(num_ctx)`, same
-/// `estimate_tokens` accounting): the engine sources already fill that budget
-/// on their own, so appending the vertical block unchecked would overflow the
+/// `estimate_tokens` accounting): `second` already filled that budget on its
+/// own in both call sites, so appending `first` unchecked would overflow the
 /// documented source budget and silently eat conversation-history headroom.
-/// The vertical block is kept whole (it is the judged-relevant partial the
-/// merge exists to preserve) and engine sources are dropped from the tail,
-/// the fusion's lowest-ranked end, until the combined list fits.
+/// `second`'s blocks are dropped from the tail, the fusion's lowest-ranked
+/// end, until the combined list fits.
 fn merge_sources(
-    vertical: SourceBlock,
-    engines: Vec<SourceBlock>,
+    first: Vec<SourceBlock>,
+    second: Vec<SourceBlock>,
     num_ctx: u32,
 ) -> Vec<SourceBlock> {
     let budget = crate::websearch::assemble::budget_tokens(num_ctx);
-    let mut spent = crate::websearch::assemble::estimate_tokens(&vertical.text);
-    let mut merged = vec![vertical];
-    for block in engines {
+    let mut spent: usize = first
+        .iter()
+        .map(|b| crate::websearch::assemble::estimate_tokens(&b.text))
+        .sum();
+    let mut merged = first;
+    for block in second {
         let cost = crate::websearch::assemble::estimate_tokens(&block.text);
         if spent + cost > budget {
             break;
@@ -972,6 +1041,133 @@ fn dedupe_hits(hits: Vec<SearchHit>) -> Vec<SearchHit> {
     hits.into_iter()
         .filter(|h| seen.insert(super::canonical_url_key(&h.url)))
         .collect()
+}
+
+/// Filters `hits` down to the URLs not already present in `existing`, so
+/// [`judge_and_requery`]'s bounded requery only fetches pages round one has
+/// not already assembled (see its docs' "fetch only new URLs" contract).
+/// Preserves input order.
+fn new_urls_only(hits: Vec<SearchHit>, existing: &[SourceBlock]) -> Vec<SearchHit> {
+    let seen: std::collections::HashSet<&str> = existing.iter().map(|s| s.url.as_str()).collect();
+    hits.into_iter()
+        .filter(|h| !seen.contains(h.url.as_str()))
+        .collect()
+}
+
+/// What [`judge_and_requery`] resolved to: the user cancelling mid-judge or
+/// mid-requery, or the final source list to answer from paired with the
+/// requery's per-engine outcome summary.
+enum EngineJudgeOutcome {
+    /// The user cancelled mid-judge or mid-requery.
+    Cancelled,
+    /// The sources to answer from, paired with the per-query, per-engine outcome
+    /// summary of the one requery this call may have fired (see [`EngineStat`]).
+    /// The sources are `sources` unchanged (a sufficient verdict, a judge
+    /// failure, an empty `missing` phrase, or a requery that found no new URLs)
+    /// or merged with the one requery's new sources; the stats are that
+    /// requery's engines, empty on every path where no requery ran, for the
+    /// caller to fold into the primary query's [`RecorderEvent::SearchRetrieved`]
+    /// so one retrieval record shows both rounds' engines.
+    Sources(Vec<SourceBlock>, Vec<EngineStat>),
+}
+
+/// The engine tier's own sufficiency judge, plus the one bounded requery it
+/// can trigger (see the module docs and
+/// [`crate::config::defaults::ENGINE_REQUERY_MAX`]).
+///
+/// Runs whenever the general engine tier itself produced `sources`: both
+/// [`run_web`]'s terminal engine-tier branch and [`commit_or_escalate`]'s
+/// escalation-merge branch reach here, since either path ends in a freshly
+/// assembled engine-tier block no prior judge call (if any) ever saw. On a
+/// confident insufficient verdict naming what is missing, this fires exactly
+/// one requery: the standalone question with the missing phrase appended,
+/// through the normal engine path (`web_search` then `fetch_pages`, so cache
+/// read/write and `bypass_cache` behave exactly as they do for any other
+/// engine-tier call). Its hits are deduped by URL against `sources`
+/// ([`new_urls_only`]) so only genuinely new pages are fetched, ranked, and
+/// merged in with `sources` kept whole ([`merge_sources`]).
+///
+/// NO second judge ever runs on the requeried result: a judge error, timeout,
+/// or unparseable body (surfaced as [`InferenceError::Request`]) fails toward
+/// committing `sources` unchanged, the same posture [`commit_or_escalate`]
+/// takes on a vertical judge failure; a [`InferenceError::Cancelled`] or an
+/// observed cancellation before the requery's network calls yields
+/// [`EngineJudgeOutcome::Cancelled`] instead.
+async fn judge_and_requery(
+    deps: &SearchDeps<'_>,
+    standalone_question: &str,
+    sources: Vec<SourceBlock>,
+    num_ctx: u32,
+    freshness: bool,
+    bypass_cache: bool,
+    cancel: &CancellationToken,
+) -> EngineJudgeOutcome {
+    let verdict = match deps
+        .judge
+        .judge(standalone_question, &sources, cancel)
+        .await
+    {
+        Ok(verdict) => verdict,
+        Err(InferenceError::Cancelled) => return EngineJudgeOutcome::Cancelled,
+        Err(InferenceError::Request(reason)) => {
+            eprintln!("[search] engine-tier judge error: {reason} -> committing round-one sources");
+            return EngineJudgeOutcome::Sources(sources, Vec::new());
+        }
+    };
+    // Sufficient, or insufficient with nothing to search for: commit
+    // round-one's sources. `ENGINE_REQUERY_MAX == 0` also lands here (the
+    // requery is disabled outright), since the flow has no loop back into
+    // itself and cannot fire more than the one requery below regardless. No
+    // requery ran, so the engine-stats companion is empty.
+    if verdict.sufficient
+        || verdict.missing.is_empty()
+        || crate::config::defaults::ENGINE_REQUERY_MAX == 0
+    {
+        return EngineJudgeOutcome::Sources(sources, Vec::new());
+    }
+    if cancel.is_cancelled() {
+        return EngineJudgeOutcome::Cancelled;
+    }
+    let requery = format!("{standalone_question} {}", verdict.missing);
+    eprintln!(
+        "[search] engine tier insufficient (missing: {}) -> requerying once: {requery}",
+        verdict.missing
+    );
+    deps.recorder.record(RecorderEvent::SearchRequeried {
+        missing: verdict.missing,
+        requery: requery.clone(),
+    });
+    // The requery races the keyless engines exactly as the primary query does,
+    // so it produces its own per-engine outcome summary. Carry it back to the
+    // caller regardless of whether new pages survive below, so the trace
+    // records the requery's engines even when it found no new URLs.
+    let (hits, requery_stats) = web_search(
+        deps.transport,
+        &requery,
+        deps.health,
+        freshness,
+        deps.web_cache,
+        bypass_cache,
+    )
+    .await;
+    let new_hits = new_urls_only(hits, &sources);
+    if new_hits.is_empty() {
+        return EngineJudgeOutcome::Sources(sources, requery_stats);
+    }
+    if cancel.is_cancelled() {
+        return EngineJudgeOutcome::Cancelled;
+    }
+    let pages = fetch_pages(
+        deps.transport,
+        &new_hits,
+        num_ctx,
+        deps.web_cache,
+        bypass_cache,
+    )
+    .await;
+    let chunks = select_chunks(&pages, standalone_question, deps.scorer);
+    let new_sources = assemble_context(&chunks, num_ctx);
+    EngineJudgeOutcome::Sources(merge_sources(sources, new_sources, num_ctx), requery_stats)
 }
 
 #[cfg(test)]
@@ -1255,7 +1451,7 @@ mod tests {
             source(1, "https://engine-a.example/"),
             source(2, "https://engine-b.example/"),
         ];
-        let merged = merge_sources(vertical, engines, 16384);
+        let merged = merge_sources(vec![vertical], engines, 16384);
         assert_eq!(merged.len(), 3);
         assert_eq!(merged[0].url, "https://vertical.example/");
         assert_eq!(merged[0].index, 1);
@@ -1289,7 +1485,7 @@ mod tests {
             block(2, "https://engine-b.example/", &big_text),
             block(3, "https://engine-c.example/", &big_text),
         ];
-        let merged = merge_sources(vertical, engines, 16384);
+        let merged = merge_sources(vec![vertical], engines, 16384);
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].url, "https://vertical.example/");
         assert_eq!(merged[0].index, 1);
@@ -3329,6 +3525,54 @@ mod tests {
         }))
     }
 
+    /// A judge that returns `first` on its 1st call and `second` on every call
+    /// after. Every escalation turn now calls the judge twice (once on the
+    /// vertical block in `commit_or_escalate`, once more on the merged
+    /// engine-tier result in `judge_and_requery`), so tests that only want to
+    /// drive the FIRST (vertical) verdict without also triggering the
+    /// engine-tier judge's own requery use this instead of
+    /// [`FakeSufficiencyJudge`]'s single fixed result.
+    struct SequencedJudge {
+        calls: std::sync::atomic::AtomicUsize,
+        first: SufficiencyVerdict,
+        second: SufficiencyVerdict,
+    }
+
+    #[async_trait]
+    impl SufficiencyJudge for SequencedJudge {
+        async fn judge(
+            &self,
+            _standalone_question: &str,
+            _sources: &[SourceBlock],
+            _cancel: &CancellationToken,
+        ) -> Result<SufficiencyVerdict, InferenceError> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(if n == 0 {
+                self.first.clone()
+            } else {
+                self.second.clone()
+            })
+        }
+    }
+
+    /// Insufficient on the vertical judge call, sufficient on every call after
+    /// (the engine-tier judge's own verdict), so an escalation test can assert
+    /// on the escalation-merge behaviour without the engine-tier judge firing
+    /// its own requery on top.
+    fn insufficient_then_sufficient() -> SequencedJudge {
+        SequencedJudge {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            first: SufficiencyVerdict {
+                sufficient: false,
+                missing: "the treaty terms".into(),
+            },
+            second: SufficiencyVerdict {
+                sufficient: true,
+                missing: String::new(),
+            },
+        }
+    }
+
     #[tokio::test]
     async fn insufficient_vertical_escalates_and_merges_vertical_with_engine_sources() {
         // The news vertical answers, the judge finds the block insufficient, and
@@ -3375,7 +3619,10 @@ mod tests {
         // path above.
         let prepass = FakePrePass::returning(Ok(news_route_decision()));
         let transport = news_and_engine_transport();
-        let judge = insufficient();
+        // Sufficient on the engine-tier judge's own call (2nd), so the
+        // engine-tier's requery never fires and this test stays scoped to the
+        // escalation-cache behaviour it exists to check.
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let web_cache = WebCache::new(
             std::time::Duration::from_secs(600),
@@ -3607,6 +3854,515 @@ mod tests {
             "2026-07-05",
             "en-US",
             &cancel,
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Cancelled));
+    }
+
+    // ── judge_and_requery: the engine tier's own judge + bounded requery ───────
+
+    /// The standalone question `judge_and_requery` tests judge round-one
+    /// sources against.
+    const REQUERY_QUESTION: &str = "when was the treaty of versailles signed in paris";
+
+    /// Round-one's already-assembled engine-tier sources: what a real
+    /// `run_engine_tier` call would have produced for [`REQUERY_QUESTION`].
+    fn round_one_sources() -> Vec<SourceBlock> {
+        vec![SourceBlock {
+            index: 1,
+            url: "https://match.example/".into(),
+            title: "Treaty of Versailles".into(),
+            text: "the treaty signed in paris".into(),
+        }]
+    }
+
+    /// A SERP with one organic result at a URL distinct from
+    /// [`round_one_sources`], so the requery's hit is genuinely new.
+    const REQUERY_SERP_HTML: &str = r#"
+      <div class="result">
+        <a class="result__a" href="https://requery.example/">Treaty Terms</a>
+        <a class="result__snippet">the exact terms of the treaty</a>
+      </div>
+    "#;
+
+    /// A dense article readability will extract, about the requery's missing
+    /// phrase, with strong lexical overlap on [`REQUERY_QUESTION`] so BM25
+    /// reliably keeps it.
+    const REQUERY_PAGE_HTML: &str = r#"
+      <html><body><article><h1>Treaty of Versailles Terms</h1>
+      <p>The financial and territorial terms of the Treaty of Versailles
+      required Germany to accept responsibility for the war and pay
+      substantial reparations to the Allied powers over a period of decades,
+      alongside major territorial concessions signed in paris and across
+      Europe.</p>
+      <p>Military restrictions, including strict caps on army size and a ban
+      on maintaining an air force, were imposed as part of the same 1919
+      settlement, reshaping the postwar balance of power for a generation of
+      European diplomacy that followed the signing of the treaty of
+      versailles.</p>
+      </article></body></html>
+    "#;
+
+    /// Transport serving the requery's SERP and page, distinct from
+    /// [`transport_with_serp_and_page`]'s round-one fixtures.
+    fn requery_transport() -> FakeHttpTransport {
+        FakeHttpTransport::new()
+            .with_response(
+                DDG_ENDPOINT,
+                HttpResponse {
+                    status: 200,
+                    final_url: DDG_ENDPOINT.into(),
+                    body: REQUERY_SERP_HTML.as_bytes().to_vec(),
+                },
+            )
+            .with_response(
+                "https://requery.example/",
+                HttpResponse {
+                    status: 200,
+                    final_url: "https://requery.example/".into(),
+                    body: REQUERY_PAGE_HTML.as_bytes().to_vec(),
+                },
+            )
+    }
+
+    /// A `PrePass` `judge_and_requery` tests never call: they drive
+    /// `judge_and_requery` directly rather than through `run_search`, but the
+    /// `SearchDeps` builders still require one.
+    fn dummy_prepass() -> FakePrePass {
+        FakePrePass::returning(Ok(web_decision(vec![])))
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_sufficient_skips_requery() {
+        // A sufficient verdict on round-one's own sources must never trigger
+        // the requery: the transport sees no calls at all.
+        let prepass = dummy_prepass();
+        let transport = FakeHttpTransport::new();
+        let judge = FakeSufficiencyJudge::sufficient();
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let sources = round_one_sources();
+        let outcome = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            sources.clone(),
+            16384,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _) if s == &sources));
+        assert!(
+            transport.calls().is_empty(),
+            "a sufficient verdict must never requery"
+        );
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_insufficient_with_missing_fires_one_requery_and_merges() {
+        // Insufficient with a `missing` phrase: exactly one requery fires,
+        // and its new source is merged in alongside round-one's, never
+        // replacing it.
+        let prepass = dummy_prepass();
+        let transport = requery_transport();
+        let judge = insufficient();
+        let health = EngineHealth::new();
+        let (mock, bound) = mock_recorder();
+        let sources = round_one_sources();
+        let outcome = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            sources,
+            16384,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _)
+            if s.len() == 2
+                && s[0].url == "https://match.example/"
+                && s[0].index == 1
+                && s[1].url == "https://requery.example/"
+                && s[1].index == 2));
+        // Exactly one requery: the DDG POST carried the missing phrase
+        // appended to the standalone question.
+        let ddg_call = transport
+            .calls()
+            .into_iter()
+            .find(|c| c.url == DDG_ENDPOINT)
+            .expect("the requery must hit DDG exactly once");
+        assert!(ddg_call.form.iter().any(|(k, v)| k == "q"
+            && v == "when was the treaty of versailles signed in paris the treaty terms"));
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert!(events.iter().any(|e| matches!(e,
+            RecorderEvent::SearchRequeried { missing, requery }
+            if missing == "the treaty terms"
+                && requery == "when was the treaty of versailles signed in paris the treaty terms")));
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_dedupes_requery_hits_by_url() {
+        // The requery's only hit points at the SAME URL round-one already
+        // has: it must be filtered out before any fetch, so no new source is
+        // added and the page is never re-fetched.
+        let prepass = dummy_prepass();
+        let dup_serp = r#"
+          <div class="result">
+            <a class="result__a" href="https://match.example/">Treaty of Versailles</a>
+            <a class="result__snippet">already retrieved</a>
+          </div>
+        "#;
+        let transport = FakeHttpTransport::new().with_response(
+            DDG_ENDPOINT,
+            HttpResponse {
+                status: 200,
+                final_url: DDG_ENDPOINT.into(),
+                body: dup_serp.as_bytes().to_vec(),
+            },
+        );
+        let judge = insufficient();
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let sources = round_one_sources();
+        let outcome = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            sources.clone(),
+            16384,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _) if s == &sources));
+        assert!(!transport
+            .calls()
+            .iter()
+            .any(|c| c.url == "https://match.example/"));
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_judge_failure_commits_round_one() {
+        // A judge transport failure fails toward committing, the same
+        // posture the vertical judge takes: round-one's sources are served
+        // without spending a requery on a verdict the judge could not make.
+        let prepass = dummy_prepass();
+        let transport = FakeHttpTransport::new();
+        let judge = FakeSufficiencyJudge::returning(Err(InferenceError::Request("boom".into())));
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let sources = round_one_sources();
+        let outcome = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            sources.clone(),
+            16384,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _) if s == &sources));
+        assert!(transport.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_judge_cancellation_yields_cancelled() {
+        // The user cancelled while the engine-tier judge was deciding: the
+        // requery never fires, and the pipeline aborts.
+        let prepass = dummy_prepass();
+        let transport = FakeHttpTransport::new();
+        let judge = FakeSufficiencyJudge::returning(Err(InferenceError::Cancelled));
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let outcome = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            round_one_sources(),
+            16384,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(outcome, EngineJudgeOutcome::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_cancelled_before_firing_yields_cancelled() {
+        // The user cancelled right after the judge returned insufficient,
+        // before the requery's network calls: caught by the post-verdict
+        // cancellation check, never reaching the transport.
+        let prepass = dummy_prepass();
+        let transport = FakeHttpTransport::new();
+        let judge = insufficient();
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let outcome = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            round_one_sources(),
+            16384,
+            false,
+            false,
+            &cancel,
+        )
+        .await;
+        assert!(matches!(outcome, EngineJudgeOutcome::Cancelled));
+        assert!(transport.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_cancelled_during_requery_search_yields_cancelled() {
+        // The user cancels while the requery's own SERP request is in
+        // flight: caught by the check between the search and the fetch.
+        let prepass = dummy_prepass();
+        let cancel = CancellationToken::new();
+        let transport = CancelOnSend {
+            token: cancel.clone(),
+            serp: REQUERY_SERP_HTML.as_bytes().to_vec(),
+        };
+        let judge = insufficient();
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let outcome = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            round_one_sources(),
+            16384,
+            false,
+            false,
+            &cancel,
+        )
+        .await;
+        assert!(matches!(outcome, EngineJudgeOutcome::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_drops_an_overflowing_requery_source_after_re_budgeting() {
+        // A tiny num_ctx budget: round-one's small block fits, but the
+        // requery's extracted article alone would already fill the whole
+        // budget, so the merge must drop it rather than append unchecked.
+        let prepass = dummy_prepass();
+        let transport = requery_transport();
+        let judge = insufficient();
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let sources = round_one_sources();
+        let outcome = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            sources.clone(),
+            100,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _) if s == &sources),
+            "the oversized requery source must be dropped, leaving round-one sources unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_bypass_cache_false_serves_the_requery_from_a_warm_serp_cache() {
+        // bypass_cache=false: a warm SERP entry for the EXACT requery text
+        // (the standalone question plus the judge's missing phrase) is
+        // served with no engine request, the same contract every other
+        // engine-tier call honours under this flag.
+        let prepass = dummy_prepass();
+        let requery_text = format!("{REQUERY_QUESTION} the treaty terms");
+        let cached_hit = SearchHit {
+            title: "Treaty Terms".into(),
+            url: "https://cached-requery.example/".into(),
+            snippet: "the exact terms of the treaty".into(),
+        };
+        let web_cache = WebCache::new(
+            std::time::Duration::from_secs(600),
+            std::time::Duration::from_secs(600),
+            64,
+            128,
+        );
+        web_cache.serp_put("duckduckgo", &requery_text, false, vec![cached_hit.clone()]);
+        web_cache.serp_put("mojeek", &requery_text, false, vec![cached_hit]);
+        // Only the page fetch hits the network; both engines' SERP endpoints
+        // are served from the warm cache.
+        let transport = FakeHttpTransport::new().with_response(
+            "https://cached-requery.example/",
+            HttpResponse {
+                status: 200,
+                final_url: "https://cached-requery.example/".into(),
+                body: REQUERY_PAGE_HTML.as_bytes().to_vec(),
+            },
+        );
+        let judge = insufficient();
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let outcome = judge_and_requery(
+            &deps_with_web_cache(
+                &prepass,
+                &transport,
+                &Bm25Scorer,
+                &judge,
+                &health,
+                &bound,
+                &web_cache,
+            ),
+            REQUERY_QUESTION,
+            round_one_sources(),
+            16384,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _)
+            if s.iter().any(|b| b.url == "https://cached-requery.example/")));
+        assert!(!transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+        let mojeek_url = crate::websearch::engine::mojeek_request(&requery_text, false).url;
+        assert!(!transport.calls().iter().any(|c| c.url == mojeek_url));
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_bypass_cache_true_skips_the_warm_serp_cache() {
+        // Same warm cache, but bypass_cache=true: the requery must skip the
+        // read and hit the network engines instead, the flag threaded
+        // through unchanged from whichever call site invoked it.
+        let prepass = dummy_prepass();
+        let requery_text = format!("{REQUERY_QUESTION} the treaty terms");
+        let cached_hit = SearchHit {
+            title: "Cached".into(),
+            url: "https://cached-requery.example/".into(),
+            snippet: "stale".into(),
+        };
+        let web_cache = WebCache::new(
+            std::time::Duration::from_secs(600),
+            std::time::Duration::from_secs(600),
+            64,
+            128,
+        );
+        web_cache.serp_put("duckduckgo", &requery_text, false, vec![cached_hit]);
+        let transport = requery_transport();
+        let judge = insufficient();
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let outcome = judge_and_requery(
+            &deps_with_web_cache(
+                &prepass,
+                &transport,
+                &Bm25Scorer,
+                &judge,
+                &health,
+                &bound,
+                &web_cache,
+            ),
+            REQUERY_QUESTION,
+            round_one_sources(),
+            16384,
+            false,
+            true,
+            &CancellationToken::new(),
+        )
+        .await;
+        // The network's hit (requery.example), not the stale cached one, made
+        // it through: the cache read was genuinely skipped, not
+        // coincidentally equal.
+        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _)
+            if s.iter().any(|b| b.url == "https://requery.example/")
+                && !s.iter().any(|b| b.url == "https://cached-requery.example/")));
+        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+    }
+
+    // ── full-pipeline coverage of judge_and_requery's Cancelled branch at
+    //    both call sites (run_web's direct tier and commit_or_escalate's
+    //    escalation-merge tier), distinct from judge_and_requery's own unit
+    //    tests above which call it directly, not through run_search ────────
+
+    #[tokio::test]
+    async fn engine_tier_judge_cancellation_yields_cancelled_on_the_direct_web_path() {
+        // The engine tier ran directly (no vertical), and its own judge call
+        // was cancelled: `run_web`'s terminal `EngineJudgeOutcome::Cancelled`
+        // branch, not just `judge_and_requery` in isolation, must abort the
+        // turn.
+        let prepass = FakePrePass::returning(Ok(web_decision(vec!["treaty versailles paris"])));
+        let transport = transport_with_serp_and_page();
+        let judge = FakeSufficiencyJudge::returning(Err(InferenceError::Cancelled));
+        let health = EngineHealth::new();
+        let (_mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            "sys",
+            &[],
+            "when signed",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Cancelled));
+    }
+
+    /// A judge returning an insufficient verdict on its 1st call (driving a
+    /// vertical's escalation in `commit_or_escalate`) and a cancellation on
+    /// every call after (the engine-tier's own call in `judge_and_requery`),
+    /// so a test can drive `commit_or_escalate`'s terminal
+    /// `EngineJudgeOutcome::Cancelled` branch specifically.
+    struct InsufficientThenCancelled {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl SufficiencyJudge for InsufficientThenCancelled {
+        async fn judge(
+            &self,
+            _standalone_question: &str,
+            _sources: &[SourceBlock],
+            _cancel: &CancellationToken,
+        ) -> Result<SufficiencyVerdict, InferenceError> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                Ok(SufficiencyVerdict {
+                    sufficient: false,
+                    missing: "the treaty terms".into(),
+                })
+            } else {
+                Err(InferenceError::Cancelled)
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn engine_tier_judge_cancellation_yields_cancelled_on_the_escalation_merge_path() {
+        // The vertical escalates, the engines answer, and the engine-tier's
+        // OWN judge call (the 2nd) is cancelled: `commit_or_escalate`'s
+        // terminal `EngineJudgeOutcome::Cancelled` branch must abort the
+        // turn.
+        let prepass = FakePrePass::returning(Ok(news_route_decision()));
+        let transport = news_and_engine_transport();
+        let judge = InsufficientThenCancelled {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let health = EngineHealth::new();
+        let (_mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
             &status,
         )
         .await;

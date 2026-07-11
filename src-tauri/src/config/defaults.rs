@@ -1254,3 +1254,20 @@ pub const CITE_MONTH_NAMES: [(&str, u32); 12] = [
     ("november", 11),
     ("december", 12),
 ];
+
+// ─── Web-search engine-tier requery ──────────────────────────────────────────
+
+/// Maximum number of bounded requeries the engine tier's own sufficiency judge
+/// (`crate::websearch::orchestrator::judge_and_requery`) may fire per turn.
+/// After the engine tier assembles its sources for the standalone question,
+/// one additional judge call checks whether they actually answer it; on a
+/// confident insufficient verdict naming what is missing, the orchestrator
+/// requeries once with the missing phrase appended, merges the new sources in,
+/// and never judges again. The flow has no loop back into itself, so `1` is
+/// the only value that fires a requery; `0` disables the requery outright
+/// (the judge still runs and its verdict is still recorded, but an
+/// insufficient result simply commits round-one's sources) and is the gate's
+/// only other meaningful setting.
+///
+/// Not user-tunable: fixed LLM-call budget per turn is a product invariant.
+pub const ENGINE_REQUERY_MAX: usize = 1;
