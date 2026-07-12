@@ -1,9 +1,15 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ChatBubble } from '../ChatBubble';
 import { invoke } from '../../testUtils/mocks/tauri';
+import {
+  SEARCH_HANDOFF_COLLAPSE_LEAD_MS,
+  SEARCH_HANDOFF_EXIT_FALLBACK_MS,
+} from '../searchHandoffPhase';
+import { mockReducedMotion } from '../../testUtils/mocks/framer-motion';
 beforeEach(() => {
   invoke.mockClear();
+  mockReducedMotion.current = false;
 });
 
 function openSources(container: HTMLElement) {
@@ -1230,6 +1236,10 @@ describe('ChatBubble', () => {
       expect(
         screen.queryByTestId('search-progress-block'),
       ).not.toBeInTheDocument();
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'done',
+      );
     });
 
     it('renders SearchProgressBlock when isSearching', () => {
@@ -1243,9 +1253,15 @@ describe('ChatBubble', () => {
         />,
       );
       expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'live',
+      );
     });
 
-    it('unmounts SearchProgressBlock when thinking content starts (Option D handoff)', () => {
+    it('skips exit when thinking mounts without a prior live search (Option D)', () => {
+      // First paint already handed off: never entered `live`, so no exit
+      // retention and Reasoning shows immediately.
       render(
         <ChatBubble
           role="assistant"
@@ -1261,9 +1277,13 @@ describe('ChatBubble', () => {
         screen.queryByTestId('search-progress-block'),
       ).not.toBeInTheDocument();
       expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'done',
+      );
     });
 
-    it('unmounts SearchProgressBlock when isThinkingPending (Option D handoff)', () => {
+    it('skips exit when isThinkingPending mounts without prior live search', () => {
       render(
         <ChatBubble
           role="assistant"
@@ -1278,9 +1298,13 @@ describe('ChatBubble', () => {
         screen.queryByTestId('search-progress-block'),
       ).not.toBeInTheDocument();
       expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'done',
+      );
     });
 
-    it('unmounts SearchProgressBlock when answer content starts (Option D handoff)', () => {
+    it('skips exit when answer mounts without prior live search', () => {
       render(
         <ChatBubble
           role="assistant"
@@ -1293,6 +1317,246 @@ describe('ChatBubble', () => {
       expect(
         screen.queryByTestId('search-progress-block'),
       ).not.toBeInTheDocument();
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'done',
+      );
+    });
+
+    it('keeps SearchProgress with isExiting and defers Reasoning mid-handoff', () => {
+      const { rerender } = render(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching
+          searchStage={{ kind: 'searching' }}
+        />,
+      );
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'live',
+      );
+
+      rerender(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching
+          searchStage={{ kind: 'searching' }}
+          thinkingContent="thoughts"
+          isThinking
+        />,
+      );
+
+      // Collapse window: search retained with isExiting, Reasoning deferred.
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'exiting',
+      );
+      const progress = screen.getByTestId('search-progress-block');
+      expect(progress).toHaveAttribute('data-exiting', 'true');
+      expect(progress).toHaveAttribute('aria-busy', 'true');
+      expect(screen.queryByTestId('reasoning-block')).not.toBeInTheDocument();
+
+      // isSearching may flip off mid-handoff; still force-mount for exit.
+      rerender(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching={false}
+          searchStage={null}
+          thinkingContent="thoughts"
+          isThinking
+        />,
+      );
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'exiting',
+      );
+      expect(screen.getByTestId('search-progress-block')).toHaveAttribute(
+        'data-exiting',
+        'true',
+      );
+    });
+
+    it('unmounts search after collapse lead then completes via onExitComplete', async () => {
+      vi.useFakeTimers();
+      try {
+        const { rerender } = render(
+          <ChatBubble
+            role="assistant"
+            content=""
+            index={0}
+            isSearching
+            searchStage={{ kind: 'searching' }}
+          />,
+        );
+
+        rerender(
+          <ChatBubble
+            role="assistant"
+            content=""
+            index={0}
+            isSearching
+            searchStage={{ kind: 'searching' }}
+            isThinkingPending
+          />,
+        );
+        expect(screen.getByTestId('search-progress-block')).toHaveAttribute(
+          'data-exiting',
+          'true',
+        );
+        expect(screen.queryByTestId('reasoning-block')).not.toBeInTheDocument();
+
+        // Collapse lead elapses → outer unmount → mock onExitComplete → done.
+        await act(async () => {
+          vi.advanceTimersByTime(SEARCH_HANDOFF_COLLAPSE_LEAD_MS);
+        });
+
+        expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+          'data-search-handoff-phase',
+          'done',
+        );
+        expect(
+          screen.queryByTestId('search-progress-block'),
+        ).not.toBeInTheDocument();
+        expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
+        expect(
+          screen.getByTestId('reasoning-handoff-enter'),
+        ).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('completes handoff via exit-fallback when exit unmount stalls', async () => {
+      vi.useFakeTimers();
+      try {
+        const { rerender } = render(
+          <ChatBubble
+            role="assistant"
+            content=""
+            index={0}
+            isSearching
+            searchStage={{ kind: 'composing' }}
+          />,
+        );
+
+        rerender(
+          <ChatBubble
+            role="assistant"
+            content="Partial answer"
+            index={0}
+            isSearching
+            searchStage={{ kind: 'composing' }}
+          />,
+        );
+
+        expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+          'data-search-handoff-phase',
+          'exiting',
+        );
+        expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+        expect(screen.queryByTestId('reasoning-block')).not.toBeInTheDocument();
+        expect(screen.getByText('Partial answer')).toBeInTheDocument();
+
+        // Skip past lead without flushing the unmount effect's follow-up by
+        // jumping to the hard fallback; completeSearchHandoffExit must clear
+        // exiting even if onExitComplete never ran.
+        await act(async () => {
+          vi.advanceTimersByTime(SEARCH_HANDOFF_EXIT_FALLBACK_MS);
+        });
+
+        expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+          'data-search-handoff-phase',
+          'done',
+        );
+        expect(
+          screen.queryByTestId('search-progress-block'),
+        ).not.toBeInTheDocument();
+        expect(screen.getByText('Partial answer')).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('resets handoff phase to idle when search cancels without content', () => {
+      const { rerender } = render(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching
+          searchStage={{ kind: 'searching' }}
+        />,
+      );
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'live',
+      );
+
+      rerender(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching={false}
+          searchStage={null}
+        />,
+      );
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'idle',
+      );
+      expect(
+        screen.queryByTestId('search-progress-block'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('uses near-instant handoff timings under reduced motion', async () => {
+      mockReducedMotion.current = true;
+      vi.useFakeTimers();
+      try {
+        const { rerender } = render(
+          <ChatBubble
+            role="assistant"
+            content=""
+            index={0}
+            isSearching
+            searchStage={{ kind: 'searching' }}
+          />,
+        );
+        rerender(
+          <ChatBubble
+            role="assistant"
+            content=""
+            index={0}
+            isSearching
+            searchStage={{ kind: 'searching' }}
+            thinkingContent="thoughts"
+            isThinking
+          />,
+        );
+        expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+          'data-search-handoff-phase',
+          'exiting',
+        );
+        // collapseLeadMs is 0 under reduced motion; flush microtask timeout.
+        await act(async () => {
+          vi.advanceTimersByTime(0);
+        });
+        expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+          'data-search-handoff-phase',
+          'done',
+        );
+        expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+        mockReducedMotion.current = false;
+      }
     });
 
     it('shows C3 verifying pill while streaming during citation audit', () => {

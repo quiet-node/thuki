@@ -308,4 +308,40 @@ describe('SearchProgressBlock', () => {
       'Searching more angles (3)',
     );
   });
+
+  it('forces collapse and disables toggle while isExiting', () => {
+    render(
+      <SearchProgressBlock
+        stage={{ kind: 'reading_sources' }}
+        isSearching
+        sources={SOURCES}
+        isExiting
+      />,
+    );
+
+    const block = screen.getByTestId('search-progress-block');
+    expect(block).toHaveAttribute('data-exiting', 'true');
+    expect(block).toHaveAttribute('aria-busy', 'true');
+    expect(
+      screen.queryByTestId('search-progress-body'),
+    ).not.toBeInTheDocument();
+    const toggle = screen.getByTestId('search-progress-toggle');
+    expect(toggle).toBeDisabled();
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('stays mounted while isExiting even if isSearching is false', () => {
+    render(
+      <SearchProgressBlock
+        stage={{ kind: 'composing' }}
+        isSearching={false}
+        isExiting
+      />,
+    );
+    expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+    expect(screen.getByTestId('loading-label')).toHaveAttribute(
+      'data-label',
+      'Composing answer',
+    );
+  });
 });

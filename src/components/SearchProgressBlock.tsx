@@ -8,8 +8,8 @@ import { RequestStatusStrip } from './RequestStatusStrip';
  * Props for progressive web-search progress chrome
  * (`ask_model` + `SearchStatus` / `SearchSources`).
  *
- * Mounted only during pure search (Option D). ChatBubble unmounts this
- * block once reasoning or answer content begins.
+ * Mounted during pure search and briefly during ChatBubble handoff exit
+ * (Option D). After exit completes, ChatBubble keeps this unmounted.
  */
 export interface SearchProgressBlockProps {
   /**
@@ -21,6 +21,12 @@ export interface SearchProgressBlockProps {
   sources?: SearchResultPreview[];
   /** True while the search-augmented turn is still generating. */
   isSearching: boolean;
+  /**
+   * When true, force-collapse the source list and disable toggle so the
+   * body height exit can run before ChatBubble fades the outer chrome.
+   * Parent owns the outer opacity exit; this block owns collapse only.
+   */
+  isExiting?: boolean;
 }
 
 /**
@@ -114,15 +120,17 @@ function searchProgressHeaderLabel(
 /**
  * Progressive-disclosure search chrome for built-in auto-search (Option D).
  *
- * Single expandable block during pure search only. Phase header while live,
+ * Single expandable block during pure search. Phase header while live,
  * optional source list in the body (user can collapse for a clean view).
- * ChatBubble unmounts this once reasoning or answer content starts so only
- * one live status row shows. Letter avatars only: no favicon network fetches.
+ * During handoff exit (`isExiting`), forces collapse so the list height
+ * animates out before ChatBubble fades the outer row. Letter avatars only:
+ * no favicon network fetches.
  */
 export function SearchProgressBlock({
   stage,
   sources = [],
   isSearching,
+  isExiting = false,
 }: SearchProgressBlockProps) {
   const panelId = useId();
   const sourceCount = sources.length;
@@ -134,24 +142,26 @@ export function SearchProgressBlock({
   /**
    * Auto policy: expand when searching with sources. Collapse when no
    * sources yet. User toggle wins until sources go empty or the turn resets.
+   * Handoff exit always forces collapsed so body AnimatePresence can run.
    */
   const autoExpanded = isSearching && hasSources;
-  const expanded = userExpanded ?? autoExpanded;
+  const expanded = isExiting ? false : (userExpanded ?? autoExpanded);
 
   // When sources first arrive during a live search, re-open unless the user
-  // already forced collapse.
+  // already forced collapse. Skip while exiting so we do not fight collapse.
   useEffect(() => {
-    if (!isSearching || !hasSources) return;
+    if (isExiting || !isSearching || !hasSources) return;
     setUserExpanded(null);
-  }, [hasSources, isSearching]);
+  }, [hasSources, isSearching, isExiting]);
 
   // Idle with no sources: nothing to show (footer chips handle post-answer).
-  if (!isSearching && !hasSources) {
+  // Keep mounted while exiting even if `isSearching` flipped off mid-handoff.
+  if (!isExiting && !isSearching && !hasSources) {
     return null;
   }
 
   // After the turn finishes, the action-bar sources chips own the list.
-  if (!isSearching) {
+  if (!isExiting && !isSearching) {
     return null;
   }
 
@@ -161,6 +171,7 @@ export function SearchProgressBlock({
   /**
    * Toggles expand/collapse. Only wired on the sources toggle button, which
    * is not rendered until at least one source exists. Label text is unchanged.
+   * Toggle is `disabled` while exiting so collapse is not interrupted.
    */
   function handleToggle(): void {
     setUserExpanded((prev) => {
@@ -194,7 +205,12 @@ export function SearchProgressBlock({
   );
 
   return (
-    <div data-testid="search-progress-block" className="mb-2">
+    <div
+      data-testid="search-progress-block"
+      data-exiting={isExiting ? 'true' : undefined}
+      aria-busy={isExiting || undefined}
+      className="mb-2"
+    >
       <div className="flex min-w-0 items-center gap-2">
         {hasSources ? (
           <button
@@ -202,8 +218,9 @@ export function SearchProgressBlock({
             data-testid="search-progress-toggle"
             aria-expanded={expanded}
             aria-controls={panelId}
+            disabled={isExiting}
             onClick={handleToggle}
-            className="flex min-w-0 flex-1 items-center gap-2 text-left cursor-pointer bg-transparent border-0 p-0"
+            className="flex min-w-0 flex-1 items-center gap-2 text-left cursor-pointer bg-transparent border-0 p-0 disabled:cursor-default"
           >
             <RequestStatusStrip label={headerLabel} accessory={chevron} />
           </button>

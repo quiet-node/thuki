@@ -1,5 +1,5 @@
-import { AnimatePresence, motion } from 'framer-motion';
-import { useEffect, useRef, useState } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ErrorCard } from './ErrorCard';
 import { CopyButton } from './CopyButton';
@@ -14,6 +14,18 @@ import type { EngineErrorKind } from '../hooks/useModel';
 import type { SearchResultPreview, SearchStage } from '../types/search';
 import { SearchProgressBlock } from './SearchProgressBlock';
 import { cleanForRender } from '../utils/sanitizeAssistantContent';
+import {
+  completeSearchHandoffExit,
+  nextSearchHandoffPhase,
+  SEARCH_HANDOFF_COLLAPSE_LEAD_MS,
+  SEARCH_HANDOFF_EXIT_FALLBACK_MS,
+  type SearchHandoffPhase,
+} from './searchHandoffPhase';
+
+/** Outer search chrome fade during handoff (ChatBubble owns this exit). */
+const SEARCH_HANDOFF_FADE_S = 0.2;
+/** Reasoning enter after search exit: opacity + tiny y, ~0.2s. */
+const REASONING_HANDOFF_ENTER_S = 0.2;
 
 /**
  * Extracts a bare hostname from a URL for the sources footer. Strips the
@@ -291,6 +303,7 @@ export function ChatBubble({
 }: ChatBubbleProps) {
   const isUser = role === 'user';
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const reduceMotion = useReducedMotion();
   const quote = useConfig().quote;
   // Render-time defense for legacy assistant content that may carry
   // special turn-boundary tokens leaked by older Ollama versions or
@@ -304,20 +317,88 @@ export function ChatBubble({
   const isVerifyingSources = searchStage?.kind === 'verifying_sources';
   const hasSearchSources = Boolean(searchSources && searchSources.length > 0);
   /**
-   * Reasoning or answer body has started. Option D sequential handoff:
-   * unmount SearchProgressBlock so only Reasoning (then answer) is live.
-   * Sources stay available post-answer via the footer chips / citations.
+   * Reasoning or answer body has started. Triggers sequential handoff:
+   * search chrome exits, then Reasoning (if any) enters. After exit
+   * completes, search stays gone (Option D). Sources remain via footer.
    */
   const handedOffFromSearch = Boolean(
     thinkingContent || isThinkingPending || displayContent,
   );
   /**
-   * SearchProgressBlock covers retrieve/read/compose only during pure
-   * search. Unmounts once reasoning/answer starts, and during verifying
-   * (C3 sources pill owns that status).
+   * Pure search only: retrieve/read/compose while no reasoning/answer yet.
+   * False during verifying (C3 pill) and after handoff signal.
    */
-  const showSearchProgress =
+  const showLiveSearch =
     isSearching && !isVerifyingSources && !handedOffFromSearch;
+
+  /**
+   * Exit-retention phase. `exiting` holds until outer fade finishes
+   * (`onExitComplete` or fallback). Adjusted during render from pure
+   * reducer so the first handed-off frame still paints search with
+   * `isExiting` (force-collapse) before the outer unmount step.
+   */
+  const [handoffPhase, setHandoffPhase] = useState<SearchHandoffPhase>('idle');
+  /**
+   * After collapse lead, remove search from the tree so AnimatePresence
+   * runs the outer opacity exit. False while `live` or during the brief
+   * collapse-only window of `exiting`.
+   */
+  const [exitUnmount, setExitUnmount] = useState(false);
+  const nextPhase = nextSearchHandoffPhase(handoffPhase, {
+    showLiveSearch,
+    handedOff: handedOffFromSearch,
+  });
+  if (nextPhase !== handoffPhase) {
+    setHandoffPhase(nextPhase);
+  }
+  const phase = nextPhase;
+  // live: always show. exiting: show until collapse lead elapses, then
+  // unmount so outer fade can run (AnimatePresence only exits removed kids).
+  const renderSearchProgress =
+    phase === 'live' || (phase === 'exiting' && !exitUnmount);
+  /** Delay Reasoning until search exit finishes when we were showing search. */
+  const showReasoning =
+    Boolean(thinkingContent || isThinkingPending) && phase !== 'exiting';
+
+  const handoffFadeS = reduceMotion ? 0.01 : SEARCH_HANDOFF_FADE_S;
+  const reasoningEnterS = reduceMotion ? 0.01 : REASONING_HANDOFF_ENTER_S;
+  const collapseLeadMs = reduceMotion ? 0 : SEARCH_HANDOFF_COLLAPSE_LEAD_MS;
+
+  // Clear unmount latch once handoff leaves `exiting` (done/idle/live).
+  // Render-time adjust avoids setState-in-effect lint and keeps next
+  // search turn starting with the latch off.
+  if (phase !== 'exiting' && exitUnmount) {
+    setExitUnmount(false);
+  }
+
+  /**
+   * Step 1 of exit: keep block mounted with isExiting (list collapses).
+   * Step 2: after lead, unmount for outer fade (AnimatePresence exit).
+   */
+  useEffect(() => {
+    if (phase !== 'exiting') return;
+    const id = window.setTimeout(() => {
+      setExitUnmount(true);
+    }, collapseLeadMs);
+    return () => window.clearTimeout(id);
+  }, [phase, collapseLeadMs]);
+
+  /**
+   * Fallback if `onExitComplete` never fires (unfocused panel rAF stall).
+   * Clears stuck `exiting` so Reasoning is not blocked forever.
+   */
+  useEffect(() => {
+    if (phase !== 'exiting') return;
+    const id = window.setTimeout(() => {
+      setHandoffPhase((prev) => completeSearchHandoffExit(prev));
+    }, SEARCH_HANDOFF_EXIT_FALLBACK_MS);
+    return () => window.clearTimeout(id);
+  }, [phase]);
+
+  const onSearchExitComplete = useCallback(() => {
+    setHandoffPhase((prev) => completeSearchHandoffExit(prev));
+  }, []);
+
   /**
    * Action bar is hidden while tokens stream. Re-open for the C3 verifying
    * pill (still isStreaming, only when sources exist) and for the finished turn.
@@ -522,27 +603,59 @@ export function ChatBubble({
         <div
           ref={containerRef}
           data-testid="chat-bubble"
+          data-search-handoff-phase={phase}
           className="search-bubble flex flex-col w-full"
           onMouseOver={onAnswerMouseOver}
           onMouseOut={onAnswerMouseOut}
           onClick={onAnswerClick}
         >
           <div className="text-sm leading-relaxed select-text py-1">
-            {showSearchProgress ? (
-              <SearchProgressBlock
-                stage={searchStage}
-                sources={searchSources}
-                isSearching={isSearching}
-              />
+            <AnimatePresence
+              initial={false}
+              onExitComplete={onSearchExitComplete}
+            >
+              {renderSearchProgress ? (
+                <motion.div
+                  key="search-progress"
+                  data-testid="search-progress-exit-wrap"
+                  initial={false}
+                  animate={{ opacity: 1 }}
+                  exit={{
+                    opacity: 0,
+                    transition: { duration: handoffFadeS, ease: 'easeOut' },
+                  }}
+                >
+                  <SearchProgressBlock
+                    stage={searchStage}
+                    sources={searchSources}
+                    isSearching={isSearching || phase === 'exiting'}
+                    isExiting={phase === 'exiting'}
+                  />
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
+            {showReasoning ? (
+              <motion.div
+                key="reasoning-handoff"
+                data-testid="reasoning-handoff-enter"
+                initial={{ opacity: 0, y: 4 }}
+                animate={{
+                  opacity: 1,
+                  y: 0,
+                  transition: {
+                    duration: reasoningEnterS,
+                    ease: [0.33, 1, 0.68, 1],
+                  },
+                }}
+              >
+                <ReasoningBlock
+                  thinkingContent={thinkingContent}
+                  isPending={isThinkingPending ?? false}
+                  pendingLabel={pendingLabel}
+                  isThinking={isThinking ?? false}
+                />
+              </motion.div>
             ) : null}
-            {(thinkingContent || isThinkingPending) && (
-              <ReasoningBlock
-                thinkingContent={thinkingContent}
-                isPending={isThinkingPending ?? false}
-                pendingLabel={pendingLabel}
-                isThinking={isThinking ?? false}
-              />
-            )}
             {errorKind ? (
               <ErrorCard
                 kind={errorKind}
