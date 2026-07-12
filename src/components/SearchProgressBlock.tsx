@@ -102,12 +102,15 @@ export function liveSearchStageLabel(stage: SearchStage): string {
 }
 
 /**
- * Header label when the web block is collapsed after sources exist: count
- * first so the row stays scannable next to reasoning/answer. Caller only
- * invokes this when `count >= 1`.
+ * Builds the progress header: live stage copy, with `(N)` when sources exist.
+ * Expand/collapse never rewrites this string; only stage advances do.
  */
-function collapsedSourcesLabel(count: number): string {
-  return `${count} ${count === 1 ? 'source' : 'sources'}`;
+function searchProgressHeaderLabel(
+  stage: SearchStage,
+  sourceCount: number,
+): string {
+  const stageLabel = liveSearchStageLabel(stage);
+  return sourceCount > 0 ? `${stageLabel} (${sourceCount})` : stageLabel;
 }
 
 /**
@@ -156,14 +159,12 @@ export function SearchProgressBlock({
     return null;
   }
 
-  const headerLabel =
-    hasSources && (preferCollapsed || !expanded)
-      ? collapsedSourcesLabel(sourceCount)
-      : liveSearchStageLabel(stage);
+  // Stage label always; count parens when sources exist. Collapse never swaps copy.
+  const headerLabel = searchProgressHeaderLabel(stage, sourceCount);
 
   /**
    * Toggles expand/collapse. Only wired on the sources toggle button, which
-   * is not rendered until at least one source exists.
+   * is not rendered until at least one source exists. Label text is unchanged.
    */
   function handleToggle(): void {
     setUserExpanded((prev) => {
@@ -181,9 +182,26 @@ export function SearchProgressBlock({
 
   const showLiveDots = isSearching && !preferCollapsed;
 
+  /**
+   * Chevron matches ReasoningBlock: left of the status strip, &#9650;, text-[9px],
+   * rotate 180 expanded / 90 collapsed.
+   */
+  const chevron = (
+    <span
+      data-testid="search-progress-chevron"
+      aria-hidden
+      className="inline-block shrink-0 text-[9px] text-text-secondary/55 transition-transform duration-150"
+      style={{
+        transform: expanded ? 'rotate(180deg)' : 'rotate(90deg)',
+      }}
+    >
+      &#9650;
+    </span>
+  );
+
   return (
     <div data-testid="search-progress-block" className="mb-2">
-      {/* Row gap matches strip internal gap (0.5rem) so chevron sits like a sibling, not a second type scale. */}
+      {/* Chevron left of strip (ReasoningBlock pattern); gap-2 matches strip siblings. */}
       <div className="flex min-w-0 items-center gap-2">
         {hasSources ? (
           <button
@@ -194,6 +212,7 @@ export function SearchProgressBlock({
             onClick={handleToggle}
             className="flex min-w-0 flex-1 items-center gap-2 text-left cursor-pointer bg-transparent border-0 p-0"
           >
+            {chevron}
             {showLiveDots ? (
               <RequestStatusStrip label={headerLabel} />
             ) : (
@@ -204,16 +223,6 @@ export function SearchProgressBlock({
                 {headerLabel}
               </span>
             )}
-            <span
-              data-testid="search-progress-chevron"
-              aria-hidden
-              className="inline-block shrink-0 text-[9px] text-text-secondary/60 transition-transform duration-150"
-              style={{
-                transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
-              }}
-            >
-              ▾
-            </span>
           </button>
         ) : (
           <div data-testid="search-progress-header-row">

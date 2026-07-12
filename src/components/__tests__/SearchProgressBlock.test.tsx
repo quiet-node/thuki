@@ -59,6 +59,9 @@ describe('SearchProgressBlock', () => {
     expect(
       screen.queryByTestId('search-progress-toggle'),
     ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('search-progress-chevron'),
+    ).not.toBeInTheDocument();
   });
 
   it('maps analyzing and reading stages to the correct labels', () => {
@@ -79,7 +82,7 @@ describe('SearchProgressBlock', () => {
     );
     expect(screen.getByTestId('loading-label')).toHaveAttribute(
       'data-label',
-      'Reading sources',
+      'Reading sources (3)',
     );
   });
 
@@ -108,9 +111,18 @@ describe('SearchProgressBlock', () => {
       'aria-expanded',
       'true',
     );
+    expect(screen.getByTestId('loading-label')).toHaveAttribute(
+      'data-label',
+      'Reading sources (3)',
+    );
+    // Chevron sits left of the strip (first child of the toggle button).
+    const toggle = screen.getByTestId('search-progress-toggle');
+    const chevron = screen.getByTestId('search-progress-chevron');
+    expect(toggle.firstElementChild).toBe(chevron);
+    expect(chevron).toHaveStyle({ transform: 'rotate(180deg)' });
   });
 
-  it('collapses the source list when preferCollapsed is true (reasoning/answer active)', () => {
+  it('keeps stage label with count when preferCollapsed (no bare N sources)', () => {
     render(
       <SearchProgressBlock
         stage={{ kind: 'reading_sources' }}
@@ -124,15 +136,18 @@ describe('SearchProgressBlock', () => {
       screen.queryByTestId('search-progress-body'),
     ).not.toBeInTheDocument();
     expect(screen.getByTestId('search-progress-header')).toHaveTextContent(
-      '3 sources',
+      'Reading sources (3)',
     );
     expect(screen.getByTestId('search-progress-toggle')).toHaveAttribute(
       'aria-expanded',
       'false',
     );
+    expect(screen.getByTestId('search-progress-chevron')).toHaveStyle({
+      transform: 'rotate(90deg)',
+    });
   });
 
-  it('lets the user expand a collapsed reading-sources list', () => {
+  it('lets the user expand a collapsed reading-sources list without label swap', () => {
     render(
       <SearchProgressBlock
         stage={{ kind: 'reading_sources' }}
@@ -142,15 +157,22 @@ describe('SearchProgressBlock', () => {
       />,
     );
 
+    expect(screen.getByTestId('search-progress-header')).toHaveTextContent(
+      'Reading sources (3)',
+    );
     fireEvent.click(screen.getByTestId('search-progress-toggle'));
     expect(screen.getByTestId('search-progress-body')).toBeInTheDocument();
     expect(screen.getByTestId('search-progress-toggle')).toHaveAttribute(
       'aria-expanded',
       'true',
     );
+    // Label stable across expand.
+    expect(screen.getByTestId('search-progress-header')).toHaveTextContent(
+      'Reading sources (3)',
+    );
   });
 
-  it('lets the user collapse an auto-expanded reading-sources list', () => {
+  it('lets the user collapse an auto-expanded list while keeping stage label', () => {
     render(
       <SearchProgressBlock
         stage={{ kind: 'reading_sources' }}
@@ -159,10 +181,22 @@ describe('SearchProgressBlock', () => {
       />,
     );
 
+    expect(screen.getByTestId('loading-label')).toHaveAttribute(
+      'data-label',
+      'Reading sources (3)',
+    );
     fireEvent.click(screen.getByTestId('search-progress-toggle'));
     expect(
       screen.queryByTestId('search-progress-body'),
     ).not.toBeInTheDocument();
+    // Still live strip + stage label with count; never bare "3 sources".
+    expect(screen.getByTestId('loading-label')).toHaveAttribute(
+      'data-label',
+      'Reading sources (3)',
+    );
+    expect(screen.getByTestId('search-progress-chevron')).toHaveStyle({
+      transform: 'rotate(90deg)',
+    });
   });
 
   it('opens a source URL through the open_url Tauri command', () => {
@@ -180,7 +214,7 @@ describe('SearchProgressBlock', () => {
     });
   });
 
-  it('uses a singular source label when only one source exists', () => {
+  it('appends (1) for a single source; never bare singular source label', () => {
     render(
       <SearchProgressBlock
         stage={{ kind: 'reading_sources' }}
@@ -190,7 +224,7 @@ describe('SearchProgressBlock', () => {
       />,
     );
     expect(screen.getByTestId('search-progress-header')).toHaveTextContent(
-      '1 source',
+      'Reading sources (1)',
     );
   });
 
@@ -274,6 +308,20 @@ describe('SearchProgressBlock', () => {
     expect(screen.getByTestId('loading-label')).toHaveAttribute(
       'data-label',
       'Searching the web',
+    );
+  });
+
+  it('appends source count to gap/searching stage labels when sources present', () => {
+    render(
+      <SearchProgressBlock
+        stage={{ kind: 'searching', gap: true }}
+        isSearching
+        sources={SOURCES}
+      />,
+    );
+    expect(screen.getByTestId('loading-label')).toHaveAttribute(
+      'data-label',
+      'Searching more angles (3)',
     );
   });
 });
