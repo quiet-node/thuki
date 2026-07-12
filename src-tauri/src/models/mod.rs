@@ -312,7 +312,7 @@ fn manifest_model_ids(db: &crate::history::Database) -> Result<Vec<String>, Stri
 /// persist when the provider reports an empty inventory so a partially-up
 /// daemon cannot corrupt the persisted choice. The resolved value (possibly
 /// `None` when unreachable or empty) is always mirrored into the in-memory
-/// [`ActiveModelState`] so downstream callers (ask_model, search_pipeline)
+/// [`ActiveModelState`] so downstream callers (`ask_model`)
 /// see the same truth as the frontend.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
@@ -690,8 +690,7 @@ pub async fn detect_ollama(
 ///    the case where a user removed their previously-selected model with
 ///    `ollama rm` between launches.
 /// 2. Mirror the resolved slug into the in-memory [`ActiveModelState`] so
-///    `ask_model` and `search_pipeline` see it on the next request
-///    without an extra DB read.
+///    `ask_model` sees it on the next request without an extra DB read.
 ///
 /// Both writes are gated through [`should_persist_resolved`] which
 /// refuses to persist when Ollama reports an empty inventory (i.e.
