@@ -57,26 +57,27 @@ export const COMMANDS: readonly Command[] = [
   {
     trigger: '/search',
     label: '/search',
-    description: 'Agentic web search: iterative reasoning & cited synthesis',
+    description: 'Force web search (built-in engines, cited answer)',
     docs: {
       summary:
-        'Runs agentic web search and answers from live sources with citations.',
+        'Forces a live web search on the built-in engine and answers with citations.',
       usage: '/search <question>',
       examples: [
         '`/search who owns Figma now?`: searches live sources for a current answer',
         '`/search latest React 19 release notes`: retrieves recent release information from the web',
       ],
       behavior:
-        "Routes the message through Thuki's local search pipeline instead of plain chat. Answers are grounded in retrieved web sources and typically include inline citations plus a Sources footer.",
+        "Forces Thuki's built-in zero-setup web search (engines-only, skips cache and verticals) even when auto-search would skip. Answers are grounded in retrieved sources with inline citations and a Sources footer. Plain messages still use automatic search when the model decides the web is needed.",
       limit:
-        'Requires the search sandbox to be running. See [agentic-search.md#setup](agentic-search.md#setup) for setup steps. Use it for current, changing, or cutoff-sensitive information.',
+        'Requires the built-in engine (not Ollama-only). Use when auto-search missed something or you want a forced look-up.',
     },
     promptHelp: {
-      summary: 'agentic web search for current or cutoff-sensitive questions.',
+      summary:
+        'force a built-in web search for current or cutoff-sensitive questions.',
       whenToSuggest:
-        'Mention this when the user asks for current web information, live prices, recent releases, current ownership, or facts likely newer than the model cutoff.',
+        'Mention this when the user asks for current web information, live prices, recent releases, current ownership, or facts likely newer than the model cutoff, or when auto-search may have skipped a needed look-up.',
       limit:
-        'Do not claim to have searched the web without `/search`. `/search` requires the local search sandbox.',
+        'Do not claim to have searched the web without search. `/search` needs the built-in engine.',
     },
   },
   {

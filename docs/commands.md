@@ -22,7 +22,7 @@ This means you can highlight text anywhere on screen, summon Thuki with double-t
 
 ## /search
 
-Runs agentic web search and answers from live sources with citations.
+Forces a live web search on the built-in engine and answers with citations.
 
 **Usage:** `/search <question>`
 
@@ -30,9 +30,9 @@ Runs agentic web search and answers from live sources with citations.
 - `/search who owns Figma now?`: searches live sources for a current answer
 - `/search latest React 19 release notes`: retrieves recent release information from the web
 
-**Behavior:** Routes the message through Thuki's local search pipeline instead of plain chat. Answers are grounded in retrieved web sources and typically include inline citations plus a Sources footer.
+**Behavior:** Forces Thuki's built-in zero-setup web search (engines-only, skips cache and verticals) even when auto-search would skip. Answers are grounded in retrieved sources with inline citations and a Sources footer. Plain messages still use automatic search when the model decides the web is needed.
 
-**Limit:** Requires the search sandbox to be running. See [agentic-search.md#setup](agentic-search.md#setup) for setup steps. Use it for current, changing, or cutoff-sensitive information.
+**Limit:** Requires the built-in engine (not Ollama-only). Use when auto-search missed something or you want a forced look-up.
 
 ---
 

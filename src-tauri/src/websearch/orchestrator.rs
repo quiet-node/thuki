@@ -164,6 +164,10 @@ pub struct SearchDeps<'a> {
 /// Runs the pipeline for one turn. `chat_system_prompt`, `history`, and
 /// `latest_user` MUST be byte-identical to the plain chat prompt so the
 /// pre-pass and writer share llama-server's warm KV prefix.
+///
+/// Production and unit tests call this with auto-routing (no force). Slash
+/// `/search` uses [`run_search_forced`] so the user override always hits the
+/// engines-only path.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_search(
     deps: &SearchDeps<'_>,
@@ -176,6 +180,83 @@ pub async fn run_search(
     cancel: &CancellationToken,
     status: &(dyn Fn(SearchPhase) + Send + Sync),
 ) -> SearchOutcome {
+    run_search_inner(
+        deps,
+        chat_system_prompt,
+        history,
+        latest_user,
+        num_ctx,
+        today,
+        locale,
+        cancel,
+        status,
+        false,
+    )
+    .await
+}
+
+/// Like [`run_search`], but forces the engines-only `explicit_search` path
+/// (skip cache and verticals), even when the classifier would say no. Used by
+/// the `/search` slash alias as the user's recovery hatch for false negatives.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_search_forced(
+    deps: &SearchDeps<'_>,
+    chat_system_prompt: &str,
+    history: &[ChatMessage],
+    latest_user: &str,
+    num_ctx: u32,
+    today: &str,
+    locale: &str,
+    cancel: &CancellationToken,
+    status: &(dyn Fn(SearchPhase) + Send + Sync),
+) -> SearchOutcome {
+    run_search_inner(
+        deps,
+        chat_system_prompt,
+        history,
+        latest_user,
+        num_ctx,
+        today,
+        locale,
+        cancel,
+        status,
+        true,
+    )
+    .await
+}
+
+/// Shared body for [`run_search`] / [`run_search_forced`].
+#[allow(clippy::too_many_arguments)]
+async fn run_search_inner(
+    deps: &SearchDeps<'_>,
+    chat_system_prompt: &str,
+    history: &[ChatMessage],
+    latest_user: &str,
+    num_ctx: u32,
+    today: &str,
+    locale: &str,
+    cancel: &CancellationToken,
+    status: &(dyn Fn(SearchPhase) + Send + Sync),
+    force_search: bool,
+) -> SearchOutcome {
+    // Slash `/search` (and any other explicit force): skip ForceNo and go
+    // engines-only. Still runs the classifier when possible for a better
+    // rewrite, then stamps explicit_search so cache/verticals never win.
+    if force_search {
+        return force_explicit_web(
+            deps,
+            chat_system_prompt,
+            history,
+            latest_user,
+            num_ctx,
+            today,
+            locale,
+            cancel,
+            status,
+        )
+        .await;
+    }
+
     // Stage one: deterministic pre-filter, no model call.
     let verdict = prefilter(latest_user, today);
     eprintln!("[search] prefilter={verdict:?}");
@@ -383,6 +464,80 @@ fn resolve_decision(verdict: PreFilterVerdict, classified: PrePassDecision) -> P
         // (it short-circuits before the model call).
         PreFilterVerdict::Ambiguous | PreFilterVerdict::ForceNo => classified,
     }
+}
+
+/// Engines-only path for an explicit user force (`/search` alias). Runs the
+/// classifier for rewrite quality when possible; on infra failure uses the raw
+/// message. Always sets `explicit_search` and `Web` so cache and verticals are
+/// skipped (same contract as a classifier `explicit_search: true` decision).
+#[allow(clippy::too_many_arguments)]
+async fn force_explicit_web(
+    deps: &SearchDeps<'_>,
+    chat_system_prompt: &str,
+    history: &[ChatMessage],
+    latest_user: &str,
+    num_ctx: u32,
+    today: &str,
+    locale: &str,
+    cancel: &CancellationToken,
+    status: &(dyn Fn(SearchPhase) + Send + Sync),
+) -> SearchOutcome {
+    status(SearchPhase::Deciding);
+    let classified = match deps
+        .prepass
+        .decide(history, latest_user, today, cancel)
+        .await
+    {
+        Ok(classified) => classified,
+        Err(InferenceError::Cancelled) => return SearchOutcome::Cancelled,
+        Err(InferenceError::Request(reason)) => {
+            eprintln!("[search] force_search classifier error: {reason} -> raw query");
+            PrePassDecision {
+                decision: SearchDecision::Web,
+                route: SearchRoute::Web,
+                standalone_question: latest_user.trim().to_string(),
+                queries: vec![latest_user.trim().to_string()],
+                explicit_search: true,
+            }
+        }
+    };
+    let queries = if classified.queries.is_empty() {
+        vec![classified.standalone_question.clone()]
+    } else {
+        classified.queries
+    };
+    let standalone = if classified.standalone_question.trim().is_empty() {
+        latest_user.trim().to_string()
+    } else {
+        classified.standalone_question
+    };
+    eprintln!(
+        "[search] force_search route={:?} queries={}",
+        classified.route,
+        queries.len()
+    );
+    deps.recorder.record(RecorderEvent::SearchDecided {
+        prefilter: "force_search".to_string(),
+        route: route_label(classified.route).to_string(),
+        standalone_question: standalone.clone(),
+        queries: queries.clone(),
+    });
+    run_web(
+        deps,
+        chat_system_prompt,
+        history,
+        latest_user,
+        classified.route,
+        &standalone,
+        &queries,
+        num_ctx,
+        today,
+        locale,
+        cancel,
+        status,
+        true, /* explicit_search: skip cache + verticals */
+    )
+    .await
 }
 
 /// The `web`/`cached` branch: search every query, fetch and rank the pages,
@@ -1858,6 +2013,117 @@ mod tests {
         .await;
         assert!(matches!(outcome, SearchOutcome::NoSearch));
         assert_eq!(*phases.lock().unwrap(), vec![SearchPhase::Deciding]);
+    }
+
+    #[tokio::test]
+    async fn force_search_overrides_classifier_no_and_searches_engines() {
+        // `/search` force path: even when the classifier would say No, we still
+        // run engines-only with explicit_search semantics.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::No,
+            route: SearchRoute::Web,
+            standalone_question: "who owns Figma".into(),
+            queries: vec!["Figma ownership".into()],
+            explicit_search: false,
+        }));
+        let transport = transport_with_serp_and_page();
+        let (phases, status) = recorder();
+        let outcome = run_search_forced(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "who owns Figma",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        // Engines ran (not NoSearch). Answer vs Unreachable depends on page
+        // fetch fixtures; both prove force overrode classifier No.
+        assert!(
+            !matches!(outcome, SearchOutcome::NoSearch | SearchOutcome::Cancelled),
+            "force_search must not skip search when the classifier says No"
+        );
+        let phases = phases.lock().unwrap().clone();
+        assert!(phases.contains(&SearchPhase::Deciding));
+        assert!(phases
+            .iter()
+            .any(|p| matches!(p, SearchPhase::Searching | SearchPhase::Reading)));
+    }
+
+    #[tokio::test]
+    async fn force_search_classifier_cancel_yields_cancelled() {
+        let prepass = FakePrePass::returning(Err(InferenceError::Cancelled));
+        let transport = FakeHttpTransport::new();
+        let (_phases, status) = recorder();
+        let outcome = run_search_forced(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "force me",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn force_search_classifier_error_uses_raw_query_and_empty_rewrite_fallback() {
+        // Infra failure: raw message becomes standalone + query.
+        let prepass = FakePrePass::returning(Err(InferenceError::Request("timeout".into())));
+        let transport = transport_with_serp_and_page();
+        let (_phases, status) = recorder();
+        let outcome = run_search_forced(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "  raw forced query  ",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(!matches!(
+            outcome,
+            SearchOutcome::NoSearch | SearchOutcome::Cancelled
+        ));
+    }
+
+    #[tokio::test]
+    async fn force_search_backfills_empty_queries_and_standalone() {
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::No,
+            route: SearchRoute::Web,
+            standalone_question: "   ".into(),
+            queries: vec![],
+            explicit_search: false,
+        }));
+        let transport = transport_with_serp_and_page();
+        let (_phases, status) = recorder();
+        let outcome = run_search_forced(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "user typed this",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(!matches!(
+            outcome,
+            SearchOutcome::NoSearch | SearchOutcome::Cancelled
+        ));
     }
 
     #[tokio::test]

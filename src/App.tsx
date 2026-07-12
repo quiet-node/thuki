@@ -3055,30 +3055,24 @@ function App() {
       return;
     }
 
-    // `/search` entry point AND sticky follow-ups. Search ignores attached
-    // images entirely (the pipeline never sends image bytes), so it does
-    // NOT route through the pending-images gate below. An explicit /screen
-    // command takes precedence over search continuation so users can always
-    // attach a screenshot mid-conversation.
-    if (hasSearch || (searchActive && !hasScreen && found.size === 0)) {
+    // `/search` force-search alias onto the built-in pipeline. One-shot only:
+    // follow-ups use normal auto-search. Ignores attached images (same as
+    // before). `/screen` still wins if both are present via command parsing
+    // above.
+    if (hasSearch) {
       const searchQuery = strippedMessage.trim();
       if (!searchQuery) return;
       const searchContext = sanitizeContext(
         selectedContext,
         quote.maxContextLength,
       );
-      // Pass the full typed query (with `/search`) as bubble display content so
-      // the user sees exactly what they typed; the backend receives only the
+      // Bubble shows the literal typed text (with `/search`); backend gets the
       // stripped query without the trigger prefix.
-      const searchDisplay = hasSearch ? trimmedQuery : undefined;
+      const searchDisplay = trimmedQuery;
       setQuery('');
       setSelectedContext(null);
-      setSearchActive(true);
-      void askSearch(searchQuery, searchDisplay, searchContext).then(
-        ({ final }) => {
-          if (final) setSearchActive(false);
-        },
-      );
+      setSearchActive(false);
+      void askSearch(searchQuery, searchDisplay, searchContext);
       return;
     }
 

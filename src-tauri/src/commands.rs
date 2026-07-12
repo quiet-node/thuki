@@ -808,6 +808,7 @@ async fn run_builtin_search(
     recorder: &std::sync::Arc<crate::trace::BoundRecorder>,
     on_chunk: &(impl Fn(StreamChunk) + Send + Sync),
     cache_scope: u64,
+    force_search: bool,
 ) -> BuiltinSearchResult {
     // The engine is already warm (the caller holds an activity guard); this
     // re-ensure just reads back the live port for the pre-pass and writer.
@@ -857,18 +858,33 @@ async fn run_builtin_search(
         local_zone: local_zone.as_deref(),
     };
     let status = |phase| on_chunk(StreamChunk::SearchStatus { phase });
-    let outcome = crate::websearch::orchestrator::run_search(
-        &deps,
-        system_prompt,
-        history,
-        latest_user,
-        num_ctx,
-        &today_string(),
-        &user_locale(),
-        cancel,
-        &status,
-    )
-    .await;
+    let outcome = if force_search {
+        crate::websearch::orchestrator::run_search_forced(
+            &deps,
+            system_prompt,
+            history,
+            latest_user,
+            num_ctx,
+            &today_string(),
+            &user_locale(),
+            cancel,
+            &status,
+        )
+        .await
+    } else {
+        crate::websearch::orchestrator::run_search(
+            &deps,
+            system_prompt,
+            history,
+            latest_user,
+            num_ctx,
+            &today_string(),
+            &user_locale(),
+            cancel,
+            &status,
+        )
+        .await
+    };
     // Diagnostic hook for the unreproduced J6 zero-token bug: log which outcome
     // variant resolved so a live occurrence can be correlated with the search
     // path that ran. One stderr line per search-turn (not gated to turn 1);
@@ -1860,6 +1876,9 @@ pub async fn ask_model(
     // and what existing frontend invokes that omit the field deserialize to)
     // leaves the gate active.
     allow_oversized: Option<bool>,
+    // When true, force built-in engines-only web search (`/search` alias).
+    // Non-builtin providers receive a capability error below.
+    force_search: bool,
     on_event: Channel<StreamChunk>,
     client: State<'_, reqwest::Client>,
     generation: State<'_, GenerationState>,
@@ -1889,6 +1908,16 @@ pub async fn ask_model(
             return Ok(());
         }
     };
+
+    // `/search` force-search is built-in only (same residency premise as auto-search).
+    if force_search && !matches!(route, ChatRoute::Builtin { .. }) {
+        let _ = on_event.send(StreamChunk::Error(EngineError {
+            kind: EngineErrorKind::Other,
+            message: "Web search needs the built-in engine\nSwitch to Built-in in Settings to use /search."
+                .to_string(),
+        }));
+        return Ok(());
+    }
 
     // Snapshot the picker-backed active model; drop the guard before any
     // `.await`. It is only a fallback: `Builtin` routes carry their model in
@@ -2157,6 +2186,7 @@ pub async fn ask_model(
                             &bound_recorder,
                             &pump,
                             epoch_at_start,
+                            force_search,
                         )
                         .await
                     };

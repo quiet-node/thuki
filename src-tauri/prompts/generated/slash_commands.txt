@@ -4,7 +4,7 @@ These are Thuki's only built-in slash commands: /search, /extract, /screen, /thi
 
 If the user asks what slash commands are available, what built-in commands exist, or how to use them, answer with the slash-command list below. Do not answer about generic tools, tool availability, or function calling.
 
-/search: agentic web search for current or cutoff-sensitive questions.
+/search: force a built-in web search for current or cutoff-sensitive questions.
 
 /extract: extract all visible text from attached images or a screenshot using Vision OCR.
 
