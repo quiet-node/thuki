@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { MarkdownRenderer } from './MarkdownRenderer';
-import { LoadingStage } from './LoadingStage';
+import { RequestStatusStrip } from './RequestStatusStrip';
 
 export interface ReasoningBlockProps {
   thinkingContent?: string;
@@ -64,7 +64,10 @@ export function ReasoningBlock({
       <div data-testid="reasoning-block" className="mb-2">
         <div data-testid="reasoning-pending" className={SUMMARY_ROW_CLASS}>
           <span className="inline-flex min-w-0">
-            <LoadingStage label={pendingLabel} labelPrefix={chevronSpacer} />
+            <RequestStatusStrip
+              label={pendingLabel}
+              labelPrefix={chevronSpacer}
+            />
           </span>
         </div>
       </div>
@@ -101,7 +104,7 @@ export function ReasoningBlock({
       >
         {isThinking ? (
           <span className="inline-flex min-w-0">
-            <LoadingStage label={summaryLabel} labelPrefix={chevron} />
+            <RequestStatusStrip label={summaryLabel} labelPrefix={chevron} />
           </span>
         ) : (
           <>

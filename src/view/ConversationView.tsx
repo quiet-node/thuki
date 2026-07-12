@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion';
 import { useRef, useEffect } from 'react';
 import { ChatBubble } from '../components/ChatBubble';
-import { LoadingStage } from '../components/LoadingStage';
+import { RequestStatusStrip } from '../components/RequestStatusStrip';
 import { WindowControls } from '../components/WindowControls';
 import { useEngineLoadingLabel } from '../hooks/useEngineLoadingLabel';
 import type { Message, RetrySnapshot } from '../hooks/useModel';
@@ -30,7 +30,7 @@ function searchStageLabel(stage: SearchStage): string | null {
       return stage.gap ? 'Composing refined answer' : 'Composing answer';
     case 'verifying_sources':
       // Answer already streamed; ChatBubble C3 pill owns this cue. Fallback
-      // label for the rare empty-content path that still hits LoadingStage.
+      // label for the rare empty-content path that still hits RequestStatusStrip.
       return 'Verifying sources...';
   }
 }
@@ -397,7 +397,7 @@ export function ConversationView({
             /think turn gets the same engine label, but rendered inside its
             own ChatBubble (ReasoningBlock's pending state) rather than here. */}
         {isAwaitingFirstToken && !lastMessage?.fromThink ? (
-          <LoadingStage
+          <RequestStatusStrip
             label={searchStageLabel(searchStage) ?? engineLoadingLabel}
           />
         ) : null}

@@ -2,7 +2,7 @@ import { useEffect, useId, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { invoke } from '@tauri-apps/api/core';
 import type { SearchResultPreview, SearchStage } from '../types/search';
-import { LoadingStage } from './LoadingStage';
+import { RequestStatusStrip } from './RequestStatusStrip';
 
 /**
  * Props for progressive web-search progress chrome
@@ -194,7 +194,7 @@ export function SearchProgressBlock({
             className="flex min-w-0 flex-1 items-center gap-1.5 text-left cursor-pointer bg-transparent border-0 p-0"
           >
             {showLiveDots ? (
-              <LoadingStage compact label={headerLabel} />
+              <RequestStatusStrip compact label={headerLabel} />
             ) : (
               <span
                 data-testid="search-progress-header"
@@ -216,7 +216,7 @@ export function SearchProgressBlock({
           </button>
         ) : (
           <div data-testid="search-progress-header-row">
-            <LoadingStage compact label={headerLabel} />
+            <RequestStatusStrip compact label={headerLabel} />
           </div>
         )}
       </div>

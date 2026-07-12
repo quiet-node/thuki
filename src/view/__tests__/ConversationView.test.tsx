@@ -636,7 +636,7 @@ describe('ConversationView', () => {
       );
     });
 
-    it('does not show TypingIndicator when assistant has thinkingContent but no content', () => {
+    it('does not show a duplicate external status strip when reasoning owns chrome', () => {
       render(
         <ConversationView
           messages={[
@@ -651,8 +651,8 @@ describe('ConversationView', () => {
           onClose={vi.fn()}
         />,
       );
-      // Reasoning path owns chrome via ReasoningBlock's LoadingStage (unified
-      // strip). No second external ConversationView loading row for /think.
+      // Reasoning path owns chrome via ReasoningBlock's RequestStatusStrip.
+      // No second external ConversationView loading row for /think.
       expect(screen.getByTestId('loading-label')).toBeInTheDocument();
     });
   });
@@ -902,7 +902,7 @@ describe('ConversationView', () => {
       );
     });
 
-    it('hides external LoadingStage for search turns (bubble progress chrome takes over)', () => {
+    it('hides external RequestStatusStrip for search turns (bubble progress chrome takes over)', () => {
       render(
         <ConversationView
           messages={[

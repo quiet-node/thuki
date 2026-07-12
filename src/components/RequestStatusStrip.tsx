@@ -29,10 +29,9 @@ const TRACK_IN_MS = 480;
 /**
  * Unified post-submit status strip: Y1 three-dot motion + optional shimmer label.
  *
- * Replaces the old 9-dot `TypingIndicator` + plain `LoadingStage` pair so
- * engine cold-start, web search stages, and `/think` share one visual language
- * (locked design: warm cream outer dots, brand middle, trails, App.css
- * shimmer, G tracking-settle on copy change).
+ * Single post-submit status strip for engine cold-start, web search stages,
+ * and `/think` (locked design: warm cream outer dots, brand middle, trails,
+ * App.css shimmer, G tracking-settle on copy change).
  *
  * Drivers stay outside: callers pass the current label; this component only
  * owns presentation and label-change motion.
