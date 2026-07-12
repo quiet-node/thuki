@@ -144,7 +144,7 @@ describe('SearchProgressBlock', () => {
     expect(list.className).toContain('overflow-y-auto');
   });
 
-  it('scrolls the progress block into view when the list expands', () => {
+  it('scrolls the progress block into view with block end when the list expands', () => {
     const scrollIntoView = vi.fn();
     const original = HTMLElement.prototype.scrollIntoView;
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
@@ -160,12 +160,94 @@ describe('SearchProgressBlock', () => {
           sources={SOURCES}
         />,
       );
-      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+      // Expand path: effect and/or onAnimationComplete use block:'end'
+      // so bottom-growing content fully enters the viewport.
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end' });
 
       scrollIntoView.mockClear();
       fireEvent.click(screen.getByTestId('search-progress-toggle')); // collapse
       fireEvent.click(screen.getByTestId('search-progress-toggle')); // re-expand
-      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end' });
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+        configurable: true,
+        value: original,
+      });
+    }
+  });
+
+  it('re-scrolls into view when sourceCount grows while expanded', () => {
+    const scrollIntoView = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    try {
+      const { rerender } = render(
+        <SearchProgressBlock
+          stage={{ kind: 'reading_sources' }}
+          isSearching
+          sources={[SOURCES[0]]}
+        />,
+      );
+      scrollIntoView.mockClear();
+
+      rerender(
+        <SearchProgressBlock
+          stage={{ kind: 'reading_sources' }}
+          isSearching
+          sources={SOURCES}
+        />,
+      );
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end' });
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+        configurable: true,
+        value: original,
+      });
+    }
+  });
+
+  it('does not scrollIntoView after collapse or while exiting', () => {
+    const scrollIntoView = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    try {
+      const { rerender } = render(
+        <SearchProgressBlock
+          stage={{ kind: 'reading_sources' }}
+          isSearching
+          sources={SOURCES}
+        />,
+      );
+
+      // User collapse: expandedRef flips false; any late animation complete
+      // must no-op (covers scrollProgressIntoView early return).
+      fireEvent.click(screen.getByTestId('search-progress-toggle'));
+      scrollIntoView.mockClear();
+
+      // Force a body remount cycle then exit so animation callbacks may fire
+      // while collapsed / exiting without pinning scroll.
+      fireEvent.click(screen.getByTestId('search-progress-toggle'));
+      scrollIntoView.mockClear();
+      fireEvent.click(screen.getByTestId('search-progress-toggle'));
+
+      rerender(
+        <SearchProgressBlock
+          stage={{ kind: 'reading_sources' }}
+          isSearching
+          sources={SOURCES}
+          isExiting
+        />,
+      );
+      // isExiting forces collapse; scroll helper must not pin.
+      expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
       Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
         configurable: true,

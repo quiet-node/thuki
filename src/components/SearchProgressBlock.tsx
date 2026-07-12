@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { invoke } from '@tauri-apps/api/core';
 import type { SearchResultPreview, SearchStage } from '../types/search';
@@ -159,13 +159,32 @@ export function SearchProgressBlock({
     setUserExpanded(null);
   }, [hasSources, isSearching, isExiting]);
 
-  // Keep the progress header in view when the list expands (auto or user).
-  // `nearest` avoids jumpy centering when the strip is already visible.
+  // Latest expand/exit flags for animation callbacks (exit must not pin).
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
+  const isExitingRef = useRef(isExiting);
+  isExitingRef.current = isExiting;
+
+  /**
+   * Scroll the progress block so header + list enter the viewport.
+   * Prefer `end`: bottom-growing content; `nearest` is a no-op when the
+   * strip is already partially visible at the chat bottom edge.
+   * Called after expand height animation finishes and when sourceCount
+   * changes while already expanded (list grows under a long answer).
+   */
+  const scrollProgressIntoView = useCallback((): void => {
+    // Exit / collapse can still fire onAnimationComplete; skip pin then.
+    /* v8 ignore next -- defensive guard; expand path always has both true */
+    if (!expandedRef.current || isExitingRef.current) return;
+    /* v8 ignore next -- scrollIntoView is a host API absent in happy-dom */
+    rootRef.current?.scrollIntoView?.({ block: 'end' });
+  }, []);
+
+  // Re-scroll when source count grows while expanded (no expand animation).
   useEffect(() => {
     if (!expanded || !hasSources || isExiting) return;
-    /* v8 ignore next -- scrollIntoView is a host API absent in happy-dom */
-    rootRef.current?.scrollIntoView?.({ block: 'nearest' });
-  }, [expanded, hasSources, isExiting]);
+    scrollProgressIntoView();
+  }, [expanded, hasSources, isExiting, sourceCount, scrollProgressIntoView]);
 
   // Idle with no sources: nothing to show (footer chips handle post-answer).
   // Keep mounted while exiting even if `isSearching` flipped off mid-handoff.
@@ -259,6 +278,7 @@ export function SearchProgressBlock({
               opacity: { duration: 0.15 },
             }}
             style={{ overflow: 'hidden' }}
+            onAnimationComplete={scrollProgressIntoView}
           >
             {/*
               Cap list height so a long source set scrolls inside the block

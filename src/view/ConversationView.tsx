@@ -266,9 +266,21 @@ export function ConversationView({
     prevMessagesLengthRef.current = messages.length;
   }, [messages.length, messages]);
 
+  // Search chrome can grow without a new message object identity change that
+  // already implies layout growth (sources list expand, stage label swap).
+  // Track these so auto-scroll re-pins after the strip settles.
+  const lastAssistantSearchSourceCount =
+    lastMessage?.role === 'assistant'
+      ? (lastMessage.searchSources?.length ?? 0)
+      : 0;
+  const searchStageKey = searchStage?.kind ?? null;
+
   /**
    * Auto-scroll the chat container to the bottom when new content arrives,
    * but only if the user hasn't manually scrolled up.
+   *
+   * Double rAF waits one frame for React commit + one for layout after
+   * expand animations / source-list growth so scrollHeight is accurate.
    */
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -278,12 +290,22 @@ export function ConversationView({
 
     if (!shouldAutoScrollRef.current) return;
 
-    const raf = requestAnimationFrame(() => {
-      container.scrollTop = container.scrollHeight;
+    let outerRaf = 0;
+    let innerRaf = 0;
+
+    outerRaf = requestAnimationFrame(() => {
+      innerRaf = requestAnimationFrame(() => {
+        // Re-check: user may have scrolled up between the two settle frames.
+        if (!shouldAutoScrollRef.current) return;
+        container.scrollTop = container.scrollHeight;
+      });
     });
 
-    return () => cancelAnimationFrame(raf);
-  }, [messages, isGenerating]);
+    return () => {
+      cancelAnimationFrame(outerRaf);
+      cancelAnimationFrame(innerRaf);
+    };
+  }, [messages, isGenerating, lastAssistantSearchSourceCount, searchStageKey]);
 
   return (
     <motion.div
