@@ -304,11 +304,20 @@ export function ChatBubble({
   const isVerifyingSources = searchStage?.kind === 'verifying_sources';
   const hasSearchSources = Boolean(searchSources && searchSources.length > 0);
   /**
-   * SearchProgressBlock covers retrieve/read/compose. During verifying the
-   * C3 sources pill owns status so the progress row does not freeze on "N
-   * sources" while the turn still looks live.
+   * Reasoning or answer body has started. Option D sequential handoff:
+   * unmount SearchProgressBlock so only Reasoning (then answer) is live.
+   * Sources stay available post-answer via the footer chips / citations.
    */
-  const showSearchProgress = isSearching && !isVerifyingSources;
+  const handedOffFromSearch = Boolean(
+    thinkingContent || isThinkingPending || displayContent,
+  );
+  /**
+   * SearchProgressBlock covers retrieve/read/compose only during pure
+   * search. Unmounts once reasoning/answer starts, and during verifying
+   * (C3 sources pill owns that status).
+   */
+  const showSearchProgress =
+    isSearching && !isVerifyingSources && !handedOffFromSearch;
   /**
    * Action bar is hidden while tokens stream. Re-open for the C3 verifying
    * pill (still isStreaming, only when sources exist) and for the finished turn.
@@ -524,9 +533,6 @@ export function ChatBubble({
                 stage={searchStage}
                 sources={searchSources}
                 isSearching={isSearching}
-                preferCollapsed={Boolean(
-                  thinkingContent || isThinkingPending || displayContent,
-                )}
               />
             ) : null}
             {(thinkingContent || isThinkingPending) && (

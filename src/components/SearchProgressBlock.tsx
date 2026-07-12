@@ -7,6 +7,9 @@ import { RequestStatusStrip } from './RequestStatusStrip';
 /**
  * Props for progressive web-search progress chrome
  * (`ask_model` + `SearchStatus` / `SearchSources`).
+ *
+ * Mounted only during pure search (Option D). ChatBubble unmounts this
+ * block once reasoning or answer content begins.
  */
 export interface SearchProgressBlockProps {
   /**
@@ -18,11 +21,6 @@ export interface SearchProgressBlockProps {
   sources?: SearchResultPreview[];
   /** True while the search-augmented turn is still generating. */
   isSearching: boolean;
-  /**
-   * When true, the block prefers a collapsed header so reasoning/answer is
-   * the single active strip (Variant B: no dual loading rows).
-   */
-  preferCollapsed?: boolean;
 }
 
 /**
@@ -114,18 +112,17 @@ function searchProgressHeaderLabel(
 }
 
 /**
- * Progressive-disclosure search chrome for built-in auto-search (Variant B).
+ * Progressive-disclosure search chrome for built-in auto-search (Option D).
  *
- * Single expandable block: phase header while live, optional source list in
- * the body (collapsible for a clean reading-sources view). Prefers collapsed
- * once reasoning or answer content starts so only one active strip shows.
- * Letter avatars only: no favicon network fetches.
+ * Single expandable block during pure search only. Phase header while live,
+ * optional source list in the body (user can collapse for a clean view).
+ * ChatBubble unmounts this once reasoning or answer content starts so only
+ * one live status row shows. Letter avatars only: no favicon network fetches.
  */
 export function SearchProgressBlock({
   stage,
   sources = [],
   isSearching,
-  preferCollapsed = false,
 }: SearchProgressBlockProps) {
   const panelId = useId();
   const sourceCount = sources.length;
@@ -135,19 +132,18 @@ export function SearchProgressBlock({
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
 
   /**
-   * Auto policy: expand when searching with sources and the caller has not
-   * asked to prefer collapsed (reasoning/answer active). Collapse otherwise.
-   * User toggle wins until sources go empty or the turn resets.
+   * Auto policy: expand when searching with sources. Collapse when no
+   * sources yet. User toggle wins until sources go empty or the turn resets.
    */
-  const autoExpanded = isSearching && hasSources && !preferCollapsed;
+  const autoExpanded = isSearching && hasSources;
   const expanded = userExpanded ?? autoExpanded;
 
   // When sources first arrive during a live search, re-open unless the user
-  // already forced collapse or reasoning has taken over.
+  // already forced collapse.
   useEffect(() => {
-    if (!isSearching || !hasSources || preferCollapsed) return;
+    if (!isSearching || !hasSources) return;
     setUserExpanded(null);
-  }, [hasSources, isSearching, preferCollapsed]);
+  }, [hasSources, isSearching]);
 
   // Idle with no sources: nothing to show (footer chips handle post-answer).
   if (!isSearching && !hasSources) {
@@ -180,12 +176,9 @@ export function SearchProgressBlock({
     void invoke('open_url', { url });
   }
 
-  const showLiveDots = isSearching && !preferCollapsed;
-
   /**
    * Expand chevron: &#9650;, text-[9px], rotate 180 expanded / 90 collapsed.
-   * Live strip passes this as `accessory` (dots → chevron → label). Static
-   * preferCollapsed headers keep chevron left of the title only.
+   * Live strip passes this as `accessory` (dots → chevron → label).
    */
   const chevron = (
     <span
@@ -212,19 +205,7 @@ export function SearchProgressBlock({
             onClick={handleToggle}
             className="flex min-w-0 flex-1 items-center gap-2 text-left cursor-pointer bg-transparent border-0 p-0"
           >
-            {showLiveDots ? (
-              <RequestStatusStrip label={headerLabel} accessory={chevron} />
-            ) : (
-              <>
-                {chevron}
-                <span
-                  data-testid="search-progress-header"
-                  className="request-status-strip__title text-text-secondary/80 font-medium"
-                >
-                  {headerLabel}
-                </span>
-              </>
-            )}
+            <RequestStatusStrip label={headerLabel} accessory={chevron} />
           </button>
         ) : (
           <div data-testid="search-progress-header-row">

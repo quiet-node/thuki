@@ -1245,7 +1245,7 @@ describe('ChatBubble', () => {
       expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
     });
 
-    it('renders SearchProgressBlock above the thinking block while searching', () => {
+    it('unmounts SearchProgressBlock when thinking content starts (Option D handoff)', () => {
       render(
         <ChatBubble
           role="assistant"
@@ -1257,12 +1257,42 @@ describe('ChatBubble', () => {
           isThinking={false}
         />,
       );
-      const progress = screen.getByTestId('search-progress-block');
-      const reasoningBlock = screen.getByTestId('reasoning-block');
       expect(
-        progress.compareDocumentPosition(reasoningBlock) &
-          Node.DOCUMENT_POSITION_FOLLOWING,
-      ).toBeTruthy();
+        screen.queryByTestId('search-progress-block'),
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
+    });
+
+    it('unmounts SearchProgressBlock when isThinkingPending (Option D handoff)', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching
+          searchStage={{ kind: 'composing' }}
+          isThinkingPending
+        />,
+      );
+      expect(
+        screen.queryByTestId('search-progress-block'),
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
+    });
+
+    it('unmounts SearchProgressBlock when answer content starts (Option D handoff)', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="Partial answer"
+          index={0}
+          isSearching
+          searchStage={{ kind: 'composing' }}
+        />,
+      );
+      expect(
+        screen.queryByTestId('search-progress-block'),
+      ).not.toBeInTheDocument();
     });
 
     it('shows C3 verifying pill while streaming during citation audit', () => {

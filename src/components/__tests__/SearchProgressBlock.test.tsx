@@ -130,61 +130,6 @@ describe('SearchProgressBlock', () => {
     expect(chevron).toHaveStyle({ transform: 'rotate(180deg)' });
   });
 
-  it('keeps stage label with count when preferCollapsed (no bare N sources)', () => {
-    render(
-      <SearchProgressBlock
-        stage={{ kind: 'reading_sources' }}
-        isSearching
-        sources={SOURCES}
-        preferCollapsed
-      />,
-    );
-
-    expect(
-      screen.queryByTestId('search-progress-body'),
-    ).not.toBeInTheDocument();
-    expect(screen.getByTestId('search-progress-header')).toHaveTextContent(
-      'Reading sources (3)',
-    );
-    expect(screen.getByTestId('search-progress-toggle')).toHaveAttribute(
-      'aria-expanded',
-      'false',
-    );
-    // Static header: chevron left of title only (no live dots).
-    const toggle = screen.getByTestId('search-progress-toggle');
-    const chevron = screen.getByTestId('search-progress-chevron');
-    expect(toggle.firstElementChild).toBe(chevron);
-    expect(screen.queryByTestId('request-status-strip')).not.toBeInTheDocument();
-    expect(chevron).toHaveStyle({
-      transform: 'rotate(90deg)',
-    });
-  });
-
-  it('lets the user expand a collapsed reading-sources list without label swap', () => {
-    render(
-      <SearchProgressBlock
-        stage={{ kind: 'reading_sources' }}
-        isSearching
-        sources={SOURCES}
-        preferCollapsed
-      />,
-    );
-
-    expect(screen.getByTestId('search-progress-header')).toHaveTextContent(
-      'Reading sources (3)',
-    );
-    fireEvent.click(screen.getByTestId('search-progress-toggle'));
-    expect(screen.getByTestId('search-progress-body')).toBeInTheDocument();
-    expect(screen.getByTestId('search-progress-toggle')).toHaveAttribute(
-      'aria-expanded',
-      'true',
-    );
-    // Label stable across expand.
-    expect(screen.getByTestId('search-progress-header')).toHaveTextContent(
-      'Reading sources (3)',
-    );
-  });
-
   it('lets the user collapse an auto-expanded list while keeping stage label', () => {
     render(
       <SearchProgressBlock
@@ -212,6 +157,32 @@ describe('SearchProgressBlock', () => {
     });
   });
 
+  it('lets the user re-expand after collapsing', () => {
+    render(
+      <SearchProgressBlock
+        stage={{ kind: 'reading_sources' }}
+        isSearching
+        sources={SOURCES}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('search-progress-toggle'));
+    expect(
+      screen.queryByTestId('search-progress-body'),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('search-progress-toggle'));
+    expect(screen.getByTestId('search-progress-body')).toBeInTheDocument();
+    expect(screen.getByTestId('search-progress-toggle')).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    // Label stable across expand/collapse.
+    expect(screen.getByTestId('loading-label')).toHaveAttribute(
+      'data-label',
+      'Reading sources (3)',
+    );
+  });
+
   it('opens a source URL through the open_url Tauri command', () => {
     render(
       <SearchProgressBlock
@@ -233,10 +204,10 @@ describe('SearchProgressBlock', () => {
         stage={{ kind: 'reading_sources' }}
         isSearching
         sources={[SOURCES[0]]}
-        preferCollapsed
       />,
     );
-    expect(screen.getByTestId('search-progress-header')).toHaveTextContent(
+    expect(screen.getByTestId('loading-label')).toHaveAttribute(
+      'data-label',
       'Reading sources (1)',
     );
   });
