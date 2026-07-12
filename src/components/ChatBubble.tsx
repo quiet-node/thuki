@@ -309,6 +309,22 @@ export function ChatBubble({
   // skip the scrub for user bubbles.
   const displayContent = isUser ? content : cleanForRender(content);
 
+  /** Citation audit/repair after answer tokens; Done is still withheld. */
+  const isVerifyingSources = searchStage?.kind === 'verifying_sources';
+  const hasSearchSources = Boolean(searchSources && searchSources.length > 0);
+  /**
+   * SearchProgressBlock covers retrieve/read/compose. During verifying the
+   * C3 sources pill owns status so the progress row does not freeze on "N
+   * sources" while the turn still looks live.
+   */
+  const showSearchProgress = isSearching && !isVerifyingSources;
+  /**
+   * Action bar is hidden while tokens stream. Re-open for the C3 verifying
+   * pill (still isStreaming, only when sources exist) and for the finished turn.
+   */
+  const showActionBar =
+    !errorKind && (!isStreaming || (isVerifyingSources && hasSearchSources));
+
   const activeWarnings = searchWarnings ?? [];
   const warningSeverity: 'error' | 'warn' | null = activeWarnings.some(
     (w) => SEARCH_WARNING_SEVERITY[w] === 'error',
@@ -378,6 +394,41 @@ export function ChatBubble({
         availableBytes: memoryFit.availableBytes,
       }
     : insufficientMemoryInfo;
+
+  /**
+   * Stacks up to three domain letter avatars for the sources trigger or the
+   * verifying pill. Call only when `hasSearchSources` is true. `pulse`
+   * enables the C3 chip-pulse while citation audit runs.
+   */
+  function renderSourceAvatars(pulse: boolean): React.ReactNode {
+    return (
+      <span
+        aria-hidden
+        className={`inline-flex items-center${pulse ? ' sources-chips-pulse' : ''}`}
+      >
+        {searchSources!.slice(0, 3).map((src, i) => {
+          const domain = domainOf(src.url);
+          /* v8 ignore start */
+          const letter = (domain[0] ?? '?').toUpperCase();
+          /* v8 ignore stop */
+          const bg = avatarColor(domain);
+          return (
+            <span
+              key={src.url}
+              className="shrink-0 h-4.5 w-4.5 rounded-full inline-flex items-center justify-center text-[9px] font-semibold text-white/90"
+              style={{
+                background: bg,
+                border: '1.5px solid var(--avatar-ring, rgba(26,26,26,1))',
+                marginLeft: i === 0 ? 0 : -6,
+              }}
+            >
+              {letter}
+            </span>
+          );
+        })}
+      </span>
+    );
+  }
 
   /**
    * Two-way hover linking between inline citation anchors and the pill
@@ -486,7 +537,7 @@ export function ChatBubble({
           onClick={onAnswerClick}
         >
           <div className="text-sm leading-relaxed select-text py-1">
-            {isSearching ? (
+            {showSearchProgress ? (
               <SearchProgressBlock
                 stage={searchStage}
                 sources={searchSources}
@@ -522,7 +573,7 @@ export function ChatBubble({
           </div>
           {!errorKind && !isStreaming && (
             <AnimatePresence initial={false}>
-              {sourcesOpen && searchSources && searchSources.length > 0 && (
+              {sourcesOpen && hasSearchSources && (
                 <motion.div
                   key="sources"
                   data-testid="search-sources"
@@ -543,7 +594,7 @@ export function ChatBubble({
                       Sources
                     </p>
                     <div className="flex flex-col gap-0.5">
-                      {searchSources.map((src, i) => {
+                      {searchSources!.map((src, i) => {
                         const n = i + 1;
                         return (
                           <button
@@ -577,68 +628,62 @@ export function ChatBubble({
               )}
             </AnimatePresence>
           )}
-          {!errorKind && !isStreaming && (
+          {showActionBar && (
             <div className="h-6 flex items-center gap-3">
-              {/* shrink-0 wrapper prevents CopyButton's internal w-full from
-                  pushing the sources trigger to the opposite end. */}
-              <div className="shrink-0">
-                <CopyButton content={displayContent} align="left" />
-              </div>
-              {onReplace && (
-                <ReplaceButton content={displayContent} onReplace={onReplace} />
-              )}
-              {searchSources && searchSources.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setSourcesOpen((v) => !v)}
-                  aria-expanded={sourcesOpen}
-                  className="sources-trigger inline-flex items-center gap-2 cursor-pointer"
-                >
-                  <span aria-hidden className="inline-flex items-center">
-                    {searchSources.slice(0, 3).map((src, i) => {
-                      const domain = domainOf(src.url);
-                      // Empty host is defensive only; live sources always carry a URL.
-                      /* v8 ignore start */
-                      const letter = (domain[0] ?? '?').toUpperCase();
-                      /* v8 ignore stop */
-                      const bg = avatarColor(domain);
-                      return (
-                        <span
-                          key={src.url}
-                          className="shrink-0 h-4.5 w-4.5 rounded-full inline-flex items-center justify-center text-[9px] font-semibold text-white/90"
-                          style={{
-                            background: bg,
-                            border:
-                              '1.5px solid var(--avatar-ring, rgba(26,26,26,1))',
-                            marginLeft: i === 0 ? 0 : -6,
-                          }}
-                        >
-                          {letter}
-                        </span>
-                      );
-                    })}
-                  </span>
-                  <span className="text-[11px] text-white/50">
-                    {searchSources.length}{' '}
-                    {searchSources.length === 1 ? 'source' : 'sources'}
-                  </span>
-                </button>
-              )}
-              <SearchWarningIcon warnings={activeWarnings} />
-              {/* Model attribution chip: visually couples the response to the
-                  model-picker UI so users can see which model produced it. */}
-              {modelName && (
+              {isVerifyingSources && hasSearchSources ? (
                 <span
-                  data-testid="model-attribution"
-                  className="inline-flex items-center gap-[5px] px-[6px] py-[2px] pr-[8px] rounded-md border border-primary/15 bg-primary/5 text-[10.5px] tracking-[0.01em] text-text-secondary w-fit transition-[background-color,border-color,color] duration-150 hover:text-text-primary hover:bg-primary/10 hover:border-primary/25"
+                  data-testid="sources-verifying-pill"
+                  role="status"
+                  aria-live="polite"
+                  className="sources-verifying-pill"
                 >
-                  <span className="text-primary/85 shrink-0 flex items-center">
-                    {ATTRIB_CHIP_ICON}
-                  </span>
-                  <span className="max-w-[100px] truncate">
-                    {displayNames?.[modelName] ?? modelName}
-                  </span>
+                  {renderSourceAvatars(true)}
+                  Verifying sources...
                 </span>
+              ) : (
+                <>
+                  {/* shrink-0 wrapper prevents CopyButton's internal w-full from
+                      pushing the sources trigger to the opposite end. */}
+                  <div className="shrink-0">
+                    <CopyButton content={displayContent} align="left" />
+                  </div>
+                  {onReplace && (
+                    <ReplaceButton
+                      content={displayContent}
+                      onReplace={onReplace}
+                    />
+                  )}
+                  {hasSearchSources && (
+                    <button
+                      type="button"
+                      onClick={() => setSourcesOpen((v) => !v)}
+                      aria-expanded={sourcesOpen}
+                      className="sources-trigger inline-flex items-center gap-2 cursor-pointer"
+                    >
+                      {renderSourceAvatars(false)}
+                      <span className="text-[11px] text-white/50">
+                        {searchSources!.length}{' '}
+                        {searchSources!.length === 1 ? 'source' : 'sources'}
+                      </span>
+                    </button>
+                  )}
+                  <SearchWarningIcon warnings={activeWarnings} />
+                  {/* Model attribution chip: visually couples the response to the
+                      model-picker UI so users can see which model produced it. */}
+                  {modelName && (
+                    <span
+                      data-testid="model-attribution"
+                      className="inline-flex items-center gap-[5px] px-[6px] py-[2px] pr-[8px] rounded-md border border-primary/15 bg-primary/5 text-[10.5px] tracking-[0.01em] text-text-secondary w-fit transition-[background-color,border-color,color] duration-150 hover:text-text-primary hover:bg-primary/10 hover:border-primary/25"
+                    >
+                      <span className="text-primary/85 shrink-0 flex items-center">
+                        {ATTRIB_CHIP_ICON}
+                      </span>
+                      <span className="max-w-[100px] truncate">
+                        {displayNames?.[modelName] ?? modelName}
+                      </span>
+                    </span>
+                  )}
+                </>
               )}
             </div>
           )}

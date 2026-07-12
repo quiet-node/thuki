@@ -83,6 +83,16 @@ describe('SearchProgressBlock', () => {
     );
   });
 
+  it('maps verifying_sources to the C3 label', () => {
+    render(
+      <SearchProgressBlock stage={{ kind: 'verifying_sources' }} isSearching />,
+    );
+    expect(screen.getByTestId('loading-label')).toHaveAttribute(
+      'data-label',
+      'Verifying sources...',
+    );
+  });
+
   it('auto-expands the collapsible source list when sources arrive while searching', () => {
     render(
       <SearchProgressBlock

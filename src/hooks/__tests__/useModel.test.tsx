@@ -341,6 +341,16 @@ describe('useModel', () => {
         });
       });
       expect(result.current.searchStage).toEqual({ kind: 'reading_sources' });
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'SearchStatus',
+          data: { phase: 'verifying' },
+        });
+      });
+      expect(result.current.searchStage).toEqual({
+        kind: 'verifying_sources',
+      });
     });
 
     it('attaches SearchSources to the assistant message and persists them on Done', async () => {

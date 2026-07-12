@@ -172,4 +172,6 @@ export type SearchStage =
   | { kind: 'searching'; gap?: boolean }
   | { kind: 'reading_sources'; gap?: boolean }
   | { kind: 'refining_search'; attempt: number; total: number }
-  | { kind: 'composing'; gap?: boolean };
+  | { kind: 'composing'; gap?: boolean }
+  /** Citation audit (± repair) after answer tokens finished; sources pill status. */
+  | { kind: 'verifying_sources' };

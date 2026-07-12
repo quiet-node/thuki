@@ -94,6 +94,10 @@ export function liveSearchStageLabel(stage: SearchStage): string {
       return `Refining search (${stage.attempt}/${stage.total})`;
     case 'composing':
       return stage.gap ? 'Composing refined answer' : 'Composing answer';
+    case 'verifying_sources':
+      // C3 sources pill owns this state in ChatBubble; label kept for
+      // exhaustiveness and any caller that still mounts the progress block.
+      return 'Verifying sources...';
   }
 }
 

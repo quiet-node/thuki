@@ -828,6 +828,54 @@ describe('ConversationView', () => {
       );
     });
 
+    it('shows C3 verifying pill on the search bubble during citation audit', () => {
+      render(
+        <ConversationView
+          messages={[
+            { id: 'u', role: 'user', content: 'q' },
+            {
+              id: 'a',
+              role: 'assistant',
+              content: 'Adobe acquired Figma.',
+              fromSearch: true,
+              searchSources: [
+                { title: 'Adobe', url: 'https://adobe.com' },
+                { title: 'Reuters', url: 'https://reuters.com' },
+              ],
+            },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          searchStage={{ kind: 'verifying_sources' }}
+        />,
+      );
+      expect(
+        screen.queryByTestId('search-progress-block'),
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId('sources-verifying-pill')).toHaveTextContent(
+        'Verifying sources...',
+      );
+    });
+
+    it('maps verifying_sources on the loading-row label helper', () => {
+      // Non-fromSearch empty assistant still hits ConversationView's
+      // searchStageLabel switch (fromSearch owns chrome in ChatBubble).
+      render(
+        <ConversationView
+          messages={[
+            { id: 'u', role: 'user', content: 'q' },
+            { id: 'a', role: 'assistant', content: '' },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          searchStage={{ kind: 'verifying_sources' }}
+        />,
+      );
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Verifying sources...',
+      );
+    });
+
     it('renders SearchProgressBlock for web search when fromSearch is true', () => {
       render(
         <ConversationView

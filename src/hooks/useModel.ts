@@ -94,8 +94,8 @@ type RawStreamChunk =
     }
   | { type: 'SetContent'; data: string };
 
-/** Progress phase of the invisible auto-search pipeline (mirrors the Rust enum). */
-type SearchPhase = 'deciding' | 'searching' | 'reading';
+/** Progress phase of the web-search pipeline (mirrors the Rust `SearchPhase`). */
+type SearchPhase = 'deciding' | 'searching' | 'reading' | 'verifying';
 
 /**
  * Normalized chat-stream chunk used inside the hook.
@@ -162,6 +162,7 @@ const SEARCH_STAGE_BY_PHASE: Record<SearchPhase, SearchStage> = {
   deciding: { kind: 'analyzing_query' },
   searching: { kind: 'searching' },
   reading: { kind: 'reading_sources' },
+  verifying: { kind: 'verifying_sources' },
 };
 
 /** Result payload delivered to callers when a `/search` pipeline turn finishes. */

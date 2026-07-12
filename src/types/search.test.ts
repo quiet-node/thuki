@@ -63,6 +63,11 @@ describe('search types', () => {
     }
   });
 
+  it('SearchStage verifying_sources marks post-stream citation audit', () => {
+    const stage: SearchStage = { kind: 'verifying_sources' };
+    expect(stage?.kind).toBe('verifying_sources');
+  });
+
   it('SearchWarning union still includes the backend warning variants', () => {
     const variants: SearchWarning[] = [
       'reader_unavailable',

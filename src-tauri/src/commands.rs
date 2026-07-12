@@ -2268,10 +2268,15 @@ pub async fn ask_model(
                             // Audit → up to CITE_REPAIR_MAX_ATTEMPTS rewrites →
                             // strip leftover bad [n] (honest note only on total fail).
                             // Repair rewrites stay muted (see refine_grounded_answer).
+                            // Emit Verifying so the FE sources pill shows work is
+                            // still in flight after the last answer token.
                             let content = if !audit_sources.is_empty()
                                 && !cancel_token.is_cancelled()
                                 && done_pending.load(std::sync::atomic::Ordering::Relaxed)
                             {
+                                pump(StreamChunk::SearchStatus {
+                                    phase: crate::websearch::orchestrator::SearchPhase::Verifying,
+                                });
                                 refine_grounded_answer(
                                     streamed_content.clone(),
                                     &audit_sources,

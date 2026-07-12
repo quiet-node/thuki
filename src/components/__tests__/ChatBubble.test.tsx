@@ -1347,6 +1347,56 @@ describe('ChatBubble', () => {
           Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
     });
+
+    it('shows C3 verifying pill while streaming during citation audit', () => {
+      const sources = [
+        { title: 'Adobe', url: 'https://adobe.com' },
+        { title: 'Reuters', url: 'https://reuters.com' },
+        { title: 'Figma', url: 'https://figma.com' },
+      ];
+      render(
+        <ChatBubble
+          role="assistant"
+          content="Adobe acquired Figma."
+          index={0}
+          isStreaming
+          isSearching
+          searchStage={{ kind: 'verifying_sources' }}
+          searchSources={sources}
+        />,
+      );
+      // Progress chrome yields to the sources-row pill during audit.
+      expect(
+        screen.queryByTestId('search-progress-block'),
+      ).not.toBeInTheDocument();
+      const pill = screen.getByTestId('sources-verifying-pill');
+      expect(pill).toHaveTextContent('Verifying sources...');
+      expect(pill).toHaveAttribute('role', 'status');
+      // Copy stays gated until Done (isStreaming still true).
+      expect(
+        screen.queryByRole('button', { name: /copy/i }),
+      ).not.toBeInTheDocument();
+      // Mini chips render inside the pill (up to 3).
+      expect(pill.querySelectorAll('span.rounded-full')).toHaveLength(3);
+    });
+
+    it('hides the verifying pill once the turn is done', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="Adobe acquired Figma."
+          index={0}
+          searchStage={null}
+          searchSources={[{ title: 'Adobe', url: 'https://adobe.com' }]}
+        />,
+      );
+      expect(
+        screen.queryByTestId('sources-verifying-pill'),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: /1 source/i }),
+      ).toBeInTheDocument();
+    });
   });
 
   describe('model attribution', () => {

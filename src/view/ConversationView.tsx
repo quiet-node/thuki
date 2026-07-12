@@ -28,6 +28,10 @@ function searchStageLabel(stage: SearchStage): string | null {
       return `Refining search (${stage.attempt}/${stage.total})`;
     case 'composing':
       return stage.gap ? 'Composing refined answer' : 'Composing answer';
+    case 'verifying_sources':
+      // Answer already streamed; ChatBubble C3 pill owns this cue. Fallback
+      // label for the rare empty-content path that still hits LoadingStage.
+      return 'Verifying sources...';
   }
 }
 

@@ -89,6 +89,9 @@ pub enum SearchPhase {
     Searching,
     /// Fetching and reading the top result pages.
     Reading,
+    /// Citation audit (± repair) after the answer has finished streaming.
+    /// UI shows a compact sources pill so the gap does not look hung.
+    Verifying,
 }
 
 /// What the orchestrator resolved for this turn.
