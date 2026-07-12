@@ -28,7 +28,6 @@ pub mod ocr;
 pub mod onboarding;
 pub mod openai;
 pub mod screenshot;
-pub mod search;
 pub mod settings_commands;
 pub mod startup_guard;
 pub mod subscribe;
@@ -2975,8 +2974,6 @@ pub fn run() {
             commands::cancel_generation,
             #[cfg(not(coverage))]
             commands::open_url,
-            #[cfg(not(coverage))]
-            search::search_pipeline,
             #[cfg(not(coverage))]
             commands::reset_conversation,
             #[cfg(not(coverage))]

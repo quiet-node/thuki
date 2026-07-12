@@ -89,8 +89,7 @@
 //! `live_classifier_eval.rs` documents.
 //!
 //! This harness also hits the live internet through the production
-//! `websearch` retrieval pipeline (not the sandboxed `/search` Docker stack,
-//! which is a separate feature); no `search-box:start` is required.
+//! `websearch` retrieval pipeline; no local search services are required.
 
 use thuki_agent_lib::commands::ChatMessage;
 use thuki_agent_lib::net::transport::ReqwestTransport;
