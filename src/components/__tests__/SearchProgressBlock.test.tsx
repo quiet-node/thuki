@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SearchProgressBlock } from '../SearchProgressBlock';
 import { invoke } from '../../testUtils/mocks/tauri';
 import type { SearchResultPreview } from '../../types/search';
@@ -128,6 +128,50 @@ describe('SearchProgressBlock', () => {
       'loading-stage-title',
     );
     expect(chevron).toHaveStyle({ transform: 'rotate(180deg)' });
+  });
+
+  it('caps the sources list with max-height and inner overflow scroll', () => {
+    render(
+      <SearchProgressBlock
+        stage={{ kind: 'reading_sources' }}
+        isSearching
+        sources={SOURCES}
+      />,
+    );
+
+    const list = screen.getByTestId('search-progress-source-list');
+    expect(list.className).toContain('max-h-48');
+    expect(list.className).toContain('overflow-y-auto');
+  });
+
+  it('scrolls the progress block into view when the list expands', () => {
+    const scrollIntoView = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    try {
+      render(
+        <SearchProgressBlock
+          stage={{ kind: 'reading_sources' }}
+          isSearching
+          sources={SOURCES}
+        />,
+      );
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+
+      scrollIntoView.mockClear();
+      fireEvent.click(screen.getByTestId('search-progress-toggle')); // collapse
+      fireEvent.click(screen.getByTestId('search-progress-toggle')); // re-expand
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+        configurable: true,
+        value: original,
+      });
+    }
   });
 
   it('lets the user collapse an auto-expanded list while keeping stage label', () => {

@@ -1,8 +1,12 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { invoke } from '@tauri-apps/api/core';
 import type { SearchResultPreview, SearchStage } from '../types/search';
 import { RequestStatusStrip } from './RequestStatusStrip';
+
+/** Inner sources list: ~8–10 rows before scroll; keeps header on screen. */
+const SOURCES_LIST_SCROLL_CLASS =
+  'mt-2 ml-1.5 pl-3 border-l border-primary/20 flex flex-col gap-1.5 max-h-48 overflow-y-auto';
 
 /**
  * Props for progressive web-search progress chrome
@@ -133,6 +137,7 @@ export function SearchProgressBlock({
   isExiting = false,
 }: SearchProgressBlockProps) {
   const panelId = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
   const sourceCount = sources.length;
   const hasSources = sourceCount > 0;
 
@@ -153,6 +158,14 @@ export function SearchProgressBlock({
     if (isExiting || !isSearching || !hasSources) return;
     setUserExpanded(null);
   }, [hasSources, isSearching, isExiting]);
+
+  // Keep the progress header in view when the list expands (auto or user).
+  // `nearest` avoids jumpy centering when the strip is already visible.
+  useEffect(() => {
+    if (!expanded || !hasSources || isExiting) return;
+    /* v8 ignore next -- scrollIntoView is a host API absent in happy-dom */
+    rootRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [expanded, hasSources, isExiting]);
 
   // Idle with no sources: nothing to show (footer chips handle post-answer).
   // Keep mounted while exiting even if `isSearching` flipped off mid-handoff.
@@ -206,6 +219,7 @@ export function SearchProgressBlock({
 
   return (
     <div
+      ref={rootRef}
       data-testid="search-progress-block"
       data-exiting={isExiting ? 'true' : undefined}
       aria-busy={isExiting || undefined}
@@ -246,7 +260,14 @@ export function SearchProgressBlock({
             }}
             style={{ overflow: 'hidden' }}
           >
-            <div className="mt-2 ml-1.5 pl-3 border-l border-primary/20 flex flex-col gap-1.5">
+            {/*
+              Cap list height so a long source set scrolls inside the block
+              instead of stretching the chat (header stays pinned above).
+            */}
+            <div
+              data-testid="search-progress-source-list"
+              className={SOURCES_LIST_SCROLL_CLASS}
+            >
               {sources.map((src) => {
                 const domain = domainOf(src.url);
                 // Hostnames always start with a letter/digit in practice; the
