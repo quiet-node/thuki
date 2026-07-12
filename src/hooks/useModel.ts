@@ -91,7 +91,8 @@ type RawStreamChunk =
   | {
       type: 'SearchSources';
       data: Array<{ index: number; url: string; title: string }>;
-    };
+    }
+  | { type: 'SetContent'; data: string };
 
 /** Progress phase of the invisible auto-search pipeline (mirrors the Rust enum). */
 type SearchPhase = 'deciding' | 'searching' | 'reading';
@@ -111,7 +112,8 @@ type StreamChunk =
   | { type: 'Error'; error: { kind: EngineErrorKind; message: string } }
   | { type: 'TurnAccepted' }
   | { type: 'SearchStatus'; phase: SearchPhase }
-  | { type: 'SearchSources'; sources: SearchResultPreview[] };
+  | { type: 'SearchSources'; sources: SearchResultPreview[] }
+  | { type: 'SetContent'; content: string };
 
 /**
  * Shared swallow-all handler for fire-and-forget trace IPC calls.
@@ -150,6 +152,8 @@ function normalizeStreamChunk(chunk: RawStreamChunk): StreamChunk {
           url: source.url,
         })),
       };
+    case 'SetContent':
+      return { type: 'SetContent', content: chunk.data };
   }
 }
 
@@ -541,6 +545,22 @@ export function useModel(
 
         if (chunk.type === 'Token') {
           currentContent += chunk.content;
+          if (chunk.content) {
+            markVisibleOutput();
+          }
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === assistantId
+                ? { ...message, content: currentContent }
+                : message,
+            ),
+          );
+          return;
+        }
+
+        // Citation repair/strip changed the live draft: replace the full body.
+        if (chunk.type === 'SetContent') {
+          currentContent = chunk.content;
           if (chunk.content) {
             markVisibleOutput();
           }

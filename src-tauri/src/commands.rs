@@ -1041,7 +1041,8 @@ async fn refine_grounded_answer(
                 | StreamChunk::ThinkingToken(_)
                 | StreamChunk::TurnAccepted
                 | StreamChunk::SearchStatus { .. }
-                | StreamChunk::SearchSources(_) => {}
+                | StreamChunk::SearchSources(_)
+                | StreamChunk::SetContent(_) => {}
             },
         )
         .await;
@@ -1062,26 +1063,27 @@ async fn refine_grounded_answer(
 }
 
 /// Decides the final persisted answer content and the terminal chunk(s) to
-/// emit once a built-in turn's token stream has finished.
+/// emit once a built-in turn's token stream (and optional citation refine)
+/// has finished.
 ///
 /// `done_pending` is `false` when the stream ended by cancellation or error
 /// instead of `Done`; nothing more is emitted (the frontend already left
-/// streaming). When `emit_body` is true (grounded turns that muted live answer
-/// tokens so repair could run), the full cleaned `content` is emitted as one
-/// `Token` before `Done`. When `emit_body` is false (plain chat already
-/// streamed live), only `Done` is emitted. Any honest total-failure note is
-/// already folded into `content` by [`finalize_answer_after_audit`].
+/// streaming). Answer tokens stream live during the first writer pass so the
+/// UI keeps the streaming feel; `streamed` is that live-accumulated body.
+/// When citation audit/repair changes the body, emit one
+/// [`StreamChunk::SetContent`] so the bubble snaps to the cleaned text before
+/// `Done`. When the body is unchanged, only `Done` is emitted.
 fn finalize_builtin_stream(
     content: String,
+    streamed: &str,
     done_pending: bool,
-    emit_body: bool,
 ) -> (String, Vec<StreamChunk>) {
     if !done_pending {
         return (content, Vec::new());
     }
     let mut chunks = Vec::new();
-    if emit_body && !content.is_empty() {
-        chunks.push(StreamChunk::Token(content.clone()));
+    if content != streamed {
+        chunks.push(StreamChunk::SetContent(content.clone()));
     }
     chunks.push(StreamChunk::Done);
     (content, chunks)
@@ -1505,6 +1507,9 @@ pub enum StreamChunk {
     /// The resolved citation sources for a source-grounded answer, emitted once
     /// just before the answer tokens. Never emitted on a plain (non-search) turn.
     SearchSources(Vec<SourceMeta>),
+    /// Replace the assistant bubble's full answer text. Used after live
+    /// streaming when citation repair or strip produces a different final body.
+    SetContent(String),
 }
 
 /// Citation metadata for one resolved web source, sent to the frontend to
@@ -1819,6 +1824,13 @@ pub(crate) fn record_chunk_to_trace(
         }
         StreamChunk::ThinkingToken(text) => {
             recorder.record(crate::trace::RecorderEvent::AssistantThinking {
+                chunk: text.clone(),
+            });
+        }
+        StreamChunk::SetContent(text) => {
+            // One synthetic chunk for the replacement body (not per-token).
+            token_count.fetch_add(1, Ordering::Relaxed);
+            recorder.record(crate::trace::RecorderEvent::AssistantTokens {
                 chunk: text.clone(),
             });
         }
@@ -2215,12 +2227,10 @@ pub async fn ask_model(
                                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                             let seen_for_pump = std::sync::Arc::clone(&reasoning_seen);
                             let backstop_model_id = model_id.clone();
-                            // Withhold `Done` so citation audit + optional repair
-                            // can finish before the UI leaves streaming. Grounded
-                            // turns with sources also mute live answer tokens so
-                            // a repaired/stripped answer can replace a bad draft
-                            // without a guilt footer on screen.
-                            let mute_answer_tokens = !audit_sources.is_empty();
+                            // Stream answer tokens live for the first writer
+                            // pass. Withhold `Done` so citation audit + optional
+                            // repair can finish; if the cleaned body differs,
+                            // emit SetContent then Done (see finalize_builtin_stream).
                             let done_pending =
                                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                             let done_pending_for_pump = std::sync::Arc::clone(&done_pending);
@@ -2231,15 +2241,10 @@ pub async fn ask_model(
                                         .store(true, std::sync::atomic::Ordering::Relaxed);
                                     return;
                                 }
-                                // Mute only answer tokens on grounded paths;
-                                // thinking still streams so /think stays visible.
-                                if mute_answer_tokens && matches!(chunk, StreamChunk::Token(_)) {
-                                    return;
-                                }
                                 pump(chunk);
                             };
                             let writer_messages_for_repair = stream_messages.clone();
-                            let content = stream_builtin_chat(
+                            let streamed_content = stream_builtin_chat(
                                 &engine,
                                 target.clone(),
                                 model_id.clone(),
@@ -2262,12 +2267,13 @@ pub async fn ask_model(
                             );
                             // Audit → up to CITE_REPAIR_MAX_ATTEMPTS rewrites →
                             // strip leftover bad [n] (honest note only on total fail).
-                            let content = if mute_answer_tokens
+                            // Repair rewrites stay muted (see refine_grounded_answer).
+                            let content = if !audit_sources.is_empty()
                                 && !cancel_token.is_cancelled()
                                 && done_pending.load(std::sync::atomic::Ordering::Relaxed)
                             {
                                 refine_grounded_answer(
-                                    content,
+                                    streamed_content.clone(),
                                     &audit_sources,
                                     writer_messages_for_repair,
                                     &engine,
@@ -2282,12 +2288,12 @@ pub async fn ask_model(
                                 )
                                 .await
                             } else {
-                                content
+                                streamed_content.clone()
                             };
                             let (content, terminal_chunks) = finalize_builtin_stream(
                                 content,
+                                &streamed_content,
                                 done_pending.load(std::sync::atomic::Ordering::Relaxed),
-                                mute_answer_tokens,
                             );
                             for chunk in terminal_chunks {
                                 pump(chunk);
@@ -4336,6 +4342,24 @@ mod tests {
     }
 
     #[test]
+    fn record_chunk_to_trace_records_set_content_as_one_token_chunk() {
+        let (bound, mock) = mock_bound_recorder("conv-set");
+        let counter = AtomicU64::new(0);
+        record_chunk_to_trace(
+            &StreamChunk::SetContent("cleaned body".to_string()),
+            &bound,
+            &counter,
+        );
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+        let snapshot = mock.snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert!(matches!(
+            snapshot[0].1,
+            crate::trace::RecorderEvent::AssistantTokens { ref chunk } if chunk == "cleaned body"
+        ));
+    }
+
+    #[test]
     fn record_chunk_to_trace_skips_terminal_chunks() {
         let (bound, mock) = mock_bound_recorder("conv-term");
         let counter = AtomicU64::new(0);
@@ -4354,28 +4378,31 @@ mod tests {
     fn finalize_builtin_stream_no_done_pending_never_emits() {
         // Cancelled/error paths: the frontend already left streaming, so
         // nothing more is emitted and content is returned unmodified.
-        let (content, chunks) = finalize_builtin_stream("partial answer".to_string(), false, true);
+        let (content, chunks) =
+            finalize_builtin_stream("partial answer".to_string(), "partial answer", false);
         assert_eq!(content, "partial answer");
         assert!(chunks.is_empty());
     }
 
     #[test]
-    fn finalize_builtin_stream_done_without_emit_body_only_done() {
-        // Plain chat: answer tokens already streamed live.
-        let (content, chunks) = finalize_builtin_stream("The answer [1].".to_string(), true, false);
-        assert_eq!(content, "The answer [1].");
+    fn finalize_builtin_stream_unchanged_body_only_done() {
+        // Live-streamed answer matches post-audit body: only Done.
+        let body = "The answer [1].";
+        let (content, chunks) = finalize_builtin_stream(body.to_string(), body, true);
+        assert_eq!(content, body);
         assert_eq!(chunks.len(), 1);
         assert!(matches!(chunks[0], StreamChunk::Done));
     }
 
     #[test]
-    fn finalize_builtin_stream_done_with_emit_body_sends_token_then_done() {
-        // Grounded path: answer was muted until audit/repair finished.
-        let body = "The answer [1].";
-        let (content, chunks) = finalize_builtin_stream(body.to_string(), true, true);
-        assert_eq!(content, body);
+    fn finalize_builtin_stream_changed_body_sets_content_then_done() {
+        // Repair/strip changed the live draft: replace bubble then Done.
+        let streamed = "Bad cite [9] here.";
+        let cleaned = "Clean answer [1].";
+        let (content, chunks) = finalize_builtin_stream(cleaned.to_string(), streamed, true);
+        assert_eq!(content, cleaned);
         assert_eq!(chunks.len(), 2);
-        assert!(matches!(&chunks[0], StreamChunk::Token(t) if t == body));
+        assert!(matches!(&chunks[0], StreamChunk::SetContent(t) if t == cleaned));
         assert!(matches!(chunks[1], StreamChunk::Done));
     }
 
@@ -4429,11 +4456,11 @@ mod tests {
         assert!(cleaned.contains("Thuki could not confirm"));
         assert!(!cleaned.contains("[1]"));
 
-        // Muted grounded stream emits the cleaned body once, then Done.
-        let (content, chunks) = finalize_builtin_stream(cleaned.clone(), true, true);
+        // Live draft differed after audit cleanup: SetContent then Done.
+        let (content, chunks) = finalize_builtin_stream(cleaned.clone(), answer, true);
         assert_eq!(content, cleaned);
         assert_eq!(chunks.len(), 2);
-        assert!(matches!(&chunks[0], StreamChunk::Token(t) if t == &cleaned));
+        assert!(matches!(&chunks[0], StreamChunk::SetContent(t) if t == &cleaned));
         assert!(matches!(chunks[1], StreamChunk::Done));
     }
 

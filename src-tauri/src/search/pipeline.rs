@@ -569,7 +569,8 @@ pub(super) fn translate_chunk(chunk: StreamChunk) -> SearchEvent {
         // empty token, keeping the event stream minimal and the match exhaustive.
         StreamChunk::ThinkingToken(_)
         | StreamChunk::SearchStatus { .. }
-        | StreamChunk::SearchSources(_) => SearchEvent::Token {
+        | StreamChunk::SearchSources(_)
+        | StreamChunk::SetContent(_) => SearchEvent::Token {
             content: String::new(),
         },
         StreamChunk::Done => SearchEvent::Done { metadata: None },
@@ -2753,6 +2754,17 @@ mod tests {
     #[test]
     fn translate_chunk_thinking_token_suppressed() {
         let out = translate_chunk(StreamChunk::ThinkingToken("reason".into()));
+        assert_eq!(
+            out,
+            SearchEvent::Token {
+                content: String::new()
+            }
+        );
+    }
+
+    #[test]
+    fn translate_chunk_set_content_suppressed() {
+        let out = translate_chunk(StreamChunk::SetContent("full".into()));
         assert_eq!(
             out,
             SearchEvent::Token {

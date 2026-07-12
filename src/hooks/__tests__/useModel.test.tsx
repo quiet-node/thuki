@@ -390,6 +390,50 @@ describe('useModel', () => {
         }),
       );
     });
+
+    it('replaces the full assistant content on SetContent after a live draft', async () => {
+      const { result } = renderHook(() => useModel('m'));
+      await act(async () => {
+        await result.current.ask('who owns Figma');
+      });
+      const channel = getChannel();
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Token',
+          data: 'Draft with bad [9].',
+        });
+        channel!.simulateMessage({
+          type: 'SetContent',
+          data: 'Clean answer with [1].',
+        });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+
+      const assistant = result.current.messages.find(
+        (m) => m.role === 'assistant',
+      );
+      expect(assistant?.content).toBe('Clean answer with [1].');
+    });
+
+    it('accepts an empty SetContent replacement without hanging', async () => {
+      const { result } = renderHook(() => useModel('m'));
+      await act(async () => {
+        await result.current.ask('who owns Figma');
+      });
+      const channel = getChannel();
+
+      act(() => {
+        channel!.simulateMessage({ type: 'Token', data: 'draft' });
+        channel!.simulateMessage({ type: 'SetContent', data: '' });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+
+      const assistant = result.current.messages.find(
+        (m) => m.role === 'assistant',
+      );
+      expect(assistant?.content).toBe('');
+    });
   });
 
   // ─── imagePaths handling ─────────────────────────────────────────────────────
