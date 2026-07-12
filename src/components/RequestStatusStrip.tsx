@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ThreeDotMotion } from './ThreeDotMotion';
 
 /**
@@ -11,14 +11,6 @@ export interface RequestStatusStripProps {
    * tracking-settle when the string changes.
    */
   label?: string | null;
-  /**
-   * Compact typography for nested chrome (search progress header, etc.).
-   */
-  compact?: boolean;
-  /**
-   * Optional prefix before the label (e.g. reasoning chevron spacer).
-   */
-  labelPrefix?: ReactNode;
 }
 
 /** Outgoing tracking-settle duration (ms). */
@@ -29,18 +21,14 @@ const TRACK_IN_MS = 480;
 /**
  * Unified post-submit status strip: Y1 three-dot motion + optional shimmer label.
  *
- * Single post-submit status strip for engine cold-start, web search stages,
- * and `/think` (locked design: warm cream outer dots, brand middle, trails,
- * App.css shimmer, G tracking-settle on copy change).
+ * Pixel-identical in every host (engine row, search progress, reasoning).
+ * Layout (gap, type size, min-height) lives only on this component and its
+ * CSS classes. Parents must not pass size variants or inject prefixes into
+ * the strip; place chevrons as siblings if needed.
  *
- * Drivers stay outside: callers pass the current label; this component only
- * owns presentation and label-change motion.
+ * Drivers stay outside: callers pass the current label only.
  */
-export function RequestStatusStrip({
-  label,
-  compact = false,
-  labelPrefix,
-}: RequestStatusStripProps) {
+export function RequestStatusStrip({ label }: RequestStatusStripProps) {
   const [displayLabel, setDisplayLabel] = useState(label ?? '');
   const [phase, setPhase] = useState<'in' | 'out' | 'enter-from'>('in');
   /** Mirrors displayed text so the effect can key only on `label`. */
@@ -104,32 +92,21 @@ export function RequestStatusStrip({
   const showLabel = Boolean(displayLabel);
 
   return (
-    <span
-      className="inline-flex items-center gap-2"
-      data-testid="request-status-strip"
-    >
-      <span className="shrink-0">
+    <span className="request-status-strip" data-testid="request-status-strip">
+      <span className="request-status-strip__dots shrink-0">
         <ThreeDotMotion />
       </span>
       {showLabel ? (
         <span
           data-testid="loading-stage-title"
-          className={`inline-flex min-w-0 items-center ${compact ? 'gap-1 text-[11px] leading-none' : 'gap-1.5 text-xs'}`}
+          className="request-status-strip__title"
         >
-          {labelPrefix ? (
-            <span
-              data-testid="loading-label-prefix"
-              className="inline-flex shrink-0 items-center"
-            >
-              {labelPrefix}
-            </span>
-          ) : null}
           <span
             data-testid="loading-label"
             // Logical stage is the prop (immediate); visible glyphs may lag
             // one tracking-settle cycle for the soft appear animation.
             data-label={label ?? displayLabel}
-            className={`loading-label loading-label-track min-w-0 ${
+            className={`loading-label loading-label-track request-status-strip__label min-w-0 ${
               phase === 'out'
                 ? 'loading-label-track-out'
                 : phase === 'enter-from'

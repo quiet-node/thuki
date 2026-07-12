@@ -579,7 +579,32 @@ body {
   }
 }
 
-/* ─── RequestStatusStrip / ThreeDotMotion (Y1 suite) ─── */
+/* ─── RequestStatusStrip: single layout contract for all hosts ───
+ * gap, type size, and min-height live only here so engine / search / think
+ * rows cannot drift. Parents wrap with the same vertical margin (mb-2) when
+ * they own a feature block; they must not restyle the strip itself.
+ */
+.request-status-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem; /* 8px — dots to label */
+  min-height: 1.375rem; /* 22px, matches tdm-host */
+  line-height: 1;
+}
+
+.request-status-strip__title {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  font-size: 0.75rem; /* text-xs */
+  line-height: 1rem;
+}
+
+.request-status-strip__label {
+  display: inline-block;
+}
+
+/* ─── ThreeDotMotion (Y1 suite) ─── */
 .tdm-host {
   position: relative;
   width: 24px;

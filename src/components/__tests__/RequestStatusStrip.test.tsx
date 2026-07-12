@@ -34,21 +34,10 @@ describe('RequestStatusStrip', () => {
     expect(label).toHaveAttribute('data-label', 'Analyzing query');
   });
 
-  it('renders optional labelPrefix', () => {
-    render(
-      <RequestStatusStrip
-        label="Reasoning..."
-        labelPrefix={<span data-testid="pfx">▸</span>}
-      />,
-    );
-    expect(screen.getByTestId('pfx')).toBeInTheDocument();
-    expect(screen.getByTestId('loading-label-prefix')).toBeInTheDocument();
-  });
-
-  it('uses compact title row classes when compact is set', () => {
-    render(<RequestStatusStrip label="Searching the web" compact />);
+  it('uses the shared title contract for label typography', () => {
+    render(<RequestStatusStrip label="Searching the web" />);
     expect(screen.getByTestId('loading-stage-title').className).toContain(
-      'text-[11px]',
+      'request-status-strip__title',
     );
   });
 

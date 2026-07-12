@@ -440,7 +440,7 @@ describe('ChatBubble', () => {
       expect(screen.getByTestId('loading-label').textContent).toBe(
         'Reasoning...',
       );
-      expect(screen.getByTestId('loading-label-prefix')).toBeInTheDocument();
+      expect(screen.getByTestId('reasoning-chevron')).toBeInTheDocument();
     });
   });
 

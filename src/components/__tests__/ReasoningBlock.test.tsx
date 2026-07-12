@@ -48,7 +48,7 @@ describe('ReasoningBlock', () => {
     expect(chevron.className).toContain('opacity-0');
   });
 
-  it("reserves the chevron's width while pending via an invisible spacer, so the label does not shift once thinking starts", () => {
+  it("reserves the chevron's width while pending via an invisible sibling spacer, so the strip does not shift once thinking starts", () => {
     render(
       <ReasoningBlock
         isThinking={false}
@@ -56,9 +56,10 @@ describe('ReasoningBlock', () => {
         pendingLabel="Starting up the model…"
       />,
     );
-    const prefix = screen.getByTestId('loading-label-prefix');
-    expect(prefix).toBeInTheDocument();
-    expect(prefix.textContent).toBe('▲');
+    const chevron = screen.getByTestId('reasoning-chevron');
+    expect(chevron).toBeInTheDocument();
+    expect(chevron.textContent).toBe('▲');
+    expect(chevron.className).toContain('opacity-0');
   });
 
   it('uses the exact same summary-row classes for the pending row and the clickable summary row', () => {
@@ -93,7 +94,7 @@ describe('ReasoningBlock', () => {
     const label = screen.getByTestId('loading-label');
     expect(label).toBeInTheDocument();
     expect(label.textContent).toBe('Reasoning...');
-    expect(screen.getByTestId('loading-label-prefix')).toBeInTheDocument();
+    expect(screen.getByTestId('reasoning-chevron')).toBeInTheDocument();
   });
 
   it('is collapsed by default, even while thinking', () => {

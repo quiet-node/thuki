@@ -390,16 +390,16 @@ export function ConversationView({
           );
         })}
 
-        {/* Loading row: always show 9-dot indicator when waiting for first
-            content. For search turns, show the stage label inline as plain
-            text next to the dots; for a plain turn stuck behind a cold
-            provider spin-up, show the engine loading label instead. A
-            /think turn gets the same engine label, but rendered inside its
-            own ChatBubble (ReasoningBlock's pending state) rather than here. */}
+        {/* Loading row: identical RequestStatusStrip as search/think hosts.
+            Engine cold-start copy comes from useEngineLoadingLabel; search
+            stages from searchStageLabel. /think pending renders the same
+            strip inside ReasoningBlock instead of here. */}
         {isAwaitingFirstToken && !lastMessage?.fromThink ? (
-          <RequestStatusStrip
-            label={searchStageLabel(searchStage) ?? engineLoadingLabel}
-          />
+          <div className="mb-2">
+            <RequestStatusStrip
+              label={searchStageLabel(searchStage) ?? engineLoadingLabel}
+            />
+          </div>
         ) : null}
       </div>
 

@@ -183,7 +183,8 @@ export function SearchProgressBlock({
 
   return (
     <div data-testid="search-progress-block" className="mb-2">
-      <div className="flex items-center gap-1 min-w-0">
+      {/* Row gap matches strip internal gap (0.5rem) so chevron sits like a sibling, not a second type scale. */}
+      <div className="flex min-w-0 items-center gap-2">
         {hasSources ? (
           <button
             type="button"
@@ -191,14 +192,14 @@ export function SearchProgressBlock({
             aria-expanded={expanded}
             aria-controls={panelId}
             onClick={handleToggle}
-            className="flex min-w-0 flex-1 items-center gap-1.5 text-left cursor-pointer bg-transparent border-0 p-0"
+            className="flex min-w-0 flex-1 items-center gap-2 text-left cursor-pointer bg-transparent border-0 p-0"
           >
             {showLiveDots ? (
-              <RequestStatusStrip compact label={headerLabel} />
+              <RequestStatusStrip label={headerLabel} />
             ) : (
               <span
                 data-testid="search-progress-header"
-                className="text-[11px] font-semibold text-text-secondary/80"
+                className="request-status-strip__title text-text-secondary/80 font-medium"
               >
                 {headerLabel}
               </span>
@@ -216,7 +217,7 @@ export function SearchProgressBlock({
           </button>
         ) : (
           <div data-testid="search-progress-header-row">
-            <RequestStatusStrip compact label={headerLabel} />
+            <RequestStatusStrip label={headerLabel} />
           </div>
         )}
       </div>
