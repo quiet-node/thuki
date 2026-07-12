@@ -895,22 +895,15 @@ async fn run_builtin_search(
     }
 }
 
-/// Runs the post-generation citation audit for a grounded built-in turn,
-/// records it to the trace, and returns the answer-facing hedge note (if any)
-/// for the caller to append before releasing the withheld `Done` chunk (see
-/// [`finalize_builtin_stream`]). Skips entirely when the turn cited nothing
-/// (`sources` empty: a plain or unreachable turn) or when the answer exceeds
-/// [`crate::config::defaults::CITE_AUDIT_MAX_ANSWER_BYTES`], logging the skip so
-/// a runaway stream can never grow the audit's work unbounded; both skip paths
-/// return `None`. Coverage-off: this is thin glue (a size gate plus a record
-/// and two `eprintln`s); all audit and hedge-wording logic lives in
-/// [`crate::websearch::cite_check`], which is pure and fully unit-tested.
+/// Records one citation audit to the trace + stderr, then returns the audit.
+/// Skips (returns `None`) when there are no sources or the answer exceeds the
+/// defensive size cap. Coverage-off: thin I/O glue over pure `cite_check`.
 #[cfg_attr(coverage_nightly, coverage(off))]
-fn audit_answer_citations(
+fn record_citation_audit(
     answer: &str,
     sources: &[crate::websearch::assemble::SourceBlock],
     recorder: &std::sync::Arc<crate::trace::BoundRecorder>,
-) -> Option<String> {
+) -> Option<crate::websearch::cite_check::CitationAudit> {
     if sources.is_empty() {
         return None;
     }
@@ -923,13 +916,12 @@ fn audit_answer_citations(
         return None;
     }
     let audit = crate::websearch::cite_check::audit_citations(answer, sources);
-    let hedge = crate::websearch::cite_check::hedge_line(&audit);
     recorder.record(crate::trace::RecorderEvent::CitationAudit {
         cited: audit.cited,
         supported: audit.supported,
         weak: audit.weak,
         unsupported: audit.unsupported,
-        unsupported_indices: audit.unsupported_indices,
+        unsupported_indices: audit.unsupported_indices.clone(),
         numeric_checked: audit.numeric_checked,
         numeric_matched: audit.numeric_matched,
         numeric_missing: audit.numeric_missing,
@@ -946,42 +938,137 @@ fn audit_answer_citations(
         audit.numeric_matched,
         audit.numeric_missing
     );
-    hedge
+    Some(audit)
+}
+
+/// Builds the writer-follow-up messages for one citation repair round: the
+/// original grounded writer transcript, the previous answer as assistant, and
+/// a pure-code critique naming the failing `[n]` indices.
+fn build_repair_messages(
+    writer_messages: Vec<ChatMessage>,
+    previous_answer: &str,
+    audit: &crate::websearch::cite_check::CitationAudit,
+) -> Vec<ChatMessage> {
+    let mut messages = writer_messages;
+    messages.push(ChatMessage {
+        role: "assistant".into(),
+        content: previous_answer.into(),
+        images: None,
+    });
+    messages.push(ChatMessage {
+        role: "user".into(),
+        content: crate::websearch::cite_check::repair_critique(audit),
+        images: None,
+    });
+    messages
+}
+
+/// After the first grounded writer stream, audit → repair (up to
+/// [`CITE_REPAIR_MAX_ATTEMPTS`]) → strip leftover bad citations. Coverage-off:
+/// orchestration glue around pure `cite_check` and `stream_builtin_chat`.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[allow(clippy::too_many_arguments)]
+async fn refine_grounded_answer(
+    mut content: String,
+    sources: &[crate::websearch::assemble::SourceBlock],
+    writer_messages: Vec<ChatMessage>,
+    engine: &crate::engine::runner::EngineHandle,
+    target: crate::engine::state::Target,
+    model_id: String,
+    think: bool,
+    client: &reqwest::Client,
+    cancel_token: CancellationToken,
+    warm_state: &crate::warmup::BuiltinWarmState,
+    recorder: &std::sync::Arc<crate::trace::BoundRecorder>,
+    on_terminal: &impl Fn(StreamChunk),
+) -> String {
+    if sources.is_empty() || content.is_empty() {
+        return content;
+    }
+    if content.len() > crate::config::defaults::CITE_AUDIT_MAX_ANSWER_BYTES {
+        return content;
+    }
+
+    for attempt in 0..crate::config::defaults::CITE_REPAIR_MAX_ATTEMPTS {
+        if cancel_token.is_cancelled() {
+            break;
+        }
+        let Some(audit) = record_citation_audit(&content, sources, recorder) else {
+            return content;
+        };
+        if audit.unsupported_indices.is_empty() {
+            return content;
+        }
+        eprintln!(
+            "[search] citation repair: attempt {}/{} unsupported={:?}",
+            attempt + 1,
+            crate::config::defaults::CITE_REPAIR_MAX_ATTEMPTS,
+            audit.unsupported_indices
+        );
+        let repair_messages = build_repair_messages(writer_messages.clone(), &content, &audit);
+        // Mute answer tokens on repair rounds: only the final cleaned answer
+        // is shown. Forward cancel/error so the UI still leaves streaming.
+        let repaired = stream_builtin_chat(
+            engine,
+            target.clone(),
+            model_id.clone(),
+            think,
+            repair_messages,
+            client,
+            cancel_token.clone(),
+            warm_state,
+            || {},
+            |chunk| match chunk {
+                StreamChunk::Cancelled | StreamChunk::Error(_) => on_terminal(chunk),
+                StreamChunk::Done
+                | StreamChunk::Token(_)
+                | StreamChunk::ThinkingToken(_)
+                | StreamChunk::TurnAccepted
+                | StreamChunk::SearchStatus { .. }
+                | StreamChunk::SearchSources(_) => {}
+            },
+        )
+        .await;
+        if cancel_token.is_cancelled() {
+            break;
+        }
+        if repaired.is_empty() {
+            break;
+        }
+        content = repaired;
+    }
+
+    // Final audit after repairs (or after exhausting attempts).
+    match record_citation_audit(&content, sources, recorder) {
+        Some(audit) => crate::websearch::cite_check::finalize_answer_after_audit(&content, &audit),
+        None => content,
+    }
 }
 
 /// Decides the final persisted answer content and the terminal chunk(s) to
-/// emit once a built-in turn's token stream has finished, given whether the
-/// underlying stream actually reached its own terminal `Done` and the
-/// citation audit's hedge note, if any.
+/// emit once a built-in turn's token stream has finished.
 ///
 /// `done_pending` is `false` when the stream ended by cancellation or error
-/// instead of `Done` (the caller withholds the real `Done` chunk from the
-/// frontend specifically so this decision can run before it, appending a
-/// hedge to the visible answer one line too late otherwise); in that case
-/// nothing is appended and no terminal chunk is emitted here, since the
-/// frontend already left its streaming state on the `Cancelled`/`Error` chunk
-/// sent earlier. Otherwise the hedge (if any) is appended to `content` and
-/// the returned chunks are the hedge as a `Token` followed by the real
-/// `Done`, in emission order; with no hedge, only `Done` is emitted.
+/// instead of `Done`; nothing more is emitted (the frontend already left
+/// streaming). When `emit_body` is true (grounded turns that muted live answer
+/// tokens so repair could run), the full cleaned `content` is emitted as one
+/// `Token` before `Done`. When `emit_body` is false (plain chat already
+/// streamed live), only `Done` is emitted. Any honest total-failure note is
+/// already folded into `content` by [`finalize_answer_after_audit`].
 fn finalize_builtin_stream(
     content: String,
     done_pending: bool,
-    hedge: Option<String>,
+    emit_body: bool,
 ) -> (String, Vec<StreamChunk>) {
     if !done_pending {
         return (content, Vec::new());
     }
-    match hedge {
-        Some(note) => {
-            let hedge_chunk = format!("\n\n{note}");
-            let final_content = format!("{content}{hedge_chunk}");
-            (
-                final_content,
-                vec![StreamChunk::Token(hedge_chunk), StreamChunk::Done],
-            )
-        }
-        None => (content, vec![StreamChunk::Done]),
+    let mut chunks = Vec::new();
+    if emit_body && !content.is_empty() {
+        chunks.push(StreamChunk::Token(content.clone()));
     }
+    chunks.push(StreamChunk::Done);
+    (content, chunks)
 }
 
 /// Sets `flag` when `chunk` carries reasoning output. The built-in runtime
@@ -2097,12 +2184,12 @@ pub async fn ask_model(
                                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                             let seen_for_pump = std::sync::Arc::clone(&reasoning_seen);
                             let backstop_model_id = model_id.clone();
-                            // Withhold the terminal `Done` chunk here: the
-                            // citation audit below may need to append a hedge
-                            // note to the answer, and telling the frontend the
-                            // stream is done before that would be one line too
-                            // early. Every other chunk, including `Cancelled`
-                            // and `Error`, still forwards immediately.
+                            // Withhold `Done` so citation audit + optional repair
+                            // can finish before the UI leaves streaming. Grounded
+                            // turns with sources also mute live answer tokens so
+                            // a repaired/stripped answer can replace a bad draft
+                            // without a guilt footer on screen.
+                            let mute_answer_tokens = !audit_sources.is_empty();
                             let done_pending =
                                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                             let done_pending_for_pump = std::sync::Arc::clone(&done_pending);
@@ -2113,12 +2200,18 @@ pub async fn ask_model(
                                         .store(true, std::sync::atomic::Ordering::Relaxed);
                                     return;
                                 }
+                                // Mute only answer tokens on grounded paths;
+                                // thinking still streams so /think stays visible.
+                                if mute_answer_tokens && matches!(chunk, StreamChunk::Token(_)) {
+                                    return;
+                                }
                                 pump(chunk);
                             };
+                            let writer_messages_for_repair = stream_messages.clone();
                             let content = stream_builtin_chat(
                                 &engine,
-                                target,
-                                model_id,
+                                target.clone(),
+                                model_id.clone(),
                                 think,
                                 stream_messages,
                                 &client,
@@ -2136,21 +2229,34 @@ pub async fn ask_model(
                                 think,
                                 reasoning_seen.load(std::sync::atomic::Ordering::Relaxed),
                             );
-                            // Post-generation citation audit: grounded turns
-                            // with sources. Off the token hot path (the stream
-                            // has completed); all classification and wording
-                            // logic lives in the pure, fully tested
-                            // `cite_check` fns. A flagged unsupported citation
-                            // earns a hedge note appended to the answer before
-                            // the withheld `Done` is released; `unverifiable`
-                            // citations (thin/empty source text) never trigger
-                            // it.
-                            let hedge =
-                                audit_answer_citations(&content, &audit_sources, &bound_recorder);
+                            // Audit → up to CITE_REPAIR_MAX_ATTEMPTS rewrites →
+                            // strip leftover bad [n] (honest note only on total fail).
+                            let content = if mute_answer_tokens
+                                && !cancel_token.is_cancelled()
+                                && done_pending.load(std::sync::atomic::Ordering::Relaxed)
+                            {
+                                refine_grounded_answer(
+                                    content,
+                                    &audit_sources,
+                                    writer_messages_for_repair,
+                                    &engine,
+                                    target,
+                                    model_id,
+                                    think,
+                                    &client,
+                                    cancel_token.clone(),
+                                    &warm_state,
+                                    &bound_recorder,
+                                    &pump,
+                                )
+                                .await
+                            } else {
+                                content
+                            };
                             let (content, terminal_chunks) = finalize_builtin_stream(
                                 content,
                                 done_pending.load(std::sync::atomic::Ordering::Relaxed),
-                                hedge,
+                                mute_answer_tokens,
                             );
                             for chunk in terminal_chunks {
                                 pump(chunk);
@@ -4214,59 +4320,47 @@ mod tests {
     }
 
     #[test]
-    fn finalize_builtin_stream_no_done_pending_never_emits_or_appends() {
-        // Cancelled/error paths: the frontend already left its streaming
-        // state on the earlier terminal chunk, so nothing more is emitted and
-        // the content is returned unmodified, even if a hedge was computed.
-        let (content, chunks) = finalize_builtin_stream(
-            "partial answer".to_string(),
-            false,
-            Some("*Note: should never appear.*".to_string()),
-        );
+    fn finalize_builtin_stream_no_done_pending_never_emits() {
+        // Cancelled/error paths: the frontend already left streaming, so
+        // nothing more is emitted and content is returned unmodified.
+        let (content, chunks) = finalize_builtin_stream("partial answer".to_string(), false, true);
         assert_eq!(content, "partial answer");
         assert!(chunks.is_empty());
     }
 
     #[test]
-    fn finalize_builtin_stream_done_pending_no_hedge_emits_plain_done() {
-        let (content, chunks) = finalize_builtin_stream("The answer [1].".to_string(), true, None);
+    fn finalize_builtin_stream_done_without_emit_body_only_done() {
+        // Plain chat: answer tokens already streamed live.
+        let (content, chunks) = finalize_builtin_stream("The answer [1].".to_string(), true, false);
         assert_eq!(content, "The answer [1].");
         assert_eq!(chunks.len(), 1);
         assert!(matches!(chunks[0], StreamChunk::Done));
     }
 
     #[test]
-    fn finalize_builtin_stream_done_pending_with_hedge_appends_and_emits_both() {
-        let note = "*Note: the figure cited to [1] could not be verified against that source.*";
-        let (content, chunks) =
-            finalize_builtin_stream("The answer [1].".to_string(), true, Some(note.to_string()));
-        assert_eq!(content, format!("The answer [1].\n\n{note}"));
+    fn finalize_builtin_stream_done_with_emit_body_sends_token_then_done() {
+        // Grounded path: answer was muted until audit/repair finished.
+        let body = "The answer [1].";
+        let (content, chunks) = finalize_builtin_stream(body.to_string(), true, true);
+        assert_eq!(content, body);
         assert_eq!(chunks.len(), 2);
-        assert!(matches!(
-            &chunks[0],
-            StreamChunk::Token(t) if t == &format!("\n\n{note}")
-        ));
+        assert!(matches!(&chunks[0], StreamChunk::Token(t) if t == body));
         assert!(matches!(chunks[1], StreamChunk::Done));
     }
 
-    /// Cross-feature: a single grounded turn where the sufficiency judge flagged
-    /// the sources as conflicting (J1) AND the post-generation citation audit
-    /// flagged a fabricated figure (J3) must carry BOTH signals. The conflict
-    /// verdict routes through the same `conflicting()` predicate the
-    /// orchestrator uses to set the writer's `conflict` flag, so the writer
-    /// appendix gains its conflict directive; and the audit's hedge still
-    /// appends to the finished answer. Neither feature suppresses the other:
-    /// the conflict directive shapes generation, the hedge annotates the
-    /// result. No single branch exercised the two together.
+    /// Cross-feature: conflict directive (J1) still shapes the writer prompt,
+    /// and post-generation audit (J3) now strips unsupported citations (or
+    /// adds an honest total-failure note) instead of a guilt hedge footer.
+    /// Neither feature suppresses the other.
     #[test]
-    fn conflicting_verdict_and_audit_hedge_compose_in_one_grounded_turn() {
+    fn conflicting_verdict_and_audit_cleanup_compose_in_one_grounded_turn() {
         use crate::websearch::assemble::SourceBlock;
-        use crate::websearch::cite_check::{audit_citations, hedge_line};
+        use crate::websearch::cite_check::{
+            audit_citations, finalize_answer_after_audit, is_total_citation_failure,
+        };
         use crate::websearch::judge::{InsufficiencyReason, SufficiencyVerdict};
         use crate::websearch::writer::build_writer_appendix;
 
-        // A conflict verdict drives the writer's conflict flag through the exact
-        // predicate the orchestrator's judge_and_requery branch uses.
         let verdict = SufficiencyVerdict {
             sufficient: false,
             missing: "the two sources report different revenue figures".into(),
@@ -4282,8 +4376,6 @@ mod tests {
         };
         let blocks = [source.clone()];
 
-        // The conflict flag appends the conflict directive to the writer prompt;
-        // a non-conflicting turn over the same sources never does.
         let conflict_appendix = build_writer_appendix(
             &blocks,
             "2026-07-10",
@@ -4297,22 +4389,49 @@ mod tests {
         assert!(conflict_appendix.contains("The sources disagree on a value the question asks for"));
         assert!(!plain_appendix.contains("The sources disagree on a value the question asks for"));
 
-        // The writer then produced an answer citing a figure absent from the
-        // source: the audit flags source [1], and the hedge fires.
+        // Fabricated figure: audit flags [1] as total failure → strip + honest note.
         let answer = "The phone costs 499 dollars launching in 2027 quarter [1].";
         let audit = audit_citations(answer, &blocks);
         assert_eq!(audit.unsupported_indices, vec![1]);
-        let hedge = hedge_line(&audit).expect("a flagged figure yields a hedge note");
+        assert!(is_total_citation_failure(&audit));
+        let cleaned = finalize_answer_after_audit(answer, &audit);
+        assert!(cleaned.contains("Thuki could not confirm"));
+        assert!(!cleaned.contains("[1]"));
 
-        // finalize_builtin_stream appends that hedge to the completed answer and
-        // emits the hedge token before the withheld Done, unchanged by the
-        // conflict path that shaped the answer upstream.
-        let (content, chunks) =
-            finalize_builtin_stream(answer.to_string(), true, Some(hedge.clone()));
-        assert_eq!(content, format!("{answer}\n\n{hedge}"));
+        // Muted grounded stream emits the cleaned body once, then Done.
+        let (content, chunks) = finalize_builtin_stream(cleaned.clone(), true, true);
+        assert_eq!(content, cleaned);
         assert_eq!(chunks.len(), 2);
-        assert!(matches!(&chunks[0], StreamChunk::Token(t) if t == &format!("\n\n{hedge}")));
+        assert!(matches!(&chunks[0], StreamChunk::Token(t) if t == &cleaned));
         assert!(matches!(chunks[1], StreamChunk::Done));
+    }
+
+    #[test]
+    fn build_repair_messages_appends_assistant_then_critique() {
+        use crate::websearch::cite_check::CitationAudit;
+        let base = vec![ChatMessage {
+            role: "user".into(),
+            content: "sources here".into(),
+            images: None,
+        }];
+        let audit = CitationAudit {
+            cited: 1,
+            supported: 0,
+            weak: 0,
+            unsupported: 1,
+            unverifiable: 0,
+            unsupported_indices: vec![3],
+            numeric_checked: 0,
+            numeric_matched: 0,
+            numeric_missing: 0,
+        };
+        let msgs = build_repair_messages(base, "bad answer [3]", &audit);
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[1].role, "assistant");
+        assert_eq!(msgs[1].content, "bad answer [3]");
+        assert_eq!(msgs[2].role, "user");
+        assert!(msgs[2].content.contains("[3]"));
+        assert!(msgs[2].content.contains("Rewrite the full answer"));
     }
 
     #[test]

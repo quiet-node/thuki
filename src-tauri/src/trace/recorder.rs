@@ -376,7 +376,8 @@ pub enum RecorderEvent {
     /// `crate::config::defaults::CITE_UNVERIFIABLE_MIN_SOURCE_BYTES`); these
     /// are never double-counted in `unsupported` and never drive the
     /// answer-facing hedge note. A flagged `unsupported` citation now also
-    /// surfaces to the user: see `crate::websearch::cite_check::hedge_line`.
+    /// may trigger repair / strip; total failure may surface
+    /// `crate::websearch::cite_check::honest_failure_note`.
     CitationAudit {
         cited: usize,
         supported: usize,

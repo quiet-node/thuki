@@ -37,14 +37,20 @@
 //! "unsupported": there is no evidence the claim is wrong, only that it could
 //! not be checked, so it is scored and treated separately (see
 //! [`CiteClass::Unverifiable`]) and never counted toward the answer-facing
-//! hedge note built by [`hedge_line`].
+//! total-failure note built by [`honest_failure_note`].
+//!
+//! After the audit, Thuki may run a small number of writer repair rounds
+//! (see [`crate::config::defaults::CITE_REPAIR_MAX_ATTEMPTS`]) and then
+//! deterministically [`strip_unsupported_citations`]. Only a total
+//! citation failure still surfaces an honest note to the user; partial
+//! failures are cleaned without a guilt footer.
 
 use crate::config::defaults::{
     CITE_MAGNITUDE_ABBREVIATIONS, CITE_MAGNITUDE_WORDS, CITE_MONTH_NAMES, CITE_SUPPORTED_MIN,
     CITE_UNVERIFIABLE_MIN_SOURCE_BYTES, CITE_WEAK_MIN,
 };
 use crate::websearch::assemble::SourceBlock;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 /// The outcome of auditing one answer's citations against its sources.
 ///
@@ -174,22 +180,21 @@ pub fn audit_citations(answer_text: &str, sources: &[SourceBlock]) -> CitationAu
     audit
 }
 
-/// Builds the deterministic, answer-facing hedge note for a [`CitationAudit`],
-/// or `None` when nothing was flagged. Fires whenever `unsupported_indices` is
-/// non-empty: a purely lexical mismatch and a numeric-consistency-guard cap
-/// (fabricated or absent figure, wrong date) both land in that list, so both
-/// trigger the same note. `unverifiable` citations never reach this list (see
-/// [`CiteClass::Unverifiable`]) and so never trigger it: there is no evidence
-/// of a wrong claim there, only an unchecked one.
+/// True when the answer cited at least one source and **every** citation was
+/// unsupported (none supported or weak). That is the only case where we still
+/// surface an honest failure note after repair attempts are exhausted; partial
+/// failures are stripped silently instead of shaming the user with a footer.
+pub fn is_total_citation_failure(audit: &CitationAudit) -> bool {
+    audit.cited > 0
+        && audit.supported == 0
+        && audit.weak == 0
+        && !audit.unsupported_indices.is_empty()
+}
+
+/// Distinct unsupported source indices in first-seen order (deduped).
 ///
-/// The source numbers are de-duplicated (a source cited more than once, and
-/// flagged more than once, is still named a single time) while preserving
-/// first-seen order, then rendered as `[N]` bracket markers matching the
-/// answer's own citation style. Wording is singular or plural depending on
-/// how many distinct sources are named, so the note always reads as a
-/// grammatical sentence. Pure and total: an empty or malformed audit simply
-/// yields `None`.
-pub fn hedge_line(audit: &CitationAudit) -> Option<String> {
+/// Pure helper shared by repair critique wording and failure notes.
+pub fn distinct_unsupported_indices(audit: &CitationAudit) -> Vec<usize> {
     let mut seen = HashSet::new();
     let mut distinct = Vec::new();
     for &index in &audit.unsupported_indices {
@@ -197,19 +202,127 @@ pub fn hedge_line(audit: &CitationAudit) -> Option<String> {
             distinct.push(index);
         }
     }
-    if distinct.is_empty() {
-        return None;
-    }
-    let markers = distinct
+    distinct
+}
+
+/// Formats `[n]` markers for a list of source indices, comma-separated.
+fn format_index_markers(indices: &[usize]) -> String {
+    indices
         .iter()
         .map(|i| format!("[{i}]"))
         .collect::<Vec<_>>()
-        .join(", ");
-    Some(if distinct.len() == 1 {
-        format!("*Note: the figure cited to {markers} could not be verified against that source.*")
-    } else {
-        format!("*Note: figures cited to {markers} could not be verified against those sources.*")
-    })
+        .join(", ")
+}
+
+/// User-facing note used only after repair rounds are exhausted and **every**
+/// citation still fails the audit. Speaks as Thuki owning the failure, not as
+/// "the sources are unreliable," and optionally points at a stronger model.
+/// Returns `None` when the audit is not a total failure.
+pub fn honest_failure_note(audit: &CitationAudit) -> Option<String> {
+    if !is_total_citation_failure(audit) {
+        return None;
+    }
+    Some(
+        "*Thuki could not confirm the cited facts against the pages it retrieved. \
+         Try rephrasing, or switch to a larger model in Settings for a stronger answer.*"
+            .to_string(),
+    )
+}
+
+/// Legacy name kept as an alias of [`honest_failure_note`] so older call sites
+/// and tests that still say "hedge" resolve to the total-failure note only
+/// (partial failures no longer produce a footer).
+pub fn hedge_line(audit: &CitationAudit) -> Option<String> {
+    honest_failure_note(audit)
+}
+
+/// Builds the user-turn critique sent back to the writer on a repair round.
+/// Names the failing `[n]` indices so the model knows which citations to drop
+/// or re-ground. Pure: does not include source bodies (those stay in the
+/// earlier writer messages).
+pub fn repair_critique(audit: &CitationAudit) -> String {
+    let markers = format_index_markers(&distinct_unsupported_indices(audit));
+    format!(
+        "Automatic citation check failed. These source numbers do not support the \
+         claim(s) next to them: {markers}.\n\n\
+         Rewrite the full answer from scratch using only the web sources already \
+         provided. Rules:\n\
+         - Place [n] only when that source's text actually contains the figure or fact.\n\
+         - Do not invent numbers or dates.\n\
+         - Prefer fewer accurate citations over many weak ones.\n\
+         - Output only the rewritten answer, with no preamble or apology."
+    )
+}
+
+/// Removes unsupported citation markers from `answer`, rewriting grouped
+/// markers (`[1, 3]`) to keep only the still-supported indices. Spans with no
+/// remaining indices are deleted; a single preceding space is trimmed when
+/// present so "word [1]." becomes "word." Pure and total: never panics.
+pub fn strip_unsupported_citations(answer: &str, unsupported_indices: &[usize]) -> String {
+    if unsupported_indices.is_empty() || answer.is_empty() {
+        return answer.to_string();
+    }
+    let drop: HashSet<usize> = unsupported_indices.iter().copied().collect();
+    let refs = find_citation_refs(answer);
+    // span_start -> (span_end, indices in that span, first-seen order)
+    let mut spans: BTreeMap<usize, (usize, Vec<usize>)> = BTreeMap::new();
+    for r in refs {
+        let entry = spans
+            .entry(r.span_start)
+            .or_insert((r.span_end, Vec::new()));
+        entry.0 = r.span_end;
+        entry.1.push(r.index);
+    }
+    // Apply from the end so earlier offsets stay valid.
+    let mut out = answer.to_string();
+    for (&start, &(end, ref indices)) in spans.iter().rev() {
+        let kept: Vec<usize> = indices
+            .iter()
+            .copied()
+            .filter(|i| !drop.contains(i))
+            .collect();
+        // Dedupe kept while preserving order inside the span.
+        let mut seen = HashSet::new();
+        let kept: Vec<usize> = kept.into_iter().filter(|i| seen.insert(*i)).collect();
+        let replacement = if kept.is_empty() {
+            String::new()
+        } else {
+            // Writer style: one index per bracket group.
+            kept.iter().map(|i| format!("[{i}]")).collect::<String>()
+        };
+        let mut replace_start = start;
+        // Drop one space immediately before a fully removed marker.
+        if replacement.is_empty()
+            && replace_start > 0
+            && out.as_bytes().get(replace_start - 1) == Some(&b' ')
+        {
+            replace_start -= 1;
+        }
+        // Spans come from parse of `out`'s prior state; applying from the end
+        // keeps offsets valid, so the range is always in bounds.
+        out.replace_range(replace_start..end, &replacement);
+    }
+    out
+}
+
+/// Applies post-repair cleanup: strip remaining bad citations; append the
+/// honest total-failure note only when nothing citable remains supported.
+/// Pure over audit + answer text.
+pub fn finalize_answer_after_audit(answer: &str, audit: &CitationAudit) -> String {
+    if audit.unsupported_indices.is_empty() {
+        return answer.to_string();
+    }
+    let stripped = strip_unsupported_citations(answer, &audit.unsupported_indices);
+    match honest_failure_note(audit) {
+        Some(note) => {
+            if stripped.trim().is_empty() {
+                note
+            } else {
+                format!("{stripped}\n\n{note}")
+            }
+        }
+        None => stripped,
+    }
 }
 
 /// The support buckets a citation's score falls into.
@@ -1637,14 +1750,13 @@ mod tests {
         assert_eq!(hedge_line(&audit), None);
     }
 
-    // ── hedge_line ───────────────────────────────────────────────────────────
+    // ── post-audit cleanup / repair helpers ──────────────────────────────────
 
-    /// Builds a minimal audit carrying exactly the given (possibly
-    /// duplicate) unsupported source numbers, for testing `hedge_line` in
-    /// isolation from the rest of the audit pipeline.
+    /// Builds a minimal audit carrying the given unsupported indices.
+    /// `supported`/`weak` default to 0 (total failure shape) unless overridden.
     fn audit_with_unsupported_indices(indices: Vec<usize>) -> CitationAudit {
         CitationAudit {
-            cited: indices.len(),
+            cited: indices.len().max(1),
             supported: 0,
             weak: 0,
             unsupported: indices.len(),
@@ -1657,53 +1769,129 @@ mod tests {
     }
 
     #[test]
-    fn hedge_line_none_when_nothing_unsupported() {
+    fn honest_failure_note_none_when_nothing_unsupported() {
+        assert_eq!(
+            honest_failure_note(&audit_with_unsupported_indices(vec![])),
+            None
+        );
         assert_eq!(hedge_line(&audit_with_unsupported_indices(vec![])), None);
     }
 
     #[test]
-    fn hedge_line_singular_wording_for_one_index() {
+    fn honest_failure_note_none_on_partial_failure() {
+        // Some citations still supported: strip only, no user-facing note.
+        let audit = CitationAudit {
+            cited: 3,
+            supported: 1,
+            weak: 0,
+            unsupported: 2,
+            unverifiable: 0,
+            unsupported_indices: vec![2, 5],
+            numeric_checked: 0,
+            numeric_matched: 0,
+            numeric_missing: 0,
+        };
+        assert!(!is_total_citation_failure(&audit));
+        assert_eq!(honest_failure_note(&audit), None);
+    }
+
+    #[test]
+    fn honest_failure_note_fires_on_total_failure() {
+        let note = honest_failure_note(&audit_with_unsupported_indices(vec![2, 5]))
+            .expect("total failure yields a note");
+        assert!(note.contains("Thuki could not confirm"));
+        assert!(note.contains("larger model"));
+    }
+
+    #[test]
+    fn repair_critique_names_failing_markers() {
+        let critique = repair_critique(&audit_with_unsupported_indices(vec![5, 2, 5]));
+        assert!(critique.contains("[5], [2]"));
+        assert!(critique.contains("Rewrite the full answer"));
+    }
+
+    #[test]
+    fn strip_unsupported_citations_removes_bad_markers_and_keeps_good_ones() {
+        let answer = "Elon is 55 [1][2][3]. Born in 1971 [2].";
+        let stripped = strip_unsupported_citations(answer, &[1, 3]);
+        assert_eq!(stripped, "Elon is 55[2]. Born in 1971 [2].");
+    }
+
+    #[test]
+    fn strip_unsupported_citations_noop_when_empty_input_or_indices() {
+        assert_eq!(strip_unsupported_citations("keep [1]", &[]), "keep [1]");
+        assert_eq!(strip_unsupported_citations("", &[1]), "");
+    }
+
+    #[test]
+    fn finalize_answer_after_audit_noop_when_nothing_unsupported() {
+        let audit = CitationAudit {
+            cited: 1,
+            supported: 1,
+            weak: 0,
+            unsupported: 0,
+            unverifiable: 0,
+            unsupported_indices: vec![],
+            numeric_checked: 0,
+            numeric_matched: 0,
+            numeric_missing: 0,
+        };
+        assert_eq!(finalize_answer_after_audit("ok [1]", &audit), "ok [1]");
+    }
+
+    #[test]
+    fn finalize_answer_after_audit_note_only_when_strip_empties_answer() {
+        // Answer is only a bad citation marker: strip leaves whitespace, note alone.
+        let answer = " [1] ";
+        let audit = audit_with_unsupported_indices(vec![1]);
+        let out = finalize_answer_after_audit(answer, &audit);
         assert_eq!(
-            hedge_line(&audit_with_unsupported_indices(vec![2])),
-            Some(
-                "*Note: the figure cited to [2] could not be verified against that source.*"
-                    .to_string()
-            )
+            out,
+            "*Thuki could not confirm the cited facts against the pages it retrieved. \
+             Try rephrasing, or switch to a larger model in Settings for a stronger answer.*"
         );
     }
 
     #[test]
-    fn hedge_line_plural_wording_matches_spec_example() {
-        assert_eq!(
-            hedge_line(&audit_with_unsupported_indices(vec![2, 5])),
-            Some(
-                "*Note: figures cited to [2], [5] could not be verified against those sources.*"
-                    .to_string()
-            )
-        );
+    fn strip_unsupported_citations_rewrites_grouped_markers() {
+        let answer = "Revenue hit 100 [1, 3].";
+        let stripped = strip_unsupported_citations(answer, &[1]);
+        // Space before the marker is kept when the span is rewritten, not removed.
+        assert_eq!(stripped, "Revenue hit 100 [3].");
     }
 
     #[test]
-    fn hedge_line_dedupes_repeated_index_down_to_singular_wording() {
-        // The same source flagged unsupported in three different sentences
-        // still names once, and reads as singular.
-        assert_eq!(
-            hedge_line(&audit_with_unsupported_indices(vec![2, 2, 2])),
-            Some(
-                "*Note: the figure cited to [2] could not be verified against that source.*"
-                    .to_string()
-            )
-        );
+    fn strip_unsupported_citations_drops_space_before_fully_removed_marker() {
+        let answer = "He is tall [9].";
+        let stripped = strip_unsupported_citations(answer, &[9]);
+        assert_eq!(stripped, "He is tall.");
     }
 
     #[test]
-    fn hedge_line_dedupes_while_preserving_first_seen_order() {
-        assert_eq!(
-            hedge_line(&audit_with_unsupported_indices(vec![5, 2, 5, 9, 2])),
-            Some(
-                "*Note: figures cited to [5], [2], [9] could not be verified against those sources.*"
-                    .to_string()
-            )
-        );
+    fn finalize_answer_after_audit_strips_partial_without_note() {
+        let answer = "A is true [1]. B is false [2].";
+        let audit = CitationAudit {
+            cited: 2,
+            supported: 1,
+            weak: 0,
+            unsupported: 1,
+            unverifiable: 0,
+            unsupported_indices: vec![2],
+            numeric_checked: 0,
+            numeric_matched: 0,
+            numeric_missing: 0,
+        };
+        let out = finalize_answer_after_audit(answer, &audit);
+        assert_eq!(out, "A is true [1]. B is false.");
+        assert!(!out.contains("Thuki could not confirm"));
+    }
+
+    #[test]
+    fn finalize_answer_after_audit_appends_honest_note_on_total_failure() {
+        let answer = "Fake number 999 [1].";
+        let audit = audit_with_unsupported_indices(vec![1]);
+        let out = finalize_answer_after_audit(answer, &audit);
+        assert!(out.contains("Fake number 999."));
+        assert!(out.contains("Thuki could not confirm"));
     }
 }

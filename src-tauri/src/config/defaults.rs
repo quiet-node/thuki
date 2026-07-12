@@ -1377,6 +1377,16 @@ pub const CITE_WEAK_MIN: f64 = 0.3;
 /// Not user-tunable: an internal defensive bound.
 pub const CITE_AUDIT_MAX_ANSWER_BYTES: usize = 262_144;
 
+/// Maximum number of targeted writer repair rounds after a citation audit
+/// finds unsupported claims. Each round is one extra LLM call with a critique
+/// of the failed `[n]` indices; 0 means never repair (strip-only path). Cap
+/// is small on purpose: repairs cost latency and KV, and after this many tries
+/// Thuki falls back to deterministic strip / total-failure wording instead of
+/// looping forever.
+///
+/// Not user-tunable: fixed product budget for the grounded-answer repair loop.
+pub const CITE_REPAIR_MAX_ATTEMPTS: u32 = 2;
+
 /// Minimum byte length a cited source's fetched text must reach before the
 /// post-generation citation audit will score a claim against it. Below this
 /// (including a source whose text is empty), there is not enough substantive
