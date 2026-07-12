@@ -9,8 +9,7 @@
  * On a successful save it lifts the loader-corrected value back via
  * `onSaved` so the parent's `RawAppConfig` snapshot stays in lock-step
  * with what is actually on disk (e.g. when the loader clamps an
- * out-of-bounds value or applies the cross-field `reader_batch_timeout`
- * correction).
+ * out-of-bounds value).
  */
 
 import { useRef, useState, type ReactNode } from 'react';

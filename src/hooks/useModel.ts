@@ -262,10 +262,9 @@ export function useModel(
    * `@eslint-react/purity`). Independent of the SQLite "saved
    * conversation" id (which is null until `useConversationHistory.save()`
    * runs); the trace recorder uses this id to route every event for the
-   * session into one `traces/chat/<id>.jsonl` and `traces/search/<id>.jsonl`
-   * pair. Refreshed on `reset()` and `loadMessages()`, both of which
-   * fire `record_conversation_end` for the outgoing id so the chat-domain
-   * file gets a clean closing line.
+   * session into one `traces/chat/<id>.jsonl` file. Refreshed on `reset()`
+   * and `loadMessages()`, both of which fire `record_conversation_end` for
+   * the outgoing id so the chat-domain file gets a clean closing line.
    */
   const traceConversationIdRef = useRef<string | null>(null);
   /**

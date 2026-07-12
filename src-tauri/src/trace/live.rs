@@ -6,11 +6,11 @@
 //! # Why a wrapper
 //!
 //! `Arc<dyn TraceRecorder>` is locked in once at startup: the chat
-//! command, the search pipeline, and the screenshot command all hold
-//! their own `Arc` clones of the initial managed state, and Tauri's
-//! managed-state surface has no way to swap a value out from under
-//! existing State<'_> handles. `LiveTraceRecorder` solves this by
-//! being the trait implementation itself; it forwards every
+//! command (including built-in websearch) and the screenshot command
+//! all hold their own `Arc` clones of the initial managed state, and
+//! Tauri's managed-state surface has no way to swap a value out from
+//! under existing State<'_> handles. `LiveTraceRecorder` solves this
+//! by being the trait implementation itself; it forwards every
 //! `record()` call to whatever inner recorder is currently installed.
 //! Swap = write-lock + replace.
 //!

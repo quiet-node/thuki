@@ -572,8 +572,8 @@ mod tests {
 
     // ── the three live-smoke failures, pinned deterministically ───────────────
     //
-    // These exact turns were answered from stale memory by the old trigger. They
-    // must now resolve to ForceWeb without any model call.
+    // These exact turns must resolve to ForceWeb (prefilter hit / without
+    // relying on model auto-search) so live smoke stays deterministic.
 
     #[test]
     fn smoke_failure_rust_version_forces_web() {

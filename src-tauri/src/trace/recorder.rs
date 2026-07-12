@@ -1,25 +1,21 @@
-//! Forensic per-conversation trace recorder shared by the chat path and
-//! the `/search` pipeline.
+//! Forensic per-conversation trace recorder for the chat path, including
+//! built-in websearch turns.
 //!
 //! When [`crate::config::schema::DebugSection::trace_enabled`] is on,
-//! every chat turn AND every search turn writes a forensic JSON-Lines
-//! record into a per-conversation file under
-//! `app_data_dir()/traces/<domain>/<conversation_id>.jsonl`. Files are
-//! grouped by domain so an analysis agent can be pointed at exactly the
-//! slice it cares about: `traces/chat/` for conversation patterns,
-//! `traces/search/` for retrieval quality, or `traces/` for end-to-end
-//! debugging.
+//! every chat turn (and its websearch events) writes a forensic
+//! JSON-Lines record into a per-conversation file under
+//! `app_data_dir()/traces/chat/<conversation_id>.jsonl`.
 //!
 //! Off in shipped builds. Intended for local quality investigation: open
-//! a `.jsonl` file and grep/jq across LLM prompts vs. judge verdicts vs.
+//! a `.jsonl` file and grep/jq across LLM prompts vs. retrieval events vs.
 //! user-visible assistant tokens to understand exactly what happened.
 //!
 //! # Architecture
 //!
-//! - [`TraceRecorder`] is the trait every callsite calls into. The chat
-//!   layer and the search pipeline both thread `&Arc<dyn TraceRecorder>`
-//!   through their execution contexts; no call site distinguishes the
-//!   live recorder from the noop.
+//! - [`TraceRecorder`] is the trait every callsite calls into. Chat and
+//!   websearch code paths both thread `&Arc<dyn TraceRecorder>` through
+//!   their execution contexts; no call site distinguishes the live
+//!   recorder from the noop.
 //! - [`NoopRecorder`] is the production default. Every method is a no-op.
 //! - [`FileRecorder`] writes events for ONE `(domain, conversation_id)`
 //!   pair into ONE file. Lazy directory + file creation on first record,
@@ -76,10 +72,10 @@ use super::ids::ConversationId;
 /// Schema version embedded in every record. Bump when the wire shape changes.
 ///
 /// `2` adds the `domain` and `conversation_id` top-level fields plus the
-/// chat-domain variants. Files produced by the v1 recorder (one file per
-/// search turn, no chat events) and files produced by v2 (one file per
-/// conversation, both chat and search events) are not interleaved on
-/// disk because the v2 layout uses different directories.
+/// chat-domain variants (including websearch events). Files produced by
+/// the v1 recorder (one file per search turn, no chat events) and files
+/// produced by v2 (one file per conversation under `traces/chat/`) are
+/// not interleaved on disk because the v2 layout uses different paths.
 pub const TRACE_SCHEMA_VERSION: u32 = 2;
 
 /// Coarse-grained classification of every recorded event. Determines
@@ -112,15 +108,15 @@ impl TraceDomain {
     }
 }
 
-/// Trait every chat or search callsite uses to emit forensic events.
+/// Trait every chat or websearch callsite uses to emit forensic events.
 /// Implementors must be cheap when tracing is off (the [`NoopRecorder`]
 /// case dominates production usage).
 pub trait TraceRecorder: Send + Sync {
     /// Records a single event for the given conversation. Implementors
     /// MUST NOT panic, MUST NOT block for arbitrary durations, and MUST
     /// NOT propagate errors. Trace I/O failures must be swallowed (with
-    /// a single rate-limited warning) so the chat path and the search
-    /// pipeline are unaffected.
+    /// a single rate-limited warning) so chat and websearch callsites
+    /// are unaffected.
     fn record(&self, conversation_id: &ConversationId, event: RecorderEvent);
 }
 
@@ -164,13 +160,14 @@ pub struct EngineStat {
     pub hit_count: usize,
 }
 
-/// Forensic trace events emitted by the chat layer or the search pipeline.
+/// Forensic trace events emitted by the chat layer, including built-in
+/// websearch.
 ///
-/// Each variant maps to one JSON-Lines record. Field shapes are
-/// intentionally permissive (`Value`, `String`) for the search-domain
-/// variants because the trace is a forensic dump, not a typed contract.
-/// Chat-domain variants carry typed payloads because the chat layer's
-/// surface is small and stable.
+/// Each variant maps to one JSON-Lines record. Field shapes for
+/// websearch events (`SearchDecided`, `SearchRetrieved`, etc.) are
+/// intentionally permissive (`Value`, `String`) because the trace is a
+/// forensic dump, not a typed contract. Lifecycle variants carry typed
+/// payloads because the chat layer's surface is small and stable.
 ///
 /// Every variant has a [`Self::domain`] method that returns its
 /// [`TraceDomain`], used by the registry to pick the destination file.
@@ -541,9 +538,9 @@ fn serialize_failure_fallback(recorder: &FileRecorder, err: serde_json::Error) -
 ///
 /// Stamps the four standard top-level fields onto every line:
 /// `v` (schema version), `seq` (per-recorder monotonic counter),
-/// `ts_ms` (wall-clock UNIX millis), `domain` (chat or search), plus
-/// `conversation_id` (the ID passed to `record`). The remaining fields
-/// come from the event variant via the `Serialize` impl below.
+/// `ts_ms` (wall-clock UNIX millis), `domain` (currently always chat),
+/// plus `conversation_id` (the ID passed to `record`). The remaining
+/// fields come from the event variant via the `Serialize` impl below.
 fn serialize_event(
     seq: u64,
     ts_ms: u64,
@@ -698,9 +695,9 @@ impl Serialize for RecorderEvent {
     }
 }
 
-/// In-memory recorder used by tests to assert what the chat layer or
-/// search pipeline emitted. Lives in a `cfg(test)` block so production
-/// builds never link it.
+/// In-memory recorder used by tests to assert what the chat layer
+/// (including websearch) emitted. Lives in a `cfg(test)` block so
+/// production builds never link it.
 #[cfg(test)]
 #[derive(Debug, Default)]
 pub(crate) struct MockRecorder {

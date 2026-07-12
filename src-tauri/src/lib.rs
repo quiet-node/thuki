@@ -2822,10 +2822,10 @@ pub fn run() {
             // ── Unified trace recorder ─────────────────────────────
             // Off by default: when `[debug] trace_enabled = false` in
             // config.toml the live recorder wraps a `NoopRecorder` and
-            // every chat / search / screenshot event is a constant-time
+            // every chat / websearch / screenshot event is a constant-time
             // call. When on, it wraps a `RegistryRecorder` that routes
             // events to per-conversation JSONL files under
-            // `app_data_dir()/traces/{chat,search}/`.
+            // `app_data_dir()/traces/chat/`.
             //
             // Wrapped in a `LiveTraceRecorder` so toggling
             // `[debug] trace_enabled` from the Settings panel hot-swaps

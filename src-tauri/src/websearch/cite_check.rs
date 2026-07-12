@@ -229,13 +229,6 @@ pub fn honest_failure_note(audit: &CitationAudit) -> Option<String> {
     )
 }
 
-/// Legacy name kept as an alias of [`honest_failure_note`] so older call sites
-/// and tests that still say "hedge" resolve to the total-failure note only
-/// (partial failures no longer produce a footer).
-pub fn hedge_line(audit: &CitationAudit) -> Option<String> {
-    honest_failure_note(audit)
-}
-
 /// Builds the user-turn critique sent back to the writer on a repair round.
 /// Names the failing `[n]` indices so the model knows which citations to drop
 /// or re-ground. Pure: does not include source bodies (those stay in the
@@ -1741,13 +1734,13 @@ mod tests {
     }
 
     #[test]
-    fn unverifiable_citation_never_drives_the_hedge_note() {
+    fn unverifiable_citation_never_drives_the_failure_note() {
         // The end-to-end path: a source too thin to verify must not surface
-        // as an answer-facing hedge, only as its own separate outcome.
+        // as an answer-facing failure note, only as its own separate outcome.
         let src = source(1, "");
         let answer = "The company earned $500 million last year [1].";
         let audit = audit_citations(answer, &[src]);
-        assert_eq!(hedge_line(&audit), None);
+        assert_eq!(honest_failure_note(&audit), None);
     }
 
     // ── post-audit cleanup / repair helpers ──────────────────────────────────
@@ -1774,7 +1767,6 @@ mod tests {
             honest_failure_note(&audit_with_unsupported_indices(vec![])),
             None
         );
-        assert_eq!(hedge_line(&audit_with_unsupported_indices(vec![])), None);
     }
 
     #[test]
