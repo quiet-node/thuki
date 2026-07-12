@@ -7073,6 +7073,8 @@ describe('App', () => {
           'Rewrite the text below so it sounds like a fluent native English speaker',
         );
         expect(args.message).toContain('fix this text');
+        expect(args.slashCommand).toBe('/rewrite');
+        expect(args.forceSearch).toBe(false);
       });
     });
 
@@ -7132,6 +7134,38 @@ describe('App', () => {
         expect(args.message).toContain('Summarize the following text');
         expect(args.message).toContain('some long text');
         expect(args.think).toBe(true);
+        // Utility trigger wins over /think so auto-search stays skipped.
+        expect(args.slashCommand).toBe('/tldr');
+        expect(args.forceSearch).toBe(false);
+      });
+    });
+
+    it('routes /explain with slashCommand but does not force-search', async () => {
+      enableChannelCapture();
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      act(() => {
+        setAskValue('/explain what is a closure?');
+      });
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      await act(async () => {});
+
+      await vi.waitFor(() => {
+        const askCall = vi
+          .mocked(invoke)
+          .mock.calls.find((c) => c[0] === 'ask_model');
+        expect(askCall).toBeDefined();
+        const args = askCall![1] as Record<string, unknown>;
+        expect(args.slashCommand).toBe('/explain');
+        expect(args.forceSearch).toBe(false);
       });
     });
 

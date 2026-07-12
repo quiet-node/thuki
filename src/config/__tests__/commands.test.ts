@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { COMMANDS, buildPrompt } from '../commands';
+import { COMMANDS, buildPrompt, skipsAutoSearch } from '../commands';
 import type { Command } from '../commands';
 
 describe('COMMANDS registry', () => {
@@ -124,6 +124,50 @@ describe('COMMANDS registry', () => {
     const think = COMMANDS.find((c: Command) => c.trigger === '/think');
     expect(screen?.promptTemplate).toBeUndefined();
     expect(think?.promptTemplate).toBeUndefined();
+  });
+
+  it('tags only transform utilities with skipSearch', () => {
+    const skip = new Set([
+      '/rewrite',
+      '/refine',
+      '/translate',
+      '/tldr',
+      '/bullets',
+      '/todos',
+      '/extract',
+    ]);
+    for (const cmd of COMMANDS) {
+      expect(!!cmd.skipSearch).toBe(skip.has(cmd.trigger));
+    }
+  });
+});
+
+describe('skipsAutoSearch', () => {
+  it('returns true for every transform slash command', () => {
+    for (const trigger of [
+      '/rewrite',
+      '/refine',
+      '/translate',
+      '/tldr',
+      '/bullets',
+      '/todos',
+      '/extract',
+    ]) {
+      expect(skipsAutoSearch(trigger)).toBe(true);
+    }
+  });
+
+  it('returns false for /search, /explain, /think, /screen, unknown', () => {
+    for (const trigger of [
+      '/search',
+      '/explain',
+      '/think',
+      '/screen',
+      '/nope',
+      '',
+    ]) {
+      expect(skipsAutoSearch(trigger)).toBe(false);
+    }
   });
 });
 

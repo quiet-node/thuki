@@ -782,6 +782,56 @@ fn builtin_search_outcome_label(
     }
 }
 
+/// Transform slash commands that must never run auto-search or the search
+/// classifier/prefilter. Kept in lockstep with FE `skipsAutoSearch` /
+/// `Command.skipSearch` in `src/config/commands.ts`.
+///
+/// Not skipped: `/search` (force), `/explain`, `/think`, `/screen`.
+fn slash_skips_auto_search(slash_command: Option<&str>) -> bool {
+    matches!(
+        slash_command,
+        Some("/rewrite")
+            | Some("/refine")
+            | Some("/translate")
+            | Some("/tldr")
+            | Some("/bullets")
+            | Some("/todos")
+            | Some("/extract")
+    )
+}
+
+/// Decision for whether a built-in turn enters `run_builtin_search`.
+#[derive(Debug, PartialEq, Eq)]
+enum BuiltinSearchGate {
+    /// Stay on the plain chat path (no classifier, no engines).
+    Plain,
+    /// Enter the search pipeline; `force` is the `/search` engines-only flag.
+    Run { force: bool },
+}
+
+/// Pure gate for built-in web search before any pipeline work.
+///
+/// Order: images always plain; `/search` always runs forced; transform slash
+/// commands always plain; otherwise Auto search Settings decide.
+fn builtin_search_gate(
+    turn_has_images: bool,
+    force_search: bool,
+    skip_search: bool,
+    auto_search: bool,
+) -> BuiltinSearchGate {
+    if turn_has_images {
+        BuiltinSearchGate::Plain
+    } else if force_search {
+        BuiltinSearchGate::Run { force: true }
+    } else if skip_search {
+        BuiltinSearchGate::Plain
+    } else if auto_search {
+        BuiltinSearchGate::Run { force: false }
+    } else {
+        BuiltinSearchGate::Plain
+    }
+}
+
 /// Runs the built-in search pre-pass and, if it fires, the retrieval pipeline
 /// on the warm engine, emitting progress through `on_chunk`. The prompt inputs
 /// MUST be the same strings the plain chat path streams (system prompt, filtered
@@ -2028,9 +2078,10 @@ pub async fn ask_model(
     // The `/search` slash command forces a web search this turn (see
     // `run_builtin_search`'s `force_search`), turning the invisible auto-search
     // into an always-on, cache-bypassing search with the same "look it up again"
-    // semantics. Any other command, or a plain chat turn, leaves the pre-pass to
-    // decide.
+    // semantics. Transform utilities (`slash_skips_auto_search`) never enter the
+    // pipeline. `/explain` and `/think` still honor Auto search Settings.
     let force_search = slash_command.as_deref() == Some("/search");
+    let skip_search = slash_skips_auto_search(slash_command.as_deref());
 
     // Base64-encode attached images for the Ollama multimodal API.
     let images = match image_paths {
@@ -2196,33 +2247,38 @@ pub async fn ask_model(
                     engine.touch();
 
                     // Built-in web search (skipped when the turn attaches images).
-                    // On-demand mode (`behavior.auto_search = false`) skips the
-                    // pipeline on plain turns; only `force_search` (`/search`)
-                    // still runs. Prompt inputs mirror the plain path so the
-                    // pre-pass and writer share the warm KV prefix. Do NOT let
-                    // source-augmented writer messages reach history below.
-                    let search = if turn_has_images {
-                        BuiltinSearchResult::Plain
-                    } else if force_search || config.behavior.auto_search {
-                        let history = &messages[1..messages.len().saturating_sub(1)];
-                        run_builtin_search(
-                            &engine,
-                            &target,
-                            &model_id,
-                            &client,
-                            config.inference.num_ctx,
-                            &messages[0].content,
-                            history,
-                            &user_msg.content,
-                            &cancel_token,
-                            &bound_recorder,
-                            &pump,
-                            epoch_at_start,
-                            force_search,
-                        )
-                        .await
-                    } else {
-                        BuiltinSearchResult::Plain
+                    // Transform slash commands skip entirely (no classifier /
+                    // prefilter). On-demand mode (`behavior.auto_search = false`)
+                    // skips the pipeline on plain turns; only `force_search`
+                    // (`/search`) still runs. Prompt inputs mirror the plain path
+                    // so the pre-pass and writer share the warm KV prefix. Do NOT
+                    // let source-augmented writer messages reach history below.
+                    let search = match builtin_search_gate(
+                        turn_has_images,
+                        force_search,
+                        skip_search,
+                        config.behavior.auto_search,
+                    ) {
+                        BuiltinSearchGate::Plain => BuiltinSearchResult::Plain,
+                        BuiltinSearchGate::Run { force } => {
+                            let history = &messages[1..messages.len().saturating_sub(1)];
+                            run_builtin_search(
+                                &engine,
+                                &target,
+                                &model_id,
+                                &client,
+                                config.inference.num_ctx,
+                                &messages[0].content,
+                                history,
+                                &user_msg.content,
+                                &cancel_token,
+                                &bound_recorder,
+                                &pump,
+                                epoch_at_start,
+                                force,
+                            )
+                            .await
+                        }
                     };
 
                     match search {
@@ -2491,6 +2547,66 @@ mod tests {
         assert_eq!(
             builtin_search_outcome_label(&SearchOutcome::Unreachable { messages: vec![] }),
             "Unreachable"
+        );
+    }
+
+    #[test]
+    fn slash_skips_auto_search_covers_transform_set_only() {
+        for trigger in [
+            "/rewrite",
+            "/refine",
+            "/translate",
+            "/tldr",
+            "/bullets",
+            "/todos",
+            "/extract",
+        ] {
+            assert!(
+                slash_skips_auto_search(Some(trigger)),
+                "{trigger} must skip auto-search"
+            );
+        }
+        for trigger in ["/search", "/explain", "/think", "/screen"] {
+            assert!(
+                !slash_skips_auto_search(Some(trigger)),
+                "{trigger} must not skip auto-search"
+            );
+        }
+        assert!(!slash_skips_auto_search(None));
+        assert!(!slash_skips_auto_search(Some("/unknown")));
+    }
+
+    #[test]
+    fn builtin_search_gate_orders_images_force_skip_and_auto() {
+        // Images always plain, even under force or auto.
+        assert_eq!(
+            builtin_search_gate(true, true, false, true),
+            BuiltinSearchGate::Plain
+        );
+        // `/search` forces the pipeline even when Auto search is off.
+        assert_eq!(
+            builtin_search_gate(false, true, false, false),
+            BuiltinSearchGate::Run { force: true }
+        );
+        // Transform slash: plain even when Auto search is on (no classifier).
+        assert_eq!(
+            builtin_search_gate(false, false, true, true),
+            BuiltinSearchGate::Plain
+        );
+        // Force wins over skip if both were ever set (defensive).
+        assert_eq!(
+            builtin_search_gate(false, true, true, true),
+            BuiltinSearchGate::Run { force: true }
+        );
+        // Plain chat with Auto search on → auto pipeline.
+        assert_eq!(
+            builtin_search_gate(false, false, false, true),
+            BuiltinSearchGate::Run { force: false }
+        );
+        // Plain chat with Auto search off → plain.
+        assert_eq!(
+            builtin_search_gate(false, false, false, false),
+            BuiltinSearchGate::Plain
         );
     }
 

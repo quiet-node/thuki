@@ -2408,6 +2408,10 @@ function App() {
             readyPaths,
             undefined,
             'Extract all text visible in this image verbatim. Output only the extracted text with no commentary, preamble, or formatting.',
+            undefined,
+            undefined,
+            undefined,
+            '/extract',
           );
         } else {
           setQuery(fullQuery);
@@ -2579,6 +2583,8 @@ function App() {
         /* v8 ignore next -- dispatch guard ensures at least one image source; empty path is defensive */
         readyPaths.length > 0 ? readyPaths : undefined,
         REPLACEABLE_COMMANDS.has(trigger) ? trigger : undefined,
+        undefined,
+        trigger,
       );
     },
     [
@@ -3188,6 +3194,8 @@ function App() {
         composedPrompt,
         undefined,
         REPLACEABLE_COMMANDS.has(utilityTrigger) ? utilityTrigger : undefined,
+        undefined,
+        utilityTrigger,
       );
       setSelectedContext(null);
       setQuery('');

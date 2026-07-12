@@ -266,6 +266,103 @@ describe('useModel', () => {
       expect(userMsg?.content).toBe('user visible text');
     });
 
+    it('sends utility slashCommand so backend can skip auto-search', async () => {
+      const { result } = renderHook(() => useModel(''));
+
+      await act(async () => {
+        await result.current.ask(
+          '/rewrite fix this text',
+          undefined,
+          undefined,
+          false,
+          'composed rewrite prompt',
+          undefined,
+          '/rewrite',
+          undefined,
+          '/rewrite',
+        );
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({
+          slashCommand: '/rewrite',
+          forceSearch: false,
+          think: false,
+        }),
+      );
+    });
+
+    it('utility slashCommand wins over think for IPC slashCommand', async () => {
+      const { result } = renderHook(() => useModel(''));
+
+      await act(async () => {
+        await result.current.ask(
+          '/think /tldr long text',
+          undefined,
+          undefined,
+          true,
+          'composed tldr prompt',
+          undefined,
+          undefined,
+          undefined,
+          '/tldr',
+        );
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({
+          slashCommand: '/tldr',
+          think: true,
+          forceSearch: false,
+        }),
+      );
+    });
+
+    it('sends /think as slashCommand when only think is set', async () => {
+      const { result } = renderHook(() => useModel(''));
+
+      await act(async () => {
+        await result.current.ask('hello', undefined, undefined, true);
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({
+          slashCommand: '/think',
+          think: true,
+          forceSearch: false,
+        }),
+      );
+    });
+
+    it('does not send a skip slashCommand for /explain (auto-search still applies)', async () => {
+      const { result } = renderHook(() => useModel(''));
+
+      await act(async () => {
+        await result.current.ask(
+          '/explain JWT',
+          undefined,
+          undefined,
+          false,
+          'composed explain prompt',
+          undefined,
+          undefined,
+          undefined,
+          '/explain',
+        );
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({
+          slashCommand: '/explain',
+          forceSearch: false,
+        }),
+      );
+    });
+
     it('sends displayContent as message when no promptOverride provided', async () => {
       const { result } = renderHook(() => useModel(''));
 
@@ -1765,8 +1862,34 @@ describe('useModel', () => {
         promptOverride: undefined,
         displayImagePaths: undefined,
         replaceCommand: undefined,
+        slashCommand: undefined,
         userMessageId: user.id,
         assistantMessageId: assistant.id,
+      });
+    });
+
+    it('stores slashCommand on chat retrySnapshot for utility turns', async () => {
+      const { result } = renderHook(() => useModel(''));
+
+      await act(async () => {
+        await result.current.ask(
+          '/rewrite fix',
+          undefined,
+          undefined,
+          false,
+          'composed',
+          undefined,
+          '/rewrite',
+          undefined,
+          '/rewrite',
+        );
+      });
+
+      const assistant = result.current.messages[1];
+      expect(assistant.retrySnapshot).toMatchObject({
+        kind: 'chat',
+        slashCommand: '/rewrite',
+        replaceCommand: '/rewrite',
       });
     });
 

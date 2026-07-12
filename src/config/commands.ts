@@ -51,6 +51,12 @@ export interface Command {
   readonly promptHelp: CommandPromptHelp;
   /** Prompt template with $INPUT / $LANG placeholders. Absent for non-template commands. */
   readonly promptTemplate?: string;
+  /**
+   * When true, this command never runs auto-search or the search classifier.
+   * Transform utilities operate on supplied text only. `/search` forces search
+   * instead; `/explain` and `/think` still honor Auto search Settings.
+   */
+  readonly skipSearch?: boolean;
 }
 
 export const COMMANDS: readonly Command[] = [
@@ -93,7 +99,7 @@ export const COMMANDS: readonly Command[] = [
         '`/screen /extract`: captures the screen and extracts all visible text',
       ],
       behavior:
-        'Text is extracted using the macOS Vision framework and returned verbatim in a code block. No prose or explanation is added. When multiple images are provided, each result is separated by a horizontal rule. Returns "[No text detected]" when no readable text is found.',
+        'Text is extracted using the macOS Vision framework and returned verbatim in a code block. No prose or explanation is added. When multiple images are provided, each result is separated by a horizontal rule. Returns "[No text detected]" when no readable text is found. Does not trigger web search.',
       composability:
         '`/extract` can combine with `/screen` to capture then extract in one step.',
       permission:
@@ -107,6 +113,7 @@ export const COMMANDS: readonly Command[] = [
       limit:
         'Returns raw extracted text only, never a description or interpretation of the image.',
     },
+    skipSearch: true,
   },
   {
     trigger: '/screen',
@@ -171,7 +178,7 @@ export const COMMANDS: readonly Command[] = [
         '`/translate Spanish meeting notes here`: translates typed text to Spanish',
       ],
       behavior:
-        'Outputs only the translation with no commentary or explanation.',
+        'Outputs only the translation with no commentary or explanation. Does not trigger web search.',
       languageFormat:
         'The target language can be a full name (`French`), ISO code (`fr`, `fra`), or common shorthand.',
       defaultBehavior:
@@ -186,6 +193,7 @@ export const COMMANDS: readonly Command[] = [
     },
     promptTemplate:
       'You are a translation assistant. Translate the following text to the specified target language. The user may specify the target language by its full name (e.g., "Vietnamese"), ISO code (e.g., "vi", "vie"), abbreviation, or informal shorthand. Interpret the language identifier flexibly and use your best judgment. If no target language is specified, translate to Vietnamese. Output only the translation with no commentary or explanation.\n\nTarget language: $LANG\n\nText: $INPUT',
+    skipSearch: true,
   },
   {
     trigger: '/rewrite',
@@ -199,7 +207,7 @@ export const COMMANDS: readonly Command[] = [
         '`/rewrite so basically what happened was i was trying to fix the bug`: rewrites typed text in a natural, casual voice',
       ],
       behavior:
-        'Rewrites text to sound like a fluent native speaker talking day to day: relaxed and casual by default, while keeping your meaning, personality, and point of view. It mirrors your original formatting instead of flattening it: Markdown headings, bold, lists, links, blockquotes, and code all stay, and only the text inside them is improved. Quoted lines, code, URLs, @mentions, #channels, and the emoji or expressive spellings you used are kept exactly as written. It fixes what reads awkwardly and leaves what already reads well alone, only stays formal when the original clearly is, and will not bolt a "we" voice onto an imperative or impersonal note. Outputs only the rewritten text. A Replace button on the result writes the rewritten text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button. Follow-up tweaks in the same chat, like asking for a longer or more formal version, keep the Replace button too.',
+        'Rewrites text to sound like a fluent native speaker talking day to day: relaxed and casual by default, while keeping your meaning, personality, and point of view. It mirrors your original formatting instead of flattening it: Markdown headings, bold, lists, links, blockquotes, and code all stay, and only the text inside them is improved. Quoted lines, code, URLs, @mentions, #channels, and the emoji or expressive spellings you used are kept exactly as written. It fixes what reads awkwardly and leaves what already reads well alone, only stays formal when the original clearly is, and will not bolt a "we" voice onto an imperative or impersonal note. Outputs only the rewritten text. A Replace button on the result writes the rewritten text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button. Follow-up tweaks in the same chat, like asking for a longer or more formal version, keep the Replace button too. Does not trigger web search.',
       composability:
         '`/rewrite` works with attached images or `/screen`. Vision OCR extracts the text first, then rewrites it.',
     },
@@ -209,6 +217,7 @@ export const COMMANDS: readonly Command[] = [
     },
     promptTemplate:
       'Rewrite the text below so it sounds like a fluent native English speaker saying it naturally in everyday conversation. Make it read like a real person talking, not stiff or robotic.\n\nRules:\n- Tone: default to relaxed, casual, conversational English, and match the writer\'s energy. Keep it formal only if the original clearly is, and never sound more formal, stiffer, louder, or more casual than they did.\n- Change only what needs it. Rephrase awkward or non-native wording so it reads like a native speaker, and leave anything that already reads well alone. Keep every key point; do not add ideas or drop information. No edit beats a pointless edit.\n- Mirror the original\'s formatting exactly. Keep its Markdown (headings, bold, italics, bullet and numbered lists, links, blockquotes, code) along with its structure and order: rewrite the text inside each element, but never flatten a list, heading, or quote into a paragraph, and never merge separate points into one sentence. If the original is plain text with no Markdown, keep it plain and add none of your own.\n- Keep these exactly, character for character; never reword, reorder, or strip them: blockquotes (lines starting with >), fenced code and inline code, raw URLs, link targets, @mentions, #channels, and any emoji, expressive spellings, or slang the writer used ("heyyyy", "gonna", "tbh"). Do not change the wording inside a blockquote or code block at all, and do not add emoji or slang they did not use.\n- Keep the original point of view. Do not invent a narrator: if the text has no "I" or "we" (an imperative or impersonal note), keep it that way. Never turn a directive into "We need to", "We should", or "Let\'s"; an imperative stays an imperative.\n- Use normal capitalization and punctuation, and no em dashes: use a comma, colon, semicolon, or period instead. If the original already uses them, keeping them is fine.\n- If the text includes an "[Additional instruction]" line, follow it; it can override these defaults. Output only the rewritten text: no preamble, explanation, or quotes.\n\nExample 1\nInput: I very much want that we can finish this today if it possible for us.\nOutput: Honestly, I\'d love to wrap this up today if we can.\n\nExample 2\nInput: heyyyy so the build was broken but i fixed it and the tests pass now 🎉\nOutput: Heyyyy, so the build was broken but I fixed it and the tests pass now 🎉\n\nExample 3\nInput: @alex @priya hey can you two take a look at the deploy when you get a sec\nOutput: @alex @priya hey, can you two take a look at the deploy when you get a chance?\n\nExample 4\nInput: **Resources:**\n- here is the docs for schedule service [Schedule Service](https://docs.hedera.com/x)\n- this one good for begineer [Getting Started](https://docs.hedera.com/start)\nOutput: **Resources:**\n- The Schedule Service docs: [Schedule Service](https://docs.hedera.com/x)\n- Good for beginners: [Getting Started](https://docs.hedera.com/start)\n\nExample 5\nInput: Updates from the infra team:\n> The importer fix is live but grpc still has an issue. Track it at https://example.com/issues/13668. Both land in 0.156.0 with a GA soon.\nOutput: Here\'s the latest from the infra team:\n> The importer fix is live but grpc still has an issue. Track it at https://example.com/issues/13668. Both land in 0.156.0 with a GA soon.\n\nNow rewrite only the following text. Do not copy anything from the examples.\n\nText: $INPUT',
+    skipSearch: true,
   },
   {
     trigger: '/tldr',
@@ -222,7 +231,7 @@ export const COMMANDS: readonly Command[] = [
         '`/tldr [paste a long article]`: summarizes typed or pasted text',
       ],
       behavior:
-        'Captures the core message, key decision, or critical takeaway. Skips background detail and qualifications.',
+        'Captures the core message, key decision, or critical takeaway. Skips background detail and qualifications. Does not trigger web search.',
       composability:
         '`/tldr` works with attached images or `/screen`. Vision OCR extracts the text first, then summarizes it.',
     },
@@ -232,6 +241,7 @@ export const COMMANDS: readonly Command[] = [
     },
     promptTemplate:
       "Summarize the following text into a TL;DR. Capture the core message in 1-3 short, direct sentences. Focus on what matters most: the main point, the key decision, or the critical takeaway. Skip background details, qualifications, and anything that isn't essential to understanding the gist. Output only the summary.\n\nText: $INPUT",
+    skipSearch: true,
   },
   {
     trigger: '/refine',
@@ -246,7 +256,7 @@ export const COMMANDS: readonly Command[] = [
         '`/refine hey just wanted to follow up on the thing we discussed`: cleans up typed text',
       ],
       behavior:
-        'Corrects errors and smooths rough phrasing without restructuring or adding new ideas. Your original tone and meaning stay intact. A Replace button on the result writes the refined text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button. Follow-up tweaks in the same chat, like asking for a longer or more formal version, keep the Replace button too.',
+        'Corrects errors and smooths rough phrasing without restructuring or adding new ideas. Your original tone and meaning stay intact. A Replace button on the result writes the refined text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button. Follow-up tweaks in the same chat, like asking for a longer or more formal version, keep the Replace button too. Does not trigger web search.',
       composability:
         '`/refine` works with attached images or `/screen`. Vision OCR extracts the text first, then refines it.',
     },
@@ -256,6 +266,7 @@ export const COMMANDS: readonly Command[] = [
     },
     promptTemplate:
       'Refine the following text by correcting grammar, spelling, punctuation, and awkward phrasing. Keep the original tone, voice, and meaning intact. Do not restructure paragraphs, add new ideas, or remove content. If a sentence is grammatically correct but stylistically rough, smooth it lightly without changing the intent. Output only the refined text.\n\nText: $INPUT',
+    skipSearch: true,
   },
   {
     trigger: '/bullets',
@@ -269,7 +280,7 @@ export const COMMANDS: readonly Command[] = [
         '`/bullets [paste meeting notes]`: extracts key points from typed or pasted content',
       ],
       behavior:
-        'Each point is a concise, self-contained statement. Ordered by importance or logical sequence. Filler and repetition are removed. Output uses `- ` prefixed markdown bullets.',
+        'Each point is a concise, self-contained statement. Ordered by importance or logical sequence. Filler and repetition are removed. Output uses `- ` prefixed markdown bullets. Does not trigger web search.',
       composability:
         '`/bullets` works with attached images or `/screen`. Vision OCR extracts the text first, then extracts key points.',
     },
@@ -279,6 +290,7 @@ export const COMMANDS: readonly Command[] = [
     },
     promptTemplate:
       'Extract the key points from the following text as a bulleted list. Each item must begin with "- " (a hyphen followed by a space). Do not use numbered lists, plain paragraphs, headers, or any other formatting. Output only the bulleted list, nothing else.\n\nExample output format:\n- First key point\n- Second key point\n- Third key point\n\nEach bullet should be a concise, self-contained statement. Order by importance or logical sequence. Leave out filler and repetition.\n\nText: $INPUT',
+    skipSearch: true,
   },
   {
     trigger: '/explain',
@@ -321,7 +333,7 @@ export const COMMANDS: readonly Command[] = [
         '`/todos [paste a conversation or notes]`: processes typed or pasted content',
       ],
       behavior:
-        'Responds in two parts: a short paragraph explaining the context and what is at stake, followed by a `- [ ]` checkbox list of all tasks. Each to-do includes who is responsible, plus any deadline or timeframe if mentioned.',
+        'Responds in two parts: a short paragraph explaining the context and what is at stake, followed by a `- [ ]` checkbox list of all tasks. Each to-do includes who is responsible, plus any deadline or timeframe if mentioned. Does not trigger web search.',
       composability:
         '`/todos` works with attached images or `/screen`. Vision OCR extracts the text first, then extracts to-dos.',
     },
@@ -331,6 +343,7 @@ export const COMMANDS: readonly Command[] = [
     },
     promptTemplate:
       'Read the following text and respond in two parts:\n\n**Part 1: Summary.** Write a short paragraph (3-5 sentences) explaining what this text is about. Cover: what the situation or topic is, who is involved, what the current state is, and why it matters or what is at stake. This should give someone who has not read the original text a clear picture of the context.\n\n**Part 2: To-dos.** List every task, action item, commitment, and follow-up from the text as a markdown checkbox list. Every single item MUST begin with "- [ ] " (hyphen, space, open bracket, space, close bracket, space). Do not use numbered lists, plain bullets, headers, or any other format for the list items.\n\nSeparate the two parts with a blank line. Do not add any headings or labels like "Summary:" or "To-dos:"; just write the paragraph, then the list.\n\nExample output format:\nThis is a paragraph explaining what the text is about, who is involved, and what the situation is. It gives enough context to understand why the tasks matter. It is clear and direct.\n\n- [ ] First task to complete\n- [ ] Second task to complete\n- [ ] Third task to complete\n\nFor each to-do item, include who is responsible (if mentioned), what needs to be done, and any deadline or timeframe (if mentioned). Order by urgency or sequence when possible.\n\nText: $INPUT',
+    skipSearch: true,
   },
 ] as const;
 
@@ -350,6 +363,18 @@ export const REPLACEABLE_COMMANDS: ReadonlySet<string> = new Set([
   '/rewrite',
   '/refine',
 ]);
+
+/**
+ * Whether `trigger` is a transform slash command that must never run
+ * auto-search or the search classifier/prefilter. Reads the command registry
+ * (`skipSearch`) so the list stays single-sourced with autocomplete and docs.
+ *
+ * `/search`, `/explain`, `/think`, and `/screen` return false.
+ */
+export function skipsAutoSearch(trigger: string): boolean {
+  const cmd = COMMANDS.find((c) => c.trigger === trigger);
+  return cmd?.skipSearch === true;
+}
 
 /**
  * Builds a fully composed prompt from a utility command's template.

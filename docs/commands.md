@@ -8,6 +8,8 @@ Commands are written as whole-word `/` triggers anywhere in your message. Press 
 
 Commands can be combined when their behavior allows it. For example, `/screen /think` captures the screen and enables extended reasoning, while `/think /tldr` summarizes with reasoning enabled.
 
+Transform commands (`/rewrite`, `/refine`, `/translate`, `/tldr`, `/bullets`, `/todos`, `/extract`) never trigger web search or the auto-search classifier. They run only on the text you supply (or OCR text). Plain messages, `/explain`, and `/think` still follow Auto search in Settings; `/search` always forces a live look-up.
+
 Commands that operate on text follow a consistent input priority:
 
 1. **Highlighted text + no typed text:** highlighted text is the input
@@ -46,7 +48,7 @@ Extracts all visible text from screenshots or attached images using macOS Vision
 - `/extract` with an attached image: extracts all text from the image
 - `/screen /extract`: captures the screen and extracts all visible text
 
-**Behavior:** Text is extracted using the macOS Vision framework and returned verbatim in a code block. No prose or explanation is added. When multiple images are provided, each result is separated by a horizontal rule. Returns "[No text detected]" when no readable text is found.
+**Behavior:** Text is extracted using the macOS Vision framework and returned verbatim in a code block. No prose or explanation is added. When multiple images are provided, each result is separated by a horizontal rule. Returns "[No text detected]" when no readable text is found. Does not trigger web search.
 
 **Composable:** `/extract` can combine with `/screen` to capture then extract in one step.
 
@@ -101,7 +103,7 @@ Translates text to another language.
 - `/translate ja` with highlighted text: translates highlighted text to Japanese
 - `/translate Spanish meeting notes here`: translates typed text to Spanish
 
-**Behavior:** Outputs only the translation with no commentary or explanation.
+**Behavior:** Outputs only the translation with no commentary or explanation. Does not trigger web search.
 
 **Composable:** `/translate` works with attached images or `/screen`. Vision OCR extracts the text first; translation runs on the result. Omitting a target language defaults to Vietnamese.
 
@@ -121,7 +123,7 @@ Rewrites text to sound like natural, casual, everyday speech.
 - `/rewrite` with highlighted text: rewrites the selected text
 - `/rewrite so basically what happened was i was trying to fix the bug`: rewrites typed text in a natural, casual voice
 
-**Behavior:** Rewrites text to sound like a fluent native speaker talking day to day: relaxed and casual by default, while keeping your meaning, personality, and point of view. It mirrors your original formatting instead of flattening it: Markdown headings, bold, lists, links, blockquotes, and code all stay, and only the text inside them is improved. Quoted lines, code, URLs, @mentions, #channels, and the emoji or expressive spellings you used are kept exactly as written. It fixes what reads awkwardly and leaves what already reads well alone, only stays formal when the original clearly is, and will not bolt a "we" voice onto an imperative or impersonal note. Outputs only the rewritten text. A Replace button on the result writes the rewritten text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button. Follow-up tweaks in the same chat, like asking for a longer or more formal version, keep the Replace button too.
+**Behavior:** Rewrites text to sound like a fluent native speaker talking day to day: relaxed and casual by default, while keeping your meaning, personality, and point of view. It mirrors your original formatting instead of flattening it: Markdown headings, bold, lists, links, blockquotes, and code all stay, and only the text inside them is improved. Quoted lines, code, URLs, @mentions, #channels, and the emoji or expressive spellings you used are kept exactly as written. It fixes what reads awkwardly and leaves what already reads well alone, only stays formal when the original clearly is, and will not bolt a "we" voice onto an imperative or impersonal note. Outputs only the rewritten text. A Replace button on the result writes the rewritten text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button. Follow-up tweaks in the same chat, like asking for a longer or more formal version, keep the Replace button too. Does not trigger web search.
 
 **Composable:** `/rewrite` works with attached images or `/screen`. Vision OCR extracts the text first, then rewrites it.
 
@@ -137,7 +139,7 @@ Summarizes text into 1-3 short, direct sentences.
 - `/tldr` with highlighted text: summarizes the selected content
 - `/tldr [paste a long article]`: summarizes typed or pasted text
 
-**Behavior:** Captures the core message, key decision, or critical takeaway. Skips background detail and qualifications.
+**Behavior:** Captures the core message, key decision, or critical takeaway. Skips background detail and qualifications. Does not trigger web search.
 
 **Composable:** `/tldr` works with attached images or `/screen`. Vision OCR extracts the text first, then summarizes it.
 
@@ -153,7 +155,7 @@ Fixes grammar, spelling, and punctuation while preserving your voice.
 - `/refine` with highlighted text: corrects the selected text
 - `/refine hey just wanted to follow up on the thing we discussed`: cleans up typed text
 
-**Behavior:** Corrects errors and smooths rough phrasing without restructuring or adding new ideas. Your original tone and meaning stay intact. A Replace button on the result writes the refined text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button. Follow-up tweaks in the same chat, like asking for a longer or more formal version, keep the Replace button too.
+**Behavior:** Corrects errors and smooths rough phrasing without restructuring or adding new ideas. Your original tone and meaning stay intact. A Replace button on the result writes the refined text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button. Follow-up tweaks in the same chat, like asking for a longer or more formal version, keep the Replace button too. Does not trigger web search.
 
 **Composable:** `/refine` works with attached images or `/screen`. Vision OCR extracts the text first, then refines it.
 
@@ -169,7 +171,7 @@ Extracts key points from text as a markdown bullet list.
 - `/bullets` with highlighted text: extracts key points from the selection
 - `/bullets [paste meeting notes]`: extracts key points from typed or pasted content
 
-**Behavior:** Each point is a concise, self-contained statement. Ordered by importance or logical sequence. Filler and repetition are removed. Output uses `- ` prefixed markdown bullets.
+**Behavior:** Each point is a concise, self-contained statement. Ordered by importance or logical sequence. Filler and repetition are removed. Output uses `- ` prefixed markdown bullets. Does not trigger web search.
 
 **Composable:** `/bullets` works with attached images or `/screen`. Vision OCR extracts the text first, then extracts key points.
 
@@ -202,6 +204,6 @@ Summarizes what a piece of text is about, then extracts every task, action item,
 - `/todos` with highlighted text: summarizes and extracts to-dos from the selected text
 - `/todos [paste a conversation or notes]`: processes typed or pasted content
 
-**Behavior:** Responds in two parts: a short paragraph explaining the context and what is at stake, followed by a `- [ ]` checkbox list of all tasks. Each to-do includes who is responsible, plus any deadline or timeframe if mentioned.
+**Behavior:** Responds in two parts: a short paragraph explaining the context and what is at stake, followed by a `- [ ]` checkbox list of all tasks. Each to-do includes who is responsible, plus any deadline or timeframe if mentioned. Does not trigger web search.
 
 **Composable:** `/todos` works with attached images or `/screen`. Vision OCR extracts the text first, then extracts to-dos.

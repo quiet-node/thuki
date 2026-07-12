@@ -170,6 +170,11 @@ interface ChatRetrySnapshot {
   promptOverride?: string;
   displayImagePaths?: string[];
   replaceCommand?: string;
+  /**
+   * Slash trigger sent on `ask_model` for this turn (utility, `/think`, etc.).
+   * Replayed so transform utilities keep skipping auto-search on retry.
+   */
+  slashCommand?: string;
   /** Ids of the failed turn's own user/assistant pair, so a retry can reuse
    *  them: leaving the user bubble untouched and resetting the assistant
    *  message in place rather than appending a duplicate pair. Reusing the id
@@ -381,6 +386,13 @@ export function useModel(
    * @param allowOversized Bypasses the pre-load memory gate (issue #296).
    * @param target How to establish the message pair: append a fresh pair or
    *   reuse a failed turn's ids and reset its assistant message in place.
+   * @param forceSearch When true, force built-in engines-only web search
+   *   (`/search` alias). Stamps the turn as a search turn for Variant B
+   *   progress chrome.
+   * @param slashCommand Explicit slash trigger for this turn (utility
+   *   commands). `/search` wins when `forceSearch` is set; otherwise this
+   *   value is sent as `slashCommand` (transform utilities use it to skip
+   *   auto-search). Falls back to `/think` when only `think` is set.
    */
   const runChatTurn = useCallback(
     async (
@@ -393,11 +405,8 @@ export function useModel(
       replaceCommand: string | undefined,
       allowOversized: boolean | undefined,
       target: TurnTarget,
-      /**
-       * When true, force built-in engines-only web search (`/search` alias).
-       * Stamps the turn as a search turn for Variant B progress chrome.
-       */
       forceSearch?: boolean,
+      slashCommand?: string,
     ) => {
       if (!displayContent.trim() && (!imagePaths || imagePaths.length === 0)) {
         return;
@@ -467,6 +476,7 @@ export function useModel(
               promptOverride,
               displayImagePaths,
               replaceCommand,
+              slashCommand,
               userMessageId,
               assistantMessageId: assistantId,
             },
@@ -636,6 +646,13 @@ export function useModel(
       // confirms it accepted the turn. Flipping here would burn the flag
       // on no-model bails that return before `ConversationStart` fires,
       // leaving the next attempt without an opening trace event.
+      // Prefer force-search, then an explicit utility/other trigger, then
+      // `/think`. Transform utilities must win over `think` so `/think /tldr`
+      // still skips auto-search on the backend.
+      const resolvedSlashCommand = forceSearch
+        ? '/search'
+        : (slashCommand ?? (think ? '/think' : null));
+
       try {
         await invoke('ask_model', {
           message: promptOverride ?? displayContent,
@@ -644,7 +661,7 @@ export function useModel(
           think: think ?? false,
           conversationId,
           isFirstTurn,
-          slashCommand: forceSearch ? '/search' : think ? '/think' : null,
+          slashCommand: resolvedSlashCommand,
           allowOversized: allowOversized ?? false,
           forceSearch: forceSearch ?? false,
           onEvent: channel,
@@ -692,6 +709,12 @@ export function useModel(
        *  `retryMessageWithOversized` when the user clicks "Load anyway";
        *  omitted by every normal caller. */
       allowOversized?: boolean,
+      /**
+       * Slash trigger for this turn (`/rewrite`, `/tldr`, `/explain`, ...).
+       * Sent as `slashCommand` on `ask_model` so the backend can skip
+       * auto-search for transform utilities. Omitted for plain chat.
+       */
+      slashCommand?: string,
     ) =>
       runChatTurn(
         displayContent,
@@ -703,6 +726,8 @@ export function useModel(
         replaceCommand,
         allowOversized,
         { mode: 'append' },
+        undefined,
+        slashCommand,
       ),
     [runChatTurn],
   );
@@ -811,6 +836,8 @@ export function useModel(
             assistantMessageId: snapshot.assistantMessageId,
             modelOverride,
           },
+          undefined,
+          snapshot.slashCommand,
         );
       } else {
         void runSearchTurn(
