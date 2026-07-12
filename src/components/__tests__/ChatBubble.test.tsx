@@ -7,6 +7,7 @@ import {
   SEARCH_HANDOFF_EXIT_FALLBACK_MS,
 } from '../searchHandoffPhase';
 import { mockReducedMotion } from '../../testUtils/mocks/framer-motion';
+import { HONEST_FAILURE_NOTE_BODY } from '../../utils/honestFailureNote';
 beforeEach(() => {
   invoke.mockClear();
   mockReducedMotion.current = false;
@@ -90,6 +91,64 @@ describe('ChatBubble', () => {
       expect(
         screen.getByRole('button', { name: 'Copy message' }),
       ).toBeInTheDocument();
+    });
+
+    it('renders trailing honesty note as L3 rail, not markdown cream italic', () => {
+      const content = `Fake number 999.\n\n${HONEST_FAILURE_NOTE_BODY}`;
+      const { container } = render(
+        <ChatBubble role="assistant" content={content} index={0} />,
+      );
+      const note = screen.getByTestId('honest-failure-note');
+      expect(note.tagName).toBe('P');
+      expect(note).toHaveClass('honest-failure-note');
+      expect(note.textContent).toBe(HONEST_FAILURE_NOTE_BODY);
+      // Answer body still visible outside the note rail.
+      expect(container.textContent).toContain('Fake number 999.');
+      // Note must not also render as Streamdown emphasis (legacy *...* path).
+      expect(
+        container.querySelector('[data-streamdown="emphasis"]'),
+      ).toBeNull();
+      // Markdown tree must not contain the note string (rail is the only host).
+      const bubble = screen.getByTestId('chat-bubble');
+      const noteHost = bubble.querySelector(
+        '[data-testid="honest-failure-note"]',
+      );
+      expect(noteHost).not.toBeNull();
+      // Walk non-note text: body present, note phrase only inside rail.
+      const withoutNote = Array.from(bubble.querySelectorAll('*'))
+        .filter((el) => !el.closest('[data-testid="honest-failure-note"]'))
+        .map((el) => el.textContent ?? '')
+        .join(' ');
+      // Coarse check: note key phrase not duplicated outside the rail.
+      // (Answer body alone never carries "could not verify".)
+      const noteOnlyInRail =
+        (bubble.textContent?.match(/could not verify/g) ?? []).length === 1;
+      expect(noteOnlyInRail).toBe(true);
+      expect(withoutNote).toContain('Fake number 999.');
+    });
+
+    it('renders note-only answer without double-painting the body', () => {
+      const { container } = render(
+        <ChatBubble
+          role="assistant"
+          content={HONEST_FAILURE_NOTE_BODY}
+          index={0}
+        />,
+      );
+      const note = screen.getByTestId('honest-failure-note');
+      expect(note.textContent).toBe(HONEST_FAILURE_NOTE_BODY);
+      // Rail is the only place the note string appears as full text.
+      expect(
+        container.querySelectorAll('[data-testid="honest-failure-note"]'),
+      ).toHaveLength(1);
+      expect(
+        container.querySelector('[data-streamdown="emphasis"]'),
+      ).toBeNull();
+    });
+
+    it('does not render honesty rail when note absent', () => {
+      render(<ChatBubble role="assistant" content="plain answer" index={0} />);
+      expect(screen.queryByTestId('honest-failure-note')).toBeNull();
     });
 
     it('renders the Replace button when onReplace is provided', () => {

@@ -14,6 +14,7 @@ import type { EngineErrorKind } from '../hooks/useModel';
 import type { SearchResultPreview, SearchStage } from '../types/search';
 import { SearchProgressBlock } from './SearchProgressBlock';
 import { cleanForRender } from '../utils/sanitizeAssistantContent';
+import { splitHonestFailureNote } from '../utils/honestFailureNote';
 import {
   completeSearchHandoffExit,
   nextSearchHandoffPhase,
@@ -312,6 +313,11 @@ export function ChatBubble({
   // relies on it. User input never contains these markers naturally so we
   // skip the scrub for user bubbles.
   const displayContent = isUser ? content : cleanForRender(content);
+  // Peel trailing total-citation-failure note so MarkdownRenderer does not
+  // paint it as cream italic prose; L3 hairline rail owns the note style.
+  const { body: answerBody, note: honestFailureNote } = isUser
+    ? { body: displayContent, note: null as string | null }
+    : splitHonestFailureNote(displayContent);
 
   /** Citation audit/repair after answer tokens; Done is still withheld. */
   const isVerifyingSources = searchStage?.kind === 'verifying_sources';
@@ -665,11 +671,21 @@ export function ChatBubble({
                 insufficientMemoryInfo={resolvedMemoryInfo}
               />
             ) : (
-              <MarkdownRenderer
-                content={displayContent}
-                isStreaming={isStreaming}
-                citationSources={searchSources}
-              />
+              <>
+                <MarkdownRenderer
+                  content={answerBody}
+                  isStreaming={isStreaming}
+                  citationSources={searchSources}
+                />
+                {honestFailureNote ? (
+                  <p
+                    className="honest-failure-note"
+                    data-testid="honest-failure-note"
+                  >
+                    {honestFailureNote}
+                  </p>
+                ) : null}
+              </>
             )}
           </div>
           {!errorKind && !isStreaming && (

@@ -214,6 +214,13 @@ fn format_index_markers(indices: &[usize]) -> String {
         .join(", ")
 }
 
+/// User-facing body for total citation failure. Plain text: frontend owns
+/// italic + hairline-rail styling. Keep in lock-step with
+/// `HONEST_FAILURE_NOTE_BODY` in `src/utils/honestFailureNote.ts`.
+pub const HONEST_FAILURE_NOTE_BODY: &str = "Thuki found sources but could not \
+verify the answer's citations against the page text. Treat specific claims \
+carefully, or try rephrasing or a larger model in Settings.";
+
 /// User-facing note used only after repair rounds are exhausted and **every**
 /// citation still fails the audit. Speaks as Thuki owning the verification
 /// failure (not retrieval failure: sources were found), and optionally points
@@ -222,12 +229,7 @@ pub fn honest_failure_note(audit: &CitationAudit) -> Option<String> {
     if !is_total_citation_failure(audit) {
         return None;
     }
-    Some(
-        "*Thuki found sources but could not verify the answer's citations against \
-         the page text. Treat specific claims carefully, or try rephrasing or a \
-         larger model in Settings.*"
-            .to_string(),
-    )
+    Some(HONEST_FAILURE_NOTE_BODY.to_string())
 }
 
 /// Builds the user-turn critique sent back to the writer on a repair round.
@@ -1882,8 +1884,10 @@ mod tests {
     fn honest_failure_note_fires_on_total_failure() {
         let note = honest_failure_note(&audit_with_unsupported_indices(vec![2, 5]))
             .expect("total failure yields a note");
-        assert!(note.contains("found sources but could not verify"));
-        assert!(note.contains("larger model"));
+        assert_eq!(note, HONEST_FAILURE_NOTE_BODY);
+        // Plain body only: no markdown italic wrappers (FE owns style).
+        assert!(!note.starts_with('*'));
+        assert!(!note.ends_with('*'));
     }
 
     #[test]
@@ -1928,12 +1932,7 @@ mod tests {
         let answer = " [1] ";
         let audit = audit_with_unsupported_indices(vec![1]);
         let out = finalize_answer_after_audit(answer, &audit);
-        assert_eq!(
-            out,
-            "*Thuki found sources but could not verify the answer's citations against \
-             the page text. Treat specific claims carefully, or try rephrasing or a \
-             larger model in Settings.*"
-        );
+        assert_eq!(out, HONEST_FAILURE_NOTE_BODY);
     }
 
     #[test]
@@ -1976,6 +1975,7 @@ mod tests {
         let audit = audit_with_unsupported_indices(vec![1]);
         let out = finalize_answer_after_audit(answer, &audit);
         assert!(out.contains("Fake number 999."));
-        assert!(out.contains("found sources but could not verify"));
+        assert!(out.ends_with(HONEST_FAILURE_NOTE_BODY));
+        assert!(out.contains(&format!("\n\n{HONEST_FAILURE_NOTE_BODY}")));
     }
 }

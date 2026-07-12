@@ -126,6 +126,23 @@ body {
     inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
+/**
+ * L3 citation total-failure honesty note: hairline left rail only, no box
+ * fill. Italic muted secondary so it reads as Thuki-owned caveats under the
+ * cream answer body and above sources chrome.
+ */
+.honest-failure-note {
+  margin: 0.75rem 0 0;
+  padding: 0 0 0 10px;
+  border-left: 1.5px solid rgba(232, 184, 109, 0.45);
+  font-size: 12.5px;
+  line-height: 1.5;
+  font-style: italic;
+  color: rgba(200, 198, 192, 0.88);
+  background: none;
+  border-radius: 0;
+}
+
 /* ─── Stop Button Border Trace ───
  * SVG border-trace using pathLength="100" so all dash math is in clean
  * percentages. Three layered strokes staggered via animation-delay (NOT
