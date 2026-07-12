@@ -53,18 +53,6 @@ const SAMPLE_CONFIG: RawAppConfig = {
     auto_close: false,
     auto_search: true,
   },
-  search: {
-    searxng_url: 'http://127.0.0.1:25017',
-    reader_url: 'http://127.0.0.1:25018',
-    max_iterations: 3,
-    top_k_urls: 10,
-    searxng_max_results: 10,
-    search_timeout_s: 20,
-    reader_per_url_timeout_s: 10,
-    reader_batch_timeout_s: 30,
-    judge_timeout_s: 30,
-    router_timeout_s: 45,
-  },
   debug: {
     trace_enabled: false,
   },

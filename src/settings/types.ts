@@ -53,18 +53,6 @@ export interface RawAppConfig {
     /** When true, built-in auto-search may open the web on plain turns. */
     auto_search: boolean;
   };
-  search: {
-    searxng_url: string;
-    reader_url: string;
-    max_iterations: number;
-    top_k_urls: number;
-    searxng_max_results: number;
-    search_timeout_s: number;
-    reader_per_url_timeout_s: number;
-    reader_batch_timeout_s: number;
-    judge_timeout_s: number;
-    router_timeout_s: number;
-  };
   debug: {
     trace_enabled: boolean;
   };

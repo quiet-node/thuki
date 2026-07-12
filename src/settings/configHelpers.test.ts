@@ -11,7 +11,8 @@ describe('configHelp', () => {
     expect(configHelp('quote', 'max_display_lines')).toMatch(
       /lines of the quoted/,
     );
-    expect(configHelp('search', 'searxng_url')).toMatch(/SearXNG/);
+    expect(configHelp('behavior', 'auto_replace')).toMatch(/rewrite/);
+    expect(configHelp('debug', 'trace_enabled')).toMatch(/JSONL trace/);
   });
 
   it('returns a non-empty string for every documented field', () => {
@@ -24,16 +25,9 @@ describe('configHelp', () => {
       ['quote', 'max_display_lines'],
       ['quote', 'max_display_chars'],
       ['quote', 'max_context_length'],
-      ['search', 'searxng_url'],
-      ['search', 'reader_url'],
-      ['search', 'searxng_max_results'],
-      ['search', 'max_iterations'],
-      ['search', 'top_k_urls'],
-      ['search', 'search_timeout_s'],
-      ['search', 'reader_per_url_timeout_s'],
-      ['search', 'reader_batch_timeout_s'],
-      ['search', 'judge_timeout_s'],
-      ['search', 'router_timeout_s'],
+      ['behavior', 'auto_replace'],
+      ['behavior', 'auto_close'],
+      ['debug', 'trace_enabled'],
     ];
     for (const [section, key] of fields) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

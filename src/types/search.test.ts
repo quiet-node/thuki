@@ -1,29 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type {
   IterationTrace,
-  SearchEvent,
   SearchStage,
   SearchTraceStep,
   SearchWarning,
 } from './search';
 
 describe('search types', () => {
-  it('SearchEvent allows the new Trace variant', () => {
-    const step: SearchTraceStep = {
-      id: 'analyze',
-      kind: 'analyze',
-      status: 'running',
-      title: 'Understanding the question',
-      summary: 'Deciding whether to search.',
-    };
-
-    const event: SearchEvent = { type: 'Trace', step };
-    expect(event.type).toBe('Trace');
-    if (event.type === 'Trace') {
-      expect(event.step.kind).toBe('analyze');
-    }
-  });
-
   it('SearchTraceStep supports verdicts, counts, queries, urls, and domains', () => {
     const step: SearchTraceStep = {
       id: 'round-1-snippet-judge',
@@ -84,7 +67,7 @@ describe('search types', () => {
     expect(variants).toHaveLength(9);
   });
 
-  it('legacy IterationComplete payloads still type-check for compatibility', () => {
+  it('legacy IterationTrace payloads still type-check for compatibility', () => {
     const trace: IterationTrace = {
       stage: { kind: 'initial' },
       queries: ['legacy query'],
@@ -95,16 +78,8 @@ describe('search types', () => {
       duration_ms: 200,
     };
 
-    const event: SearchEvent = { type: 'IterationComplete', trace };
-    expect(event.type).toBe('IterationComplete');
-    if (event.type === 'IterationComplete') {
-      expect(event.trace.duration_ms).toBe(200);
-    }
-  });
-
-  it('SearchEvent still allows SandboxUnavailable', () => {
-    const event: SearchEvent = { type: 'SandboxUnavailable' };
-    expect(event.type).toBe('SandboxUnavailable');
+    expect(trace.duration_ms).toBe(200);
+    expect(trace.stage.kind).toBe('initial');
   });
 
   it('SearchEvent still allows InsufficientMemory', () => {
