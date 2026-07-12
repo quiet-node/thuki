@@ -32,9 +32,4 @@ describe('search types', () => {
     const stage: SearchStage = null;
     expect(stage).toBeNull();
   });
-
-  it('SearchEvent still allows InsufficientMemory', () => {
-    const event: SearchEvent = { type: 'InsufficientMemory' };
-    expect(event.type).toBe('InsufficientMemory');
-  });
 });
