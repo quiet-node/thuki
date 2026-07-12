@@ -46,8 +46,6 @@ describe('useConversationHistory', () => {
           image_paths: null,
           thinking_content: null,
           search_sources: null,
-          search_warnings: null,
-          search_metadata: null,
           model_name: null,
         },
         {
@@ -57,8 +55,6 @@ describe('useConversationHistory', () => {
           image_paths: null,
           thinking_content: null,
           search_sources: null,
-          search_warnings: null,
-          search_metadata: null,
           model_name: null,
         },
       ],
@@ -99,8 +95,6 @@ describe('useConversationHistory', () => {
           image_paths: null,
           thinking_content: null,
           search_sources: null,
-          search_warnings: null,
-          search_metadata: null,
           model_name: null,
         },
         {
@@ -110,8 +104,6 @@ describe('useConversationHistory', () => {
           image_paths: null,
           thinking_content: null,
           search_sources: null,
-          search_warnings: null,
-          search_metadata: null,
           model_name: null,
         },
       ],
@@ -199,8 +191,6 @@ describe('useConversationHistory', () => {
       imagePaths: null,
       thinkingContent: null,
       searchSources: null,
-      searchWarnings: null,
-      searchMetadata: null,
       modelName: null,
     });
     expect(invoke).toHaveBeenCalledWith('persist_message', {
@@ -211,8 +201,6 @@ describe('useConversationHistory', () => {
       imagePaths: null,
       thinkingContent: null,
       searchSources: null,
-      searchWarnings: null,
-      searchMetadata: null,
       modelName: null,
     });
   });
@@ -440,8 +428,6 @@ describe('useConversationHistory', () => {
       imagePaths: null,
       thinkingContent: 'Let me reason step by step',
       searchSources: null,
-      searchWarnings: null,
-      searchMetadata: null,
       modelName: null,
     });
   });
@@ -475,8 +461,6 @@ describe('useConversationHistory', () => {
           image_paths: null,
           thinking_content: null,
           search_sources: null,
-          search_warnings: null,
-          search_metadata: null,
           model_name: null,
         },
         {
@@ -486,8 +470,6 @@ describe('useConversationHistory', () => {
           image_paths: null,
           thinking_content: 'Deep thoughts',
           search_sources: null,
-          search_warnings: null,
-          search_metadata: null,
           model_name: null,
         },
       ],
@@ -779,8 +761,6 @@ describe('useConversationHistory', () => {
         image_paths: null,
         thinking_content: null,
         search_sources: null,
-        search_warnings: null,
-        search_metadata: null,
         model_name: null,
         created_at: 1,
       },
@@ -792,8 +772,6 @@ describe('useConversationHistory', () => {
         image_paths: null,
         thinking_content: null,
         search_sources: null,
-        search_warnings: null,
-        search_metadata: null,
         model_name: 'gemma4:e2b',
         created_at: 2,
       },
@@ -808,104 +786,5 @@ describe('useConversationHistory', () => {
 
     expect(loaded[0].modelName).toBeUndefined();
     expect(loaded[1].modelName).toBe('gemma4:e2b');
-  });
-
-  it('save() and persistTurn() leave search_warnings/search_metadata null', async () => {
-    invoke.mockResolvedValueOnce({ conversation_id: 'conv-opaque' });
-    invoke.mockResolvedValue(undefined);
-
-    const messages: Message[] = [
-      { id: 'u1', role: 'user', content: '/search q' },
-      {
-        id: 'a1',
-        role: 'assistant',
-        content: 'Answer',
-        searchSources: [{ title: 'Doc', url: 'https://doc.example' }],
-      },
-    ];
-
-    const { result } = renderHook(() => useConversationHistory());
-
-    await act(async () => {
-      await result.current.save(messages, MODEL);
-    });
-
-    expect(invoke).toHaveBeenCalledWith(
-      'save_conversation',
-      expect.objectContaining({
-        messages: expect.arrayContaining([
-          expect.objectContaining({
-            role: 'assistant',
-            search_sources: [{ title: 'Doc', url: 'https://doc.example' }],
-            search_warnings: null,
-            search_metadata: null,
-          }),
-        ]),
-      }),
-    );
-
-    invoke.mockClear();
-
-    await act(async () => {
-      await result.current.persistTurn(messages[0], messages[1]);
-    });
-
-    expect(invoke).toHaveBeenCalledWith(
-      'persist_message',
-      expect.objectContaining({
-        role: 'assistant',
-        searchSources: [{ title: 'Doc', url: 'https://doc.example' }],
-        searchWarnings: null,
-        searchMetadata: null,
-      }),
-    );
-  });
-
-  it('loadConversation() ignores opaque search_warnings and search_metadata', async () => {
-    invoke.mockResolvedValueOnce([
-      {
-        id: 'a1',
-        role: 'assistant',
-        content: 'answer',
-        quoted_text: null,
-        image_paths: null,
-        thinking_content: null,
-        search_sources: null,
-        search_warnings: JSON.stringify(['opaque']),
-        search_metadata: JSON.stringify({ opaque: true }),
-        created_at: 1,
-      },
-      {
-        id: 'a2',
-        role: 'assistant',
-        content: 'with sources',
-        quoted_text: null,
-        image_paths: null,
-        thinking_content: null,
-        search_sources: JSON.stringify([
-          { title: 'A', url: 'https://a.example' },
-        ]),
-        search_warnings: JSON.stringify(['opaque2']),
-        search_metadata: '{not json',
-        created_at: 2,
-      },
-    ]);
-
-    const { result } = renderHook(() => useConversationHistory());
-
-    let loaded: Message[] = [];
-    await act(async () => {
-      loaded = await result.current.loadConversation('conv-opaque-load');
-    });
-
-    expect(loaded[0].fromSearch).toBeUndefined();
-    expect(loaded[0].searchSources).toBeUndefined();
-    expect(loaded[1].fromSearch).toBe(true);
-    expect(loaded[1].searchSources).toEqual([
-      { title: 'A', url: 'https://a.example' },
-    ]);
-    expect('searchWarnings' in loaded[0]).toBe(false);
-    expect('searchMetadata' in loaded[0]).toBe(false);
-    expect('searchTraces' in loaded[0]).toBe(false);
   });
 });

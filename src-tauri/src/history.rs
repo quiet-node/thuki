@@ -42,12 +42,6 @@ pub struct SaveMessagePayload {
     /// Sources footer for `/search` assistant messages. Serialised to JSON
     /// before hitting the `messages.search_sources` column.
     pub search_sources: Option<Vec<SaveSearchSource>>,
-    /// Opaque JSON passed through to `messages.search_warnings`.
-    /// Current product always sends `None`.
-    pub search_warnings: Option<String>,
-    /// Opaque JSON passed through to `messages.search_metadata`.
-    /// Current product always sends `None`.
-    pub search_metadata: Option<String>,
     /// Slug of the Ollama model that produced this response. Frontend stamps
     /// assistant payloads with the active model at generation time; `None`
     /// for user payloads. Accepted as missing via serde Option default.
@@ -117,8 +111,6 @@ pub fn save_conversation(
                 image_json,
                 m.thinking_content,
                 sources_json,
-                m.search_warnings,
-                m.search_metadata,
                 m.model_name,
             )
         })
@@ -141,8 +133,6 @@ pub fn persist_message(
     image_paths: Option<Vec<String>>,
     thinking_content: Option<String>,
     search_sources: Option<Vec<SaveSearchSource>>,
-    search_warnings: Option<String>,
-    search_metadata: Option<String>,
     model_name: Option<String>,
     db: State<'_, Database>,
 ) -> Result<(), String> {
@@ -162,8 +152,6 @@ pub fn persist_message(
         image_json.as_deref(),
         thinking_content.as_deref(),
         sources_json.as_deref(),
-        search_warnings.as_deref(),
-        search_metadata.as_deref(),
         model_name.as_deref(),
     )
     .map_err(|e| e.to_string())?;
@@ -451,8 +439,6 @@ mod tests {
                 image_paths: Some(vec!["/tmp/img.jpg".to_string()]),
                 thinking_content: None,
                 search_sources: None,
-                search_warnings: None,
-                search_metadata: None,
                 model_name: None,
             },
             SaveMessagePayload {
@@ -471,8 +457,6 @@ mod tests {
                         url: "https://tokio.rs".into(),
                     },
                 ]),
-                search_warnings: Some(r#"["opaque"]"#.to_string()),
-                search_metadata: Some(r#"{"opaque":true}"#.to_string()),
                 model_name: Some("gemma4:e2b".to_string()),
             },
         ];
@@ -504,8 +488,6 @@ mod tests {
                     image_json,
                     m.thinking_content,
                     sources_json,
-                    m.search_warnings,
-                    m.search_metadata,
                     m.model_name,
                 )
             })
@@ -533,13 +515,6 @@ mod tests {
         let sources_json = loaded[1].search_sources.as_deref().unwrap();
         assert!(sources_json.contains("Rust docs"));
         assert!(sources_json.contains("https://tokio.rs"));
-        assert_eq!(loaded[1].search_warnings.as_deref(), Some(r#"["opaque"]"#));
-        assert_eq!(
-            loaded[1].search_metadata.as_deref(),
-            Some(r#"{"opaque":true}"#)
-        );
-        assert!(loaded[0].search_warnings.is_none());
-        assert!(loaded[0].search_metadata.is_none());
         assert!(loaded[0].model_name.is_none());
         assert_eq!(loaded[1].model_name.as_deref(), Some("gemma4:e2b"));
     }

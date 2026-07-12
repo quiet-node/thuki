@@ -12,9 +12,6 @@ import type {
 /**
  * Maps a frontend `Message` to the `SaveMessagePayload` shape expected by
  * the `save_conversation` and `generate_title` Tauri commands.
- *
- * `search_warnings` and `search_metadata` stay null: SQLite columns remain
- * for row-shape compatibility, but the UI never writes or renders them.
  */
 function toPayload(msg: Message): SaveMessagePayload {
   return {
@@ -24,8 +21,6 @@ function toPayload(msg: Message): SaveMessagePayload {
     image_paths: msg.imagePaths ?? null,
     thinking_content: msg.thinkingContent ?? null,
     search_sources: msg.searchSources ?? null,
-    search_warnings: null,
-    search_metadata: null,
     model_name: msg.modelName ?? null,
   };
 }
@@ -33,9 +28,6 @@ function toPayload(msg: Message): SaveMessagePayload {
 /**
  * Maps a `PersistedMessage` returned by `load_conversation` back to a
  * frontend `Message`, preserving optional fields.
- *
- * Opaque or unknown JSON in `search_warnings` / `search_metadata` is ignored
- * so older saved rows cannot rehydrate dead search UI.
  */
 function fromPersisted(msg: PersistedMessage): Message {
   const imagePaths = msg.image_paths
@@ -144,8 +136,6 @@ export function useConversationHistory() {
           imagePaths: userMsg.imagePaths ?? null,
           thinkingContent: null,
           searchSources: null,
-          searchWarnings: null,
-          searchMetadata: null,
           modelName: null,
         }),
         invoke('persist_message', {
@@ -156,8 +146,6 @@ export function useConversationHistory() {
           imagePaths: null,
           thinkingContent: assistantMsg.thinkingContent ?? null,
           searchSources: assistantMsg.searchSources ?? null,
-          searchWarnings: null,
-          searchMetadata: null,
           modelName: assistantMsg.modelName ?? null,
         }),
       ]);
