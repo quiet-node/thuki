@@ -70,23 +70,6 @@ const IMAGE_DEFAULTS = {
 };
 
 describe('AskBarView', () => {
-  it('renders the auto-search globe control next to history', () => {
-    render(
-      <AskBarView
-        {...IMAGE_DEFAULTS}
-        query=""
-        setQuery={vi.fn()}
-        isChatMode={false}
-        isGenerating={false}
-        onSubmit={vi.fn()}
-        onCancel={vi.fn()}
-        inputRef={makeRef()}
-        onHistoryOpen={vi.fn()}
-      />,
-    );
-    expect(screen.getByTestId('auto-search-globe')).toBeInTheDocument();
-  });
-
   it('renders the input with placeholder for input bar mode', () => {
     render(
       <AskBarView

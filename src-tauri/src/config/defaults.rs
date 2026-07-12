@@ -431,7 +431,7 @@ pub const DEFAULT_AUTO_CLOSE: bool = false;
 /// when the classifier decides live facts are needed. When `false`, plain
 /// turns stay local-only and only an explicit `/search` (`force_search`) runs
 /// the web pipeline. Independent of auto-replace / auto-close. Toggleable from
-/// Settings › Behavior and the ask-bar globe control.
+/// Settings › Behavior.
 pub const DEFAULT_AUTO_SEARCH: bool = true;
 
 // Ollama API baked-in limits: not exposed in config.toml because they bound

@@ -628,13 +628,23 @@ describe('BehaviorTab', () => {
     );
   });
 
-  it('opens the help tooltip upward so it is not clipped at the short window edge', () => {
+  it('opens the Auto search help tooltip downward so it is not clipped at the top edge', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const help = screen.getByRole('button', { name: 'About Auto search' });
+    fireEvent.mouseEnter(help.parentElement!);
+    // placement="bottom" uses translateX(-50%) (below the trigger).
+    expect(
+      document.body.querySelector('[style*="translateX(-50%)"]'),
+    ).not.toBeNull();
+    expect(screen.getByText(/Built-in engine only/i)).toBeInTheDocument();
+  });
+
+  it('opens Text Replacement help tooltips upward so they are not clipped at the bottom edge', () => {
     render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
     const help = screen.getByRole('button', { name: 'About Auto-replace' });
     fireEvent.mouseEnter(help.parentElement!);
     // placement="top" positions the tooltip box with a `translate(..., -100%)`
-    // transform (it sits above the trigger). The default "bottom" placement
-    // uses `translateX(-50%)`, which here would overflow the bottom edge.
+    // transform (it sits above the trigger).
     expect(
       document.body.querySelector('[style*="translate(-50%, -100%)"]'),
     ).not.toBeNull();
@@ -649,5 +659,12 @@ describe('BehaviorTab', () => {
     expect(
       screen.getByText(/Applies only to \/rewrite and \/refine/),
     ).toBeInTheDocument();
+  });
+
+  it('does not show a section-level help control on Web search', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    expect(
+      screen.queryByRole('button', { name: 'About Web search' }),
+    ).not.toBeInTheDocument();
   });
 });

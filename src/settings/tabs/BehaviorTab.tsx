@@ -26,12 +26,6 @@ const TEXT_REPLACEMENT_HELP =
   'Applies only to /rewrite and /refine: writing their result back into the app you were using, replacing your highlighted text.';
 
 /**
- * Section-level "?" for the Web search group: mode scope, not per-row copy.
- */
-const WEB_SEARCH_HELP =
-  'Controls whether the built-in engine may open the web on ordinary messages. Force a look-up anytime with /search.';
-
-/**
  * Renders Behavior settings: Auto search, then Text Replacement toggles.
  *
  * @param config Current raw app config from the Settings host.
@@ -45,7 +39,7 @@ export function BehaviorTab({
 }: BehaviorTabProps) {
   return (
     <>
-      <Section heading="Web search" helper={WEB_SEARCH_HELP}>
+      <Section heading="Web search">
         <SaveField
           section="behavior"
           fieldKey="auto_search"
@@ -55,7 +49,9 @@ export function BehaviorTab({
           resyncToken={resyncToken}
           onSaved={onSaved}
           rightAlign
-          tooltipPlacement="top"
+          // Top of the panel: open the help below the "?" so it is not clipped
+          // by the traffic-lights / window edge (Text Replacement uses "top").
+          tooltipPlacement="bottom"
           render={(value, setValue) => (
             <Toggle
               checked={value}
