@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ThreeDotMotion } from './ThreeDotMotion';
 
 /**
@@ -7,10 +7,16 @@ import { ThreeDotMotion } from './ThreeDotMotion';
 export interface RequestStatusStripProps {
   /**
    * Optional stage label next to the three-dot motion. When null/undefined,
-   * only the dots render. Label text uses production shimmer plus G-style
-   * tracking-settle when the string changes.
+   * only the dots render (plus any accessory). Label text uses production
+   * shimmer plus G-style tracking-settle when the string changes.
    */
   label?: string | null;
+  /**
+   * Optional node between the dots host and the title (child order: dots,
+   * accessory, title). Use for expand chevrons on search/reasoning hosts.
+   * Leave undefined for engine-load and other dots-only rows.
+   */
+  accessory?: ReactNode;
 }
 
 /** Outgoing tracking-settle duration (ms). */
@@ -23,12 +29,16 @@ const TRACK_IN_MS = 480;
  *
  * Pixel-identical in every host (engine row, search progress, reasoning).
  * Layout (gap, type size, min-height) lives only on this component and its
- * CSS classes. Parents must not pass size variants or inject prefixes into
- * the strip; place chevrons as siblings if needed.
+ * CSS classes. Optional `accessory` sits between dots and title so chevrons
+ * can share the strip gap; parents must not pass size variants or inject
+ * label prefixes.
  *
  * Drivers stay outside: callers pass the current label only.
  */
-export function RequestStatusStrip({ label }: RequestStatusStripProps) {
+export function RequestStatusStrip({
+  label,
+  accessory,
+}: RequestStatusStripProps) {
   const [displayLabel, setDisplayLabel] = useState(label ?? '');
   const [phase, setPhase] = useState<'in' | 'out' | 'enter-from'>('in');
   /** Mirrors displayed text so the effect can key only on `label`. */
@@ -96,6 +106,7 @@ export function RequestStatusStrip({ label }: RequestStatusStripProps) {
       <span className="request-status-strip__dots shrink-0">
         <ThreeDotMotion />
       </span>
+      {accessory ?? null}
       {showLabel ? (
         <span
           data-testid="loading-stage-title"

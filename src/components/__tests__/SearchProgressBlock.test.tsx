@@ -115,10 +115,18 @@ describe('SearchProgressBlock', () => {
       'data-label',
       'Reading sources (3)',
     );
-    // Chevron sits left of the strip (first child of the toggle button).
+    // Live row: dots → chevron accessory → label (chevron inside strip).
     const toggle = screen.getByTestId('search-progress-toggle');
+    const strip = screen.getByTestId('request-status-strip');
     const chevron = screen.getByTestId('search-progress-chevron');
-    expect(toggle.firstElementChild).toBe(chevron);
+    expect(toggle.firstElementChild).toBe(strip);
+    const stripChildren = Array.from(strip.children);
+    expect(stripChildren[0].className).toContain('request-status-strip__dots');
+    expect(stripChildren[1]).toBe(chevron);
+    expect(stripChildren[2]).toHaveAttribute(
+      'data-testid',
+      'loading-stage-title',
+    );
     expect(chevron).toHaveStyle({ transform: 'rotate(180deg)' });
   });
 
@@ -142,7 +150,12 @@ describe('SearchProgressBlock', () => {
       'aria-expanded',
       'false',
     );
-    expect(screen.getByTestId('search-progress-chevron')).toHaveStyle({
+    // Static header: chevron left of title only (no live dots).
+    const toggle = screen.getByTestId('search-progress-toggle');
+    const chevron = screen.getByTestId('search-progress-chevron');
+    expect(toggle.firstElementChild).toBe(chevron);
+    expect(screen.queryByTestId('request-status-strip')).not.toBeInTheDocument();
+    expect(chevron).toHaveStyle({
       transform: 'rotate(90deg)',
     });
   });

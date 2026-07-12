@@ -183,8 +183,9 @@ export function SearchProgressBlock({
   const showLiveDots = isSearching && !preferCollapsed;
 
   /**
-   * Chevron matches ReasoningBlock: left of the status strip, &#9650;, text-[9px],
-   * rotate 180 expanded / 90 collapsed.
+   * Expand chevron: &#9650;, text-[9px], rotate 180 expanded / 90 collapsed.
+   * Live strip passes this as `accessory` (dots → chevron → label). Static
+   * preferCollapsed headers keep chevron left of the title only.
    */
   const chevron = (
     <span
@@ -201,7 +202,6 @@ export function SearchProgressBlock({
 
   return (
     <div data-testid="search-progress-block" className="mb-2">
-      {/* Chevron left of strip (ReasoningBlock pattern); gap-2 matches strip siblings. */}
       <div className="flex min-w-0 items-center gap-2">
         {hasSources ? (
           <button
@@ -212,16 +212,18 @@ export function SearchProgressBlock({
             onClick={handleToggle}
             className="flex min-w-0 flex-1 items-center gap-2 text-left cursor-pointer bg-transparent border-0 p-0"
           >
-            {chevron}
             {showLiveDots ? (
-              <RequestStatusStrip label={headerLabel} />
+              <RequestStatusStrip label={headerLabel} accessory={chevron} />
             ) : (
-              <span
-                data-testid="search-progress-header"
-                className="request-status-strip__title text-text-secondary/80 font-medium"
-              >
-                {headerLabel}
-              </span>
+              <>
+                {chevron}
+                <span
+                  data-testid="search-progress-header"
+                  className="request-status-strip__title text-text-secondary/80 font-medium"
+                >
+                  {headerLabel}
+                </span>
+              </>
             )}
           </button>
         ) : (

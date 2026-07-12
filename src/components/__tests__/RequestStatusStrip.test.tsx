@@ -71,6 +71,16 @@ describe('RequestStatusStrip', () => {
     expect(screen.queryByTestId('loading-label')).toBeNull();
   });
 
+  it('shows a label without exit animation when going from empty to text', () => {
+    const { rerender } = render(<RequestStatusStrip />);
+    expect(screen.queryByTestId('loading-label')).toBeNull();
+    rerender(<RequestStatusStrip label="Thinking…" />);
+    expect(screen.getByTestId('loading-label').textContent).toBe('Thinking…');
+    expect(screen.getByTestId('loading-label').className).toContain(
+      'loading-label-track-in',
+    );
+  });
+
   it('supersedes an in-flight tracking-settle when the label changes again', () => {
     const { rerender } = render(<RequestStatusStrip label="Analyzing query" />);
     rerender(<RequestStatusStrip label="Searching the web" />);
@@ -92,5 +102,29 @@ describe('RequestStatusStrip', () => {
     expect(screen.getByTestId('loading-label').textContent).toBe(
       'Analyzing query',
     );
+  });
+
+  it('renders accessory between the dots host and the title', () => {
+    render(
+      <RequestStatusStrip
+        label="Reading sources (11)"
+        accessory={<span data-testid="strip-accessory">▴</span>}
+      />,
+    );
+    const strip = screen.getByTestId('request-status-strip');
+    const children = Array.from(strip.children);
+    expect(children).toHaveLength(3);
+    expect(children[0].className).toContain('request-status-strip__dots');
+    expect(children[1]).toHaveAttribute('data-testid', 'strip-accessory');
+    expect(children[2]).toHaveAttribute('data-testid', 'loading-stage-title');
+  });
+
+  it('omits accessory when undefined', () => {
+    render(<RequestStatusStrip label="Thinking…" />);
+    const strip = screen.getByTestId('request-status-strip');
+    const children = Array.from(strip.children);
+    expect(children).toHaveLength(2);
+    expect(children[0].className).toContain('request-status-strip__dots');
+    expect(children[1]).toHaveAttribute('data-testid', 'loading-stage-title');
   });
 });

@@ -48,7 +48,7 @@ describe('ReasoningBlock', () => {
     expect(chevron.className).toContain('opacity-0');
   });
 
-  it("reserves the chevron's width while pending via an invisible sibling spacer, so the strip does not shift once thinking starts", () => {
+  it("reserves the chevron's width while pending via an invisible strip accessory, so the label does not shift once thinking starts", () => {
     render(
       <ReasoningBlock
         isThinking={false}
@@ -56,10 +56,19 @@ describe('ReasoningBlock', () => {
         pendingLabel="Starting up the model…"
       />,
     );
+    const strip = screen.getByTestId('request-status-strip');
     const chevron = screen.getByTestId('reasoning-chevron');
     expect(chevron).toBeInTheDocument();
     expect(chevron.textContent).toBe('▲');
     expect(chevron.className).toContain('opacity-0');
+    // DOM order: dots → accessory chevron → title.
+    const stripChildren = Array.from(strip.children);
+    expect(stripChildren[0].className).toContain('request-status-strip__dots');
+    expect(stripChildren[1]).toBe(chevron);
+    expect(stripChildren[2]).toHaveAttribute(
+      'data-testid',
+      'loading-stage-title',
+    );
   });
 
   it('uses the exact same summary-row classes for the pending row and the clickable summary row', () => {
@@ -94,7 +103,16 @@ describe('ReasoningBlock', () => {
     const label = screen.getByTestId('loading-label');
     expect(label).toBeInTheDocument();
     expect(label.textContent).toBe('Reasoning...');
-    expect(screen.getByTestId('reasoning-chevron')).toBeInTheDocument();
+    // Live thinking: dots → chevron accessory → label inside the strip.
+    const strip = screen.getByTestId('request-status-strip');
+    const chevron = screen.getByTestId('reasoning-chevron');
+    const stripChildren = Array.from(strip.children);
+    expect(stripChildren[0].className).toContain('request-status-strip__dots');
+    expect(stripChildren[1]).toBe(chevron);
+    expect(stripChildren[2]).toHaveAttribute(
+      'data-testid',
+      'loading-stage-title',
+    );
   });
 
   it('is collapsed by default, even while thinking', () => {
@@ -112,6 +130,13 @@ describe('ReasoningBlock', () => {
     expect(screen.getByTestId('reasoning-summary-label').textContent).toBe(
       'Reasoning',
     );
+    // Done (no live dots): chevron left of static title only.
+    const button = screen.getByRole('button', {
+      name: 'Toggle reasoning details',
+    });
+    const chevron = screen.getByTestId('reasoning-chevron');
+    expect(button.firstElementChild).toBe(chevron);
+    expect(screen.queryByTestId('request-status-strip')).toBeNull();
   });
 
   it('expands on click to show thinking content', () => {

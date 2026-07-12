@@ -50,8 +50,7 @@ export function ReasoningBlock({
     // purely to reserve the exact width the real chevron occupies once
     // thinking starts, using the identical classes/markup that state uses
     // below, so the label lands at the same x position in both.
-    // Chevron as a sibling (not inside the strip) so RequestStatusStrip
-    // stays pixel-identical to engine/search hosts; spacer reserves width.
+    // Passed as RequestStatusStrip accessory so order is dots → chevron → label.
     const chevronSpacer = (
       <span
         data-testid="reasoning-chevron"
@@ -65,8 +64,7 @@ export function ReasoningBlock({
     return (
       <div data-testid="reasoning-block" className="mb-2">
         <div data-testid="reasoning-pending" className={SUMMARY_ROW_CLASS}>
-          {chevronSpacer}
-          <RequestStatusStrip label={pendingLabel} />
+          <RequestStatusStrip label={pendingLabel} accessory={chevronSpacer} />
         </div>
       </div>
     );
@@ -91,7 +89,8 @@ export function ReasoningBlock({
 
   return (
     <div data-testid="reasoning-block" className="mb-2">
-      {/* Clickable summary row: chevron sibling + strip (or static label). */}
+      {/* Live: chevron as strip accessory (dots → chevron → label).
+          Done: chevron left of static title only (no dots). */}
       <button
         type="button"
         onClick={() => setIsExpanded((prev) => !prev)}
@@ -100,10 +99,7 @@ export function ReasoningBlock({
         aria-label="Toggle reasoning details"
       >
         {isThinking ? (
-          <>
-            {chevron}
-            <RequestStatusStrip label={summaryLabel} />
-          </>
+          <RequestStatusStrip label={summaryLabel} accessory={chevron} />
         ) : (
           <>
             {chevron}
