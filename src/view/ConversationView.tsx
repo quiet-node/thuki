@@ -375,7 +375,6 @@ export function ConversationView({
                 isLastAssistant && !msg.content && !!msg.thinkingContent
               }
               searchSources={msg.searchSources}
-              searchWarnings={msg.searchWarnings}
               searchStage={
                 isGenerating && i === messages.length - 1 ? searchStage : null
               }

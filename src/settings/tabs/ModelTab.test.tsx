@@ -50,18 +50,6 @@ function buildConfig(
       max_context_length: 4000,
     },
     behavior: { auto_replace: false, auto_close: false, auto_search: true },
-    search: {
-      searxng_url: '',
-      reader_url: '',
-      max_iterations: 3,
-      top_k_urls: 5,
-      searxng_max_results: 10,
-      search_timeout_s: 30,
-      reader_per_url_timeout_s: 10,
-      reader_batch_timeout_s: 20,
-      judge_timeout_s: 15,
-      router_timeout_s: 15,
-    },
     debug: { trace_enabled: false },
   };
 }

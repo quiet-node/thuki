@@ -47,13 +47,13 @@ pub struct PersistedMessage {
     pub image_paths: Option<String>,
     pub thinking_content: Option<String>,
     /// JSON-serialized `Vec<SearchResultPreview>` for assistant messages
-    /// produced through the `/search` pipeline. `None` for all other messages.
+    /// produced through web search. `None` for all other messages.
     pub search_sources: Option<String>,
-    /// JSON-serialized `Vec<SearchWarning>` recorded during this search turn.
-    /// `None` for non-search messages and for rows written before Task 17.
+    /// Opaque JSON column retained for SQLite row-shape compatibility.
+    /// Current product never writes or reads structured content here.
     pub search_warnings: Option<String>,
-    /// JSON-serialized `SearchMetadata` (iteration traces, timing) for this
-    /// search turn. `None` for non-search messages and pre-Task-17 rows.
+    /// Opaque JSON column retained for SQLite row-shape compatibility.
+    /// Current product never writes or reads structured content here.
     pub search_metadata: Option<String>,
     /// Slug of the Ollama model that produced this assistant message. `None`
     /// for user messages and rows written before the model_name migration.
@@ -221,7 +221,7 @@ fn run_migrations(conn: &Connection) -> SqlResult<()> {
     ensure_column(conn, "messages", "thinking_content", "TEXT")?;
     // JSON-encoded SearchResultPreview[] for /search assistant messages.
     ensure_column(conn, "messages", "search_sources", "TEXT")?;
-    // JSON-encoded Vec<SearchWarning> and SearchMetadata (Task 17).
+    // Opaque JSON columns retained for row-shape compatibility.
     ensure_column(conn, "messages", "search_warnings", "TEXT")?;
     ensure_column(conn, "messages", "search_metadata", "TEXT")?;
     // Per-message model attribution (slug of the Ollama model that produced

@@ -928,8 +928,8 @@ pub const SERP_EARLY_STOP_HITS: usize = 8;
 /// engines for a query and fuses their ranked lists with RRF: each URL scores
 /// `sum over engines of 1 / (RRF_K + rank)`, where `rank` is its 1-based
 /// position in that engine's list. `k = 60` is the parameter-free value from the
-/// original RRF paper (Cormack et al., 2009) and the same constant SearXNG and
-/// Elasticsearch ship as their default.
+/// original RRF paper (Cormack et al., 2009) and the same constant Elasticsearch
+/// ships as its default.
 ///
 /// Not user-tunable: RRF is famously insensitive to `k`, so it is a fixed
 /// algorithm constant, not a quality knob a user would ever benefit from turning.
@@ -954,7 +954,7 @@ pub const CREDIBILITY_PENALTY_RANK_OFFSET: u32 = 40;
 /// DuckDuckGo `df` (date filter) value applied to the POST form and mirrored as
 /// a `df` cookie when the standalone question carries a freshness signal (see
 /// [`WIKI_VOLATILITY_MARKERS`]). `"w"` restricts results to the past week. The
-/// dual form+cookie placement matches SearXNG's maintained DuckDuckGo scraper,
+/// dual form+cookie placement matches the common DuckDuckGo HTML client pattern,
 /// which sets the filter both ways because the HTML endpoint honours either.
 ///
 /// Not user-tunable: a fixed protocol convention of an external service, not a

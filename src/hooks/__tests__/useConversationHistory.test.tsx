@@ -446,54 +446,6 @@ describe('useConversationHistory', () => {
     });
   });
 
-  it('save() serialises searchWarnings to JSON in payload', async () => {
-    invoke.mockResolvedValueOnce({ conversation_id: 'conv-warn-save' });
-    invoke.mockResolvedValue(undefined);
-
-    const messagesWithWarnings: Message[] = [
-      { id: 'u1', role: 'user', content: 'Search something' },
-      {
-        id: 'a1',
-        role: 'assistant',
-        content: 'Here are results',
-        searchWarnings: ['reader_unavailable'],
-      },
-    ];
-
-    const { result } = renderHook(() => useConversationHistory());
-
-    await act(async () => {
-      await result.current.save(messagesWithWarnings, MODEL);
-    });
-
-    expect(invoke).toHaveBeenCalledWith('save_conversation', {
-      messages: [
-        {
-          role: 'user',
-          content: 'Search something',
-          quoted_text: null,
-          image_paths: null,
-          thinking_content: null,
-          search_sources: null,
-          search_warnings: null,
-          search_metadata: null,
-          model_name: null,
-        },
-        {
-          role: 'assistant',
-          content: 'Here are results',
-          quoted_text: null,
-          image_paths: null,
-          thinking_content: null,
-          search_sources: null,
-          search_warnings: JSON.stringify(['reader_unavailable']),
-          search_metadata: null,
-          model_name: null,
-        },
-      ],
-    });
-  });
-
   it('save() includes thinking_content in payload', async () => {
     invoke.mockResolvedValueOnce({ conversation_id: 'conv-think' });
     invoke.mockResolvedValue(undefined);
@@ -710,83 +662,6 @@ describe('useConversationHistory', () => {
     expect(result.current.conversationId).toBeNull();
   });
 
-  it('persistTurn() serialises searchWarnings to JSON on assistant messages', async () => {
-    invoke.mockResolvedValueOnce({ conversation_id: 'conv-warn' });
-    invoke.mockResolvedValue(undefined);
-
-    const { result } = renderHook(() => useConversationHistory());
-
-    await act(async () => {
-      await result.current.save(MESSAGES, MODEL);
-    });
-    invoke.mockClear();
-
-    const userMsg: Message = {
-      id: 'u-w',
-      role: 'user',
-      content: 'q',
-    };
-    const assistantMsg: Message = {
-      id: 'a-w',
-      role: 'assistant',
-      content: 'answer',
-      searchWarnings: ['reader_unavailable'],
-    };
-
-    await act(async () => {
-      await result.current.persistTurn(userMsg, assistantMsg);
-    });
-
-    expect(invoke).toHaveBeenCalledWith('persist_message', {
-      conversationId: 'conv-warn',
-      role: 'assistant',
-      content: 'answer',
-      quotedText: null,
-      imagePaths: null,
-      thinkingContent: null,
-      searchSources: null,
-      searchWarnings: JSON.stringify(['reader_unavailable']),
-      searchMetadata: null,
-      modelName: null,
-    });
-  });
-
-  it('loadConversation() parses search_warnings back to SearchWarning array', async () => {
-    invoke.mockResolvedValueOnce([
-      {
-        id: 'u1',
-        role: 'user',
-        content: 'query',
-        quoted_text: null,
-        image_paths: null,
-        thinking_content: null,
-        search_sources: null,
-        search_warnings: null,
-        created_at: 1,
-      },
-      {
-        id: 'a1',
-        role: 'assistant',
-        content: 'answer',
-        quoted_text: null,
-        image_paths: null,
-        thinking_content: null,
-        search_sources: null,
-        search_warnings: JSON.stringify(['reader_partial_failure']),
-        created_at: 2,
-      },
-    ]);
-
-    const { result } = renderHook(() => useConversationHistory());
-
-    let loaded: Message[] = [];
-    await act(async () => {
-      loaded = await result.current.loadConversation('conv-load-warn');
-    });
-
-    expect(loaded[1].searchWarnings).toEqual(['reader_partial_failure']);
-  });
-
   it('unsave() is a no-op when not saved', async () => {
     const { result } = renderHook(() => useConversationHistory());
 
@@ -816,542 +691,6 @@ describe('useConversationHistory', () => {
     expect(invoke).not.toHaveBeenCalledWith(
       'reset_conversation',
       expect.anything(),
-    );
-  });
-
-  it('save() serialises searchMetadata to JSON in payload', async () => {
-    invoke.mockResolvedValueOnce({ conversation_id: 'conv-meta-save' });
-    invoke.mockResolvedValue(undefined);
-
-    const metadata = {
-      iterations: [
-        {
-          stage: { kind: 'initial' as const },
-          queries: ['q'],
-          urls_fetched: ['https://example.com/rust'],
-          reader_empty_urls: [],
-          judge_verdict: 'sufficient' as const,
-          judge_reasoning: 'enough evidence',
-          duration_ms: 42,
-        },
-      ],
-      total_duration_ms: 42,
-      retries_performed: 0,
-    };
-    const messagesWithMeta: Message[] = [
-      { id: 'u1', role: 'user', content: '/search q' },
-      {
-        id: 'a1',
-        role: 'assistant',
-        content: 'Answer',
-        searchMetadata: metadata,
-      },
-    ];
-
-    const { result } = renderHook(() => useConversationHistory());
-
-    await act(async () => {
-      await result.current.save(messagesWithMeta, MODEL);
-    });
-
-    expect(invoke).toHaveBeenCalledWith(
-      'save_conversation',
-      expect.objectContaining({
-        messages: expect.arrayContaining([
-          expect.objectContaining({
-            role: 'assistant',
-            search_metadata: JSON.stringify(metadata),
-          }),
-        ]),
-      }),
-    );
-  });
-
-  it('save() falls back to serialising searchTraces when searchMetadata is absent', async () => {
-    invoke.mockResolvedValueOnce({ conversation_id: 'conv-trace-save' });
-    invoke.mockResolvedValue(undefined);
-
-    const traces = [
-      {
-        id: 'round-1-search',
-        kind: 'search' as const,
-        status: 'completed' as const,
-        round: 1,
-        title: 'Searching the web',
-        summary: 'Found 4 results across 2 sites.',
-        queries: ['q'],
-      },
-    ];
-    const messagesWithTraces: Message[] = [
-      { id: 'u1', role: 'user', content: '/search q' },
-      {
-        id: 'a1',
-        role: 'assistant',
-        content: 'Answer',
-        searchTraces: traces,
-      },
-    ];
-
-    const { result } = renderHook(() => useConversationHistory());
-
-    await act(async () => {
-      await result.current.save(messagesWithTraces, MODEL);
-    });
-
-    expect(invoke).toHaveBeenCalledWith(
-      'save_conversation',
-      expect.objectContaining({
-        messages: expect.arrayContaining([
-          expect.objectContaining({
-            role: 'assistant',
-            search_metadata: JSON.stringify(traces),
-          }),
-        ]),
-      }),
-    );
-  });
-
-  it('persistTurn() serialises searchMetadata to JSON on assistant messages', async () => {
-    invoke.mockResolvedValueOnce({ conversation_id: 'conv-meta' });
-    invoke.mockResolvedValue(undefined);
-
-    const { result } = renderHook(() => useConversationHistory());
-
-    await act(async () => {
-      await result.current.save(MESSAGES, MODEL);
-    });
-    invoke.mockClear();
-
-    const metadata = {
-      iterations: [
-        {
-          stage: { kind: 'gap_round' as const, round: 1 },
-          queries: ['q', 'follow up'],
-          urls_fetched: ['https://example.com/a'],
-          reader_empty_urls: ['https://example.com/b'],
-          judge_verdict: 'partial' as const,
-          judge_reasoning: 'still missing one detail',
-          duration_ms: 88,
-        },
-      ],
-      total_duration_ms: 130,
-      retries_performed: 1,
-    };
-    const userMsg: Message = { id: 'u-m', role: 'user', content: 'q' };
-    const assistantMsg: Message = {
-      id: 'a-m',
-      role: 'assistant',
-      content: 'answer',
-      searchMetadata: metadata,
-    };
-
-    await act(async () => {
-      await result.current.persistTurn(userMsg, assistantMsg);
-    });
-
-    expect(invoke).toHaveBeenCalledWith('persist_message', {
-      conversationId: 'conv-meta',
-      role: 'assistant',
-      content: 'answer',
-      quotedText: null,
-      imagePaths: null,
-      thinkingContent: null,
-      searchSources: null,
-      searchWarnings: null,
-      searchMetadata: JSON.stringify(metadata),
-      modelName: null,
-    });
-  });
-
-  it('persistTurn() falls back to searchTraces when searchMetadata is absent', async () => {
-    invoke.mockResolvedValueOnce({ conversation_id: 'conv-trace' });
-    invoke.mockResolvedValue(undefined);
-
-    const { result } = renderHook(() => useConversationHistory());
-
-    await act(async () => {
-      await result.current.save(MESSAGES, MODEL);
-    });
-    invoke.mockClear();
-
-    const traces = [
-      {
-        id: 'compose',
-        kind: 'compose' as const,
-        status: 'completed' as const,
-        title: 'Synthesizing the answer',
-        summary: 'Pulling the strongest points together into a clear answer.',
-        counts: { sources: 2 },
-      },
-    ];
-    const userMsg: Message = { id: 'u-t', role: 'user', content: 'q' };
-    const assistantMsg: Message = {
-      id: 'a-t',
-      role: 'assistant',
-      content: 'answer',
-      searchTraces: traces,
-    };
-
-    await act(async () => {
-      await result.current.persistTurn(userMsg, assistantMsg);
-    });
-
-    expect(invoke).toHaveBeenCalledWith('persist_message', {
-      conversationId: 'conv-trace',
-      role: 'assistant',
-      content: 'answer',
-      quotedText: null,
-      imagePaths: null,
-      thinkingContent: null,
-      searchSources: null,
-      searchWarnings: null,
-      searchMetadata: JSON.stringify(traces),
-      modelName: null,
-    });
-  });
-
-  it('loadConversation() parses SearchMetadata from search_metadata', async () => {
-    const metadata = {
-      iterations: [
-        {
-          stage: { kind: 'initial' as const },
-          queries: ['q'],
-          urls_fetched: ['https://example.com/a'],
-          reader_empty_urls: [],
-          judge_verdict: 'sufficient' as const,
-          judge_reasoning: 'enough evidence',
-          duration_ms: 10,
-        },
-      ],
-      total_duration_ms: 10,
-      retries_performed: 0,
-    };
-
-    invoke.mockResolvedValueOnce([
-      {
-        id: 'u1',
-        role: 'user',
-        content: 'query',
-        quoted_text: null,
-        image_paths: null,
-        thinking_content: null,
-        search_sources: null,
-        search_warnings: null,
-        search_metadata: null,
-        created_at: 1,
-      },
-      {
-        id: 'a1',
-        role: 'assistant',
-        content: 'answer',
-        quoted_text: null,
-        image_paths: null,
-        thinking_content: null,
-        search_sources: null,
-        search_warnings: null,
-        search_metadata: JSON.stringify(metadata),
-        created_at: 2,
-      },
-    ]);
-
-    const { result } = renderHook(() => useConversationHistory());
-
-    let loaded: Message[] = [];
-    await act(async () => {
-      loaded = await result.current.loadConversation('conv-meta-load');
-    });
-
-    expect(loaded[1].searchMetadata).toEqual(metadata);
-    expect(loaded[1].searchTraces).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ kind: 'search' }),
-        expect.objectContaining({ kind: 'read' }),
-        expect.objectContaining({ kind: 'chunk_judge', verdict: 'sufficient' }),
-      ]),
-    );
-    expect(loaded[1].fromSearch).toBe(true);
-  });
-
-  it('loadConversation() preserves SearchMetadata with empty iterations', async () => {
-    const metadata = {
-      iterations: [],
-      total_duration_ms: 0,
-      retries_performed: 0,
-    };
-
-    invoke.mockResolvedValueOnce([
-      {
-        id: 'a-empty-meta',
-        role: 'assistant',
-        content: 'answer',
-        quoted_text: null,
-        image_paths: null,
-        thinking_content: null,
-        search_sources: null,
-        search_warnings: null,
-        search_metadata: JSON.stringify(metadata),
-        created_at: 1,
-      },
-    ]);
-
-    const { result } = renderHook(() => useConversationHistory());
-
-    let loaded: Message[] = [];
-    await act(async () => {
-      loaded = await result.current.loadConversation('conv-empty-meta');
-    });
-
-    expect(loaded[0].searchMetadata).toEqual(metadata);
-    expect(loaded[0].searchTraces).toBeUndefined();
-    expect(loaded[0].fromSearch).toBe(true);
-  });
-
-  it('loadConversation() parses SearchTraceStep[] from search_metadata', async () => {
-    const traces = [
-      {
-        id: 'round-1-search',
-        kind: 'search' as const,
-        status: 'completed' as const,
-        round: 1,
-        title: 'Searching the web',
-        summary: 'Found 4 results across 2 sites.',
-        queries: ['q'],
-      },
-    ];
-
-    invoke.mockResolvedValueOnce([
-      {
-        id: 'u1',
-        role: 'user',
-        content: 'query',
-        quoted_text: null,
-        image_paths: null,
-        thinking_content: null,
-        search_sources: null,
-        search_warnings: null,
-        search_metadata: null,
-        created_at: 1,
-      },
-      {
-        id: 'a1',
-        role: 'assistant',
-        content: 'answer',
-        quoted_text: null,
-        image_paths: null,
-        thinking_content: null,
-        search_sources: null,
-        search_warnings: null,
-        search_metadata: JSON.stringify(traces),
-        created_at: 2,
-      },
-    ]);
-
-    const { result } = renderHook(() => useConversationHistory());
-
-    let loaded: Message[] = [];
-    await act(async () => {
-      loaded = await result.current.loadConversation('conv-meta-load');
-    });
-
-    expect(loaded[0].searchTraces).toBeUndefined();
-    expect(loaded[1].searchTraces).toEqual(traces);
-  });
-
-  it('loadConversation() converts legacy IterationTrace[] into SearchTraceStep[]', async () => {
-    invoke.mockResolvedValueOnce([
-      {
-        id: 'a1',
-        role: 'assistant',
-        content: 'answer',
-        quoted_text: null,
-        image_paths: null,
-        thinking_content: null,
-        search_sources: null,
-        search_warnings: null,
-        search_metadata: JSON.stringify([
-          {
-            stage: { kind: 'initial' },
-            queries: ['legacy query'],
-            urls_fetched: ['https://example.com/a'],
-            reader_empty_urls: [],
-            judge_verdict: 'partial',
-            judge_reasoning: 'missing details',
-            duration_ms: 120,
-          },
-        ]),
-        created_at: 1,
-      },
-    ]);
-
-    const { result } = renderHook(() => useConversationHistory());
-
-    let loaded: Message[] = [];
-    await act(async () => {
-      loaded = await result.current.loadConversation('conv-meta-legacy');
-    });
-
-    expect(loaded[0].searchTraces).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ kind: 'search' }),
-        expect.objectContaining({ kind: 'read' }),
-        expect.objectContaining({ kind: 'chunk_judge', verdict: 'partial' }),
-      ]),
-    );
-    expect(loaded[0].fromSearch).toBe(true);
-  });
-
-  it('loadConversation() ignores invalid search_metadata payloads', async () => {
-    invoke.mockResolvedValueOnce([
-      {
-        id: 'a-primitive',
-        role: 'assistant',
-        content: 'primitive metadata',
-        quoted_text: null,
-        image_paths: null,
-        thinking_content: null,
-        search_sources: null,
-        search_warnings: null,
-        search_metadata: JSON.stringify('not an object'),
-        created_at: 0,
-      },
-      {
-        id: 'a-invalid-object',
-        role: 'assistant',
-        content: 'not array metadata',
-        quoted_text: null,
-        image_paths: null,
-        thinking_content: null,
-        search_sources: null,
-        search_warnings: null,
-        search_metadata: JSON.stringify({ not: 'an array' }),
-        created_at: 1,
-      },
-      {
-        id: 'a-invalid-item',
-        role: 'assistant',
-        content: 'invalid item metadata',
-        quoted_text: null,
-        image_paths: null,
-        thinking_content: null,
-        search_sources: null,
-        search_warnings: null,
-        search_metadata: JSON.stringify(['bad']),
-        created_at: 2,
-      },
-      {
-        id: 'a-empty-array',
-        role: 'assistant',
-        content: 'empty metadata',
-        quoted_text: null,
-        image_paths: null,
-        thinking_content: null,
-        search_sources: null,
-        search_warnings: null,
-        search_metadata: JSON.stringify([]),
-        created_at: 3,
-      },
-      {
-        id: 'a-malformed',
-        role: 'assistant',
-        content: 'malformed metadata',
-        quoted_text: null,
-        image_paths: null,
-        thinking_content: null,
-        search_sources: null,
-        search_warnings: null,
-        search_metadata: '{not json',
-        created_at: 4,
-      },
-    ]);
-
-    const { result } = renderHook(() => useConversationHistory());
-
-    let loaded: Message[] = [];
-    await act(async () => {
-      loaded = await result.current.loadConversation('conv-meta-invalid');
-    });
-
-    expect(loaded).toHaveLength(5);
-    expect(loaded.every((message) => message.searchTraces === undefined)).toBe(
-      true,
-    );
-    expect(
-      loaded.every((message) => message.searchMetadata === undefined),
-    ).toBe(true);
-  });
-
-  it('loadConversation() covers snippet-only and plural legacy trace variants', async () => {
-    invoke.mockResolvedValueOnce([
-      {
-        id: 'a-legacy-variants',
-        role: 'assistant',
-        content: 'answer',
-        quoted_text: null,
-        image_paths: null,
-        thinking_content: null,
-        search_sources: null,
-        search_warnings: null,
-        search_metadata: JSON.stringify([
-          {
-            stage: { kind: 'gap_round', round: 2 },
-            queries: [],
-            urls_fetched: [],
-            reader_empty_urls: [],
-            judge_verdict: 'sufficient',
-            judge_reasoning: 'enough evidence',
-            duration_ms: 90,
-          },
-          {
-            stage: { kind: 'initial' },
-            queries: [],
-            urls_fetched: ['not-a-url', 'https://b.com/guide'],
-            reader_empty_urls: ['not-a-url'],
-            judge_verdict: 'insufficient',
-            judge_reasoning: 'still missing details',
-            duration_ms: 120,
-          },
-        ]),
-        created_at: 1,
-      },
-    ]);
-
-    const { result } = renderHook(() => useConversationHistory());
-
-    let loaded: Message[] = [];
-    await act(async () => {
-      loaded = await result.current.loadConversation('conv-meta-variants');
-    });
-
-    expect(loaded[0].fromSearch).toBe(true);
-    expect(loaded[0].searchTraces).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: 'legacy-round-3-0-search',
-          round: 3,
-          title: 'Searched the web again',
-          summary: 'Loaded a saved search round.',
-        }),
-        expect.objectContaining({
-          id: 'legacy-round-3-0-judge',
-          kind: 'snippet_judge',
-          title: 'Checked whether the snippets were enough',
-          verdict: 'sufficient',
-          summary:
-            'This saved round had enough evidence to answer confidently.',
-        }),
-        expect.objectContaining({
-          id: 'legacy-round-1-1-read',
-          summary: 'Read 2 saved pages.',
-          domains: ['not-a-url', 'b.com'],
-          counts: expect.objectContaining({ empty: 1 }),
-        }),
-        expect.objectContaining({
-          id: 'legacy-round-1-1-judge',
-          kind: 'chunk_judge',
-          verdict: 'insufficient',
-          summary: 'This saved round did not gather enough evidence yet.',
-        }),
-      ]),
     );
   });
 
@@ -1469,5 +808,104 @@ describe('useConversationHistory', () => {
 
     expect(loaded[0].modelName).toBeUndefined();
     expect(loaded[1].modelName).toBe('gemma4:e2b');
+  });
+
+  it('save() and persistTurn() leave search_warnings/search_metadata null', async () => {
+    invoke.mockResolvedValueOnce({ conversation_id: 'conv-opaque' });
+    invoke.mockResolvedValue(undefined);
+
+    const messages: Message[] = [
+      { id: 'u1', role: 'user', content: '/search q' },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'Answer',
+        searchSources: [{ title: 'Doc', url: 'https://doc.example' }],
+      },
+    ];
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.save(messages, MODEL);
+    });
+
+    expect(invoke).toHaveBeenCalledWith(
+      'save_conversation',
+      expect.objectContaining({
+        messages: expect.arrayContaining([
+          expect.objectContaining({
+            role: 'assistant',
+            search_sources: [{ title: 'Doc', url: 'https://doc.example' }],
+            search_warnings: null,
+            search_metadata: null,
+          }),
+        ]),
+      }),
+    );
+
+    invoke.mockClear();
+
+    await act(async () => {
+      await result.current.persistTurn(messages[0], messages[1]);
+    });
+
+    expect(invoke).toHaveBeenCalledWith(
+      'persist_message',
+      expect.objectContaining({
+        role: 'assistant',
+        searchSources: [{ title: 'Doc', url: 'https://doc.example' }],
+        searchWarnings: null,
+        searchMetadata: null,
+      }),
+    );
+  });
+
+  it('loadConversation() ignores opaque search_warnings and search_metadata', async () => {
+    invoke.mockResolvedValueOnce([
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'answer',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: null,
+        search_warnings: JSON.stringify(['opaque']),
+        search_metadata: JSON.stringify({ opaque: true }),
+        created_at: 1,
+      },
+      {
+        id: 'a2',
+        role: 'assistant',
+        content: 'with sources',
+        quoted_text: null,
+        image_paths: null,
+        thinking_content: null,
+        search_sources: JSON.stringify([
+          { title: 'A', url: 'https://a.example' },
+        ]),
+        search_warnings: JSON.stringify(['opaque2']),
+        search_metadata: '{not json',
+        created_at: 2,
+      },
+    ]);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    let loaded: Message[] = [];
+    await act(async () => {
+      loaded = await result.current.loadConversation('conv-opaque-load');
+    });
+
+    expect(loaded[0].fromSearch).toBeUndefined();
+    expect(loaded[0].searchSources).toBeUndefined();
+    expect(loaded[1].fromSearch).toBe(true);
+    expect(loaded[1].searchSources).toEqual([
+      { title: 'A', url: 'https://a.example' },
+    ]);
+    expect('searchWarnings' in loaded[0]).toBe(false);
+    expect('searchMetadata' in loaded[0]).toBe(false);
+    expect('searchTraces' in loaded[0]).toBe(false);
   });
 });

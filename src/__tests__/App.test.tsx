@@ -4798,7 +4798,7 @@ describe('App', () => {
             all: ['gemma4:e2b'],
             ollamaReachable: true,
           };
-        if (cmd === 'search_pipeline') {
+        if (cmd === 'ask_model') {
           return new Promise<void>((res) => {
             resolveSearch = res;
           });
@@ -4847,9 +4847,7 @@ describe('App', () => {
         fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
       });
 
-      const calls = invoke.mock.calls.filter(
-        (c) => c[0] === 'ask_model' || c[0] === 'search_pipeline',
-      );
+      const calls = invoke.mock.calls.filter((c) => c[0] === 'ask_model');
       const last = calls[calls.length - 1];
       expect(last[0]).toBe('ask_model');
       expect(last[1]).toMatchObject({ message: 'hello' });

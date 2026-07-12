@@ -10,14 +10,8 @@ import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { formatQuotedText } from '../utils/formatQuote';
 import { useConfig } from '../contexts/ConfigContext';
 import { COMMANDS, SCREEN_CAPTURE_PLACEHOLDER } from '../config/commands';
-import { SearchWarningIcon } from './SearchWarningIcon';
 import type { EngineErrorKind } from '../hooks/useModel';
-import type {
-  SearchResultPreview,
-  SearchStage,
-  SearchWarning,
-} from '../types/search';
-import { SEARCH_WARNING_SEVERITY } from '../config/searchWarnings';
+import type { SearchResultPreview, SearchStage } from '../types/search';
 import { SearchProgressBlock } from './SearchProgressBlock';
 import { cleanForRender } from '../utils/sanitizeAssistantContent';
 
@@ -215,8 +209,6 @@ interface ChatBubbleProps {
   onReplace?: (text: string) => Promise<boolean>;
   /** Source URLs for a web-search answer. Click opens the URL in the browser. */
   searchSources?: SearchResultPreview[];
-  /** Optional warnings for a search turn. Renders a warning icon by Sources. */
-  searchWarnings?: SearchWarning[];
   /**
    * Coarse web-search phase (`SearchStatus`). Drives
    * {@link SearchProgressBlock} while the turn is searching.
@@ -291,7 +283,6 @@ export function ChatBubble({
   pendingLabel,
   isThinking,
   searchSources,
-  searchWarnings,
   searchStage = null,
   isSearching = false,
   modelName,
@@ -324,15 +315,6 @@ export function ChatBubble({
    */
   const showActionBar =
     !errorKind && (!isStreaming || (isVerifyingSources && hasSearchSources));
-
-  const activeWarnings = searchWarnings ?? [];
-  const warningSeverity: 'error' | 'warn' | null = activeWarnings.some(
-    (w) => SEARCH_WARNING_SEVERITY[w] === 'error',
-  )
-    ? 'error'
-    : activeWarnings.length > 0
-      ? 'warn'
-      : null;
 
   /**
    * Machine-readable figures for the `InsufficientMemory` error card
@@ -531,7 +513,7 @@ export function ChatBubble({
         <div
           ref={containerRef}
           data-testid="chat-bubble"
-          className={`search-bubble flex flex-col w-full${warningSeverity === 'error' ? ' search-bubble--error' : ''}`}
+          className="search-bubble flex flex-col w-full"
           onMouseOver={onAnswerMouseOver}
           onMouseOut={onAnswerMouseOut}
           onClick={onAnswerClick}
@@ -669,7 +651,6 @@ export function ChatBubble({
                       </span>
                     </button>
                   )}
-                  <SearchWarningIcon warnings={activeWarnings} />
                   {/* Model attribution chip: visually couples the response to the
                       model-picker UI so users can see which model produced it. */}
                   {modelName && (

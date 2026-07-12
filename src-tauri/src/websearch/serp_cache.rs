@@ -3,8 +3,7 @@
 //! bodies. A repeat within a short window is served from memory instead of
 //! re-scraping, which cuts latency AND starves the keyless engines'
 //! volume-triggered rate limits (a burst of identical requests is exactly what
-//! earns a multi-hour DuckDuckGo IP block, observed live). The closest OSS peer
-//! (SearXNG) ships no such cache; this is a deliberate addition, not a port.
+//! earns a multi-hour DuckDuckGo IP block, observed live).
 //!
 //! ## Security: in-memory ONLY, never disk
 //!

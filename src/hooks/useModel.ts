@@ -1,12 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { Channel, invoke } from '@tauri-apps/api/core';
-import type {
-  SearchMetadata,
-  SearchResultPreview,
-  SearchStage,
-  SearchTraceStep,
-  SearchWarning,
-} from '../types/search';
+import type { SearchResultPreview, SearchStage } from '../types/search';
 
 /** Mirrors the Rust EngineErrorKind enum sent over IPC. */
 export type EngineErrorKind =
@@ -46,15 +40,6 @@ export interface Message {
   replaceCommand?: string;
   /** Source links for a web-search answer. */
   searchSources?: SearchResultPreview[];
-  /** Optional warnings attached to a search turn (e.g. loaded history). */
-  searchWarnings?: SearchWarning[];
-  /**
-   * Legacy step timeline from older saved conversations. New turns leave this
-   * unset; live UI uses {@link SearchStage} via SearchProgressBlock.
-   */
-  searchTraces?: SearchTraceStep[];
-  /** Structured retrieval metadata when present on a saved search turn. */
-  searchMetadata?: SearchMetadata;
   /**
    * Immutable snapshot of the request that produced this message, captured
    * once at dispatch time (issue #296). Lets `retryMessageWithOversized`

@@ -98,7 +98,7 @@ Prefer to download by hand? Grab the DMG and clear the quarantine flag yourself.
 <details>
 <summary><strong>Build from source</strong></summary>
 
-**Prerequisites:** [Bun](https://bun.sh), [Rust](https://rustup.rs), and optionally [Docker](https://www.docker.com/get-started)
+**Prerequisites:** [Bun](https://bun.sh) and [Rust](https://rustup.rs)
 
 ```bash
 # Clone and install dependencies

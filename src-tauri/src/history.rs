@@ -42,11 +42,11 @@ pub struct SaveMessagePayload {
     /// Sources footer for `/search` assistant messages. Serialised to JSON
     /// before hitting the `messages.search_sources` column.
     pub search_sources: Option<Vec<SaveSearchSource>>,
-    /// Already-serialised `Vec<SearchWarning>` JSON string for search turns.
-    /// Passed through verbatim to `messages.search_warnings`.
+    /// Opaque JSON passed through to `messages.search_warnings`.
+    /// Current product always sends `None`.
     pub search_warnings: Option<String>,
-    /// Already-serialised `SearchMetadata` JSON string for search turns.
-    /// Passed through verbatim to `messages.search_metadata`.
+    /// Opaque JSON passed through to `messages.search_metadata`.
+    /// Current product always sends `None`.
     pub search_metadata: Option<String>,
     /// Slug of the Ollama model that produced this response. Frontend stamps
     /// assistant payloads with the active model at generation time; `None`
@@ -471,10 +471,8 @@ mod tests {
                         url: "https://tokio.rs".into(),
                     },
                 ]),
-                search_warnings: Some(r#"["reader_unavailable"]"#.to_string()),
-                search_metadata: Some(
-                    r#"{"iterations":[],"total_duration_ms":10,"retries_performed":0}"#.to_string(),
-                ),
+                search_warnings: Some(r#"["opaque"]"#.to_string()),
+                search_metadata: Some(r#"{"opaque":true}"#.to_string()),
                 model_name: Some("gemma4:e2b".to_string()),
             },
         ];
@@ -535,15 +533,11 @@ mod tests {
         let sources_json = loaded[1].search_sources.as_deref().unwrap();
         assert!(sources_json.contains("Rust docs"));
         assert!(sources_json.contains("https://tokio.rs"));
+        assert_eq!(loaded[1].search_warnings.as_deref(), Some(r#"["opaque"]"#));
         assert_eq!(
-            loaded[1].search_warnings.as_deref(),
-            Some(r#"["reader_unavailable"]"#)
+            loaded[1].search_metadata.as_deref(),
+            Some(r#"{"opaque":true}"#)
         );
-        assert!(loaded[1]
-            .search_metadata
-            .as_deref()
-            .unwrap()
-            .contains("total_duration_ms"));
         assert!(loaded[0].search_warnings.is_none());
         assert!(loaded[0].search_metadata.is_none());
         assert!(loaded[0].model_name.is_none());

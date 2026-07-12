@@ -552,8 +552,8 @@ fn drop_incredible(list: Vec<SearchHit>) -> Vec<SearchHit> {
 /// form-encoded query. When `freshness` is set (the turn's standalone question
 /// carried a freshness signal), the request is biased toward recent results
 /// via [`crate::config::defaults::DDG_FRESHNESS_DF_VALUE`], set both as a `df`
-/// form field and as a `df` cookie: SearXNG's maintained DuckDuckGo scraper
-/// sets the filter both ways because the HTML endpoint honours either.
+/// form field and as a `df` cookie: the HTML endpoint honours either placement,
+/// so both are set for reliability.
 pub(crate) fn ddg_html_request(query: &str, freshness: bool) -> HttpRequest {
     let mut headers = vec![
         ("User-Agent".to_string(), BROWSER_USER_AGENT.to_string()),

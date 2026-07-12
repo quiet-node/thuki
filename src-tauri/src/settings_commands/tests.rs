@@ -165,8 +165,7 @@ fn is_allowed_section_accepts_known() {
 fn is_allowed_section_rejects_unknown() {
     assert!(!is_allowed_section("activation"));
     assert!(!is_allowed_section(""));
-    // The legacy `[search]` section was removed end-to-end; it must reject
-    // like any other unknown section, not fall through as allowed.
+    // Unknown section names (including historical `search`) must reject.
     assert!(!is_allowed_section("search"));
 }
 
@@ -175,16 +174,23 @@ fn is_allowed_section_rejects_unknown() {
 #[test]
 fn coerce_integer_accepts_json_integer() {
     let doc = parse_sample();
-    let item = doc.get("updater").unwrap().get("check_interval_hours").unwrap();
-    let coerced =
-        coerce_json_to_toml(item, json!(48), "updater", "check_interval_hours").unwrap();
+    let item = doc
+        .get("updater")
+        .unwrap()
+        .get("check_interval_hours")
+        .unwrap();
+    let coerced = coerce_json_to_toml(item, json!(48), "updater", "check_interval_hours").unwrap();
     assert_eq!(coerced.as_integer(), Some(48));
 }
 
 #[test]
 fn coerce_integer_accepts_whole_float() {
     let doc = parse_sample();
-    let item = doc.get("updater").unwrap().get("check_interval_hours").unwrap();
+    let item = doc
+        .get("updater")
+        .unwrap()
+        .get("check_interval_hours")
+        .unwrap();
     let coerced =
         coerce_json_to_toml(item, json!(48.0), "updater", "check_interval_hours").unwrap();
     assert_eq!(coerced.as_integer(), Some(48));
@@ -193,7 +199,11 @@ fn coerce_integer_accepts_whole_float() {
 #[test]
 fn coerce_integer_rejects_fractional_float() {
     let doc = parse_sample();
-    let item = doc.get("updater").unwrap().get("check_interval_hours").unwrap();
+    let item = doc
+        .get("updater")
+        .unwrap()
+        .get("check_interval_hours")
+        .unwrap();
     let err =
         coerce_json_to_toml(item, json!(48.5), "updater", "check_interval_hours").unwrap_err();
     matches_type_mismatch(&err, "updater", "check_interval_hours");
@@ -202,7 +212,11 @@ fn coerce_integer_rejects_fractional_float() {
 #[test]
 fn coerce_integer_rejects_string() {
     let doc = parse_sample();
-    let item = doc.get("updater").unwrap().get("check_interval_hours").unwrap();
+    let item = doc
+        .get("updater")
+        .unwrap()
+        .get("check_interval_hours")
+        .unwrap();
     let err =
         coerce_json_to_toml(item, json!("nope"), "updater", "check_interval_hours").unwrap_err();
     matches_type_mismatch(&err, "updater", "check_interval_hours");
@@ -784,8 +798,7 @@ fn write_field_to_disk_rejects_unknown_field() {
 fn write_field_to_disk_propagates_read_error_for_missing_file() {
     let dir = tempdir();
     let path = dir.join("missing.toml");
-    let err =
-        write_field_to_disk(&path, "updater", "manifest_url", json!("http://x")).unwrap_err();
+    let err = write_field_to_disk(&path, "updater", "manifest_url", json!("http://x")).unwrap_err();
     matches!(err, ConfigError::IoError { .. });
 }
 

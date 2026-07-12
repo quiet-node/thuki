@@ -1557,7 +1557,6 @@ describe('useModel', () => {
         (m) => m.role === 'assistant',
       );
       expect(assistant?.fromSearch).toBe(true);
-      expect(assistant?.searchTraces).toBeUndefined();
     });
 
     it('stores display content and quotedText on the user bubble', async () => {

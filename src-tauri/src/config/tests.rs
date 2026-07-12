@@ -1077,13 +1077,12 @@ fn config_error_messages_include_context() {
     assert!(e.to_string().contains("/tmp/z"));
 }
 
-// ── legacy [search] section migration ───────────────────────────────────────────
+// ── unknown [search] section ignored ────────────────────────────────────────────
 
 #[test]
-fn legacy_search_section_is_silently_ignored_on_load() {
-    // A config.toml written by a pre-J9 build still carries a full `[search]`
-    // section (the removed SearXNG/reader pipeline knobs). The loader must load
-    // it cleanly, silently dropping the now-unknown table, and never panic or
+fn unknown_search_section_is_silently_ignored_on_load() {
+    // A config.toml may still carry an unknown `[search]` table. The loader must
+    // load it cleanly, silently dropping the unknown table, and never panic or
     // error. AppConfig has no `deny_unknown_fields`, so serde ignores the stray
     // table; the surrounding known sections must survive untouched.
     let dir = fresh_temp_dir();
@@ -1095,23 +1094,16 @@ fn legacy_search_section_is_silently_ignored_on_load() {
             "auto_replace = true\n",
             "\n",
             "[search]\n",
-            "searxng_url = \"http://127.0.0.1:25017\"\n",
-            "reader_url = \"http://127.0.0.1:25018\"\n",
+            "unknown_url = \"http://127.0.0.1:25017\"\n",
             "max_iterations = 3\n",
             "top_k_urls = 10\n",
-            "searxng_max_results = 10\n",
-            "search_timeout_s = 20\n",
-            "reader_per_url_timeout_s = 10\n",
-            "reader_batch_timeout_s = 30\n",
-            "judge_timeout_s = 30\n",
-            "router_timeout_s = 45\n",
-            "pipeline_wall_clock_budget_s = 90\n",
+            "timeout_s = 20\n",
         ),
     )
     .unwrap();
 
     // Loads without error despite the removed section.
-    let loaded = load_from_path(&path).expect("legacy [search] section must not break the loader");
+    let loaded = load_from_path(&path).expect("unknown [search] section must not break the loader");
 
     // The known field around it is preserved verbatim, proving only the unknown
     // table was dropped.

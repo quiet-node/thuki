@@ -1,4 +1,4 @@
-//! The search orchestrator: the fixed, non-agentic pipeline that turns one user
+//! The search orchestrator: fixed-budget web retrieval that turns one user
 //! turn into either a plain answer or a source-grounded answer.
 //!
 //! All external effects are injected through traits ([`PrePass`],
