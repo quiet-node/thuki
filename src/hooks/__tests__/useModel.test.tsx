@@ -320,6 +320,11 @@ describe('useModel', () => {
         });
       });
       expect(result.current.searchStage).toEqual({ kind: 'analyzing_query' });
+      // Variant B: bubble owns progress chrome from the first status event.
+      const assistantAfterStatus = result.current.messages.find(
+        (m) => m.role === 'assistant',
+      );
+      expect(assistantAfterStatus?.fromSearch).toBe(true);
 
       act(() => {
         channel!.simulateMessage({
@@ -1752,10 +1757,12 @@ describe('useModel', () => {
         await expect(pending).resolves.toEqual({ final: false });
       });
 
+      // Agentic path stamps searchTraces: [] at turn start; no Trace events
+      // means it stays an empty list (not undefined).
       expect(
         result.current.messages.find((message) => message.role === 'assistant')
           ?.searchTraces,
-      ).toBeUndefined();
+      ).toEqual([]);
     });
 
     it('drops the empty placeholder on Cancelled with no content', async () => {
@@ -2305,7 +2312,7 @@ describe('useModel', () => {
       ]);
     });
 
-    it('searchTraces is undefined when no Trace event is received', async () => {
+    it('persists an empty searchTraces list when no Trace event is received', async () => {
       const onTurnComplete = vi.fn();
       const { result } = renderHook(() => useModel('', onTurnComplete));
       let pending!: Promise<{ final: boolean }>;
@@ -2321,7 +2328,8 @@ describe('useModel', () => {
         await pending;
       });
       const last = result.current.messages[result.current.messages.length - 1];
-      expect(last.searchTraces).toBeUndefined();
+      // Empty array keeps the agentic path marker; auto-search leaves the field unset.
+      expect(last.searchTraces).toEqual([]);
     });
   });
 

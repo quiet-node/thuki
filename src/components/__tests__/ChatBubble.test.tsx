@@ -1383,10 +1383,34 @@ describe('ChatBubble', () => {
       expect(screen.getByTestId('search-trace-block')).toBeInTheDocument();
     });
 
-    it('renders SearchTraceBlock in loading state when isSearching with no traces', () => {
-      render(<ChatBubble role="assistant" content="" index={0} isSearching />);
+    it('renders SearchTraceBlock in loading state when isSearching with empty agentic traces', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching
+          searchTraces={[]}
+        />,
+      );
       expect(screen.getByTestId('search-trace-block')).toBeInTheDocument();
       expect(screen.getByTestId('search-trace-loading')).toBeInTheDocument();
+    });
+
+    it('renders SearchProgressBlock for built-in auto-search when isSearching without traces', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching
+          searchStage={{ kind: 'searching' }}
+        />,
+      );
+      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+      expect(
+        screen.queryByTestId('search-trace-block'),
+      ).not.toBeInTheDocument();
     });
 
     it('renders SearchTraceBlock above thinking block', () => {

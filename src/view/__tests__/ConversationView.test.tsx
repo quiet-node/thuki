@@ -828,7 +828,7 @@ describe('ConversationView', () => {
       );
     });
 
-    it('renders SearchTraceBlock immediately when fromSearch=true during generation (no traces yet)', () => {
+    it('renders SearchProgressBlock for built-in auto-search when fromSearch without traces', () => {
       render(
         <ConversationView
           messages={[
@@ -838,6 +838,34 @@ describe('ConversationView', () => {
               role: 'assistant',
               content: '',
               fromSearch: true,
+            },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          searchStage={{ kind: 'searching' }}
+        />,
+      );
+      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+      expect(screen.getByTestId('loading-label')).toHaveAttribute(
+        'data-label',
+        'Searching the web',
+      );
+      expect(
+        screen.queryByTestId('search-trace-block'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('renders SearchTraceBlock when fromSearch uses agentic empty traces', () => {
+      render(
+        <ConversationView
+          messages={[
+            { id: 'u', role: 'user', content: 'q' },
+            {
+              id: 'a',
+              role: 'assistant',
+              content: '',
+              fromSearch: true,
+              searchTraces: [],
             },
           ]}
           isGenerating={true}
@@ -892,7 +920,7 @@ describe('ConversationView', () => {
       ).toBeInTheDocument();
     });
 
-    it('hides external LoadingStage for search turns (SearchTraceBlock takes over)', () => {
+    it('hides external LoadingStage for search turns (bubble progress chrome takes over)', () => {
       render(
         <ConversationView
           messages={[
@@ -909,12 +937,12 @@ describe('ConversationView', () => {
           searchStage={{ kind: 'searching' }}
         />,
       );
-      // External LoadingStage shows "Searching the web"; SearchTraceBlock's
-      // internal label shows "Searching..." - assert the external one is gone.
+      // External stage row is suppressed via !fromSearch; the label lives inside
+      // SearchProgressBlock (auto-search) instead of a second ConversationView row.
+      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
       const labels = screen.getAllByTestId('loading-label');
-      expect(labels.every((el) => el.textContent !== 'Searching the web')).toBe(
-        true,
-      );
+      expect(labels).toHaveLength(1);
+      expect(labels[0]).toHaveAttribute('data-label', 'Searching the web');
     });
   });
 

@@ -561,7 +561,16 @@ export function useModel(
         }
 
         if (chunk.type === 'SearchStatus') {
+          // Stamp fromSearch early so the bubble owns Variant B progress chrome
+          // for the whole retrieval, not only after sources arrive.
           setSearchStage(SEARCH_STAGE_BY_PHASE[chunk.phase]);
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === assistantId
+                ? { ...message, fromSearch: true }
+                : message,
+            ),
+          );
           return;
         }
 
@@ -752,6 +761,10 @@ export function useModel(
         role: 'assistant',
         content: '',
         fromSearch: true,
+        // Empty array marks the agentic `/search` path so the bubble keeps
+        // SearchTraceBlock even before the first Trace event arrives (Variant B
+        // progress chrome is for auto-search only, where this field stays unset).
+        searchTraces: [],
         modelName: resolvedModel ?? undefined,
         // Captured once, here, so a later turn can never overwrite the
         // retry data this specific message needs (issue #296).
@@ -817,10 +830,13 @@ export function useModel(
           const persistedTraces = finalizedTraces;
 
           if (!errored && !cancelled && currentContent) {
+            // Always persist an array on the agentic path so the UI keeps the
+            // SearchTraceBlock discriminator (undefined = auto-search / Variant B).
+            const tracesForPersist = persistedTraces ?? [];
             updateAssistant({
               searchSources: pendingSources,
               searchWarnings: warnings.length > 0 ? warnings : undefined,
-              searchTraces: persistedTraces,
+              searchTraces: tracesForPersist,
               searchMetadata: pendingMetadata,
             });
             onTurnComplete?.(userMsg, {
@@ -828,7 +844,7 @@ export function useModel(
               content: currentContent,
               searchSources: pendingSources,
               searchWarnings: warnings.length > 0 ? warnings : undefined,
-              searchTraces: persistedTraces,
+              searchTraces: tracesForPersist,
               searchMetadata: pendingMetadata,
             });
           }

@@ -14,11 +14,13 @@ import { SearchWarningIcon } from './SearchWarningIcon';
 import type { EngineErrorKind } from '../hooks/useModel';
 import type {
   SearchResultPreview,
+  SearchStage,
   SearchTraceStep,
   SearchWarning,
 } from '../types/search';
 import { SEARCH_WARNING_SEVERITY } from '../config/searchWarnings';
 import { SearchTraceBlock } from './SearchTraceBlock';
+import { SearchProgressBlock } from './SearchProgressBlock';
 import { SandboxSetupCard } from './SandboxSetupCard';
 import { cleanForRender } from '../utils/sanitizeAssistantContent';
 
@@ -224,6 +226,11 @@ interface ChatBubbleProps {
   sandboxUnavailable?: boolean;
   /** User-facing search timeline data for `/search` turns. */
   searchTraces?: SearchTraceStep[];
+  /**
+   * Coarse built-in auto-search phase (`SearchStatus`). Used by
+   * {@link SearchProgressBlock} when there is no agentic trace timeline.
+   */
+  searchStage?: SearchStage;
   /** Whether the search pipeline is currently running. When true, renders a
    * `SearchTraceBlock` in loading state even before any traces arrive. */
   isSearching?: boolean;
@@ -297,6 +304,7 @@ export function ChatBubble({
   searchWarnings,
   sandboxUnavailable = false,
   searchTraces,
+  searchStage = null,
   isSearching = false,
   modelName,
   displayNames,
@@ -490,13 +498,25 @@ export function ChatBubble({
           onClick={onAnswerClick}
         >
           <div className="text-sm leading-relaxed select-text py-1">
-            {(isSearching || (searchTraces && searchTraces.length > 0)) && (
+            {/* Agentic `/search` stamps `searchTraces` (possibly empty) so the
+                step timeline owns that path. Built-in auto-search leaves the
+                field unset and uses Variant B progressive chrome instead. */}
+            {searchTraces !== undefined ? (
               <SearchTraceBlock
-                traces={searchTraces ?? []}
+                traces={searchTraces}
                 isSearching={isSearching}
                 sources={searchSources}
               />
-            )}
+            ) : isSearching ? (
+              <SearchProgressBlock
+                stage={searchStage}
+                sources={searchSources}
+                isSearching={isSearching}
+                preferCollapsed={Boolean(
+                  thinkingContent || isThinkingPending || displayContent,
+                )}
+              />
+            ) : null}
             {(thinkingContent || isThinkingPending) && (
               <ReasoningBlock
                 thinkingContent={thinkingContent}

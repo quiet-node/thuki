@@ -378,6 +378,9 @@ export function ConversationView({
               searchWarnings={msg.searchWarnings}
               sandboxUnavailable={msg.sandboxUnavailable}
               searchTraces={msg.searchTraces}
+              searchStage={
+                isGenerating && i === messages.length - 1 ? searchStage : null
+              }
               modelName={msg.modelName}
               displayNames={modelDisplayNames}
               memoryFit={msg.memoryFit}
