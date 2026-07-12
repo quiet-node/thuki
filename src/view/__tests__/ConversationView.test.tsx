@@ -828,7 +828,7 @@ describe('ConversationView', () => {
       );
     });
 
-    it('renders SearchProgressBlock for built-in auto-search when fromSearch without traces', () => {
+    it('renders SearchProgressBlock for web search when fromSearch is true', () => {
       render(
         <ConversationView
           messages={[
@@ -850,74 +850,6 @@ describe('ConversationView', () => {
         'data-label',
         'Searching the web',
       );
-      expect(
-        screen.queryByTestId('search-trace-block'),
-      ).not.toBeInTheDocument();
-    });
-
-    it('renders SearchTraceBlock when fromSearch uses agentic empty traces', () => {
-      render(
-        <ConversationView
-          messages={[
-            { id: 'u', role: 'user', content: 'q' },
-            {
-              id: 'a',
-              role: 'assistant',
-              content: '',
-              fromSearch: true,
-              searchTraces: [],
-            },
-          ]}
-          isGenerating={true}
-          onClose={vi.fn()}
-          searchStage={{ kind: 'searching' }}
-        />,
-      );
-      expect(screen.getByTestId('search-trace-block')).toBeInTheDocument();
-      expect(screen.getByTestId('search-trace-loading')).toBeInTheDocument();
-    });
-
-    it('threads searchTraces from message to SearchTraceBlock', () => {
-      render(
-        <ConversationView
-          messages={[
-            { id: 'u', role: 'user', content: 'q' },
-            {
-              id: 'a',
-              role: 'assistant',
-              content: '',
-              fromSearch: true,
-              searchTraces: [
-                {
-                  id: 'round-1-read',
-                  kind: 'read' as const,
-                  status: 'running' as const,
-                  round: 1,
-                  title: 'Reading the shortlisted pages',
-                  summary: 'Opened 1 of 3 pages so far.',
-                  domains: ['example.com'],
-                  counts: { processed: 1, total: 3 },
-                },
-              ],
-            },
-          ]}
-          isGenerating={true}
-          onClose={vi.fn()}
-        />,
-      );
-
-      expect(screen.getByTestId('search-trace-block')).toBeInTheDocument();
-      expect(screen.getByTestId('loading-label')).toHaveTextContent(
-        'Reading the shortlisted pages',
-      );
-
-      fireEvent.click(
-        screen.getByRole('button', { name: /toggle search trace/i }),
-      );
-
-      expect(
-        screen.getByText('Opened 1 of 3 pages so far.'),
-      ).toBeInTheDocument();
     });
 
     it('hides external LoadingStage for search turns (bubble progress chrome takes over)', () => {

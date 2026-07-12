@@ -57,27 +57,27 @@ export const COMMANDS: readonly Command[] = [
   {
     trigger: '/search',
     label: '/search',
-    description: 'Force web search (built-in engines, cited answer)',
+    description: 'Force a live web look-up with citations',
     docs: {
       summary:
-        'Forces a live web search on the built-in engine and answers with citations.',
+        'Forces a live web look-up and answers with citations (zero-setup).',
       usage: '/search <question>',
       examples: [
         '`/search who owns Figma now?`: searches live sources for a current answer',
         '`/search latest React 19 release notes`: retrieves recent release information from the web',
       ],
       behavior:
-        "Forces Thuki's built-in zero-setup web search (engines-only, skips cache and verticals) even when auto-search would skip. Answers are grounded in retrieved sources with inline citations and a Sources footer. Plain messages still use automatic search when the model decides the web is needed.",
+        'Forces engines-only web search even when Auto search is off or would skip. Answers are grounded in retrieved sources with inline citations and a Sources footer. With Auto search on (Settings → Behavior, default), plain messages may also search when live facts are needed.',
       limit:
-        'Requires the built-in engine (not Ollama-only). Use when auto-search missed something or you want a forced look-up.',
+        'Use when you want a forced look-up, Auto search is off, or a plain turn skipped the web.',
     },
     promptHelp: {
       summary:
-        'force a built-in web search for current or cutoff-sensitive questions.',
+        'force a live web look-up for current or cutoff-sensitive questions.',
       whenToSuggest:
-        'Mention this when the user asks for current web information, live prices, recent releases, current ownership, or facts likely newer than the model cutoff, or when auto-search may have skipped a needed look-up.',
+        'Mention this when the user asks for current web information, live prices, recent releases, current ownership, or facts likely newer than the model cutoff, or when they want a forced look-up instead of auto search.',
       limit:
-        'Do not claim to have searched the web without search. `/search` needs the built-in engine.',
+        'Do not claim to have searched the web without actually searching. Prefer `/search` when the user needs a forced live look-up.',
     },
   },
   {

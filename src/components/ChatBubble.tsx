@@ -15,13 +15,10 @@ import type { EngineErrorKind } from '../hooks/useModel';
 import type {
   SearchResultPreview,
   SearchStage,
-  SearchTraceStep,
   SearchWarning,
 } from '../types/search';
 import { SEARCH_WARNING_SEVERITY } from '../config/searchWarnings';
-import { SearchTraceBlock } from './SearchTraceBlock';
 import { SearchProgressBlock } from './SearchProgressBlock';
-import { SandboxSetupCard } from './SandboxSetupCard';
 import { cleanForRender } from '../utils/sanitizeAssistantContent';
 
 /**
@@ -216,23 +213,16 @@ interface ChatBubbleProps {
   /** When set, renders a Replace button in the action bar that writes this
    * message's content back into the source app (for `/rewrite` & `/refine`). */
   onReplace?: (text: string) => Promise<boolean>;
-  /** Source URLs forwarded from the SearXNG results. Rendered as a clickable
-   * footer below the answer; clicking opens the URL in the default browser. */
+  /** Source URLs for a web-search answer. Click opens the URL in the browser. */
   searchSources?: SearchResultPreview[];
-  /** Warnings emitted by the `/search` pipeline for this turn. Renders a
-   * `SearchWarningIcon` beside the Sources collapsible when non-empty. */
+  /** Optional warnings for a search turn. Renders a warning icon by Sources. */
   searchWarnings?: SearchWarning[];
-  /** When true, renders a `SandboxSetupCard` instead of markdown or error bubble. */
-  sandboxUnavailable?: boolean;
-  /** User-facing search timeline data for `/search` turns. */
-  searchTraces?: SearchTraceStep[];
   /**
-   * Coarse built-in auto-search phase (`SearchStatus`). Used by
-   * {@link SearchProgressBlock} when there is no agentic trace timeline.
+   * Coarse web-search phase (`SearchStatus`). Drives
+   * {@link SearchProgressBlock} while the turn is searching.
    */
   searchStage?: SearchStage;
-  /** Whether the search pipeline is currently running. When true, renders a
-   * `SearchTraceBlock` in loading state even before any traces arrive. */
+  /** True while web search is in flight for this assistant message. */
   isSearching?: boolean;
   /** When set on an assistant message, renders a chip-style attribution badge beside the CopyButton so the user sees which model produced this response. */
   modelName?: string;
@@ -302,8 +292,6 @@ export function ChatBubble({
   isThinking,
   searchSources,
   searchWarnings,
-  sandboxUnavailable = false,
-  searchTraces,
   searchStage = null,
   isSearching = false,
   modelName,
@@ -498,16 +486,7 @@ export function ChatBubble({
           onClick={onAnswerClick}
         >
           <div className="text-sm leading-relaxed select-text py-1">
-            {/* Agentic `/search` stamps `searchTraces` (possibly empty) so the
-                step timeline owns that path. Built-in auto-search leaves the
-                field unset and uses Variant B progressive chrome instead. */}
-            {searchTraces !== undefined ? (
-              <SearchTraceBlock
-                traces={searchTraces}
-                isSearching={isSearching}
-                sources={searchSources}
-              />
-            ) : isSearching ? (
+            {isSearching ? (
               <SearchProgressBlock
                 stage={searchStage}
                 sources={searchSources}
@@ -525,9 +504,7 @@ export function ChatBubble({
                 isThinking={isThinking ?? false}
               />
             )}
-            {sandboxUnavailable ? (
-              <SandboxSetupCard />
-            ) : errorKind ? (
+            {errorKind ? (
               <ErrorCard
                 kind={errorKind}
                 message={content}
@@ -543,7 +520,7 @@ export function ChatBubble({
               />
             )}
           </div>
-          {!errorKind && !sandboxUnavailable && !isStreaming && (
+          {!errorKind && !isStreaming && (
             <AnimatePresence initial={false}>
               {sourcesOpen && searchSources && searchSources.length > 0 && (
                 <motion.div
@@ -600,7 +577,7 @@ export function ChatBubble({
               )}
             </AnimatePresence>
           )}
-          {!errorKind && !sandboxUnavailable && !isStreaming && (
+          {!errorKind && !isStreaming && (
             <div className="h-6 flex items-center gap-3">
               {/* shrink-0 wrapper prevents CopyButton's internal w-full from
                   pushing the sources trigger to the opposite end. */}
@@ -620,9 +597,7 @@ export function ChatBubble({
                   <span aria-hidden className="inline-flex items-center">
                     {searchSources.slice(0, 3).map((src, i) => {
                       const domain = domainOf(src.url);
-                      // SearXNG filters out empty-URL results before they reach
-                      // the frontend, so `domain[0]` is always defined here -
-                      // the `?` fallback is a belt-and-braces defensive default.
+                      // Empty host is defensive only; live sources always carry a URL.
                       /* v8 ignore start */
                       const letter = (domain[0] ?? '?').toUpperCase();
                       /* v8 ignore stop */

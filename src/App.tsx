@@ -637,9 +637,9 @@ function App() {
    * Sticky rewrite mode: the trigger of the most recent replaceable command
    * (`/rewrite` or `/refine`) in this conversation, or `null`. Plain follow-up
    * turns inherit it so refinements ("make it longer") keep the Replace button;
-   * any other command exits the mode. Mirrors `searchActive`'s lifecycle. A ref,
-   * not state, because nothing re-renders on change — each message carries its
-   * own `replaceCommand`, fixed at creation.
+   * any other command exits the mode. A ref, not state, because nothing
+   * re-renders on change: each message carries its own `replaceCommand`, fixed
+   * at creation.
    */
   const stickyReplaceCommandRef = useRef<string | null>(null);
 
@@ -701,15 +701,6 @@ function App() {
    */
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
-
-  /**
-   * Sticky flag: once the user invokes `/search`, subsequent submits in the
-   * same conversation route through the search pipeline automatically until
-   * the pipeline delivers a final answer (or the conversation is reset/loaded
-   * /closed). The backend LLM classifies each turn and decides whether to
-   * clarify, answer from context, or perform a fresh web search.
-   */
-  const [searchActive, setSearchActive] = useState(false);
 
   const inputRef = useRef<HTMLDivElement>(null);
 
@@ -1251,7 +1242,6 @@ function App() {
       setIsSubmitPending(false);
       setPendingUserMessage(null);
       setCaptureError(null);
-      setSearchActive(false);
       stickyReplaceCommandRef.current = null;
 
       void refreshModels();
@@ -1272,7 +1262,6 @@ function App() {
     setGrowsUpward(false);
     screenCapturePendingRef.current = false;
     screenCaptureInputSnapshotRef.current = null;
-    setSearchActive(false);
     stickyReplaceCommandRef.current = null;
     setSelectedContext(null);
     setPreviewImageUrl(null);
@@ -1925,7 +1914,6 @@ function App() {
       try {
         const loaded = await loadConversation(id);
         loadMessages(loaded);
-        setSearchActive(false);
         stickyReplaceCommandRef.current = null;
       } catch {
         // Load failed - current session is preserved intact.
@@ -1956,7 +1944,6 @@ function App() {
       try {
         const loaded = await loadConversation(id);
         loadMessages(loaded);
-        setSearchActive(false);
         stickyReplaceCommandRef.current = null;
       } catch {
         // Load failed - save already committed; dismiss panel, keep current view.
@@ -2004,7 +1991,6 @@ function App() {
     screenCaptureInputSnapshotRef.current = null;
     setIsSubmitPending(false);
     setPendingUserMessage(null);
-    setSearchActive(false);
     stickyReplaceCommandRef.current = null;
   }, [reset, resetHistory]);
 
@@ -3071,7 +3057,6 @@ function App() {
       const searchDisplay = trimmedQuery;
       setQuery('');
       setSelectedContext(null);
-      setSearchActive(false);
       void askSearch(searchQuery, searchDisplay, searchContext);
       return;
     }
@@ -3224,7 +3209,6 @@ function App() {
     setCaptureError,
     ask,
     askSearch,
-    searchActive,
     quote.maxContextLength,
     hasBlockingConflict,
     isBuiltinDownloadActive,
@@ -3348,9 +3332,8 @@ function App() {
       return;
     }
     void cancel();
-    setSearchActive(false);
     requestAnimationFrame(() => inputRef.current?.focus());
-  }, [isSubmitPending, cancel, setSearchActive, setSelectedContext]);
+  }, [isSubmitPending, cancel, setSelectedContext]);
 
   /**
    * Turn to replay once the model picker's next selection succeeds (issue

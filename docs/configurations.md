@@ -254,7 +254,7 @@ Controls rewrite/replace dismiss behavior and whether the built-in engine may op
 | :------------- | :------ | :------- | :-------------- | :----- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `auto_replace` | `false` | Yes      | —               | —      | When on, a `/rewrite` or `/refine` result is written straight back into the source app, replacing your highlighted text, the moment the rewrite is ready, with no extra click. When off, the rewrite appears in Thuki and you press the Replace button to send it back. The Replace button is available either way. |
 | `auto_close`   | `false` | Yes      | —               | —      | When on, the Thuki overlay closes itself right after a `/rewrite` or `/refine` result is replaced back into the source app, whether the replace happened automatically (`auto_replace`) or from a manual Replace click. Only closes on a successful replace. Independent of `auto_replace`. Turn on for a one-shot rewrite-and-dismiss flow; leave off to keep Thuki open and replace repeatedly. |
-| `auto_search`  | `true`  | Yes      | —               | —      | On (default): search the web when a plain message needs live facts. Off: stay local unless you type `/search`. Built-in engine only. Toggle from Settings › Behavior. |
+| `auto_search`  | `true`  | Yes      | —               | —      | On (default): search the web when a plain message needs live facts. Off: stay local unless you type `/search`. Toggle from Settings › Behavior. |
 
 ### `[search]`
 

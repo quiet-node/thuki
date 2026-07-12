@@ -8368,7 +8368,7 @@ describe('App', () => {
         firstChannel!.onmessage({ type: 'Token', data: 'Which person?' });
         firstChannel!.onmessage({ type: 'Done' });
       });
-      // Flush askSearch promise so searchActive resets (always final: true).
+      // Flush askSearch promise so the force-search turn settles.
       await act(async () => {
         await Promise.resolve();
       });

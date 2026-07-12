@@ -1,11 +1,11 @@
 /**
- * User-facing copy and severity mapping for the agentic search pipeline's
- * warnings. Kept in a const map rather than inline so the wording can be
- * tuned without editing component code.
+ * User-facing copy and severity mapping for search-turn warnings (including
+ * values that may appear on older saved conversations). Kept in a const map
+ * so wording can be tuned without editing component code.
  *
  * Severity drives the warning icon's appearance:
- * - "warn"  -> amber triangle, the pipeline still produced an answer.
- * - "error" -> red circle, the pipeline failed or the answer is unreliable.
+ * - "warn"  -> amber triangle, the turn still produced an answer.
+ * - "error" -> red circle, the turn failed or the answer is unreliable.
  */
 import type { SearchWarning } from '../types/search';
 

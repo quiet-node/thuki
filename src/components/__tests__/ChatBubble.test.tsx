@@ -2,8 +2,6 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ChatBubble } from '../ChatBubble';
 import { invoke } from '../../testUtils/mocks/tauri';
-import type { SearchTraceStep } from '../../types/search';
-
 beforeEach(() => {
   invoke.mockClear();
 });
@@ -1309,95 +1307,15 @@ describe('ChatBubble', () => {
     });
   });
 
-  describe('sandboxUnavailable', () => {
-    it('renders SandboxSetupCard when sandboxUnavailable is true', () => {
-      render(
-        <ChatBubble role="assistant" content="" index={0} sandboxUnavailable />,
-      );
-      expect(screen.getByTestId('sandbox-setup-card')).toBeInTheDocument();
-    });
-
-    it('does not render MarkdownRenderer when sandboxUnavailable is true', () => {
-      const { container } = render(
-        <ChatBubble
-          role="assistant"
-          content="some content"
-          index={0}
-          sandboxUnavailable
-        />,
-      );
-      // MarkdownRenderer wraps output in a streamdown element; absence confirms it was not rendered.
-      expect(container.querySelector('[data-streamdown]')).toBeNull();
-    });
-
-    it('does not render ErrorCard when sandboxUnavailable is true', () => {
-      const { container } = render(
-        <ChatBubble
-          role="assistant"
-          content="error text"
-          index={0}
-          sandboxUnavailable
-          errorKind="Other"
-        />,
-      );
-      expect(container.querySelector('[data-error-bar]')).toBeNull();
-      expect(screen.getByTestId('sandbox-setup-card')).toBeInTheDocument();
-    });
-
-    it('hides the action bar (copy button / sources) when sandboxUnavailable', () => {
-      render(
-        <ChatBubble role="assistant" content="" index={0} sandboxUnavailable />,
-      );
-      expect(screen.queryByRole('button', { name: 'Copy message' })).toBeNull();
-    });
-  });
-
-  describe('search trace', () => {
-    const trace: SearchTraceStep = {
-      id: 'round-1-search',
-      kind: 'search',
-      status: 'completed',
-      round: 1,
-      title: 'Searching the web',
-      summary: 'Found 3 results across 2 sites.',
-      queries: ['test query'],
-      domains: ['example.com'],
-    };
-
-    it('does not render SearchTraceBlock when no searchTraces and not searching', () => {
+  describe('search progress', () => {
+    it('does not render SearchProgressBlock when not searching', () => {
       render(<ChatBubble role="assistant" content="answer" index={0} />);
       expect(
-        screen.queryByTestId('search-trace-block'),
+        screen.queryByTestId('search-progress-block'),
       ).not.toBeInTheDocument();
     });
 
-    it('renders SearchTraceBlock when searchTraces has items', () => {
-      render(
-        <ChatBubble
-          role="assistant"
-          content="answer"
-          index={0}
-          searchTraces={[trace]}
-        />,
-      );
-      expect(screen.getByTestId('search-trace-block')).toBeInTheDocument();
-    });
-
-    it('renders SearchTraceBlock in loading state when isSearching with empty agentic traces', () => {
-      render(
-        <ChatBubble
-          role="assistant"
-          content=""
-          index={0}
-          isSearching
-          searchTraces={[]}
-        />,
-      );
-      expect(screen.getByTestId('search-trace-block')).toBeInTheDocument();
-      expect(screen.getByTestId('search-trace-loading')).toBeInTheDocument();
-    });
-
-    it('renders SearchProgressBlock for built-in auto-search when isSearching without traces', () => {
+    it('renders SearchProgressBlock when isSearching', () => {
       render(
         <ChatBubble
           role="assistant"
@@ -1408,26 +1326,24 @@ describe('ChatBubble', () => {
         />,
       );
       expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
-      expect(
-        screen.queryByTestId('search-trace-block'),
-      ).not.toBeInTheDocument();
     });
 
-    it('renders SearchTraceBlock above thinking block', () => {
+    it('renders SearchProgressBlock above the thinking block while searching', () => {
       render(
         <ChatBubble
           role="assistant"
-          content="answer"
+          content=""
           index={0}
-          searchTraces={[trace]}
+          isSearching
+          searchStage={{ kind: 'searching' }}
           thinkingContent="thoughts"
           isThinking={false}
         />,
       );
-      const traceBlock = screen.getByTestId('search-trace-block');
+      const progress = screen.getByTestId('search-progress-block');
       const reasoningBlock = screen.getByTestId('reasoning-block');
       expect(
-        traceBlock.compareDocumentPosition(reasoningBlock) &
+        progress.compareDocumentPosition(reasoningBlock) &
           Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
     });
@@ -1494,19 +1410,6 @@ describe('ChatBubble', () => {
           index={0}
           modelName="gemma4:e2b"
           errorKind="Other"
-        />,
-      );
-      expect(screen.queryByTestId('model-attribution')).toBeNull();
-    });
-
-    it('does not render the attribution chip when sandbox is unavailable', () => {
-      render(
-        <ChatBubble
-          role="assistant"
-          content=""
-          index={0}
-          modelName="gemma4:e2b"
-          sandboxUnavailable
         />,
       );
       expect(screen.queryByTestId('model-attribution')).toBeNull();

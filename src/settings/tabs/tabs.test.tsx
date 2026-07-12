@@ -636,7 +636,7 @@ describe('BehaviorTab', () => {
     expect(
       document.body.querySelector('[style*="translateX(-50%)"]'),
     ).not.toBeNull();
-    expect(screen.getByText(/Built-in engine only/i)).toBeInTheDocument();
+    expect(screen.getByText(/live facts/i)).toBeInTheDocument();
   });
 
   it('opens Text Replacement help tooltips upward so they are not clipped at the bottom edge', () => {

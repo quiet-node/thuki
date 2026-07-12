@@ -1,7 +1,6 @@
 /**
- * TypeScript mirror of the Rust `SearchEvent` enum emitted by the
- * `search_pipeline` Tauri command. The `type` tag matches the
- * `#[serde(tag = "type")]` attribute on the Rust side (CamelCase variants).
+ * Shared web-search UI types: live progress stages, source previews, and
+ * shapes that may still appear on older saved conversations.
  */
 export interface SearchResultPreview {
   title: string;
@@ -9,9 +8,8 @@ export interface SearchResultPreview {
 }
 
 /**
- * User-facing trace step streamed from the backend while a `/search` turn is
- * running. The backend updates a step by re-emitting the same `id` with fresh
- * status, counts, or summary text.
+ * Step timeline payload that may exist on older saved search conversations.
+ * Live turns use {@link SearchStage} / SearchProgressBlock instead.
  */
 export interface SearchTraceStep {
   /** Stable identifier used to update the same timeline step over time. */
@@ -120,8 +118,7 @@ export type SearchEvent =
   | { type: 'Done'; metadata?: SearchMetadata }
   | { type: 'Cancelled' }
   | { type: 'Error'; message: string }
-  /** Pre-flight sandbox probe failed: the SearXNG or reader container is not
-   * running. The frontend renders a static setup-guidance card. */
+  /** @deprecated Legacy sandbox event; no longer rendered in the UI. */
   | { type: 'SandboxUnavailable' }
   /** No active model is selected. Mirror of the chat path's
    * `Error { kind: 'NoModelSelected' }`; emitted instead of a generic Error so
@@ -149,21 +146,21 @@ export type SearchEvent =
  */
 export interface LiveIterationState {
   /**
-   * Current phase of the in-progress iteration.
-   * - `analyzing`: router LLM is running, no queries yet
-   * - `searching`: queries dispatched to SearXNG, waiting for results
-   * - `reading`: reader is fetching pages; fetchingUrls accumulates as each completes
+   * Current phase of an in-progress iteration (legacy history shapes).
+   * - `analyzing`: decision / rewrite in flight
+   * - `searching`: web queries in flight
+   * - `reading`: pages being fetched
    */
   kind: 'analyzing' | 'searching' | 'reading';
-  /** Queries submitted to SearXNG for this iteration. */
+  /** Queries used for this iteration. */
   queries: string[];
-  /** URLs that have completed reader fetching so far this iteration. */
+  /** URLs finished fetching so far this iteration. */
   fetchingUrls: string[];
 }
 
 /**
- * Transient UI stage indicator shown while the search pipeline is running.
- * `null` means the pipeline is idle or has finished streaming tokens.
+ * Transient UI stage for live web search progress.
+ * `null` means idle or answer tokens have started.
  *
  * `refining_search` carries the 1-indexed gap-round number and total gap
  * rounds so the UI can render text like "Refining search (1/2)". Initial

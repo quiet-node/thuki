@@ -36,7 +36,7 @@ export interface Message {
   errorKind?: EngineErrorKind;
   /** Accumulated thinking content from the model, if thinking mode was used. */
   thinkingContent?: string;
-  /** Marks an assistant message produced through the `/search` pipeline. */
+  /** Marks an assistant message produced via web search (auto or `/search`). */
   fromSearch?: boolean;
   /** Marks an assistant message produced through a `/think` turn. */
   fromThink?: boolean;
@@ -44,15 +44,16 @@ export interface Message {
    *  produced this assistant message. Present only on those results; drives the
    *  in-chat Replace button and the auto-replace path. */
   replaceCommand?: string;
-  /** Source links forwarded by the search pipeline. */
+  /** Source links for a web-search answer. */
   searchSources?: SearchResultPreview[];
-  /** Warnings emitted by the `/search` pipeline during this turn. */
+  /** Optional warnings attached to a search turn (e.g. loaded history). */
   searchWarnings?: SearchWarning[];
-  /** When true, renders sandbox setup guidance instead of normal content. */
-  sandboxUnavailable?: boolean;
-  /** Ordered, user-facing timeline steps for a `/search` turn. */
+  /**
+   * Legacy step timeline from older saved conversations. New turns leave this
+   * unset; live UI uses {@link SearchStage} via SearchProgressBlock.
+   */
   searchTraces?: SearchTraceStep[];
-  /** Structured retrieval metadata emitted by the backend search pipeline. */
+  /** Structured retrieval metadata when present on a saved search turn. */
   searchMetadata?: SearchMetadata;
   /**
    * Immutable snapshot of the request that produced this message, captured
@@ -257,7 +258,7 @@ export function useModel(
 ) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
-  /** Transient stage indicator for the active `/search` pipeline, if any. */
+  /** Transient stage indicator while web search is in flight, if any. */
   const [searchStage, setSearchStage] = useState<SearchStage>(null);
   const activeGenerationRef = useRef<ActiveGeneration | null>(null);
   const nextGenerationIdRef = useRef(0);
@@ -450,7 +451,6 @@ export function useModel(
         content: '',
         fromThink: think ? true : undefined,
         // Force-search turns own the Variant B progress chrome immediately
-        // (no searchTraces: that discriminator is for the unplugged agentic path).
         fromSearch: forceSearch ? true : undefined,
         replaceCommand,
         modelName: resolvedModel ?? undefined,
@@ -702,12 +702,9 @@ export function useModel(
 
   /**
    * Core `/search` force-search driver shared by the public {@link askSearch}
-   * wrapper and the retry path. Forces built-in web search via `ask_model`
-   * (`forceSearch`). Does not call the legacy `search_pipeline` command; that
-   * path stays registered in the binary but unplugged from the UI for J9 removal.
-   *
-   * Always one-shot (`final: true`): follow-ups use auto-search. Sticky mode
-   * still sets `searchActive` in App but each force turn completes finally.
+   * wrapper and the retry path. Forces web search via `ask_model`
+   * (`forceSearch`). Always one-shot (`final: true`); follow-ups use normal
+   * auto-search rules.
    *
    * @param query Text sent to the backend without the `/search` trigger.
    * @param displayContent Text shown in the user bubble. Defaults to `query`.

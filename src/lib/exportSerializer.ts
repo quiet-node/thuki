@@ -240,7 +240,7 @@ function renderImagesAsMarkers(message: Message): string | null {
 function renderSources(message: Message): string | null {
   const sources = message.searchSources;
   if (!sources || sources.length === 0) return null;
-  const lines = ['**Sources** (`/search`):'];
+  const lines = ['**Sources**:'];
   sources.forEach((source, index) => {
     const title = source.title || source.url;
     lines.push(formatMarkdownSourceLine(index + 1, title, source.url));

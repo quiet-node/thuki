@@ -181,11 +181,10 @@ export function ConversationView({
 
   // True while the trailing assistant message is waiting on its first token
   // (or, for a /think turn, its first thinking token) from a non-search chat
-  // turn. Search turns render their own loading state inside ChatBubble's
-  // SearchTraceBlock and never reach this. Drives the cold-start label timer
-  // for BOTH surfaces: the bare-dots row below (plain turns) and, for a
-  // /think turn, the pending state inside ReasoningBlock (see `pendingLabel`
-  // below) - one shared source of truth for the cue instead of two.
+  // turn. Web-search turns own loading inside ChatBubble's SearchProgressBlock
+  // and never reach this. Drives the cold-start label timer for both surfaces:
+  // the bare-dots row below (plain turns) and, for a /think turn, the pending
+  // state inside ReasoningBlock (see `pendingLabel` below).
   const lastMessage = messages[messages.length - 1];
   const isAwaitingFirstToken = Boolean(
     isGenerating &&
@@ -322,16 +321,13 @@ export function ConversationView({
             !msg.content &&
             !msg.thinkingContent;
 
-          // Hide the empty assistant placeholder; the TypingIndicator
-          // already covers this visual state. When thinking content is
-          // present, sandbox unavailability is flagged, or this is a
-          // search or think turn, render the bubble so the relevant
-          // card is visible immediately.
+          // Hide the empty assistant placeholder; the TypingIndicator already
+          // covers this visual state. Search and /think turns still render the
+          // bubble so progress / reasoning chrome is visible.
           if (
             isLastAssistant &&
             !msg.content &&
             !msg.thinkingContent &&
-            !msg.sandboxUnavailable &&
             !msg.fromSearch &&
             !msg.fromThink
           )
@@ -376,8 +372,6 @@ export function ConversationView({
               }
               searchSources={msg.searchSources}
               searchWarnings={msg.searchWarnings}
-              sandboxUnavailable={msg.sandboxUnavailable}
-              searchTraces={msg.searchTraces}
               searchStage={
                 isGenerating && i === messages.length - 1 ? searchStage : null
               }

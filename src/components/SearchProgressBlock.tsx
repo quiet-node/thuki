@@ -5,11 +5,8 @@ import type { SearchResultPreview, SearchStage } from '../types/search';
 import { LoadingStage } from './LoadingStage';
 
 /**
- * Props for the progressive-disclosure search progress chrome used by the
- * built-in auto-search path (`ask_model` + `SearchStatus` / `SearchSources`).
- *
- * Distinct from {@link SearchTraceBlock}, which renders the legacy agentic
- * `/search` step timeline.
+ * Props for progressive web-search progress chrome
+ * (`ask_model` + `SearchStatus` / `SearchSources`).
  */
 export interface SearchProgressBlockProps {
   /**
