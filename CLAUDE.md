@@ -25,9 +25,6 @@ bun run typecheck        # tsc --noEmit
 
 bun run engine:ensure    # Build + verify + sign the pinned llama-server sidecar from source (auto-runs before dev/build)
 
-bun run search-box:start # Docker Compose up for the /search services (SearXNG + reader)
-bun run search-box:stop  # docker compose down for the /search services
-
 bun run test             # Vitest run (frontend tests only)
 bun run test:watch       # Vitest watch mode
 bun run test:coverage    # Vitest with coverage report
@@ -85,10 +82,6 @@ User-facing reference for all commands lives in `docs/commands.md`. **Any new sl
 - **`screenshot.rs`** — `capture_full_screen_command` Tauri command: uses CoreGraphics FFI (`CGWindowListCreateImage`) to capture all displays excluding Thuki's own windows, writes a JPEG to a temp dir, and returns the path
 - **`activator.rs`** — Core Graphics event tap watching for double-tap Control key (400 ms window, 600 ms cooldown; timing is a compiled constant, not yet exposed through `AppConfig` because the event-tap callback runs in a thread that cannot trivially read Tauri managed state). The tap MUST use `CGEventTapLocation::HID` and `CGEventTapOptions::Default` — see the critical constraint note in "Key Design Constraints" below.
 
-### Sandbox (`sandbox/`)
-
-`sandbox/search-box/` runs the SearXNG + reader services behind `/search` as a Docker Compose stack.
-
 ### IPC Pattern
 
 Frontend calls Tauri commands via `@tauri-apps/api/core`. Streaming uses Tauri's **Channel API** — the Rust side sends typed `StreamChunk` enum variants, the hook accumulates tokens into React state.
@@ -111,14 +104,14 @@ Every default value and every numeric bound lives in **`config/defaults.rs`** as
 ### Layered structure
 
 - **`config/defaults.rs`** — every constant Thuki uses. Tunable defaults, hard bounds, and baked-in pipeline constants all live here.
-- **`config/schema.rs`** — typed TOML shape (`AppConfig` + per-section structs like `SearchSection`). Each section has a manual `Default` impl that pulls from `defaults.rs`. Use `#[serde(default)]` on every section so partial files load cleanly.
-- **`config/loader.rs`** — read → parse → resolve. `resolve` empties strings to defaults, clamps numerics via `clamp_u32`/`clamp_u64`/`clamp_f64`, composes the prompt appendix, and enforces cross-field invariants (e.g. `reader_batch_timeout_s > reader_per_url_timeout_s`).
+- **`config/schema.rs`** — typed TOML shape (`AppConfig` + per-section structs like `WindowSection`). Each section has a manual `Default` impl that pulls from `defaults.rs`. Use `#[serde(default)]` on every section so partial files load cleanly.
+- **`config/loader.rs`** — read → parse → resolve. `resolve` empties strings to defaults, clamps numerics via `clamp_u32`/`clamp_u64`/`clamp_f64`, composes the prompt appendix, and applies any cross-field corrections a section needs. Unknown keys and whole unknown sections are silently ignored (no `deny_unknown_fields`), so a config written by an older build still loads clean.
 - **`config/writer.rs`** — atomic write used to seed the file on first run.
 - **`AppConfig` is installed as Tauri managed state** once at startup in `lib.rs`. Subsystems that need config read from `State<AppConfig>` and nowhere else.
 
 ### Subsystem projections
 
-Some subsystems do not want a transitive dependency on the whole TOML schema. They take a flat projection instead. The pattern: a `Subsystem RuntimeConfig` struct with a `from_app_config(&AppConfig) -> Self` constructor and a `Default` impl that reads `defaults::*`. See `src-tauri/src/search/config.rs` (`SearchRuntimeConfig`) for the canonical example. This isolates schema changes to one adapter file and keeps the subsystem's tests free of `AppConfig` setup.
+Some subsystems do not want a transitive dependency on the whole TOML schema. They take a flat projection instead. The pattern: a `Subsystem RuntimeConfig` struct with a `from_app_config(&AppConfig) -> Self` constructor and a `Default` impl that reads `defaults::*`. This isolates schema changes to one adapter file and keeps the subsystem's tests free of `AppConfig` setup.
 
 ### Adding a new user-tunable field (checklist)
 
@@ -127,7 +120,7 @@ Some subsystems do not want a transitive dependency on the whole TOML schema. Th
 3. Add a `clamp_*` (or string-empty fallback) call in `loader::resolve`.
 4. If a subsystem uses a `RuntimeConfig` projection, add the field there and to `from_app_config` + `Default` + the field-by-field assertion test.
 5. Cover it in `config/tests.rs`: schema default matches `DEFAULT_*`, out-of-bounds → default, in-bounds preserved, TOML round-trip carries the field.
-6. Update `docs/configurations.md`: add a row to the matching domain table, update the example TOML at the top of the file. For numeric fields, include a "Raise for X; lower for Y" trade-off in the description (see `[search]` rows for the tone).
+6. Update `docs/configurations.md`: add a row to the matching domain table, update the example TOML at the top of the file. For numeric fields, include a "Raise for X; lower for Y" trade-off in the description (see `[quote]` rows for the tone).
 
 ### Adding a new baked-in constant
 

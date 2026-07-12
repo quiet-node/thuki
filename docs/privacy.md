@@ -15,7 +15,7 @@ Your conversation history lives in a local SQLite database on your Mac and nowhe
 Thuki makes no background calls. The only outbound requests are ones you initiate:
 
 - **Downloading a model.** When you install a model from Discover, Thuki fetches it from the Hugging Face Hub. After the download, inference is fully offline.
-- **`/search`.** The optional agentic-search pipeline fetches web pages to answer a `/search` query. It runs against local services you start yourself; if you never use `/search`, nothing is fetched. See [Agentic search](./agentic-search.md).
+- **Web search.** When a question needs current information, Thuki's built-in search fetches web pages to answer it; typing `/search` forces this for a single message. Queries and page fetches go straight from your machine to the search engines and the pages themselves; if a turn does not search, nothing is fetched.
 
 Everything else, including reading your selected text and capturing your screen, happens entirely on-device.
 

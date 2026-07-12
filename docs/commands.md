@@ -30,9 +30,9 @@ Forces a live web look-up and answers with citations (zero-setup).
 - `/search who owns Figma now?`: searches live sources for a current answer
 - `/search latest React 19 release notes`: retrieves recent release information from the web
 
-**Behavior:** Forces engines-only web search even when Auto search is off or would skip. Answers are grounded in retrieved sources with inline citations and a Sources footer. With Auto search on (Settings → Behavior, default), plain messages may also search when live facts are needed.
+**Behavior:** Forces engines-only web search even when Auto search is off or would skip. Re-fetches from the source rather than reusing SERP/page cache, so it is the way to say "look it up again" when a previous answer looked stale. Answers are grounded in retrieved sources with inline citations and a Sources footer. With Auto search on (Settings → Behavior, default), plain messages may also search when live facts are needed.
 
-**Limit:** Use when you want a forced look-up, Auto search is off, or a plain turn skipped the web.
+**Limit:** Use when you want a forced look-up, Auto search is off, a plain turn skipped the web, or you need a fresh re-check.
 
 ---
 
