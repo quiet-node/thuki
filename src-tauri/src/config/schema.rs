@@ -14,11 +14,11 @@
 use serde::{Deserialize, Serialize};
 
 use super::defaults::{
-    DEFAULT_ACTIVE_PROVIDER, DEFAULT_AUTO_CLOSE, DEFAULT_AUTO_REPLACE, DEFAULT_BUILTIN_LABEL,
-    DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
-    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX,
-    DEFAULT_OLLAMA_LABEL, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
-    DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
+    DEFAULT_ACTIVE_PROVIDER, DEFAULT_AUTO_CLOSE, DEFAULT_AUTO_REPLACE, DEFAULT_AUTO_SEARCH,
+    DEFAULT_BUILTIN_LABEL, DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S,
+    DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
+    DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_LABEL, DEFAULT_OLLAMA_URL,
+    DEFAULT_OVERLAY_WIDTH, DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
     DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
     DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
     DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
@@ -289,7 +289,7 @@ impl Default for QuoteSection {
     }
 }
 
-/// Selection-replacement behavior for the `/rewrite` and `/refine` commands.
+/// Selection-replacement and web-search mode behavior.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct BehaviorSection {
@@ -303,6 +303,9 @@ pub struct BehaviorSection {
     /// the replace was automatic (`auto_replace`) or a manual Replace click.
     /// Independent of `auto_replace`; only closes on a successful replace.
     pub auto_close: bool,
+    /// When `true` (default), built-in auto-search may open the web on plain
+    /// turns. When `false`, only `/search` forces a live web look-up.
+    pub auto_search: bool,
 }
 
 impl Default for BehaviorSection {
@@ -310,6 +313,7 @@ impl Default for BehaviorSection {
         Self {
             auto_replace: DEFAULT_AUTO_REPLACE,
             auto_close: DEFAULT_AUTO_CLOSE,
+            auto_search: DEFAULT_AUTO_SEARCH,
         }
     }
 }

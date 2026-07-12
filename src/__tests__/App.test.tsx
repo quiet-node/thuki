@@ -1995,7 +1995,7 @@ describe('App', () => {
       <ConfigProviderForTest
         value={{
           ...DEFAULT_CONFIG,
-          behavior: { autoReplace: true, autoClose: false },
+          behavior: { autoReplace: true, autoClose: false, autoSearch: true },
         }}
       >
         <App />
@@ -2048,7 +2048,7 @@ describe('App', () => {
       <ConfigProviderForTest
         value={{
           ...DEFAULT_CONFIG,
-          behavior: { autoReplace: true, autoClose: false },
+          behavior: { autoReplace: true, autoClose: false, autoSearch: true },
         }}
       >
         <App />
@@ -2097,7 +2097,7 @@ describe('App', () => {
       <ConfigProviderForTest
         value={{
           ...DEFAULT_CONFIG,
-          behavior: { autoReplace: true, autoClose: true },
+          behavior: { autoReplace: true, autoClose: true, autoSearch: true },
         }}
       >
         <App />
@@ -2147,7 +2147,7 @@ describe('App', () => {
       <ConfigProviderForTest
         value={{
           ...DEFAULT_CONFIG,
-          behavior: { autoReplace: true, autoClose: true },
+          behavior: { autoReplace: true, autoClose: true, autoSearch: true },
         }}
       >
         <App />
@@ -2195,7 +2195,7 @@ describe('App', () => {
       <ConfigProviderForTest
         value={{
           ...DEFAULT_CONFIG,
-          behavior: { autoReplace: false, autoClose: false },
+          behavior: { autoReplace: false, autoClose: false, autoSearch: true },
         }}
       >
         <App />
@@ -2263,7 +2263,7 @@ describe('App', () => {
       <ConfigProviderForTest
         value={{
           ...DEFAULT_CONFIG,
-          behavior: { autoReplace: false, autoClose: false },
+          behavior: { autoReplace: false, autoClose: false, autoSearch: true },
         }}
       >
         <App />

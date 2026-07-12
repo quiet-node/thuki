@@ -50,6 +50,8 @@ export interface RawAppConfig {
   behavior: {
     auto_replace: boolean;
     auto_close: boolean;
+    /** When true, built-in auto-search may open the web on plain turns. */
+    auto_search: boolean;
   };
   search: {
     searxng_url: string;
@@ -84,12 +86,7 @@ export interface CorruptMarker {
 }
 
 /** Identifier for the active Settings tab. */
-export type SettingsTabId =
-  | 'general'
-  | 'behavior'
-  | 'search'
-  | 'display'
-  | 'about';
+export type SettingsTabId = 'general' | 'behavior' | 'display' | 'about';
 
 /**
  * Returns a human-friendly description of a Tauri-side `ConfigError`. Used

@@ -58,6 +58,7 @@ const SAMPLE: RawAppConfig = {
   behavior: {
     auto_replace: false,
     auto_close: false,
+    auto_search: true,
   },
   search: {
     searxng_url: 'http://127.0.0.1:25017',
@@ -128,7 +129,9 @@ describe('SettingsWindow', () => {
       expect(screen.getByRole('tab', { name: /Models/ })).toBeInTheDocument(),
     );
     expect(screen.getByRole('tab', { name: /Behavior/ })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: /Web/ })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('tab', { name: /^Web$/ }),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Display/ })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /About/ })).toBeInTheDocument();
   });
@@ -283,7 +286,8 @@ describe('SettingsWindow', () => {
       configurable: true,
       value: 1500,
     });
-    fireEvent.click(screen.getByRole('tab', { name: /Web/ }));
+    // Display tab is long enough that a tall content wrapper enables scroll.
+    fireEvent.click(screen.getByRole('tab', { name: /Display/ }));
     await waitFor(() =>
       expect(container.querySelector('[role="tabpanel"]')!.className).toMatch(
         /bodyScrollable/,

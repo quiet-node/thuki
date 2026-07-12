@@ -94,6 +94,9 @@ auto_replace = false
 # Dismiss the Thuki overlay after a /rewrite or /refine result is replaced
 # back into the source app (manual Replace click or auto-replace).
 auto_close = false
+# When true (default), the built-in engine may search the web on plain turns.
+# When false, only /search forces a live look-up.
+auto_search = true
 
 [search]
 # URLs of the local sandbox services. Match the bindings in
@@ -245,12 +248,13 @@ Controls how text you select in another app (and bring to Thuki) appears as a qu
 
 ### `[behavior]`
 
-Controls what happens to a `/rewrite` or `/refine` result: whether Thuki writes it straight back into the app you were using, or waits for you to send it back yourself.
+Controls rewrite/replace dismiss behavior and whether the built-in engine may open the web on plain chat turns.
 
 | Constant       | Default | Tunable? | Why not tunable | Bounds | Description                                                                                                                                                                                                                                                                                                          |
 | :------------- | :------ | :------- | :-------------- | :----- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `auto_replace` | `false` | Yes      | —               | —      | When on, a `/rewrite` or `/refine` result is written straight back into the source app, replacing your highlighted text, the moment the rewrite is ready, with no extra click. When off, the rewrite appears in Thuki and you press the Replace button to send it back. The Replace button is available either way. |
 | `auto_close`   | `false` | Yes      | —               | —      | When on, the Thuki overlay closes itself right after a `/rewrite` or `/refine` result is replaced back into the source app, whether the replace happened automatically (`auto_replace`) or from a manual Replace click. Only closes on a successful replace. Independent of `auto_replace`. Turn on for a one-shot rewrite-and-dismiss flow; leave off to keep Thuki open and replace repeatedly. |
+| `auto_search`  | `true`  | Yes      | —               | —      | When on (default), Thuki may search the web on a plain message when the built-in engine decides live facts are needed. When off, plain turns stay local; type `/search` to force a live look-up. Only applies with the built-in engine. Toggle from Settings › Behavior or the ask-bar globe. |
 
 ### `[search]`
 

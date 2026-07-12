@@ -427,6 +427,13 @@ pub const DEFAULT_AUTO_REPLACE: bool = false;
 /// Toggleable from the Settings panel (Behavior tab).
 pub const DEFAULT_AUTO_CLOSE: bool = false;
 
+/// When `true` (default), the built-in engine may open the web on a plain turn
+/// when the classifier decides live facts are needed. When `false`, plain
+/// turns stay local-only and only an explicit `/search` (`force_search`) runs
+/// the web pipeline. Independent of auto-replace / auto-close. Toggleable from
+/// Settings › Behavior and the ask-bar globe control.
+pub const DEFAULT_AUTO_SEARCH: bool = true;
+
 // Ollama API baked-in limits: not exposed in config.toml because they bound
 // attacker-controlled data (response bodies from the local Ollama daemon) and
 // keep the UI responsive when the daemon is hung. Changing either timeout
@@ -589,6 +596,7 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     // [behavior]
     ("behavior", "auto_replace"),
     ("behavior", "auto_close"),
+    ("behavior", "auto_search"),
     // [search]
     ("search", "searxng_url"),
     ("search", "reader_url"),

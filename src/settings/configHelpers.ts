@@ -84,6 +84,8 @@ const HELPERS = {
       'When on, a /rewrite or /refine result is written straight back into your app, replacing your highlighted text, with no click. When off, click the Replace button to send it back. Off by default.',
     auto_close:
       'When on, Thuki closes itself after a /rewrite or /refine result is replaced into your app (via Auto-replace or the Replace button). Only if the replace succeeds. Off by default.',
+    auto_search:
+      'When on (default), Thuki may search the web on a plain message when the built-in engine decides live facts are needed. When off, plain turns stay local; type /search to force a live look-up. Only applies with the built-in engine.',
   },
   debug: {
     trace_enabled:

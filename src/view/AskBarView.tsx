@@ -7,6 +7,7 @@ import type { AskBarKeyHandlers } from './askbar/LexicalAskBarInput';
 import { useConfig } from '../contexts/ConfigContext';
 import { ImageThumbnails } from '../components/ImageThumbnails';
 import { CommandSuggestion } from '../components/CommandSuggestion';
+import { AutoSearchGlobeButton } from '../components/AutoSearchGlobeButton';
 import { ModelPicker } from '../components/ModelPicker';
 import { Tooltip } from '../components/Tooltip';
 import { CapabilityMismatchStrip } from '../components/CapabilityMismatchStrip';
@@ -633,6 +634,10 @@ export function AskBarView({
               </button>
             </Tooltip>
           )}
+
+          {/* Auto vs on-demand web search (design A2). Same config bit as
+              Settings › Behavior › Auto search. */}
+          <AutoSearchGlobeButton disabled={isBusy} />
 
           {/* Lexical-backed input. A single contentEditable means the caret is
               native and never drifts; command triggers highlight inline via a

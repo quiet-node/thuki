@@ -2162,16 +2162,15 @@ pub async fn ask_model(
                     let _activity = engine.activity_guard();
                     engine.touch();
 
-                    // Invisible auto-search (built-in engine only; skipped when
-                    // the turn attaches images). The prompt inputs mirror the
-                    // plain path exactly so the pre-pass and writer share the warm
-                    // KV prefix: the system prompt, the capability-filtered
-                    // history (`messages[1..len-1]`), and the quote-wrapped user
-                    // turn (`user_msg.content`). Do NOT let the source-augmented
-                    // writer messages reach history persistence below.
+                    // Built-in web search (skipped when the turn attaches images).
+                    // On-demand mode (`behavior.auto_search = false`) skips the
+                    // pipeline on plain turns; only `force_search` (`/search`)
+                    // still runs. Prompt inputs mirror the plain path so the
+                    // pre-pass and writer share the warm KV prefix. Do NOT let
+                    // source-augmented writer messages reach history below.
                     let search = if turn_has_images {
                         BuiltinSearchResult::Plain
-                    } else {
+                    } else if force_search || config.behavior.auto_search {
                         let history = &messages[1..messages.len().saturating_sub(1)];
                         run_builtin_search(
                             &engine,
@@ -2189,6 +2188,8 @@ pub async fn ask_model(
                             force_search,
                         )
                         .await
+                    } else {
+                        BuiltinSearchResult::Plain
                     };
 
                     match search {
