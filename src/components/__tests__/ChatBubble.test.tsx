@@ -1054,6 +1054,23 @@ describe('ChatBubble', () => {
       expect(anchors[0].textContent).toBe('[1]');
     });
 
+    it('wraps fullwidth 【N】 citations as ASCII [N] chips', () => {
+      const { container } = render(
+        <ChatBubble
+          role="assistant"
+          content="Rust 【1】 is fast and Tokio 【2】 is async."
+          index={0}
+          searchSources={SOURCES}
+        />,
+      );
+      const anchors = container.querySelectorAll('a.citation-link');
+      expect(anchors).toHaveLength(2);
+      expect(anchors[0].getAttribute('data-citation')).toBe('1');
+      expect(anchors[0].textContent).toBe('[1]');
+      expect(anchors[1].getAttribute('data-citation')).toBe('2');
+      expect(anchors[1].textContent).toBe('[2]');
+    });
+
     it('skips [N] markers that reference a source index past the end of the array', () => {
       const { container } = render(
         <ChatBubble

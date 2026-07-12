@@ -32,20 +32,42 @@ interface MarkdownRendererProps {
 const CITATION_MARKER_RE = /\[\s*\d+(?:\s*,\s*\d+)*\s*\]/g;
 
 /**
+ * CJK fullwidth lenticular brackets (`【` U+3010 / `】` U+3011) that some
+ * models emit instead of ASCII `[N]`. Same digit/comma rules as
+ * {@link CITATION_MARKER_RE}; normalized to ASCII before linkify so chips
+ * render as `[N]`.
+ */
+const FULLWIDTH_CITATION_MARKER_RE = /【\s*\d+(?:\s*,\s*\d+)*\s*】/g;
+
+/**
+ * Rewrites fullwidth `【N】` / `【1, 2】` markers to ASCII `[N]` / `[1, 2]`
+ * so a single linkify path handles both. Unrelated fullwidth brackets with
+ * non-numeric content are left unchanged.
+ */
+export function normalizeFullwidthCitationBrackets(content: string): string {
+  return content.replace(
+    FULLWIDTH_CITATION_MARKER_RE,
+    (marker) => `[${marker.slice(1, -1)}]`,
+  );
+}
+
+/**
  * Rewrites plain-text `[N]` markers into markdown links targeting the
  * matching source URL so the citation renders through the normal markdown
- * pipeline. A comma-grouped marker (`[1, 7]`) is split into one link per
- * index, each resolving against its own source. Any index with no matching
- * source is left as a literal `[N]` (unlinked), exactly as a lone unmatched
- * marker already was. Spaces and parentheses in the URL are percent-encoded
- * so they cannot terminate the `(destination)` and break the surrounding
- * markdown.
+ * pipeline. Fullwidth `【N】` markers are normalized to ASCII first so chips
+ * stay visually consistent (`[N]`). A comma-grouped marker (`[1, 7]`) is
+ * split into one link per index, each resolving against its own source. Any
+ * index with no matching source is left as a literal `[N]` (unlinked),
+ * exactly as a lone unmatched marker already was. Spaces and parentheses in
+ * the URL are percent-encoded so they cannot terminate the `(destination)`
+ * and break the surrounding markdown.
  */
 export function linkifyCitations(
   content: string,
   sources: SearchResultPreview[],
 ): string {
-  return content.replace(CITATION_MARKER_RE, (marker) => {
+  const normalized = normalizeFullwidthCitationBrackets(content);
+  return normalized.replace(CITATION_MARKER_RE, (marker) => {
     const digitsList = Array.from(marker.matchAll(/\d+/g), (m) => m[0]);
     return digitsList
       .map((digits) => {

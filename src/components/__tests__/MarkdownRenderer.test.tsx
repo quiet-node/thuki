@@ -11,6 +11,7 @@ import {
   MarkdownRenderer,
   childText,
   linkifyCitations,
+  normalizeFullwidthCitationBrackets,
 } from '../MarkdownRenderer';
 
 const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
@@ -458,6 +459,30 @@ describe('MarkdownRenderer', () => {
         'Claim [\\[1\\]](https://doc.rust-lang.org)[\\[2\\]](https://tokio.rs)[\\[3\\]](https://serde.rs) here.',
       );
     });
+
+    it('normalizes fullwidth 【N】 markers to ASCII chips', () => {
+      expect(normalizeFullwidthCitationBrackets('Fast 【1】 here.')).toBe(
+        'Fast [1] here.',
+      );
+      expect(linkifyCitations('Fast 【1】 here.', sources)).toBe(
+        'Fast [\\[1\\]](https://doc.rust-lang.org) here.',
+      );
+    });
+
+    it('linkifies fullwidth comma groups and leaves orphan indices literal', () => {
+      expect(linkifyCitations('Claim 【1, 2】 here.', sources)).toBe(
+        'Claim [\\[1\\]](https://doc.rust-lang.org)[\\[2\\]](https://tokio.rs) here.',
+      );
+      expect(linkifyCitations('Orphan 【9】 marker.', sources)).toBe(
+        'Orphan [9] marker.',
+      );
+    });
+
+    it('leaves non-numeric fullwidth brackets unchanged', () => {
+      expect(normalizeFullwidthCitationBrackets('See 【note】.')).toBe(
+        'See 【note】.',
+      );
+    });
   });
 
   describe('citation anchor override', () => {
@@ -477,6 +502,22 @@ describe('MarkdownRenderer', () => {
         'https://doc.rust-lang.org',
       );
       expect(anchor!.getAttribute('href')).toBeNull();
+      expect(anchor!.textContent).toBe('[1]');
+    });
+
+    it('renders a fullwidth 【N】 marker as an ASCII [N] citation chip', () => {
+      const { container } = render(
+        <MarkdownRenderer
+          content="Rust 【1】 rocks."
+          citationSources={sources}
+        />,
+      );
+      const anchor = container.querySelector('a.citation-link');
+      expect(anchor).not.toBeNull();
+      expect(anchor!.getAttribute('data-citation')).toBe('1');
+      expect(anchor!.getAttribute('data-url')).toBe(
+        'https://doc.rust-lang.org',
+      );
       expect(anchor!.textContent).toBe('[1]');
     });
 

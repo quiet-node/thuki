@@ -344,24 +344,56 @@ fn classify(score: f64) -> CiteClass {
     }
 }
 
+/// UTF-8 for U+3010 LEFT BLACK LENTICULAR BRACKET (`【`). Models sometimes
+/// emit fullwidth corner brackets instead of ASCII `[N]`.
+const FULLWIDTH_OPEN: &[u8] = &[0xE3, 0x80, 0x90];
+/// UTF-8 for U+3011 RIGHT BLACK LENTICULAR BRACKET (`】`).
+const FULLWIDTH_CLOSE: &[u8] = &[0xE3, 0x80, 0x91];
+
+/// Byte length of an opening citation bracket at `i`, if any: ASCII `[` (1)
+/// or fullwidth `【` (3).
+fn open_bracket_len(bytes: &[u8], i: usize) -> Option<usize> {
+    if bytes.get(i) == Some(&b'[') {
+        Some(1)
+    } else if bytes[i..].starts_with(FULLWIDTH_OPEN) {
+        Some(FULLWIDTH_OPEN.len())
+    } else {
+        None
+    }
+}
+
+/// Byte length of a closing citation bracket at `i`, if any: ASCII `]` (1)
+/// or fullwidth `】` (3). Either closer is accepted after either opener so
+/// mixed `【1]` / `[1】` still strip cleanly.
+fn close_bracket_len(bytes: &[u8], i: usize) -> Option<usize> {
+    if bytes.get(i) == Some(&b']') {
+        Some(1)
+    } else if bytes[i..].starts_with(FULLWIDTH_CLOSE) {
+        Some(FULLWIDTH_CLOSE.len())
+    } else {
+        None
+    }
+}
+
 /// Extracts every citation reference from `text`, mirroring the frontend's
-/// lenient marker regex (`[N]`, `[1, 2]`, `[1,2]`, `[1 , 2]`). Scans for `[`,
-/// then reads a comma-separated list of runs of ASCII digits separated only by
-/// whitespace and commas, terminated by `]`. Anything that does not match this
-/// exact shape (letters inside the brackets, an empty group, a missing `]`) is
-/// skipped, leaving the scanner positioned to find later markers. A comma group
-/// yields one reference per number, all carrying the same marker span so the
-/// digits are excluded from the claim text.
+/// lenient marker rules (`[N]`, `[1, 2]`, `[1,2]`, `[1 , 2]`, plus fullwidth
+/// `【N】` / `【1, 2】`). Scans for an opening bracket, then reads a
+/// comma-separated list of runs of ASCII digits separated only by whitespace
+/// and commas, terminated by a closing bracket. Anything that does not match
+/// this exact shape (letters inside the brackets, an empty group, a missing
+/// closer) is skipped, leaving the scanner positioned to find later markers.
+/// A comma group yields one reference per number, all carrying the same
+/// marker span so the digits are excluded from the claim text.
 fn find_citation_refs(text: &str) -> Vec<CitationRef> {
     let bytes = text.as_bytes();
     let mut refs = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] != b'[' {
+        let Some(open_len) = open_bracket_len(bytes, i) else {
             i += 1;
             continue;
-        }
-        match parse_marker(bytes, i) {
+        };
+        match parse_marker(bytes, i, open_len) {
             Some((indices, end)) => {
                 for index in indices {
                     refs.push(CitationRef {
@@ -378,14 +410,15 @@ fn find_citation_refs(text: &str) -> Vec<CitationRef> {
     refs
 }
 
-/// Parses a single citation marker beginning at `start` (which must index a
-/// `[`). Returns the list of 1-based indices it names and the byte offset just
-/// past the closing `]`, or `None` if the bytes from `start` are not a
+/// Parses a single citation marker beginning at `start` (which must index an
+/// ASCII `[` or fullwidth `【`; `open_len` is that opener's byte length).
+/// Returns the list of 1-based indices it names and the byte offset just past
+/// the closing bracket, or `None` if the bytes from `start` are not a
 /// well-formed comma-grouped numeric marker. Number-run overflow (an
 /// absurdly long digit run) saturates rather than panicking; such a marker is
 /// still parsed so the scanner advances past it.
-fn parse_marker(bytes: &[u8], start: usize) -> Option<(Vec<usize>, usize)> {
-    let mut i = start + 1; // past '['
+fn parse_marker(bytes: &[u8], start: usize, open_len: usize) -> Option<(Vec<usize>, usize)> {
+    let mut i = start + open_len;
     let mut indices = Vec::new();
     loop {
         // Skip whitespace before a number.
@@ -409,11 +442,14 @@ fn parse_marker(bytes: &[u8], start: usize) -> Option<(Vec<usize>, usize)> {
         while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
         }
-        match bytes.get(i) {
-            Some(b']') => return Some((indices, i + 1)),
-            Some(b',') => i += 1, // another index follows
-            _ => return None,     // unexpected byte or end of input
+        if let Some(close_len) = close_bracket_len(bytes, i) {
+            return Some((indices, i + close_len));
         }
+        if bytes.get(i) == Some(&b',') {
+            i += 1; // another index follows
+            continue;
+        }
+        return None; // unexpected byte or end of input
     }
 }
 
@@ -1137,9 +1173,63 @@ mod tests {
     }
 
     #[test]
+    fn finds_fullwidth_single_and_comma_group_markers() {
+        // Models sometimes emit CJK fullwidth lenticular brackets.
+        let refs = find_citation_refs("A \u{3010}1\u{3011} and B \u{3010}2, 3\u{3011} end.");
+        let idx: Vec<usize> = refs.iter().map(|r| r.index).collect();
+        assert_eq!(idx, vec![1, 2, 3]);
+        assert_eq!(refs[1].span_start, refs[2].span_start);
+        assert_eq!(refs[1].span_end, refs[2].span_end);
+        // Span covers the multi-byte open/close brackets.
+        assert_eq!(
+            &"A \u{3010}1\u{3011} and B \u{3010}2, 3\u{3011} end."
+                [refs[0].span_start..refs[0].span_end],
+            "\u{3010}1\u{3011}"
+        );
+    }
+
+    #[test]
+    fn finds_mixed_ascii_and_fullwidth_markers() {
+        let refs = find_citation_refs("A [1] and B \u{3010}2\u{3011} end.");
+        let idx: Vec<usize> = refs.iter().map(|r| r.index).collect();
+        assert_eq!(idx, vec![1, 2]);
+    }
+
+    #[test]
+    fn accepts_mixed_open_close_bracket_styles() {
+        // Either closer after either opener still counts so strip is total.
+        let refs = find_citation_refs("\u{3010}1] and [2\u{3011}");
+        let idx: Vec<usize> = refs.iter().map(|r| r.index).collect();
+        assert_eq!(idx, vec![1, 2]);
+    }
+
+    #[test]
+    fn strip_rewrites_fullwidth_kept_markers_to_ascii() {
+        // Kept indices always re-emit as ASCII `[n]` for writer consistency.
+        let out =
+            strip_unsupported_citations("Claim \u{3010}1\u{3011} and \u{3010}2\u{3011}.", &[2]);
+        assert_eq!(out, "Claim [1] and.");
+    }
+
+    #[test]
+    fn strip_removes_fullwidth_orphan_marker() {
+        let out = strip_unsupported_citations("Only \u{3010}9\u{3011} left.", &[9]);
+        assert_eq!(out, "Only left.");
+    }
+
+    #[test]
     fn skips_malformed_brackets() {
         // Letters, empty brackets, and an unterminated marker all skipped.
         let refs = find_citation_refs("[x] [] [12 no bracket and [7]");
+        let idx: Vec<usize> = refs.iter().map(|r| r.index).collect();
+        assert_eq!(idx, vec![7]);
+    }
+
+    #[test]
+    fn skips_malformed_fullwidth_brackets() {
+        let refs = find_citation_refs(
+            "\u{3010}x\u{3011} \u{3010}\u{3011} \u{3010}12 no close and \u{3010}7\u{3011}",
+        );
         let idx: Vec<usize> = refs.iter().map(|r| r.index).collect();
         assert_eq!(idx, vec![7]);
     }
