@@ -1234,6 +1234,131 @@ describe('ConversationView', () => {
 
       expect(scrollTopValue).toBe(700);
     });
+
+    it('ResizeObserver pins scroller when content resizes and auto-scroll is on', () => {
+      let roCallback: ResizeObserverCallback | null = null;
+      const Original = globalThis.ResizeObserver;
+      const roSpy = vi
+        .spyOn(globalThis, 'ResizeObserver')
+        .mockImplementation(function (cb: ResizeObserverCallback) {
+          roCallback = cb;
+          return new Original(cb) as ResizeObserver;
+        });
+
+      try {
+        const { container } = render(
+          <ConversationView
+            messages={[
+              { id: 'u', role: 'user', content: 'q' },
+              {
+                id: 'a',
+                role: 'assistant',
+                content: 'long answer',
+                fromSearch: true,
+                searchSources: [{ title: 'A', url: 'https://a.example' }],
+              },
+            ]}
+            isGenerating={true}
+            onClose={vi.fn()}
+            searchStage={{ kind: 'reading_sources' }}
+          />,
+        );
+
+        const scrollEl = container.querySelector(
+          '.chat-messages-scroll',
+        ) as HTMLElement;
+        expect(scrollEl).not.toBeNull();
+        expect(roCallback).not.toBeNull();
+
+        let scrollTopValue = 0;
+        Object.defineProperty(scrollEl, 'scrollHeight', {
+          get: () => 1500,
+          configurable: true,
+        });
+        Object.defineProperty(scrollEl, 'scrollTop', {
+          get: () => scrollTopValue,
+          set: (v: number) => {
+            scrollTopValue = v;
+          },
+          configurable: true,
+        });
+
+        // Simulate Framer sources-body height growth mid-animation.
+        act(() => {
+          roCallback!(
+            [] as unknown as ResizeObserverEntry[],
+            {} as ResizeObserver,
+          );
+        });
+
+        expect(scrollTopValue).toBe(1500);
+      } finally {
+        roSpy.mockRestore();
+      }
+    });
+
+    it('ResizeObserver does not pin when user has scrolled up', () => {
+      let roCallback: ResizeObserverCallback | null = null;
+      const Original = globalThis.ResizeObserver;
+      const roSpy = vi
+        .spyOn(globalThis, 'ResizeObserver')
+        .mockImplementation(function (cb: ResizeObserverCallback) {
+          roCallback = cb;
+          return new Original(cb) as ResizeObserver;
+        });
+
+      try {
+        const { container } = render(
+          <ConversationView
+            messages={[
+              { id: 'u', role: 'user', content: 'q' },
+              {
+                id: 'a',
+                role: 'assistant',
+                content: 'long answer',
+                fromSearch: true,
+                searchSources: [{ title: 'A', url: 'https://a.example' }],
+              },
+            ]}
+            isGenerating={true}
+            onClose={vi.fn()}
+            searchStage={{ kind: 'reading_sources' }}
+          />,
+        );
+
+        const scrollEl = container.querySelector(
+          '.chat-messages-scroll',
+        ) as HTMLElement;
+
+        let scrollTopValue = 40;
+        Object.defineProperty(scrollEl, 'scrollHeight', {
+          get: () => 1500,
+          configurable: true,
+        });
+        Object.defineProperty(scrollEl, 'scrollTop', {
+          get: () => scrollTopValue,
+          set: (v: number) => {
+            scrollTopValue = v;
+          },
+          configurable: true,
+        });
+
+        act(() => {
+          scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
+        });
+
+        act(() => {
+          roCallback!(
+            [] as unknown as ResizeObserverEntry[],
+            {} as ResizeObserver,
+          );
+        });
+
+        expect(scrollTopValue).toBe(40);
+      } finally {
+        roSpy.mockRestore();
+      }
+    });
   });
 
   describe('Engine loading label', () => {

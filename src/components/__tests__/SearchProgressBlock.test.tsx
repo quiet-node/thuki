@@ -3,6 +3,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SearchProgressBlock } from '../SearchProgressBlock';
 import { invoke } from '../../testUtils/mocks/tauri';
 import type { SearchResultPreview } from '../../types/search';
+import { pinChatMessagesToBottom } from '../../utils/scrollChat';
+
+vi.mock('../../utils/scrollChat', () => ({
+  pinChatMessagesToBottom: vi.fn(),
+}));
+
+const pinChatMessagesToBottomMock = vi.mocked(pinChatMessagesToBottom);
 
 const SOURCES: SearchResultPreview[] = [
   {
@@ -19,6 +26,7 @@ const SOURCES: SearchResultPreview[] = [
 describe('SearchProgressBlock', () => {
   beforeEach(() => {
     invoke.mockClear();
+    pinChatMessagesToBottomMock.mockClear();
   });
 
   it('renders nothing when idle with no sources', () => {
@@ -144,116 +152,76 @@ describe('SearchProgressBlock', () => {
     expect(list.className).toContain('overflow-y-auto');
   });
 
-  it('scrolls the progress block into view with block end when the list expands', () => {
-    const scrollIntoView = vi.fn();
-    const original = HTMLElement.prototype.scrollIntoView;
-    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
-      configurable: true,
-      value: scrollIntoView,
-    });
+  it('pins chat scroller when the sources list expands', () => {
+    render(
+      <SearchProgressBlock
+        stage={{ kind: 'reading_sources' }}
+        isSearching
+        sources={SOURCES}
+      />,
+    );
+    // Expand path: effect and/or onAnimationComplete hard-pin scroller
+    // so bottom-growing content fully enters the viewport.
+    expect(pinChatMessagesToBottomMock).toHaveBeenCalled();
+    const firstArg = pinChatMessagesToBottomMock.mock.calls[0]?.[0];
+    expect(firstArg).toBeInstanceOf(HTMLElement);
 
-    try {
-      render(
-        <SearchProgressBlock
-          stage={{ kind: 'reading_sources' }}
-          isSearching
-          sources={SOURCES}
-        />,
-      );
-      // Expand path: effect and/or onAnimationComplete use block:'end'
-      // so bottom-growing content fully enters the viewport.
-      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end' });
-
-      scrollIntoView.mockClear();
-      fireEvent.click(screen.getByTestId('search-progress-toggle')); // collapse
-      fireEvent.click(screen.getByTestId('search-progress-toggle')); // re-expand
-      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end' });
-    } finally {
-      Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
-        configurable: true,
-        value: original,
-      });
-    }
+    pinChatMessagesToBottomMock.mockClear();
+    fireEvent.click(screen.getByTestId('search-progress-toggle')); // collapse
+    fireEvent.click(screen.getByTestId('search-progress-toggle')); // re-expand
+    expect(pinChatMessagesToBottomMock).toHaveBeenCalled();
   });
 
-  it('re-scrolls into view when sourceCount grows while expanded', () => {
-    const scrollIntoView = vi.fn();
-    const original = HTMLElement.prototype.scrollIntoView;
-    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
-      configurable: true,
-      value: scrollIntoView,
-    });
+  it('re-pins when sourceCount grows while expanded', () => {
+    const { rerender } = render(
+      <SearchProgressBlock
+        stage={{ kind: 'reading_sources' }}
+        isSearching
+        sources={[SOURCES[0]]}
+      />,
+    );
+    pinChatMessagesToBottomMock.mockClear();
 
-    try {
-      const { rerender } = render(
-        <SearchProgressBlock
-          stage={{ kind: 'reading_sources' }}
-          isSearching
-          sources={[SOURCES[0]]}
-        />,
-      );
-      scrollIntoView.mockClear();
-
-      rerender(
-        <SearchProgressBlock
-          stage={{ kind: 'reading_sources' }}
-          isSearching
-          sources={SOURCES}
-        />,
-      );
-      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end' });
-    } finally {
-      Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
-        configurable: true,
-        value: original,
-      });
-    }
+    rerender(
+      <SearchProgressBlock
+        stage={{ kind: 'reading_sources' }}
+        isSearching
+        sources={SOURCES}
+      />,
+    );
+    expect(pinChatMessagesToBottomMock).toHaveBeenCalled();
   });
 
-  it('does not scrollIntoView after collapse or while exiting', () => {
-    const scrollIntoView = vi.fn();
-    const original = HTMLElement.prototype.scrollIntoView;
-    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
-      configurable: true,
-      value: scrollIntoView,
-    });
+  it('does not pin after collapse or while exiting', () => {
+    const { rerender } = render(
+      <SearchProgressBlock
+        stage={{ kind: 'reading_sources' }}
+        isSearching
+        sources={SOURCES}
+      />,
+    );
 
-    try {
-      const { rerender } = render(
-        <SearchProgressBlock
-          stage={{ kind: 'reading_sources' }}
-          isSearching
-          sources={SOURCES}
-        />,
-      );
+    // User collapse: expandedRef flips false; any late animation complete
+    // must no-op (covers pinProgressInView early return).
+    fireEvent.click(screen.getByTestId('search-progress-toggle'));
+    pinChatMessagesToBottomMock.mockClear();
 
-      // User collapse: expandedRef flips false; any late animation complete
-      // must no-op (covers scrollProgressIntoView early return).
-      fireEvent.click(screen.getByTestId('search-progress-toggle'));
-      scrollIntoView.mockClear();
+    // Force a body remount cycle then exit so animation callbacks may fire
+    // while collapsed / exiting without pinning scroll.
+    fireEvent.click(screen.getByTestId('search-progress-toggle'));
+    pinChatMessagesToBottomMock.mockClear();
+    fireEvent.click(screen.getByTestId('search-progress-toggle'));
 
-      // Force a body remount cycle then exit so animation callbacks may fire
-      // while collapsed / exiting without pinning scroll.
-      fireEvent.click(screen.getByTestId('search-progress-toggle'));
-      scrollIntoView.mockClear();
-      fireEvent.click(screen.getByTestId('search-progress-toggle'));
-
-      rerender(
-        <SearchProgressBlock
-          stage={{ kind: 'reading_sources' }}
-          isSearching
-          sources={SOURCES}
-          isExiting
-        />,
-      );
-      // isExiting forces collapse; scroll helper must not pin.
-      expect(scrollIntoView).not.toHaveBeenCalled();
-    } finally {
-      Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
-        configurable: true,
-        value: original,
-      });
-    }
+    rerender(
+      <SearchProgressBlock
+        stage={{ kind: 'reading_sources' }}
+        isSearching
+        sources={SOURCES}
+        isExiting
+      />,
+    );
+    // isExiting forces collapse; pin helper must not be called.
+    expect(pinChatMessagesToBottomMock).not.toHaveBeenCalled();
   });
 
   it('lets the user collapse an auto-expanded list while keeping stage label', () => {

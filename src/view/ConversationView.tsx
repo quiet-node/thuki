@@ -6,6 +6,7 @@ import { WindowControls } from '../components/WindowControls';
 import { useEngineLoadingLabel } from '../hooks/useEngineLoadingLabel';
 import type { Message, RetrySnapshot } from '../hooks/useModel';
 import type { SearchStage } from '../types/search';
+import { pinChatMessagesToBottom } from '../utils/scrollChat';
 
 /**
  * Human-readable label shown next to the loading dots for each search stage.
@@ -220,6 +221,8 @@ export function ConversationView({
    */
   const shouldAutoScrollRef = useRef(true);
   const prevMessagesLengthRef = useRef(0);
+  /** Inner content wrapper observed for height growth (Framer expand, tokens). */
+  const messagesContentRef = useRef<HTMLDivElement>(null);
 
   /**
    * Wheel listener - the only mechanism that can disable auto-scroll.
@@ -276,11 +279,30 @@ export function ConversationView({
   const searchStageKey = searchStage?.kind ?? null;
 
   /**
-   * Auto-scroll the chat container to the bottom when new content arrives,
-   * but only if the user hasn't manually scrolled up.
-   *
-   * Double rAF waits one frame for React commit + one for layout after
-   * expand animations / source-list growth so scrollHeight is accurate.
+   * Primary pin: ResizeObserver on the messages content wrapper.
+   * Fires on every content height change including Framer height animation
+   * frames (sources body 0→auto), streaming token growth, and stage chrome.
+   * Honors shouldAutoScrollRef so wheel-up history reading is never stolen.
+   */
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    const content = messagesContentRef.current;
+    /* v8 ignore start */
+    if (!container || !content) return;
+    /* v8 ignore stop */
+
+    const observer = new ResizeObserver(() => {
+      if (!shouldAutoScrollRef.current) return;
+      container.scrollTop = container.scrollHeight;
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, []);
+
+  /**
+   * Belt-and-suspenders pin when message / search chrome deps change.
+   * Double rAF waits one frame for React commit + one for layout settle.
+   * ResizeObserver covers mid-animation growth; this covers dep-driven commits.
    */
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -297,7 +319,7 @@ export function ConversationView({
       innerRaf = requestAnimationFrame(() => {
         // Re-check: user may have scrolled up between the two settle frames.
         if (!shouldAutoScrollRef.current) return;
-        container.scrollTop = container.scrollHeight;
+        pinChatMessagesToBottom(container);
       });
     });
 
@@ -334,95 +356,97 @@ export function ConversationView({
 
       <div
         ref={scrollContainerRef}
-        className="chat-messages-scroll px-5 py-4 flex flex-col gap-3 flex-1 min-h-0 overflow-y-auto"
+        className="chat-messages-scroll px-5 py-4 flex-1 min-h-0 overflow-y-auto"
       >
-        {messages.map((msg, i) => {
-          const isLastAssistant =
-            isGenerating &&
-            i === messages.length - 1 &&
-            msg.role === 'assistant';
-          const isThinkingPending =
-            isLastAssistant &&
-            msg.fromThink === true &&
-            !msg.content &&
-            !msg.thinkingContent;
+        <div ref={messagesContentRef} className="flex flex-col gap-3">
+          {messages.map((msg, i) => {
+            const isLastAssistant =
+              isGenerating &&
+              i === messages.length - 1 &&
+              msg.role === 'assistant';
+            const isThinkingPending =
+              isLastAssistant &&
+              msg.fromThink === true &&
+              !msg.content &&
+              !msg.thinkingContent;
 
-          // Hide the empty assistant placeholder; RequestStatusStrip already
-          // covers this visual state. Search and /think turns still render the
-          // bubble so progress / reasoning chrome is visible.
-          if (
-            isLastAssistant &&
-            !msg.content &&
-            !msg.thinkingContent &&
-            !msg.fromSearch &&
-            !msg.fromThink
-          )
-            return null;
+            // Hide the empty assistant placeholder; RequestStatusStrip already
+            // covers this visual state. Search and /think turns still render the
+            // bubble so progress / reasoning chrome is visible.
+            if (
+              isLastAssistant &&
+              !msg.content &&
+              !msg.thinkingContent &&
+              !msg.fromSearch &&
+              !msg.fromThink
+            )
+              return null;
 
-          // Bind this specific message's own retained snapshot (issue
-          // #296) rather than forwarding a single shared callback, so
-          // clicking "Load anyway" on an older card can never replay a
-          // more recent turn's request.
-          const retrySnapshot = msg.retrySnapshot;
+            // Bind this specific message's own retained snapshot (issue
+            // #296) rather than forwarding a single shared callback, so
+            // clicking "Load anyway" on an older card can never replay a
+            // more recent turn's request.
+            const retrySnapshot = msg.retrySnapshot;
 
-          return (
-            <ChatBubble
-              key={msg.id}
-              role={msg.role}
-              content={msg.content}
-              quotedText={msg.quotedText}
-              index={i}
-              isStreaming={isLastAssistant}
-              imagePaths={msg.imagePaths}
-              onImagePreview={onImagePreview}
-              onReplace={msg.replaceCommand ? onReplace : undefined}
-              errorKind={msg.errorKind}
-              onSwitchModel={
-                onSwitchModel ? () => onSwitchModel(retrySnapshot) : undefined
-              }
-              onLoadAnyway={
-                retrySnapshot && onLoadAnyway
-                  ? () => onLoadAnyway(retrySnapshot)
-                  : undefined
-              }
-              thinkingContent={msg.thinkingContent}
-              isThinkingPending={isThinkingPending}
-              pendingLabel={engineLoadingLabel}
-              // "Still thinking" reflects the real stream state, not whether
-              // /think was used: thinking tokens have arrived, the answer has
-              // not started, and the turn is still generating (isLastAssistant
-              // already implies isGenerating). This keeps the Done indicator
-              // honest even if a model reasons without an explicit /think.
-              isThinking={
-                isLastAssistant && !msg.content && !!msg.thinkingContent
-              }
-              searchSources={msg.searchSources}
-              searchStage={
-                isGenerating && i === messages.length - 1 ? searchStage : null
-              }
-              modelName={msg.modelName}
-              displayNames={modelDisplayNames}
-              memoryFit={msg.memoryFit}
-              isSearching={
-                isGenerating &&
-                msg.fromSearch === true &&
-                i === messages.length - 1
-              }
-            />
-          );
-        })}
+            return (
+              <ChatBubble
+                key={msg.id}
+                role={msg.role}
+                content={msg.content}
+                quotedText={msg.quotedText}
+                index={i}
+                isStreaming={isLastAssistant}
+                imagePaths={msg.imagePaths}
+                onImagePreview={onImagePreview}
+                onReplace={msg.replaceCommand ? onReplace : undefined}
+                errorKind={msg.errorKind}
+                onSwitchModel={
+                  onSwitchModel ? () => onSwitchModel(retrySnapshot) : undefined
+                }
+                onLoadAnyway={
+                  retrySnapshot && onLoadAnyway
+                    ? () => onLoadAnyway(retrySnapshot)
+                    : undefined
+                }
+                thinkingContent={msg.thinkingContent}
+                isThinkingPending={isThinkingPending}
+                pendingLabel={engineLoadingLabel}
+                // "Still thinking" reflects the real stream state, not whether
+                // /think was used: thinking tokens have arrived, the answer has
+                // not started, and the turn is still generating (isLastAssistant
+                // already implies isGenerating). This keeps the Done indicator
+                // honest even if a model reasons without an explicit /think.
+                isThinking={
+                  isLastAssistant && !msg.content && !!msg.thinkingContent
+                }
+                searchSources={msg.searchSources}
+                searchStage={
+                  isGenerating && i === messages.length - 1 ? searchStage : null
+                }
+                modelName={msg.modelName}
+                displayNames={modelDisplayNames}
+                memoryFit={msg.memoryFit}
+                isSearching={
+                  isGenerating &&
+                  msg.fromSearch === true &&
+                  i === messages.length - 1
+                }
+              />
+            );
+          })}
 
-        {/* Loading row: identical RequestStatusStrip as search/think hosts.
-            Engine cold-start copy comes from useEngineLoadingLabel; search
-            stages from searchStageLabel. /think pending renders the same
-            strip inside ReasoningBlock instead of here. */}
-        {isAwaitingFirstToken && !lastMessage?.fromThink ? (
-          <div className="mb-2">
-            <RequestStatusStrip
-              label={searchStageLabel(searchStage) ?? engineLoadingLabel}
-            />
-          </div>
-        ) : null}
+          {/* Loading row: identical RequestStatusStrip as search/think hosts.
+              Engine cold-start copy comes from useEngineLoadingLabel; search
+              stages from searchStageLabel. /think pending renders the same
+              strip inside ReasoningBlock instead of here. */}
+          {isAwaitingFirstToken && !lastMessage?.fromThink ? (
+            <div className="mb-2">
+              <RequestStatusStrip
+                label={searchStageLabel(searchStage) ?? engineLoadingLabel}
+              />
+            </div>
+          ) : null}
+        </div>
       </div>
 
       <motion.div
