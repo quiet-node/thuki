@@ -1,18 +1,19 @@
-//! Unified forensic trace recorder for the chat layer and the `/search`
-//! pipeline.
+//! Unified forensic trace recorder for the chat layer, including the
+//! built-in web-search turns that the `/search` command and the
+//! auto-search pre-pass drive.
 //!
 //! Three submodules:
 //! - [`ids`]: `ConversationId` newtype and `new_turn_id` generator.
-//! - [`recorder`]: `TraceRecorder` trait, `RecorderEvent` enum (chat +
-//!   search variants), `TraceDomain`, `FileRecorder`, `NoopRecorder`.
+//! - [`recorder`]: `TraceRecorder` trait, `RecorderEvent` enum,
+//!   `TraceDomain`, `FileRecorder`, `NoopRecorder`.
 //! - [`registry`]: `RegistryRecorder` production composition that owns
 //!   one `FileRecorder` per `(domain, conversation_id)` pair.
 //!
 //! [`BoundRecorder`] is a thin wrapper that closes over a
 //! `ConversationId` so call sites can emit events with a single-arg
 //! `record(event)` instead of threading the id through every signature.
-//! The chat layer and the search pipeline both hold an
-//! `Arc<BoundRecorder>` for the conversation they belong to.
+//! The chat layer holds an `Arc<BoundRecorder>` for the conversation it
+//! belongs to.
 //!
 //! See `recorder.rs` module-level docs for the JSONL schema and the
 //! late-event tolerance contract.
@@ -27,8 +28,8 @@ pub mod registry;
 pub use ids::{new_turn_id, ConversationId};
 pub use live::LiveTraceRecorder;
 pub use recorder::{
-    EngineStat, FileRecorder, NoopRecorder, ReaderUrlOutcome, RecorderEvent, RerankedChunk,
-    RetrievedSource, TraceDomain, TraceRecorder, TRACE_SCHEMA_VERSION,
+    EngineStat, FileRecorder, NoopRecorder, RecorderEvent, RetrievedSource, TraceDomain,
+    TraceRecorder, TRACE_SCHEMA_VERSION,
 };
 pub use registry::RegistryRecorder;
 
@@ -36,10 +37,10 @@ pub use registry::RegistryRecorder;
 /// `Arc<dyn TraceRecorder>` so call sites can emit events without
 /// threading the conversation id through every function signature.
 ///
-/// Constructed by `commands::ask_model` and `search::search_pipeline`
-/// once at the start of each turn from managed state, then handed down
-/// through the streaming or pipeline machinery as
-/// `Arc<BoundRecorder>`. Cheap to clone (single `Arc`).
+/// Constructed by `commands::ask_model` once at the start of each turn
+/// from managed state, then handed down through the streaming and
+/// built-in-search machinery as `Arc<BoundRecorder>`. Cheap to clone
+/// (single `Arc`).
 ///
 /// Manual `Debug` impl: `dyn TraceRecorder` does not require `Debug`
 /// (and the noop / file recorder don't all implement it through a
@@ -94,17 +95,13 @@ impl BoundRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn noop_for_constructs_bound_recorder_with_id() {
         let r = BoundRecorder::noop_for(ConversationId::new("conv-noop"));
         assert_eq!(r.conversation_id().as_str(), "conv-noop");
         // No panic, no I/O.
-        r.record(RecorderEvent::Warning {
-            kind: "k".into(),
-            payload: json!({}),
-        });
+        r.record(RecorderEvent::AssistantTokens { chunk: "k".into() });
     }
 
     #[test]
@@ -141,7 +138,7 @@ mod tests {
         impl TraceRecorder for Captor {
             fn record(&self, conversation_id: &ConversationId, event: RecorderEvent) {
                 let kind = match &event {
-                    RecorderEvent::Warning { kind, .. } => kind.clone(),
+                    RecorderEvent::AssistantThinking { chunk } => chunk.clone(),
                     _ => "other".into(),
                 };
                 self.seen
@@ -154,15 +151,13 @@ mod tests {
             seen: parking_lot::Mutex::new(Vec::new()),
         });
         let bound = BoundRecorder::new(captor.clone(), ConversationId::new("conv-thread"));
-        bound.record(RecorderEvent::Warning {
-            kind: "alpha".into(),
-            payload: json!({}),
+        bound.record(RecorderEvent::AssistantThinking {
+            chunk: "alpha".into(),
         });
-        bound.record(RecorderEvent::Warning {
-            kind: "beta".into(),
-            payload: json!({}),
+        bound.record(RecorderEvent::AssistantThinking {
+            chunk: "beta".into(),
         });
-        // Non-Warning event exercises the captor's `_ => "other"` fallback
+        // A different variant exercises the captor's `_ => "other"` fallback
         // arm so coverage hits both match arms in the test instrumentation.
         bound.record(RecorderEvent::AssistantTokens { chunk: "hi".into() });
         let seen = captor.seen.lock().clone();

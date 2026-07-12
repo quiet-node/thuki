@@ -14,24 +14,21 @@ use std::path::PathBuf;
 
 use super::defaults::{
     DEFAULT_ACTIVE_PROVIDER, DEFAULT_AUTO_CLOSE, DEFAULT_AUTO_REPLACE, DEFAULT_AUTO_SEARCH,
-    DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
-    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX,
-    DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
-    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
-    DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
-    DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
-    DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX,
+    DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT,
+    DEFAULT_MAX_IMAGES, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX,
     DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT,
-    DEFAULT_TOP_K_URLS, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
-    PROVIDER_ID_BUILTIN, PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA,
-    PROVIDER_KIND_OPENAI, SLASH_COMMAND_PROMPT_APPENDIX,
+    DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL, PROVIDER_ID_BUILTIN,
+    PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
+    SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
 use super::loader::{compose_system_prompt, load_from_path, resolve};
 use super::migrate::{attach_legacy_active_model, toml_has_providers};
 use super::schema::{
     ollama_provider, openai_provider, AppConfig, BehaviorSection, DebugSection, InferenceSection,
-    PromptSection, Provider, QuoteSection, SearchSection, UpdaterSection, WindowSection,
+    PromptSection, Provider, QuoteSection, UpdaterSection, WindowSection,
 };
 use super::writer::atomic_write;
 
@@ -91,22 +88,6 @@ fn defaults_const_values_match_schema_defaults() {
     assert_eq!(c.quote.max_display_lines, DEFAULT_QUOTE_MAX_DISPLAY_LINES);
     assert_eq!(c.quote.max_display_chars, DEFAULT_QUOTE_MAX_DISPLAY_CHARS);
     assert_eq!(c.quote.max_context_length, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH);
-    assert_eq!(c.search.searxng_url, DEFAULT_SEARXNG_URL);
-    assert_eq!(c.search.reader_url, DEFAULT_READER_URL);
-    assert_eq!(c.search.max_iterations, DEFAULT_MAX_ITERATIONS);
-    assert_eq!(c.search.top_k_urls, DEFAULT_TOP_K_URLS);
-    assert_eq!(c.search.searxng_max_results, DEFAULT_SEARXNG_MAX_RESULTS);
-    assert_eq!(c.search.search_timeout_s, DEFAULT_SEARCH_TIMEOUT_S);
-    assert_eq!(
-        c.search.reader_per_url_timeout_s,
-        DEFAULT_READER_PER_URL_TIMEOUT_S
-    );
-    assert_eq!(
-        c.search.reader_batch_timeout_s,
-        DEFAULT_READER_BATCH_TIMEOUT_S
-    );
-    assert_eq!(c.search.judge_timeout_s, DEFAULT_JUDGE_TIMEOUT_S);
-    assert_eq!(c.search.router_timeout_s, DEFAULT_ROUTER_TIMEOUT_S);
 }
 
 #[test]
@@ -1096,167 +1077,48 @@ fn config_error_messages_include_context() {
     assert!(e.to_string().contains("/tmp/z"));
 }
 
-// ── search section ────────────────────────────────────────────────────────────
+// ── legacy [search] section migration ───────────────────────────────────────────
 
 #[test]
-fn search_section_defaults_are_sane() {
-    let s = SearchSection::default();
-    assert!(s.searxng_url.starts_with("http://127.0.0.1:"));
-    assert!(s.reader_url.starts_with("http://127.0.0.1:"));
-    assert!(s.max_iterations >= 1 && s.max_iterations <= 10);
-    assert!(s.top_k_urls >= 1 && s.top_k_urls <= 20);
-    assert!(s.searxng_max_results >= 1 && s.searxng_max_results <= 20);
-    assert!(s.reader_batch_timeout_s > s.reader_per_url_timeout_s);
-}
-
-#[test]
-fn search_section_roundtrips_through_toml() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    let original = AppConfig::default();
-    atomic_write(&path, &original).unwrap();
-    let loaded = load_from_path(&path).unwrap();
-    assert_eq!(loaded.search.searxng_url, original.search.searxng_url);
-    assert_eq!(loaded.search.reader_url, original.search.reader_url);
-    assert_eq!(loaded.search.max_iterations, original.search.max_iterations);
-    assert_eq!(loaded.search.top_k_urls, original.search.top_k_urls);
-    assert_eq!(
-        loaded.search.searxng_max_results,
-        original.search.searxng_max_results
-    );
-    assert_eq!(
-        loaded.search.search_timeout_s,
-        original.search.search_timeout_s
-    );
-    assert_eq!(
-        loaded.search.reader_per_url_timeout_s,
-        original.search.reader_per_url_timeout_s
-    );
-    assert_eq!(
-        loaded.search.reader_batch_timeout_s,
-        original.search.reader_batch_timeout_s
-    );
-    assert_eq!(
-        loaded.search.judge_timeout_s,
-        original.search.judge_timeout_s
-    );
-    assert_eq!(
-        loaded.search.router_timeout_s,
-        original.search.router_timeout_s
-    );
-}
-
-#[test]
-fn search_empty_url_resets_to_default() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(&path, "[search]\nsearxng_url = \"\"\nreader_url = \"  \"\n").unwrap();
-    let loaded = load_from_path(&path).unwrap();
-    assert_eq!(loaded.search.searxng_url, DEFAULT_SEARXNG_URL);
-    assert_eq!(loaded.search.reader_url, DEFAULT_READER_URL);
-}
-
-#[test]
-fn search_max_iterations_clamped_to_bounds() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(&path, "[search]\nmax_iterations = 0\ntop_k_urls = 999\n").unwrap();
-    let loaded = load_from_path(&path).unwrap();
-    assert_eq!(loaded.search.max_iterations, DEFAULT_MAX_ITERATIONS);
-    assert_eq!(loaded.search.top_k_urls, DEFAULT_TOP_K_URLS);
-}
-
-#[test]
-fn search_searxng_max_results_clamped_to_bounds() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    // Below lower bound (0) and above upper bound (999) both reset to default.
-    std::fs::write(&path, "[search]\nsearxng_max_results = 0\n").unwrap();
-    let loaded_low = load_from_path(&path).unwrap();
-    assert_eq!(
-        loaded_low.search.searxng_max_results,
-        DEFAULT_SEARXNG_MAX_RESULTS
-    );
-    std::fs::write(&path, "[search]\nsearxng_max_results = 999\n").unwrap();
-    let loaded_high = load_from_path(&path).unwrap();
-    assert_eq!(
-        loaded_high.search.searxng_max_results,
-        DEFAULT_SEARXNG_MAX_RESULTS
-    );
-}
-
-#[test]
-fn search_searxng_max_results_in_bounds_preserved() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(&path, "[search]\nsearxng_max_results = 5\n").unwrap();
-    let loaded = load_from_path(&path).unwrap();
-    assert_eq!(loaded.search.searxng_max_results, 5);
-}
-
-#[test]
-fn search_timeouts_clamped_to_bounds() {
+fn legacy_search_section_is_silently_ignored_on_load() {
+    // A config.toml written by a pre-J9 build still carries a full `[search]`
+    // section (the removed SearXNG/reader pipeline knobs). The loader must load
+    // it cleanly, silently dropping the now-unknown table, and never panic or
+    // error. AppConfig has no `deny_unknown_fields`, so serde ignores the stray
+    // table; the surrounding known sections must survive untouched.
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
     std::fs::write(
         &path,
-        "[search]\nsearch_timeout_s = 0\nrouter_timeout_s = 9999\n",
+        concat!(
+            "[behavior]\n",
+            "auto_replace = true\n",
+            "\n",
+            "[search]\n",
+            "searxng_url = \"http://127.0.0.1:25017\"\n",
+            "reader_url = \"http://127.0.0.1:25018\"\n",
+            "max_iterations = 3\n",
+            "top_k_urls = 10\n",
+            "searxng_max_results = 10\n",
+            "search_timeout_s = 20\n",
+            "reader_per_url_timeout_s = 10\n",
+            "reader_batch_timeout_s = 30\n",
+            "judge_timeout_s = 30\n",
+            "router_timeout_s = 45\n",
+            "pipeline_wall_clock_budget_s = 90\n",
+        ),
     )
     .unwrap();
-    let loaded = load_from_path(&path).unwrap();
-    assert_eq!(loaded.search.search_timeout_s, DEFAULT_SEARCH_TIMEOUT_S);
-    assert_eq!(loaded.search.router_timeout_s, DEFAULT_ROUTER_TIMEOUT_S);
-}
 
-#[test]
-fn search_batch_timeout_invariant_corrected() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    // Set batch <= per_url — loader must correct.
-    std::fs::write(
-        &path,
-        "[search]\nreader_per_url_timeout_s = 20\nreader_batch_timeout_s = 5\n",
-    )
-    .unwrap();
-    let loaded = load_from_path(&path).unwrap();
-    assert!(
-        loaded.search.reader_batch_timeout_s > loaded.search.reader_per_url_timeout_s,
-        "loader must correct batch_timeout > per_url_timeout invariant"
-    );
-}
+    // Loads without error despite the removed section.
+    let loaded = load_from_path(&path).expect("legacy [search] section must not break the loader");
 
-#[test]
-fn toml_without_search_section_deserializes_to_defaults() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(
-        &path,
-        "[inference]\nollama_url = \"http://127.0.0.1:11434\"\n",
-    )
-    .unwrap();
-    let loaded = load_from_path(&path).unwrap();
-    assert_eq!(
-        loaded.search.searxng_url, DEFAULT_SEARXNG_URL,
-        "missing [search] section must deserialize to defaults via #[serde(default)]"
-    );
-}
-
-#[test]
-fn toml_partial_search_section_fills_missing_fields_from_defaults() {
-    let dir = fresh_temp_dir();
-    let path = config_path_in(&dir);
-    std::fs::write(
-        &path,
-        "[search]\nsearxng_url = \"http://192.168.1.50:8080\"\n",
-    )
-    .unwrap();
-    let loaded = load_from_path(&path).unwrap();
-    assert_eq!(loaded.search.searxng_url, "http://192.168.1.50:8080");
-    assert_eq!(
-        loaded.search.reader_url, DEFAULT_READER_URL,
-        "unset field in partial [search] must fall back to default"
-    );
-    assert_eq!(loaded.search.max_iterations, DEFAULT_MAX_ITERATIONS);
+    // The known field around it is preserved verbatim, proving only the unknown
+    // table was dropped.
+    assert!(loaded.behavior.auto_replace);
+    // Untouched sections still resolve to their compiled defaults.
+    assert_eq!(loaded.inference.active_provider, DEFAULT_ACTIVE_PROVIDER);
+    assert_eq!(loaded.debug.trace_enabled, DEFAULT_DEBUG_TRACE_ENABLED);
 }
 
 // ── error: serde_json round-trip ────────────────────────────────────────────

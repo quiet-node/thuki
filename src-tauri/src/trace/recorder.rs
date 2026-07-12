@@ -94,14 +94,11 @@ pub const TRACE_SCHEMA_VERSION: u32 = 2;
 #[serde(rename_all = "snake_case")]
 pub enum TraceDomain {
     /// Chat-layer events: user messages, assistant streaming, screen
-    /// captures, conversation lifecycle. One file per conversation,
-    /// rooted at `traces/chat/<conversation_id>.jsonl`.
+    /// captures, conversation lifecycle, and the built-in web-search
+    /// records (search decision, retrieval, escalation, requery, and
+    /// citation audit). One file per conversation, rooted at
+    /// `traces/chat/<conversation_id>.jsonl`.
     Chat,
-    /// Search-pipeline events: router/judge LLM calls, SearXNG queries,
-    /// reader batches, chunker output, rerank results, judge verdicts.
-    /// One file per conversation, rooted at
-    /// `traces/search/<conversation_id>.jsonl`.
-    Search,
 }
 
 impl TraceDomain {
@@ -111,7 +108,6 @@ impl TraceDomain {
     pub fn dir(self) -> &'static str {
         match self {
             TraceDomain::Chat => "chat",
-            TraceDomain::Search => "search",
         }
     }
 }
@@ -180,103 +176,7 @@ pub struct EngineStat {
 /// [`TraceDomain`], used by the registry to pick the destination file.
 #[derive(Debug, Clone)]
 pub enum RecorderEvent {
-    // ─── Search domain (existing variants from PR #126) ─────────────────
-    /// Search-pipeline turn starts. Captures the user query, model slug,
-    /// runtime search-config snapshot (so a trace is reproducible without
-    /// the config file), and conversation-history length.
-    TurnStart {
-        turn_id: String,
-        query: String,
-        model: String,
-        runtime_config: Value,
-        history_len: usize,
-    },
-    /// Single Ollama `/api/chat` non-streaming JSON request issued by the
-    /// search pipeline. Captures the stage label
-    /// (router / snippet_judge / chunk_judge / synthesis /
-    /// answer_from_context), the full request body the pipeline sent,
-    /// the raw response string Ollama returned, and the request latency.
-    /// `error` is `Some` when the call failed (timeout, transport, parse).
-    LlmCall {
-        stage: String,
-        endpoint: String,
-        request_body: Value,
-        response_raw: Option<String>,
-        latency_ms: u64,
-        error: Option<String>,
-    },
-    /// Streaming Ollama `/api/chat` request used by the search synthesis
-    /// path. `tokens` counts streamed pieces; `final_text` is the
-    /// accumulated assistant message; per-token records are NOT emitted
-    /// (would flood the file without adding signal).
-    StreamingLlmCall {
-        stage: String,
-        endpoint: String,
-        request_body: Value,
-        final_text: Option<String>,
-        tokens: u64,
-        latency_ms: u64,
-        error: Option<String>,
-    },
-    /// SearXNG search request: query string, full URL, raw HTTP response
-    /// body, and the normalized result list the pipeline forwarded to the
-    /// reranker.
-    SearxngQuery {
-        query: String,
-        url: String,
-        status: Option<u16>,
-        response_raw: Option<String>,
-        normalized_results: Value,
-        latency_ms: u64,
-        error: Option<String>,
-    },
-    /// Reader sidecar batch: per-URL fetch results including raw HTTP
-    /// body and extracted text. Latency is per-URL plus the overall batch.
-    ReaderBatch {
-        urls: Vec<String>,
-        per_url: Vec<ReaderUrlOutcome>,
-        batch_latency_ms: u64,
-        batch_error: Option<String>,
-    },
-    /// Page chunked into N pieces. `chunks` are the full chunk texts so
-    /// a downstream consumer can reconstruct what the judge actually saw.
-    ChunkerBatch {
-        page_url: String,
-        chunk_count: usize,
-        chunks: Vec<String>,
-    },
-    /// Reranker output: top-k chunks with scores, in selection order.
-    RerankResult {
-        query: String,
-        input_count: usize,
-        top_k: Vec<RerankedChunk>,
-    },
-    /// Parsed judge verdict at a given stage (snippet or chunk). Captures
-    /// the raw string the LLM returned plus the normalized verdict struct.
-    JudgeVerdict {
-        stage: String,
-        raw: String,
-        normalized: Value,
-    },
-    /// Warning surfaced by the search pipeline (e.g. JudgeFailed,
-    /// BudgetExhausted).
-    Warning { kind: String, payload: Value },
-    /// Mirrors a [`crate::search::types::SearchEvent`] emission so the
-    /// trace reflects the user-visible event stream alongside backend
-    /// internals.
-    SearchEventEmitted { event: Value },
-    /// Search-pipeline turn ends. Captures the final action taken and
-    /// total wall-clock latency. `error` is `Some` only on hard failure
-    /// paths.
-    TurnEnd {
-        turn_id: String,
-        final_action: String,
-        final_source_urls: Vec<String>,
-        total_latency_ms: u64,
-        error: Option<String>,
-    },
-
-    // ─── Chat domain (new in v2) ────────────────────────────────────────
+    // ─── Chat domain ────────────────────────────────────────────────────
     /// First event in a chat-domain file. Captures the model slug and
     /// the resolved system prompt at the moment the conversation began,
     /// so the trace is reproducible without snapshotting the live
@@ -417,18 +317,11 @@ impl RecorderEvent {
     /// Returns the [`TraceDomain`] this event belongs to. Used by the
     /// registry to pick the destination file.
     pub fn domain(&self) -> TraceDomain {
+        // Every event belongs to the chat domain. The built-in web search
+        // (both the `/search` command and the auto-search pre-pass) rides the
+        // chat turn, so its decision/retrieval/escalation/requery and
+        // citation-audit records are chat-domain events too.
         match self {
-            RecorderEvent::TurnStart { .. }
-            | RecorderEvent::LlmCall { .. }
-            | RecorderEvent::StreamingLlmCall { .. }
-            | RecorderEvent::SearxngQuery { .. }
-            | RecorderEvent::ReaderBatch { .. }
-            | RecorderEvent::ChunkerBatch { .. }
-            | RecorderEvent::RerankResult { .. }
-            | RecorderEvent::JudgeVerdict { .. }
-            | RecorderEvent::Warning { .. }
-            | RecorderEvent::SearchEventEmitted { .. }
-            | RecorderEvent::TurnEnd { .. } => TraceDomain::Search,
             RecorderEvent::ConversationStart { .. }
             | RecorderEvent::UserMessage { .. }
             | RecorderEvent::AssistantThinking { .. }
@@ -450,45 +343,6 @@ impl RecorderEvent {
     pub fn is_conversation_end(&self) -> bool {
         matches!(self, RecorderEvent::ConversationEnd { .. })
     }
-
-    /// Returns true if this event terminates a turn in the search domain.
-    /// Used by the registry to evict the search-domain file handle from
-    /// its per-conversation cache so long-running sessions with many
-    /// `/search` turns do not accumulate one file handle per turn until
-    /// the process exits.
-    pub fn is_turn_end(&self) -> bool {
-        matches!(self, RecorderEvent::TurnEnd { .. })
-    }
-
-    /// Returns the `request_body` from an [`RecorderEvent::LlmCall`] event,
-    /// or `None` for any other variant. Provides a branch-free extraction
-    /// path for tests that assert on the recorded wire body.
-    #[cfg(test)]
-    pub(crate) fn llm_call_request_body(&self) -> Option<&serde_json::Value> {
-        match self {
-            RecorderEvent::LlmCall { request_body, .. } => Some(request_body),
-            _ => None,
-        }
-    }
-}
-
-/// Per-URL outcome inside a [`RecorderEvent::ReaderBatch`].
-#[derive(Debug, Clone, Serialize)]
-pub struct ReaderUrlOutcome {
-    pub url: String,
-    pub status: Option<u16>,
-    pub latency_ms: u64,
-    pub raw_body: Option<String>,
-    pub extracted_text: Option<String>,
-    pub error: Option<String>,
-}
-
-/// Single ranked chunk inside a [`RecorderEvent::RerankResult`].
-#[derive(Debug, Clone, Serialize)]
-pub struct RerankedChunk {
-    pub source_url: String,
-    pub score: f64,
-    pub text: String,
 }
 
 /// Lazy file-backed recorder for ONE `(domain, conversation_id)` pair.
@@ -723,140 +577,6 @@ impl Serialize for RecorderEvent {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(None)?;
         match self {
-            // ─── Search domain ────────────────────────────────────────
-            RecorderEvent::TurnStart {
-                turn_id,
-                query,
-                model,
-                runtime_config,
-                history_len,
-            } => {
-                map.serialize_entry("kind", "turn_start")?;
-                map.serialize_entry("turn_id", turn_id)?;
-                map.serialize_entry("query", query)?;
-                map.serialize_entry("model", model)?;
-                map.serialize_entry("runtime_config", runtime_config)?;
-                map.serialize_entry("history_len", history_len)?;
-            }
-            RecorderEvent::LlmCall {
-                stage,
-                endpoint,
-                request_body,
-                response_raw,
-                latency_ms,
-                error,
-            } => {
-                map.serialize_entry("kind", "llm_call")?;
-                map.serialize_entry("stage", stage)?;
-                map.serialize_entry("endpoint", endpoint)?;
-                map.serialize_entry("request_body", request_body)?;
-                map.serialize_entry("response_raw", response_raw)?;
-                map.serialize_entry("latency_ms", latency_ms)?;
-                map.serialize_entry("error", error)?;
-            }
-            RecorderEvent::StreamingLlmCall {
-                stage,
-                endpoint,
-                request_body,
-                final_text,
-                tokens,
-                latency_ms,
-                error,
-            } => {
-                map.serialize_entry("kind", "streaming_llm_call")?;
-                map.serialize_entry("stage", stage)?;
-                map.serialize_entry("endpoint", endpoint)?;
-                map.serialize_entry("request_body", request_body)?;
-                map.serialize_entry("final_text", final_text)?;
-                map.serialize_entry("tokens", tokens)?;
-                map.serialize_entry("latency_ms", latency_ms)?;
-                map.serialize_entry("error", error)?;
-            }
-            RecorderEvent::SearxngQuery {
-                query,
-                url,
-                status,
-                response_raw,
-                normalized_results,
-                latency_ms,
-                error,
-            } => {
-                map.serialize_entry("kind", "searxng_query")?;
-                map.serialize_entry("query", query)?;
-                map.serialize_entry("url", url)?;
-                map.serialize_entry("status", status)?;
-                map.serialize_entry("response_raw", response_raw)?;
-                map.serialize_entry("normalized_results", normalized_results)?;
-                map.serialize_entry("latency_ms", latency_ms)?;
-                map.serialize_entry("error", error)?;
-            }
-            RecorderEvent::ReaderBatch {
-                urls,
-                per_url,
-                batch_latency_ms,
-                batch_error,
-            } => {
-                map.serialize_entry("kind", "reader_batch")?;
-                map.serialize_entry("urls", urls)?;
-                map.serialize_entry("per_url", per_url)?;
-                map.serialize_entry("batch_latency_ms", batch_latency_ms)?;
-                map.serialize_entry("batch_error", batch_error)?;
-            }
-            RecorderEvent::ChunkerBatch {
-                page_url,
-                chunk_count,
-                chunks,
-            } => {
-                map.serialize_entry("kind", "chunker_batch")?;
-                map.serialize_entry("page_url", page_url)?;
-                map.serialize_entry("chunk_count", chunk_count)?;
-                map.serialize_entry("chunks", chunks)?;
-            }
-            RecorderEvent::RerankResult {
-                query,
-                input_count,
-                top_k,
-            } => {
-                map.serialize_entry("kind", "rerank_result")?;
-                map.serialize_entry("query", query)?;
-                map.serialize_entry("input_count", input_count)?;
-                map.serialize_entry("top_k", top_k)?;
-            }
-            RecorderEvent::JudgeVerdict {
-                stage,
-                raw,
-                normalized,
-            } => {
-                map.serialize_entry("kind", "judge_verdict")?;
-                map.serialize_entry("stage", stage)?;
-                map.serialize_entry("raw", raw)?;
-                map.serialize_entry("normalized", normalized)?;
-            }
-            RecorderEvent::Warning { kind, payload } => {
-                map.serialize_entry("kind", "warning")?;
-                map.serialize_entry("warning_kind", kind)?;
-                map.serialize_entry("payload", payload)?;
-            }
-            RecorderEvent::SearchEventEmitted { event } => {
-                map.serialize_entry("kind", "search_event")?;
-                map.serialize_entry("event", event)?;
-            }
-            RecorderEvent::TurnEnd {
-                turn_id,
-                final_action,
-                final_source_urls,
-                total_latency_ms,
-                error,
-            } => {
-                map.serialize_entry("kind", "turn_end")?;
-                map.serialize_entry("turn_id", turn_id)?;
-                map.serialize_entry("final_action", final_action)?;
-                map.serialize_entry("final_source_urls", final_source_urls)?;
-                map.serialize_entry("total_latency_ms", total_latency_ms)?;
-                map.serialize_entry("error", error)?;
-            }
-
-            // ─── Chat domain ──────────────────────────────────────────
             RecorderEvent::ConversationStart {
                 model,
                 system_prompt,
@@ -1035,7 +755,6 @@ mod tests {
     #[test]
     fn trace_domain_dir_strings_match_layout() {
         assert_eq!(TraceDomain::Chat.dir(), "chat");
-        assert_eq!(TraceDomain::Search.dir(), "search");
     }
 
     #[test]
@@ -1044,85 +763,6 @@ mod tests {
             serde_json::to_string(&TraceDomain::Chat).unwrap(),
             "\"chat\""
         );
-        assert_eq!(
-            serde_json::to_string(&TraceDomain::Search).unwrap(),
-            "\"search\""
-        );
-    }
-
-    #[test]
-    fn search_variants_belong_to_search_domain() {
-        let cases = vec![
-            RecorderEvent::TurnStart {
-                turn_id: "t".into(),
-                query: "q".into(),
-                model: "m".into(),
-                runtime_config: json!({}),
-                history_len: 0,
-            },
-            RecorderEvent::LlmCall {
-                stage: "router".into(),
-                endpoint: "e".into(),
-                request_body: json!({}),
-                response_raw: None,
-                latency_ms: 0,
-                error: None,
-            },
-            RecorderEvent::StreamingLlmCall {
-                stage: "synthesis".into(),
-                endpoint: "e".into(),
-                request_body: json!({}),
-                final_text: None,
-                tokens: 0,
-                latency_ms: 0,
-                error: None,
-            },
-            RecorderEvent::SearxngQuery {
-                query: "q".into(),
-                url: "u".into(),
-                status: None,
-                response_raw: None,
-                normalized_results: json!([]),
-                latency_ms: 0,
-                error: None,
-            },
-            RecorderEvent::ReaderBatch {
-                urls: vec![],
-                per_url: vec![],
-                batch_latency_ms: 0,
-                batch_error: None,
-            },
-            RecorderEvent::ChunkerBatch {
-                page_url: "u".into(),
-                chunk_count: 0,
-                chunks: vec![],
-            },
-            RecorderEvent::RerankResult {
-                query: "q".into(),
-                input_count: 0,
-                top_k: vec![],
-            },
-            RecorderEvent::JudgeVerdict {
-                stage: "snippet".into(),
-                raw: "{}".into(),
-                normalized: json!({}),
-            },
-            RecorderEvent::Warning {
-                kind: "k".into(),
-                payload: json!({}),
-            },
-            RecorderEvent::SearchEventEmitted { event: json!({}) },
-            RecorderEvent::TurnEnd {
-                turn_id: "t".into(),
-                final_action: "answer".into(),
-                final_source_urls: vec![],
-                total_latency_ms: 0,
-                error: None,
-            },
-        ];
-        for e in cases {
-            assert_eq!(e.domain(), TraceDomain::Search, "{:?} should be search", e);
-        }
     }
 
     #[test]
@@ -1201,41 +841,11 @@ mod tests {
     fn is_conversation_end_only_true_for_conversation_end_variant() {
         assert!(RecorderEvent::ConversationEnd { reason: "x".into() }.is_conversation_end());
         assert!(!RecorderEvent::AssistantTokens { chunk: "x".into() }.is_conversation_end());
-        assert!(!RecorderEvent::Warning {
-            kind: "x".into(),
-            payload: json!({}),
+        assert!(!RecorderEvent::SearchRequeried {
+            missing: "x".into(),
+            requery: "y".into(),
         }
         .is_conversation_end());
-    }
-
-    #[test]
-    fn is_turn_end_only_true_for_turn_end_variant() {
-        assert!(RecorderEvent::TurnEnd {
-            turn_id: "t".into(),
-            final_action: "answered".into(),
-            final_source_urls: vec![],
-            total_latency_ms: 0,
-            error: None,
-        }
-        .is_turn_end());
-        assert!(!RecorderEvent::ConversationEnd { reason: "x".into() }.is_turn_end());
-        assert!(!RecorderEvent::AssistantTokens { chunk: "x".into() }.is_turn_end());
-    }
-
-    #[test]
-    fn llm_call_request_body_returns_body_for_llm_call_and_none_for_others() {
-        let ev = RecorderEvent::LlmCall {
-            stage: "router".into(),
-            endpoint: "http://x/v1/chat/completions".into(),
-            request_body: json!({"model": "m"}),
-            response_raw: None,
-            latency_ms: 1,
-            error: None,
-        };
-        assert_eq!(ev.llm_call_request_body(), Some(&json!({"model": "m"})));
-
-        let other = RecorderEvent::AssistantTokens { chunk: "hi".into() };
-        assert!(other.llm_call_request_body().is_none());
     }
 
     #[test]
@@ -1243,10 +853,7 @@ mod tests {
         let r = NoopRecorder;
         r.record(
             &cid("conv-x"),
-            RecorderEvent::Warning {
-                kind: "x".into(),
-                payload: json!({}),
-            },
+            RecorderEvent::AssistantTokens { chunk: "x".into() },
         );
         // No panic, no I/O.
     }
@@ -1309,146 +916,6 @@ mod tests {
         assert_eq!(lines[0]["model"], "qwen3:4b");
         assert_eq!(lines[1]["kind"], "user_message");
         assert_eq!(lines[1]["content"], "summarize");
-    }
-
-    #[test]
-    fn file_recorder_serializes_every_search_variant() {
-        let root = fresh_dir();
-        let r = FileRecorder::for_conversation(&root, TraceDomain::Search, &cid("conv-all"));
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::TurnStart {
-                turn_id: "t".into(),
-                query: "q".into(),
-                model: "m".into(),
-                runtime_config: json!({}),
-                history_len: 0,
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::LlmCall {
-                stage: "router".into(),
-                endpoint: "http://x/api/chat".into(),
-                request_body: json!({"messages": []}),
-                response_raw: Some("{}".into()),
-                latency_ms: 12,
-                error: None,
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::StreamingLlmCall {
-                stage: "synthesis".into(),
-                endpoint: "http://x/api/chat".into(),
-                request_body: json!({}),
-                final_text: Some("answer".into()),
-                tokens: 7,
-                latency_ms: 100,
-                error: None,
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::SearxngQuery {
-                query: "rust".into(),
-                url: "http://s/search".into(),
-                status: Some(200),
-                response_raw: Some("{}".into()),
-                normalized_results: json!([]),
-                latency_ms: 5,
-                error: None,
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::ReaderBatch {
-                urls: vec!["http://a".into()],
-                per_url: vec![ReaderUrlOutcome {
-                    url: "http://a".into(),
-                    status: Some(200),
-                    latency_ms: 9,
-                    raw_body: Some("<html/>".into()),
-                    extracted_text: Some("hi".into()),
-                    error: None,
-                }],
-                batch_latency_ms: 11,
-                batch_error: None,
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::ChunkerBatch {
-                page_url: "http://a".into(),
-                chunk_count: 1,
-                chunks: vec!["chunk".into()],
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::RerankResult {
-                query: "rust".into(),
-                input_count: 1,
-                top_k: vec![RerankedChunk {
-                    source_url: "http://a".into(),
-                    score: 0.8,
-                    text: "chunk".into(),
-                }],
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::JudgeVerdict {
-                stage: "snippet".into(),
-                raw: "{}".into(),
-                normalized: json!({"sufficiency": "Sufficient"}),
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::Warning {
-                kind: "JudgeFailed".into(),
-                payload: json!({"reason": "parse"}),
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::SearchEventEmitted {
-                event: json!({"type": "Done"}),
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::TurnEnd {
-                turn_id: "t".into(),
-                final_action: "answer".into(),
-                final_source_urls: vec!["http://a".into()],
-                total_latency_ms: 1234,
-                error: None,
-            },
-        );
-        let lines = read_lines(r.path());
-        let kinds: Vec<&str> = lines.iter().map(|l| l["kind"].as_str().unwrap()).collect();
-        assert_eq!(
-            kinds,
-            vec![
-                "turn_start",
-                "llm_call",
-                "streaming_llm_call",
-                "searxng_query",
-                "reader_batch",
-                "chunker_batch",
-                "rerank_result",
-                "judge_verdict",
-                "warning",
-                "search_event",
-                "turn_end"
-            ]
-        );
-        for line in &lines {
-            assert_eq!(line["domain"], "search");
-            assert_eq!(line["conversation_id"], "conv-all");
-        }
     }
 
     #[test]
@@ -1599,7 +1066,7 @@ mod tests {
         // next to a healthy one, exactly the case the trace previously had no
         // way to show.
         let root = fresh_dir();
-        let r = FileRecorder::for_conversation(&root, TraceDomain::Search, &cid("conv-engine"));
+        let r = FileRecorder::for_conversation(&root, TraceDomain::Chat, &cid("conv-engine"));
         r.record(
             &cid("conv-engine"),
             RecorderEvent::SearchRetrieved {
@@ -1640,7 +1107,7 @@ mod tests {
         // a trace consumer can tell it apart from the turn's terminal
         // (post-requery) record.
         let root = fresh_dir();
-        let r = FileRecorder::for_conversation(&root, TraceDomain::Search, &cid("conv-round1"));
+        let r = FileRecorder::for_conversation(&root, TraceDomain::Chat, &cid("conv-round1"));
         r.record(
             &cid("conv-round1"),
             RecorderEvent::SearchRetrieved {
@@ -1664,7 +1131,7 @@ mod tests {
         // had before the field existed, so no existing trace consumer's
         // schema check needs updating.
         let root = fresh_dir();
-        let r = FileRecorder::for_conversation(&root, TraceDomain::Search, &cid("conv-final"));
+        let r = FileRecorder::for_conversation(&root, TraceDomain::Chat, &cid("conv-final"));
         r.record(
             &cid("conv-final"),
             RecorderEvent::SearchRetrieved {
@@ -1684,7 +1151,7 @@ mod tests {
         // their SearchRetrieved records must carry an empty engine_stats,
         // not a stale or default-filled list.
         let root = fresh_dir();
-        let r = FileRecorder::for_conversation(&root, TraceDomain::Search, &cid("conv-wiki"));
+        let r = FileRecorder::for_conversation(&root, TraceDomain::Chat, &cid("conv-wiki"));
         r.record(
             &cid("conv-wiki"),
             RecorderEvent::SearchRetrieved {
@@ -1722,8 +1189,6 @@ mod tests {
         let root = fresh_dir();
         let r = FileRecorder::for_conversation(&root, TraceDomain::Chat, &cid("conv-x"));
         assert_eq!(r.path(), root.join("chat").join("conv-x.jsonl"));
-        let r2 = FileRecorder::for_conversation(&root, TraceDomain::Search, &cid("conv-y"));
-        assert_eq!(r2.path(), root.join("search").join("conv-y.jsonl"));
     }
 
     #[test]
@@ -1736,10 +1201,7 @@ mod tests {
         ));
         r.record(
             &cid("conv-arc"),
-            RecorderEvent::Warning {
-                kind: "k".into(),
-                payload: json!({}),
-            },
+            RecorderEvent::AssistantTokens { chunk: "k".into() },
         );
     }
 
@@ -1756,10 +1218,7 @@ mod tests {
         );
         r.record(
             &cid("conv-fail"),
-            RecorderEvent::Warning {
-                kind: "k".into(),
-                payload: json!({}),
-            },
+            RecorderEvent::AssistantTokens { chunk: "k".into() },
         );
         assert!(
             r.failed.load(Ordering::SeqCst),
@@ -1768,10 +1227,7 @@ mod tests {
         // Second call exits at the latch check, exercising that branch.
         r.record(
             &cid("conv-fail"),
-            RecorderEvent::Warning {
-                kind: "k2".into(),
-                payload: json!({}),
-            },
+            RecorderEvent::AssistantTokens { chunk: "k2".into() },
         );
     }
 
@@ -1784,10 +1240,7 @@ mod tests {
         std::fs::create_dir_all(r.path()).unwrap();
         r.record(
             &cid("conv-dir"),
-            RecorderEvent::Warning {
-                kind: "k".into(),
-                payload: json!({}),
-            },
+            RecorderEvent::AssistantTokens { chunk: "k".into() },
         );
         assert!(
             r.failed.load(Ordering::SeqCst),
@@ -1807,10 +1260,7 @@ mod tests {
         );
         r.record(
             &cid("conv-warn"),
-            RecorderEvent::Warning {
-                kind: "k".into(),
-                payload: json!({}),
-            },
+            RecorderEvent::AssistantTokens { chunk: "k".into() },
         );
         assert!(r.warned.load(Ordering::SeqCst));
         r.warn_once("ignored");
@@ -1878,17 +1328,11 @@ mod tests {
         let m = MockRecorder::new();
         m.record(
             &cid("conv-a"),
-            RecorderEvent::Warning {
-                kind: "a".into(),
-                payload: json!({}),
-            },
+            RecorderEvent::AssistantTokens { chunk: "a".into() },
         );
         m.record(
             &cid("conv-b"),
-            RecorderEvent::Warning {
-                kind: "b".into(),
-                payload: json!({}),
-            },
+            RecorderEvent::AssistantTokens { chunk: "b".into() },
         );
         assert_eq!(m.len(), 2);
         let snap = m.snapshot();
@@ -1898,7 +1342,7 @@ mod tests {
             .iter()
             .map(|(_, e)| serde_json::to_value(e).unwrap())
             .collect();
-        assert_eq!(dump[0]["warning_kind"], "a");
-        assert_eq!(dump[1]["warning_kind"], "b");
+        assert_eq!(dump[0]["chunk"], "a");
+        assert_eq!(dump[1]["chunk"], "b");
     }
 }

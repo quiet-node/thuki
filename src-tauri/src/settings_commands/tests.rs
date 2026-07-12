@@ -42,17 +42,10 @@ max_display_lines = 4
 max_display_chars = 300
 max_context_length = 4096
 
-[search]
-searxng_url = "http://127.0.0.1:25017"
-reader_url = "http://127.0.0.1:25018"
-max_iterations = 3
-top_k_urls = 10
-searxng_max_results = 10
-search_timeout_s = 20
-reader_per_url_timeout_s = 10
-reader_batch_timeout_s = 30
-judge_timeout_s = 30
-router_timeout_s = 45
+[updater]
+auto_check = true
+check_interval_hours = 24
+manifest_url = "https://github.com/quiet-node/thuki/releases/latest/download/latest.json"
 "#;
 
 fn parse_sample() -> DocumentMut {
@@ -116,7 +109,7 @@ vision = false
 #[test]
 fn allowed_fields_count_matches_schema_field_count() {
     // Hand-counted from `AppConfig`: inference(2) + prompt(1) + window(7) + quote(3)
-    // + behavior(3) + search(11) + debug(1) + updater(3) = 31 tunable flat fields.
+    // + behavior(3) + debug(1) + updater(3) = 20 tunable flat fields.
     // The inference section's two flat tunables are `keep_warm_inactivity_minutes`
     // and `num_ctx`; `active_provider` and the `providers` array are NOT flat
     // fields: they are written through the dedicated `set_active_model` /
@@ -129,7 +122,7 @@ fn allowed_fields_count_matches_schema_field_count() {
     // and is intentionally absent from ALLOWED_FIELDS. If this assertion fails, the
     // schema has drifted from the allowlist and someone added a field without
     // extending ALLOWED_FIELDS.
-    assert_eq!(ALLOWED_FIELDS.len(), 31);
+    assert_eq!(ALLOWED_FIELDS.len(), 20);
 }
 
 #[test]
@@ -142,7 +135,6 @@ fn allowed_sections_match_app_config_top_level_keys() {
             "window",
             "quote",
             "behavior",
-            "search",
             "debug",
             "updater"
         ]
@@ -152,8 +144,8 @@ fn allowed_sections_match_app_config_top_level_keys() {
 #[test]
 fn is_allowed_field_accepts_known_pair() {
     assert!(is_allowed_field("inference", "num_ctx"));
-    assert!(is_allowed_field("search", "router_timeout_s"));
-    assert!(is_allowed_field("search", "pipeline_wall_clock_budget_s"));
+    assert!(is_allowed_field("updater", "manifest_url"));
+    assert!(is_allowed_field("window", "max_images"));
 }
 
 #[test]
@@ -173,6 +165,9 @@ fn is_allowed_section_accepts_known() {
 fn is_allowed_section_rejects_unknown() {
     assert!(!is_allowed_section("activation"));
     assert!(!is_allowed_section(""));
+    // The legacy `[search]` section was removed end-to-end; it must reject
+    // like any other unknown section, not fall through as allowed.
+    assert!(!is_allowed_section("search"));
 }
 
 // ─── coerce_json_to_toml ────────────────────────────────────────────────────
@@ -180,33 +175,37 @@ fn is_allowed_section_rejects_unknown() {
 #[test]
 fn coerce_integer_accepts_json_integer() {
     let doc = parse_sample();
-    let item = doc.get("search").unwrap().get("search_timeout_s").unwrap();
-    let coerced = coerce_json_to_toml(item, json!(500), "search", "search_timeout_s").unwrap();
-    assert_eq!(coerced.as_integer(), Some(500));
+    let item = doc.get("updater").unwrap().get("check_interval_hours").unwrap();
+    let coerced =
+        coerce_json_to_toml(item, json!(48), "updater", "check_interval_hours").unwrap();
+    assert_eq!(coerced.as_integer(), Some(48));
 }
 
 #[test]
 fn coerce_integer_accepts_whole_float() {
     let doc = parse_sample();
-    let item = doc.get("search").unwrap().get("search_timeout_s").unwrap();
-    let coerced = coerce_json_to_toml(item, json!(500.0), "search", "search_timeout_s").unwrap();
-    assert_eq!(coerced.as_integer(), Some(500));
+    let item = doc.get("updater").unwrap().get("check_interval_hours").unwrap();
+    let coerced =
+        coerce_json_to_toml(item, json!(48.0), "updater", "check_interval_hours").unwrap();
+    assert_eq!(coerced.as_integer(), Some(48));
 }
 
 #[test]
 fn coerce_integer_rejects_fractional_float() {
     let doc = parse_sample();
-    let item = doc.get("search").unwrap().get("search_timeout_s").unwrap();
-    let err = coerce_json_to_toml(item, json!(500.5), "search", "search_timeout_s").unwrap_err();
-    matches_type_mismatch(&err, "search", "search_timeout_s");
+    let item = doc.get("updater").unwrap().get("check_interval_hours").unwrap();
+    let err =
+        coerce_json_to_toml(item, json!(48.5), "updater", "check_interval_hours").unwrap_err();
+    matches_type_mismatch(&err, "updater", "check_interval_hours");
 }
 
 #[test]
 fn coerce_integer_rejects_string() {
     let doc = parse_sample();
-    let item = doc.get("search").unwrap().get("search_timeout_s").unwrap();
-    let err = coerce_json_to_toml(item, json!("nope"), "search", "search_timeout_s").unwrap_err();
-    matches_type_mismatch(&err, "search", "search_timeout_s");
+    let item = doc.get("updater").unwrap().get("check_interval_hours").unwrap();
+    let err =
+        coerce_json_to_toml(item, json!("nope"), "updater", "check_interval_hours").unwrap_err();
+    matches_type_mismatch(&err, "updater", "check_interval_hours");
 }
 
 #[test]
@@ -418,13 +417,13 @@ fn patch_document_inserts_missing_string_field() {
 
 #[test]
 fn patch_document_inserts_missing_integer_field() {
-    let toml = "[search]\ntop_k_urls = 10\n";
+    let toml = "[window]\noverlay_width = 600.0\n";
     let mut doc: DocumentMut = toml.parse().unwrap();
-    patch_document(&mut doc, "search", "max_iterations", json!(5)).unwrap();
+    patch_document(&mut doc, "window", "max_images", json!(5)).unwrap();
     let inserted = doc
-        .get("search")
+        .get("window")
         .unwrap()
-        .get("max_iterations")
+        .get("max_images")
         .unwrap()
         .as_integer()
         .expect("integer");
@@ -691,15 +690,18 @@ fn write_field_to_disk_persists_and_returns_resolved_config() {
 
     let resolved = write_field_to_disk(
         &path,
-        "search",
-        "searxng_url",
-        json!("http://10.0.0.1:25017"),
+        "updater",
+        "manifest_url",
+        json!("https://example.com/latest.json"),
     )
     .unwrap();
-    assert_eq!(resolved.search.searxng_url, "http://10.0.0.1:25017");
+    assert_eq!(
+        resolved.updater.manifest_url,
+        "https://example.com/latest.json"
+    );
 
     let on_disk = std::fs::read_to_string(&path).unwrap();
-    assert!(on_disk.contains("http://10.0.0.1:25017"));
+    assert!(on_disk.contains("https://example.com/latest.json"));
 }
 
 #[test]
@@ -719,20 +721,6 @@ fn write_field_to_disk_creates_section_absent_from_older_file() {
     let on_disk = std::fs::read_to_string(&path).unwrap();
     assert!(on_disk.contains("[behavior]"));
     assert!(on_disk.contains("auto_replace = true"));
-}
-
-#[test]
-fn write_field_to_disk_accepts_search_pipeline_wall_clock_budget() {
-    let dir = tempdir();
-    let path = dir.join("config.toml");
-    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
-
-    let resolved =
-        write_field_to_disk(&path, "search", "pipeline_wall_clock_budget_s", json!(90)).unwrap();
-    assert_eq!(resolved.search.pipeline_wall_clock_budget_s, 90);
-
-    let on_disk = std::fs::read_to_string(&path).unwrap();
-    assert!(on_disk.contains("pipeline_wall_clock_budget_s = 90"));
 }
 
 #[test]
@@ -796,7 +784,8 @@ fn write_field_to_disk_rejects_unknown_field() {
 fn write_field_to_disk_propagates_read_error_for_missing_file() {
     let dir = tempdir();
     let path = dir.join("missing.toml");
-    let err = write_field_to_disk(&path, "search", "searxng_url", json!("http://x")).unwrap_err();
+    let err =
+        write_field_to_disk(&path, "updater", "manifest_url", json!("http://x")).unwrap_err();
     matches!(err, ConfigError::IoError { .. });
 }
 
@@ -805,8 +794,8 @@ fn write_field_to_disk_propagates_patch_error_for_type_mismatch() {
     let dir = tempdir();
     let path = dir.join("config.toml");
     std::fs::write(&path, SAMPLE_CONFIG).unwrap();
-    let err = write_field_to_disk(&path, "search", "searxng_url", json!(42)).unwrap_err();
-    matches_type_mismatch(&err, "search", "searxng_url");
+    let err = write_field_to_disk(&path, "updater", "manifest_url", json!(42)).unwrap_err();
+    matches_type_mismatch(&err, "updater", "manifest_url");
 }
 
 #[cfg(unix)]
@@ -825,9 +814,9 @@ fn write_field_to_disk_propagates_io_error_when_parent_dir_is_readonly() {
 
     let err = write_field_to_disk(
         &path,
-        "search",
-        "searxng_url",
-        json!("http://10.0.0.1:25017"),
+        "updater",
+        "manifest_url",
+        json!("https://example.com/latest2.json"),
     )
     .unwrap_err();
 
@@ -1470,12 +1459,12 @@ fn reset_section_on_disk_preserves_other_sections() {
     let path = dir.join("config.toml");
     std::fs::write(&path, SAMPLE_CONFIG).unwrap();
 
-    // Change the search section, then reset only inference.
-    write_field_to_disk(&path, "search", "max_iterations", json!(7)).unwrap();
+    // Change the updater section, then reset only inference.
+    write_field_to_disk(&path, "updater", "check_interval_hours", json!(48)).unwrap();
 
-    // Reset only inference; search.max_iterations should still be 7.
+    // Reset only inference; updater.check_interval_hours should still be 48.
     let resolved = reset_section_on_disk(&path, Some("inference")).unwrap();
-    assert_eq!(resolved.search.max_iterations, 7);
+    assert_eq!(resolved.updater.check_interval_hours, 48);
 }
 
 #[test]
@@ -1484,10 +1473,10 @@ fn reset_section_on_disk_whole_file_resets_everything() {
     let path = dir.join("config.toml");
     std::fs::write(&path, SAMPLE_CONFIG).unwrap();
 
-    write_field_to_disk(&path, "search", "max_iterations", json!(7)).unwrap();
+    write_field_to_disk(&path, "updater", "check_interval_hours", json!(48)).unwrap();
     let resolved = reset_section_on_disk(&path, None).unwrap();
-    // Default is 3 per defaults.rs.
-    assert_eq!(resolved.search.max_iterations, 3);
+    // Default is 24 per defaults.rs.
+    assert_eq!(resolved.updater.check_interval_hours, 24);
 }
 
 #[test]

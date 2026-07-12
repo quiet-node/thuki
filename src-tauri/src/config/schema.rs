@@ -15,16 +15,12 @@ use serde::{Deserialize, Serialize};
 
 use super::defaults::{
     DEFAULT_ACTIVE_PROVIDER, DEFAULT_AUTO_CLOSE, DEFAULT_AUTO_REPLACE, DEFAULT_AUTO_SEARCH,
-    DEFAULT_BUILTIN_LABEL, DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_JUDGE_TIMEOUT_S,
-    DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
-    DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_LABEL, DEFAULT_OLLAMA_URL,
-    DEFAULT_OVERLAY_WIDTH, DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
-    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
-    DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
-    DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
-    DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_CUSTOMIZED, DEFAULT_SYSTEM_PROMPT_BASE,
-    DEFAULT_TEXT_BASE_PX, DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX,
-    DEFAULT_TEXT_LINE_HEIGHT, DEFAULT_TOP_K_URLS, DEFAULT_UPDATER_AUTO_CHECK,
+    DEFAULT_BUILTIN_LABEL, DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
+    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_LABEL,
+    DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
+    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_SYSTEM_CUSTOMIZED,
+    DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX, DEFAULT_TEXT_FONT_WEIGHT,
+    DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT, DEFAULT_UPDATER_AUTO_CHECK,
     DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL, PROVIDER_ID_BUILTIN,
     PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
 };
@@ -318,78 +314,13 @@ impl Default for BehaviorSection {
     }
 }
 
-/// Search pipeline and service configuration.
-///
-/// Service URLs control where the SearXNG and reader sidecar processes live.
-/// The defaults match the Docker sandbox bindings in `sandbox/docker-compose.yml`.
-/// Users who remap ports or run the services on a different host set these in
-/// `[search]` in config.toml; no rebuild required.
-///
-/// Pipeline tuning knobs (`max_iterations`, `top_k_urls`) let users trade
-/// search quality against latency. Timeout fields cover slow networks and slow
-/// local hardware. Values that would create an inconsistency (e.g.
-/// `reader_batch_timeout_s <= reader_per_url_timeout_s`) are silently corrected
-/// by the loader.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct SearchSection {
-    /// Base URL of the SearXNG instance (scheme + host + port, no path).
-    /// The `/search` endpoint is appended automatically.
-    pub searxng_url: String,
-    /// Base URL of the reader/extractor sidecar (scheme + host + port, no path).
-    pub reader_url: String,
-    /// Maximum number of search-refine iterations before the pipeline gives up.
-    pub max_iterations: u32,
-    /// Number of top-ranked URLs forwarded to the reader after reranking.
-    pub top_k_urls: u32,
-    /// Maximum number of results each SearXNG query contributes to the
-    /// reranker. Acts before rerank to bound prompt size and latency: lower
-    /// values trade recall for speed; higher values give the reranker more
-    /// candidates per query.
-    pub searxng_max_results: u32,
-    /// Seconds before a SearXNG query is abandoned.
-    pub search_timeout_s: u64,
-    /// Seconds allowed for a single URL fetch inside the reader.
-    pub reader_per_url_timeout_s: u64,
-    /// Seconds allowed for the full parallel reader batch to complete.
-    /// Must exceed `reader_per_url_timeout_s`; the loader corrects violations.
-    pub reader_batch_timeout_s: u64,
-    /// Seconds before the judge LLM call is abandoned.
-    pub judge_timeout_s: u64,
-    /// Seconds before the router LLM call is abandoned.
-    pub router_timeout_s: u64,
-    /// Wall-clock budget for the full `/search` pipeline turn (seconds).
-    /// When exceeded, the gap-refinement loop bails out early and the
-    /// pipeline force-synthesizes on whatever evidence it has gathered,
-    /// surfacing a `BudgetExhausted` warning. Raise for deeper research;
-    /// lower for snappier interactive use.
-    pub pipeline_wall_clock_budget_s: u64,
-}
-
-impl Default for SearchSection {
-    fn default() -> Self {
-        Self {
-            searxng_url: DEFAULT_SEARXNG_URL.to_string(),
-            reader_url: DEFAULT_READER_URL.to_string(),
-            max_iterations: DEFAULT_MAX_ITERATIONS,
-            top_k_urls: DEFAULT_TOP_K_URLS,
-            searxng_max_results: DEFAULT_SEARXNG_MAX_RESULTS,
-            search_timeout_s: DEFAULT_SEARCH_TIMEOUT_S,
-            reader_per_url_timeout_s: DEFAULT_READER_PER_URL_TIMEOUT_S,
-            reader_batch_timeout_s: DEFAULT_READER_BATCH_TIMEOUT_S,
-            judge_timeout_s: DEFAULT_JUDGE_TIMEOUT_S,
-            router_timeout_s: DEFAULT_ROUTER_TIMEOUT_S,
-            pipeline_wall_clock_budget_s: DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S,
-        }
-    }
-}
-
 /// Developer and power-user debugging knobs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct DebugSection {
-    /// Records every chat conversation and `/search` session to JSON-Lines
-    /// files under `app_data_dir/traces/{chat,search}/<conversation_id>.jsonl`.
+    /// Records every chat conversation (including the built-in web-search
+    /// turns the `/search` command and the auto-search pre-pass drive) to
+    /// JSON-Lines files under `app_data_dir/traces/chat/<conversation_id>.jsonl`.
     /// Off by default; toggleable from Settings.
     pub trace_enabled: bool,
 }
@@ -453,7 +384,6 @@ pub struct AppConfig {
     pub window: WindowSection,
     pub quote: QuoteSection,
     pub behavior: BehaviorSection,
-    pub search: SearchSection,
     pub debug: DebugSection,
     #[serde(default)]
     pub updater: UpdaterSection,
