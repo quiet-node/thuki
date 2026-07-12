@@ -450,7 +450,9 @@ export function useModel(
         retrySnapshot: forceSearch
           ? {
               kind: 'search',
-              query: promptOverride ?? displayContent,
+              // `runSearchTurn` always passes the stripped query as
+              // `promptOverride`; forceSearch is never set from `ask()`.
+              query: promptOverride!,
               displayContent,
               quotedText,
               userMessageId,
