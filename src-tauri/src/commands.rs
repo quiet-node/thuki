@@ -1272,6 +1272,13 @@ pub(crate) fn route_activity_guard(
 pub(crate) enum OversizePolicy {
     /// Refuse an over-large load with the user-facing insufficient-memory
     /// error. `forced` is the user's "load anyway" and bypasses the gate.
+    ///
+    /// Production `ask_model` runs the same gate inline via
+    /// `preflight_memory_gate` + `allow_oversized`. This variant remains for
+    /// [`resolve_llm_transport`]'s unit tests (and any future non-command
+    /// caller that wants the user-facing block path); the only live production
+    /// constructor today is [`SilentSkip`] from background title generation.
+    #[allow(dead_code)]
     Block {
         /// Whether the user explicitly opted to load the over-large model.
         forced: bool,
