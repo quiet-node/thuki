@@ -629,7 +629,9 @@ export function ChatBubble({
             </AnimatePresence>
           )}
           {showActionBar && (
-            <div className="h-6 flex items-center gap-3">
+            <div
+              className={`h-6 flex items-center gap-3${isVerifyingSources ? ' mt-1.5' : ''}`}
+            >
               {isVerifyingSources && hasSearchSources ? (
                 <span
                   data-testid="sources-verifying-pill"
