@@ -40,7 +40,7 @@ describe('ConversationView', () => {
     expect(container.textContent).toContain('response...');
   });
 
-  it('shows TypingIndicator when isGenerating with empty assistant content', () => {
+  it('shows RequestStatusStrip when isGenerating with empty assistant content', () => {
     const { container } = render(
       <ConversationView
         messages={[{ id: '1', role: 'assistant' as const, content: '' }]}
@@ -48,12 +48,13 @@ describe('ConversationView', () => {
         onClose={vi.fn()}
       />,
     );
-    // New indicator: 9-dot spiral grid
-    const dots = container.querySelectorAll('.rounded-full');
-    expect(dots.length).toBeGreaterThanOrEqual(9);
+    // Unified strip: Y1 three-dot motion host
+    expect(
+      container.querySelectorAll('[data-testid="three-dot-motion"]').length,
+    ).toBeGreaterThanOrEqual(1);
   });
 
-  it('hides TypingIndicator when assistant content arrives', () => {
+  it('hides RequestStatusStrip when assistant content arrives', () => {
     const { container } = render(
       <ConversationView
         messages={[
@@ -63,8 +64,9 @@ describe('ConversationView', () => {
         onClose={vi.fn()}
       />,
     );
-    const dots = container.querySelectorAll('.rounded-full.bg-primary\\/70');
-    expect(dots).toHaveLength(0);
+    expect(
+      container.querySelectorAll('[data-testid="three-dot-motion"]'),
+    ).toHaveLength(0);
   });
 
   it('renders WindowControls with onClose', () => {
@@ -635,7 +637,7 @@ describe('ConversationView', () => {
     });
 
     it('does not show TypingIndicator when assistant has thinkingContent but no content', () => {
-      const { container } = render(
+      render(
         <ConversationView
           messages={[
             {
@@ -649,9 +651,9 @@ describe('ConversationView', () => {
           onClose={vi.fn()}
         />,
       );
-      // TypingIndicator renders 9 pulsing dots
-      const dots = container.querySelectorAll('.rounded-full.bg-primary\\/70');
-      expect(dots).toHaveLength(0);
+      // Reasoning path owns chrome via ReasoningBlock's LoadingStage (unified
+      // strip). No second external ConversationView loading row for /think.
+      expect(screen.getByTestId('loading-label')).toBeInTheDocument();
     });
   });
 

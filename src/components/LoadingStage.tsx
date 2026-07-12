@@ -1,17 +1,17 @@
 import type { ReactNode } from 'react';
-import { TypingIndicator } from './TypingIndicator';
+import { RequestStatusStrip } from './RequestStatusStrip';
 
 interface LoadingStageProps {
   /**
-   * Optional label shown next to the 9-dot indicator. When `null` or
-   * `undefined`, only the dots render (no label text). The label animates
-   * with the shared shimmer sweep used for search/thinking stages.
+   * Optional label shown next to the three-dot motion. When `null` or
+   * `undefined`, only the dots render (no label text). The label uses the
+   * shared shimmer sweep plus tracking-settle on change.
    */
   label?: string | null;
   /**
-   * Compact layout used in secondary UI surfaces like the search trace
-   * disclosure header, where the stage label should stay supportive rather
-   * than dominate the response body.
+   * Compact layout used in secondary UI surfaces like the search progress
+   * header, where the stage label should stay supportive rather than dominate
+   * the response body.
    */
   compact?: boolean;
   /**
@@ -23,15 +23,11 @@ interface LoadingStageProps {
 }
 
 /**
- * Shared loading row: 9-dot `TypingIndicator` on the left, an optional
- * shimmer-animated label on the right. Used as the stable loading state for
- * both `/search` stages ("Analyzing query", "Searching the web") and the
- * `/think` flow ("Reasoning..."). Keeps the visual pattern consistent across
- * long-running backend processes.
+ * Unified loading row for engine cold-start, web search stages, and `/think`.
  *
- * The outer wrapper is a `span` with `inline-flex` so the component can sit
- * inside a `<button>` (e.g. the reasoning-block disclosure row) without
- * producing invalid block-inside-button HTML.
+ * Thin wrapper around {@link RequestStatusStrip} so existing call sites keep a
+ * stable import path. Presentation lives entirely in RequestStatusStrip
+ * (Y1 three-dot motion + shimmer label).
  */
 export function LoadingStage({
   label,
@@ -39,32 +35,10 @@ export function LoadingStage({
   labelPrefix,
 }: LoadingStageProps) {
   return (
-    <span className="inline-flex items-center gap-2">
-      <span className="shrink-0">
-        <TypingIndicator />
-      </span>
-      {label ? (
-        <span
-          data-testid="loading-stage-title"
-          className={`inline-flex min-w-0 items-center ${compact ? 'gap-1 text-[11px] leading-none' : 'gap-1.5 text-xs'}`}
-        >
-          {labelPrefix ? (
-            <span
-              data-testid="loading-label-prefix"
-              className="inline-flex shrink-0 items-center"
-            >
-              {labelPrefix}
-            </span>
-          ) : null}
-          <span
-            data-testid="loading-label"
-            data-label={label}
-            className="loading-label min-w-0"
-          >
-            {label}
-          </span>
-        </span>
-      ) : null}
-    </span>
+    <RequestStatusStrip
+      label={label}
+      compact={compact}
+      labelPrefix={labelPrefix}
+    />
   );
 }

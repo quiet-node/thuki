@@ -325,7 +325,7 @@ export function ConversationView({
             !msg.content &&
             !msg.thinkingContent;
 
-          // Hide the empty assistant placeholder; the TypingIndicator already
+          // Hide the empty assistant placeholder; RequestStatusStrip already
           // covers this visual state. Search and /think turns still render the
           // bubble so progress / reasoning chrome is visible.
           if (
