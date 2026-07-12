@@ -4479,7 +4479,7 @@ mod tests {
         assert_eq!(audit.unsupported_indices, vec![1]);
         assert!(is_total_citation_failure(&audit));
         let cleaned = finalize_answer_after_audit(answer, &audit);
-        assert!(cleaned.contains("Thuki could not confirm"));
+        assert!(cleaned.contains("found sources but could not verify"));
         assert!(!cleaned.contains("[1]"));
 
         // Live draft differed after audit cleanup: SetContent then Done.

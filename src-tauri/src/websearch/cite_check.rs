@@ -215,16 +215,17 @@ fn format_index_markers(indices: &[usize]) -> String {
 }
 
 /// User-facing note used only after repair rounds are exhausted and **every**
-/// citation still fails the audit. Speaks as Thuki owning the failure, not as
-/// "the sources are unreliable," and optionally points at a stronger model.
-/// Returns `None` when the audit is not a total failure.
+/// citation still fails the audit. Speaks as Thuki owning the verification
+/// failure (not retrieval failure: sources were found), and optionally points
+/// at a stronger model. Returns `None` when the audit is not a total failure.
 pub fn honest_failure_note(audit: &CitationAudit) -> Option<String> {
     if !is_total_citation_failure(audit) {
         return None;
     }
     Some(
-        "*Thuki could not confirm the cited facts against the pages it retrieved. \
-         Try rephrasing, or switch to a larger model in Settings for a stronger answer.*"
+        "*Thuki found sources but could not verify the answer's citations against \
+         the page text. Treat specific claims carefully, or try rephrasing or a \
+         larger model in Settings.*"
             .to_string(),
     )
 }
@@ -1881,7 +1882,7 @@ mod tests {
     fn honest_failure_note_fires_on_total_failure() {
         let note = honest_failure_note(&audit_with_unsupported_indices(vec![2, 5]))
             .expect("total failure yields a note");
-        assert!(note.contains("Thuki could not confirm"));
+        assert!(note.contains("found sources but could not verify"));
         assert!(note.contains("larger model"));
     }
 
@@ -1929,8 +1930,9 @@ mod tests {
         let out = finalize_answer_after_audit(answer, &audit);
         assert_eq!(
             out,
-            "*Thuki could not confirm the cited facts against the pages it retrieved. \
-             Try rephrasing, or switch to a larger model in Settings for a stronger answer.*"
+            "*Thuki found sources but could not verify the answer's citations against \
+             the page text. Treat specific claims carefully, or try rephrasing or a \
+             larger model in Settings.*"
         );
     }
 
@@ -1965,7 +1967,7 @@ mod tests {
         };
         let out = finalize_answer_after_audit(answer, &audit);
         assert_eq!(out, "A is true [1]. B is false.");
-        assert!(!out.contains("Thuki could not confirm"));
+        assert!(!out.contains("found sources but could not verify"));
     }
 
     #[test]
@@ -1974,6 +1976,6 @@ mod tests {
         let audit = audit_with_unsupported_indices(vec![1]);
         let out = finalize_answer_after_audit(answer, &audit);
         assert!(out.contains("Fake number 999."));
-        assert!(out.contains("Thuki could not confirm"));
+        assert!(out.contains("found sources but could not verify"));
     }
 }
