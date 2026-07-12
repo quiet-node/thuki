@@ -162,6 +162,16 @@ pub struct SearchDeps<'a> {
     /// pipeline (the sports tier), so it rides in `deps` rather than threading
     /// an extra positional argument through every `run_search` call site.
     pub local_zone: Option<&'a str>,
+    /// Force a web search this turn regardless of what the pre-filter and
+    /// classifier decide, with the exact "look it up again" semantics: skip
+    /// every fast path (the source cache and all verticals) and go straight to
+    /// the scraped engines with a cache read-bypass, write-through fetch. Set by
+    /// the `/search` slash command (see `commands::run_builtin_search`); `false`
+    /// for the invisible auto-search, which lets the pre-pass decide. Rides in
+    /// `deps` rather than as a positional argument for the same reason
+    /// `local_zone` does: it is a per-turn caller input the call sites should not
+    /// each have to thread.
+    pub force_search: bool,
 }
 
 /// Runs the pipeline for one turn. `chat_system_prompt`, `history`, and
@@ -263,7 +273,11 @@ async fn run_search_inner(
     // Stage one: deterministic pre-filter, no model call.
     let verdict = prefilter(latest_user, today);
     eprintln!("[search] prefilter={verdict:?}");
-    if verdict == PreFilterVerdict::ForceNo {
+    // The `/search` command forces a search even when the pre-filter would
+    // force-skip (e.g. a message that reads like a greeting): the user asked
+    // for a web search explicitly, so the deterministic skip is overridden and
+    // the classifier still runs for the query rewrite.
+    if verdict == PreFilterVerdict::ForceNo && !deps.force_search {
         deps.recorder.record(RecorderEvent::SearchDecided {
             prefilter: prefilter_label(verdict).to_string(),
             route: String::new(),
@@ -290,7 +304,11 @@ async fn run_search_inner(
         // ambiguous turn, fall back to a plain model answer.
         Err(InferenceError::Request(reason)) => {
             eprintln!("[search] classifier error: {reason}");
-            if verdict != PreFilterVerdict::ForceWeb {
+            // A deterministic ForceWeb signal, or an explicit `/search`
+            // (`force_search`), already committed to searching: fall through to
+            // the raw-message search below rather than dropping to a stale
+            // answer. Only an ambiguous, non-forced turn abandons the search.
+            if verdict != PreFilterVerdict::ForceWeb && !deps.force_search {
                 deps.recorder.record(RecorderEvent::SearchDecided {
                     prefilter: prefilter_label(verdict).to_string(),
                     route: String::new(),
@@ -325,12 +343,13 @@ async fn run_search_inner(
         standalone_question: decision.standalone_question.clone(),
         queries: decision.queries.clone(),
     });
-    // Explicit "look it up / verify / double-check" request: the user is
-    // telling us the source we just served was insufficient, so re-serving ANY
-    // fast path is forbidden. Skip the cache AND every vertical and go straight
-    // to the scraped engines with the classifier's resolved question/queries.
-    // Forced even over a `No` decision: an explicit look-it-up is a search.
-    if decision.explicit_search {
+    // Explicit "look it up / verify / double-check" request, or the `/search`
+    // command (`deps.force_search`): re-serving ANY fast path is forbidden. Skip
+    // the cache AND every vertical and go straight to the scraped engines with
+    // the classifier's resolved question/queries and a cache read-bypass,
+    // write-through fetch. Forced even over a `No` decision: an explicit
+    // look-it-up, and an explicit `/search`, are both always a search.
+    if decision.explicit_search || deps.force_search {
         return run_web(
             deps,
             chat_system_prompt,
@@ -1758,6 +1777,7 @@ mod tests {
             // `websearch::sports`; the orchestrator only threads the zone
             // through, so tests here run without one (date-only event lines).
             local_zone: None,
+            force_search: false,
         }
     }
 
@@ -1791,6 +1811,7 @@ mod tests {
                 128,
             ))),
             local_zone: None,
+            force_search: false,
         }
     }
 
@@ -1820,6 +1841,7 @@ mod tests {
             cache_scope: 1,
             web_cache,
             local_zone: None,
+            force_search: false,
         }
     }
 
@@ -2722,6 +2744,82 @@ mod tests {
         assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
             if sources[0].url == "https://match.example/"));
         assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+    }
+
+    #[tokio::test]
+    async fn force_search_overrides_a_force_no_greeting_and_reaches_the_engines() {
+        // The `/search` command sets `deps.force_search`. Even a bare greeting,
+        // which the deterministic pre-filter force-skips, must still search: the
+        // ForceNo short-circuit is overridden, the classifier runs for the query
+        // rewrite, and the turn goes straight to the scraped engines with the
+        // "look it up again" cache-bypass semantics.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::No,
+            route: SearchRoute::Web,
+            standalone_question: "when was the treaty of versailles signed in paris".into(),
+            queries: vec!["treaty versailles paris".into()],
+            explicit_search: false,
+        }));
+        let transport = transport_with_serp_and_page();
+        let mut deps = deps(&prepass, &transport, &Bm25Scorer);
+        deps.force_search = true;
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps,
+            "sys",
+            &[],
+            "hi",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources[0].url == "https://match.example/"));
+        assert!(
+            transport.calls().iter().any(|c| c.url == DDG_ENDPOINT),
+            "a forced /search must reach the engines even over a ForceNo greeting"
+        );
+    }
+
+    #[tokio::test]
+    async fn force_search_survives_a_classifier_error_on_a_force_no_turn() {
+        // `/search` on a greeting whose classifier call also fails: the forced
+        // search must fall back to searching the raw message from the engines
+        // rather than dropping to a plain answer. Exercises both the ForceNo
+        // override and the classifier-error `force_search` fall-through.
+        let prepass = FakePrePass::returning(Err(InferenceError::Request("timeout".into())));
+        let transport = transport_with_serp_and_page();
+        let mut deps = deps(&prepass, &transport, &Bm25Scorer);
+        deps.force_search = true;
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps,
+            "sys",
+            &[],
+            "hi",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        // The forced search reached the engines with the raw message rather than
+        // abandoning to a plain answer; the loosely-relevant raw query may or may
+        // not clear the relevance bar, so either a grounded answer or an
+        // unreachable (searched-but-nothing-kept) outcome is correct here, never
+        // NoSearch.
+        assert!(matches!(
+            &outcome,
+            SearchOutcome::Answer { .. } | SearchOutcome::Unreachable { .. }
+        ));
+        assert!(
+            transport.calls().iter().any(|c| c.url == DDG_ENDPOINT),
+            "a forced /search must reach the engines even when the classifier errors"
+        );
     }
 
     #[tokio::test]

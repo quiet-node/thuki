@@ -789,6 +789,9 @@ fn builtin_search_outcome_label(
 /// llama-server's warm KV prefix. `cache_scope` is the conversation epoch
 /// snapshotted at the start of this turn, scoping reads/writes of the
 /// multi-turn source cache to this conversation (see `websearch::cache`).
+/// `force_search` (set by the `/search` slash command) forces the search on
+/// regardless of the pre-pass decision, with cache read-bypass, write-through
+/// semantics; `false` lets the invisible auto-search pre-pass decide.
 ///
 /// Coverage-excluded: glue that wires the real engine port, HTTP transport, and
 /// BM25 scorer into the fully-tested [`crate::websearch::orchestrator::run_search`]
@@ -856,6 +859,10 @@ async fn run_builtin_search(
         // repeat scrape is served from memory (see `websearch::serp_cache`).
         web_cache: crate::websearch::serp_cache::global_web_cache(),
         local_zone: local_zone.as_deref(),
+        // Forced on by the `/search` slash command: search this turn regardless
+        // of the pre-pass decision, with cache read-bypass, write-through
+        // semantics (see `SearchDeps::force_search`).
+        force_search,
     };
     let status = |phase| on_chunk(StreamChunk::SearchStatus { phase });
     let outcome = if force_search {
@@ -2010,6 +2017,13 @@ pub async fn ask_model(
     // Whether this turn attaches images. Auto-search is skipped for image turns
     // (the writer prompt is text-only), so capture it before `image_paths` moves.
     let turn_has_images = image_paths.as_ref().is_some_and(|paths| !paths.is_empty());
+
+    // The `/search` slash command forces a web search this turn (see
+    // `run_builtin_search`'s `force_search`), turning the invisible auto-search
+    // into an always-on, cache-bypassing search with the same "look it up again"
+    // semantics. Any other command, or a plain chat turn, leaves the pre-pass to
+    // decide.
+    let force_search = slash_command.as_deref() == Some("/search");
 
     // Base64-encode attached images for the Ollama multimodal API.
     let images = match image_paths {

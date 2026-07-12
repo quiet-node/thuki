@@ -869,6 +869,7 @@ async fn live_answer_for(
         cache_scope: 1,
         web_cache: &web_cache,
         local_zone: None,
+        force_search: false,
     };
     let cancel = CancellationToken::new();
     let outcome = run_search(

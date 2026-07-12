@@ -131,6 +131,7 @@ async fn live_turn(
         cache_scope: 1,
         web_cache: &web_cache,
         local_zone: None,
+        force_search: false,
     };
     run_search(
         &deps,
