@@ -47,7 +47,7 @@ time = { version = "0.3", features = ["std", "local-offset", "macros", "parsing"
 tz-rs = "0.7"
 async-trait = "0.1"
 semver = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 libc = "0.2"
 keyring = { version = "3", features = ["apple-native"] }
 
