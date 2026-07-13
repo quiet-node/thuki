@@ -172,6 +172,11 @@ pub struct SearchDeps<'a> {
     /// `local_zone` does: it is a per-turn caller input the call sites should not
     /// each have to thread.
     pub force_search: bool,
+    /// Base64 image payloads for the latest user turn when the active model is
+    /// vision-capable. Passed to the classifier and re-attached on the writer
+    /// so grounded answers keep the photo. `None` or empty keeps the text-only
+    /// path (no multimodal prefill). Never sent to search engines.
+    pub latest_images: Option<&'a [String]>,
 }
 
 /// Runs the pipeline for one turn. `chat_system_prompt`, `history`, and
@@ -291,7 +296,7 @@ async fn run_search_inner(
     status(SearchPhase::Deciding);
     let classified = match deps
         .prepass
-        .decide(history, latest_user, today, cancel)
+        .decide(history, latest_user, deps.latest_images, today, cancel)
         .await
     {
         Ok(classified) => classified,
@@ -507,7 +512,7 @@ async fn force_explicit_web(
     status(SearchPhase::Deciding);
     let classified = match deps
         .prepass
-        .decide(history, latest_user, today, cancel)
+        .decide(history, latest_user, deps.latest_images, today, cancel)
         .await
     {
         Ok(classified) => classified,
@@ -774,7 +779,12 @@ async fn run_web(
     {
         EngineTierOutcome::Cancelled => SearchOutcome::Cancelled,
         EngineTierOutcome::Empty => SearchOutcome::Unreachable {
-            messages: unreachable_messages(chat_system_prompt, history, latest_user),
+            messages: unreachable_messages(
+                chat_system_prompt,
+                history,
+                latest_user,
+                deps.latest_images,
+            ),
         },
         EngineTierOutcome::Ranked {
             sources,
@@ -1247,6 +1257,7 @@ fn grounded_answer(
         locale,
         is_cache_tier,
         conflict,
+        deps.latest_images,
     );
     SearchOutcome::Answer { messages, sources }
 }
@@ -1778,6 +1789,7 @@ mod tests {
             // through, so tests here run without one (date-only event lines).
             local_zone: None,
             force_search: false,
+            latest_images: None,
         }
     }
 
@@ -1812,6 +1824,7 @@ mod tests {
             ))),
             local_zone: None,
             force_search: false,
+            latest_images: None,
         }
     }
 
@@ -1842,6 +1855,7 @@ mod tests {
             web_cache,
             local_zone: None,
             force_search: false,
+            latest_images: None,
         }
     }
 
@@ -2249,7 +2263,7 @@ mod tests {
             matches!(&outcome, SearchOutcome::Answer { messages, sources }
             if sources.len() == 1
                 && sources[0].url == "https://news.google.com/"
-                && messages.last().is_some_and(|m| m.content.contains("Leclerc wins British GP")))
+                && messages.first().is_some_and(|m| m.content.contains("Leclerc wins British GP")))
         );
         assert!(!transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
     }
@@ -2393,7 +2407,7 @@ mod tests {
         assert!(
             matches!(&outcome, SearchOutcome::Answer { messages, sources }
             if sources[0].url == "https://news.google.com/"
-                && messages.last().is_some_and(|m| m.content.contains("Leclerc wins the race")))
+                && messages.first().is_some_and(|m| m.content.contains("Leclerc wins the race")))
         );
         // Both feed queries were attempted, in order.
         assert!(transport.calls().iter().any(|c| c.url == first_url));
@@ -2452,7 +2466,7 @@ mod tests {
             matches!(&outcome, SearchOutcome::Answer { messages, sources }
             if sources.len() == 1
                 && sources[0].url == "https://open-meteo.com/"
-                && messages.last().is_some_and(|m| m.content.contains("Current weather in Tokyo")))
+                && messages.first().is_some_and(|m| m.content.contains("Current weather in Tokyo")))
         );
         // No scraped engine was touched.
         assert!(!transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
@@ -2566,7 +2580,7 @@ mod tests {
             matches!(&outcome, SearchOutcome::Answer { messages, sources }
             if sources.len() == 1
                 && sources[0].url == "https://www.espn.com/"
-                && messages.last().is_some_and(|m| m.content.contains("Celtics")))
+                && messages.first().is_some_and(|m| m.content.contains("Celtics")))
         );
         assert!(!transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
     }
@@ -3101,7 +3115,7 @@ mod tests {
             matches!(&outcome, SearchOutcome::Answer { messages, sources }
             if sources.len() == 1
                 && sources[0].url == "https://en.wikipedia.org/wiki/Photosynthesis"
-                && messages.last().is_some_and(|m| m.content.contains("Photosynthesis is a system")))
+                && messages.first().is_some_and(|m| m.content.contains("Photosynthesis is a system")))
         );
         assert!(!transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
     }
@@ -3508,9 +3522,11 @@ mod tests {
             matches!(&outcome, SearchOutcome::Answer { messages, sources }
             if sources.len() == 1
                 && sources[0].url == "https://match.example/"
-                && messages.last().is_some_and(|m| m.content.starts_with("when signed")
+                && messages.first().is_some_and(|m| m.role == "system"
                     && m.content.contains("UNTRUSTED_WEB_CONTENT")
-                    && m.content.contains("treaty")))
+                    && m.content.contains("treaty"))
+                && messages.last().is_some_and(|m| m.role == "user"
+                    && m.content == "when signed"))
         );
         assert_eq!(
             *phases.lock().unwrap(),
@@ -3551,11 +3567,13 @@ mod tests {
             &status,
         )
         .await;
-        // The writer prompt carries the conflict directive alongside the
+        // The system turn carries the conflict directive alongside the
         // untrusted-source region: the forwarded flag survived every hop.
         assert!(matches!(&outcome, SearchOutcome::Answer { messages, .. }
-            if messages.last().is_some_and(|m| m.content.contains("The sources disagree on a value")
-                && m.content.contains("UNTRUSTED_WEB_CONTENT"))));
+            if messages.first().is_some_and(|m| m.role == "system"
+                && m.content.contains("The sources disagree on a value")
+                && m.content.contains("UNTRUSTED_WEB_CONTENT"))
+                && messages.last().is_some_and(|m| m.content == "when signed")));
         // No requery fired: a conflict commits directly, so no SearchRequeried.
         let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
         assert!(!events
@@ -3754,9 +3772,10 @@ mod tests {
         )
         .await;
         assert!(matches!(&outcome, SearchOutcome::Unreachable { messages }
-            if messages.last().is_some_and(|m|
-                m.content.starts_with("what is the latest rust version")
-                && m.content.contains("no web sources could be retrieved"))));
+            if messages.first().is_some_and(|m| m.role == "system"
+                && m.content.contains("no web sources could be retrieved"))
+                && messages.last().is_some_and(|m|
+                    m.content == "what is the latest rust version")));
     }
 
     #[tokio::test]
@@ -4010,16 +4029,19 @@ mod tests {
             matches!(&outcome, SearchOutcome::Answer { messages, sources }
             if sources.len() == 1
                 && sources[0].url == "https://blog.rust-lang.org/"
-                && messages.last().is_some_and(|m| m.content.contains("Rust 1.90.0 is the latest stable release")))
+                && messages.first().is_some_and(|m| m.role == "system"
+                    && m.content.contains("Rust 1.90.0 is the latest stable release"))
+                && messages.last().is_some_and(|m|
+                    m.content == "what's the latest stable rust version"))
         );
         assert!(
             transport.calls().is_empty(),
             "a cache hit must not retrieve"
         );
-        // A `cached`-tier answer carries the cache-brevity directive: the user
-        // is re-asking about the answer just given.
+        // A `cached`-tier answer carries the cache-brevity directive on system:
+        // the user is re-asking about the answer just given.
         assert!(matches!(&outcome, SearchOutcome::Answer { messages, .. }
-            if messages.last().is_some_and(|m| m.content
+            if messages.first().is_some_and(|m| m.content
                 .contains("asking again about the answer you just gave"))));
         let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
         assert!(events.iter().any(|e| matches!(
@@ -4053,8 +4075,9 @@ mod tests {
         )
         .await;
         assert!(matches!(&outcome, SearchOutcome::Answer { messages, .. }
-            if messages.last().is_some_and(|m| !m.content
-                .contains("asking again about the answer you just gave"))));
+            if messages.first().is_some_and(|m| m.role == "system"
+                && m.content.contains("UNTRUSTED_WEB_CONTENT")
+                && !m.content.contains("asking again about the answer you just gave"))));
     }
 
     #[tokio::test]

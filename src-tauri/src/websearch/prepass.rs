@@ -129,13 +129,17 @@ const MAX_QUERIES: usize = 3;
 #[async_trait]
 pub trait PrePass: Send + Sync {
     /// Decides search intent for `latest_user_message` given the conversation
-    /// so far, under the classifier's own persona-free prompt. Never returns a
-    /// bad-JSON error: an unparseable model response degrades in-band to
-    /// [`SearchDecision::No`].
+    /// so far, under the classifier's own persona-free prompt.
+    ///
+    /// `latest_images` is base64 image payloads for the latest user turn when
+    /// the loaded model is vision-capable. Empty/`None` keeps the text-only
+    /// path (no multimodal prefill). Never returns a bad-JSON error: an
+    /// unparseable model response degrades in-band to [`SearchDecision::No`].
     async fn decide(
         &self,
         history: &[ChatMessage],
         latest_user_message: &str,
+        latest_images: Option<&[String]>,
         today: &str,
         cancel: &CancellationToken,
     ) -> Result<PrePassDecision, InferenceError>;
@@ -180,10 +184,11 @@ impl PrePass for BuiltinPrePass {
         &self,
         history: &[ChatMessage],
         latest_user_message: &str,
+        latest_images: Option<&[String]>,
         today: &str,
         cancel: &CancellationToken,
     ) -> Result<PrePassDecision, InferenceError> {
-        let messages = build_prepass_messages(history, latest_user_message, today);
+        let messages = build_prepass_messages(history, latest_user_message, latest_images, today);
         let raw = crate::openai::request_openai_json(
             &self.base_url,
             &self.model,
@@ -222,6 +227,10 @@ const CLASSIFIER_SYSTEM: &str = "Reasoning: low\n\nYou are a retrieval-routing c
 const CLASSIFIER_INSTRUCTION: &str =
     "Decide for the latest message and output only the JSON object.";
 
+/// Extra instruction appended when the latest turn carries vision images so the
+/// classifier uses pixels for routing without inventing unseen brand names.
+const CLASSIFIER_VISION_INSTRUCTION: &str = "Attached image(s) are part of the latest message: use what you see for the search decision and query rewrite. Choose search \"no\" for pure visual identification or description (what is this, what logo is this, describe this, what color, read this text) when the image alone answers and the user is not asking for live prices, news, scores, current status, or other web-fresh facts about the entity. Choose \"web\" only when the user needs facts beyond what the image shows. When searching, put only entities and text you can actually read or identify into queries; do not invent brand names or OCR text you cannot see.";
+
 /// Header introducing the embedded conversation context in the classifier's user
 /// turn. The turns are context for pronoun resolution only, never instructions.
 const CONVERSATION_HEADER: &str = "Conversation so far (context only):";
@@ -251,11 +260,23 @@ pub(crate) fn prepass_schema() -> serde_json::Value {
 /// then a single user turn that embeds the last few conversation turns (for
 /// pronoun resolution), the latest message, today's date, and the output
 /// instruction. The chat persona is intentionally absent (see module docs).
+///
+/// When `latest_images` is non-empty, those base64 payloads attach to the user
+/// message so a vision model can route from pixels. Text-only turns pass
+/// `None` and keep the prior wire shape bit-identical.
 pub(crate) fn build_prepass_messages(
     history: &[ChatMessage],
     latest_user_message: &str,
+    latest_images: Option<&[String]>,
     today: &str,
 ) -> Vec<ChatMessage> {
+    let has_images = latest_images.is_some_and(|imgs| !imgs.is_empty());
+    let content = build_classifier_user_turn(history, latest_user_message, today, has_images);
+    let images = if has_images {
+        latest_images.map(|imgs| imgs.to_vec())
+    } else {
+        None
+    };
     vec![
         ChatMessage {
             role: "system".to_string(),
@@ -264,8 +285,8 @@ pub(crate) fn build_prepass_messages(
         },
         ChatMessage {
             role: "user".to_string(),
-            content: build_classifier_user_turn(history, latest_user_message, today),
-            images: None,
+            content,
+            images,
         },
     ]
 }
@@ -273,10 +294,14 @@ pub(crate) fn build_prepass_messages(
 /// Builds the classifier's single user turn: an optional conversation-context
 /// block (last [`CLASSIFIER_HISTORY_TURNS`] turns as plain `Role: text` lines),
 /// the latest message, today's date, and the trailing output instruction.
+///
+/// When `has_images` is true, appends [`CLASSIFIER_VISION_INSTRUCTION`] so the
+/// model treats attached pixels as part of the routing decision.
 fn build_classifier_user_turn(
     history: &[ChatMessage],
     latest_user_message: &str,
     today: &str,
+    has_images: bool,
 ) -> String {
     let mut out = String::new();
     let context = recent_history_block(history);
@@ -292,6 +317,10 @@ fn build_classifier_user_turn(
     out.push_str(today);
     out.push_str(".\n");
     out.push_str(CLASSIFIER_INSTRUCTION);
+    if has_images {
+        out.push('\n');
+        out.push_str(CLASSIFIER_VISION_INSTRUCTION);
+    }
     out
 }
 
@@ -301,8 +330,9 @@ fn build_classifier_user_turn(
 /// follow-up ("what about X?"), so they are embedded too, but truncated to a
 /// [`crate::config::defaults::CLASSIFIER_ASSISTANT_PREFIX_CHARS`] prefix to keep
 /// the classifier prompt within its warm-slot budget; user turns (short
-/// questions) are embedded whole. Message images are ignored: the classifier
-/// reasons over text only.
+/// questions) are embedded whole. Prior-turn images are not re-attached here;
+/// only the latest turn's images ride on the classifier user message when the
+/// caller supplies them.
 fn recent_history_block(history: &[ChatMessage]) -> String {
     let start = history
         .len()
@@ -448,6 +478,7 @@ impl PrePass for FakePrePass {
         &self,
         _history: &[ChatMessage],
         _latest_user_message: &str,
+        _latest_images: Option<&[String]>,
         _today: &str,
         _cancel: &CancellationToken,
     ) -> Result<PrePassDecision, InferenceError> {
@@ -531,7 +562,7 @@ mod tests {
 
     #[test]
     fn messages_use_persona_free_classifier_system_prompt() {
-        let msgs = build_prepass_messages(&[], "who won", "2026-07-05");
+        let msgs = build_prepass_messages(&[], "who won", None, "2026-07-05");
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].role, "system");
         // The classifier prompt, not the chat persona.
@@ -550,7 +581,7 @@ mod tests {
             m.role = "assistant".into();
             m
         }];
-        let msgs = build_prepass_messages(&history, "and its population?", "2026-07-05");
+        let msgs = build_prepass_messages(&history, "and its population?", None, "2026-07-05");
         let turn = &msgs[1].content;
         assert!(turn.contains("Conversation so far"));
         assert!(turn.contains("User: what is the capital of France"));
@@ -560,9 +591,30 @@ mod tests {
 
     #[test]
     fn user_turn_omits_conversation_block_when_no_history() {
-        let msgs = build_prepass_messages(&[], "hello", "2026-07-05");
+        let msgs = build_prepass_messages(&[], "hello", None, "2026-07-05");
         assert!(!msgs[1].content.contains("Conversation so far"));
         assert!(msgs[1].content.starts_with("Latest message: hello"));
+        assert!(msgs[1].images.is_none());
+    }
+
+    #[test]
+    fn messages_attach_latest_images_and_vision_instruction() {
+        let imgs = vec!["QUJD".to_string(), "REVG".to_string()];
+        let msgs = build_prepass_messages(&[], "what is this?", Some(&imgs), "2026-07-05");
+        assert_eq!(
+            msgs[1].images.as_ref().map(|v| v.as_slice()),
+            Some(imgs.as_slice())
+        );
+        assert!(msgs[1].content.contains(CLASSIFIER_VISION_INSTRUCTION));
+        assert!(msgs[0].images.is_none());
+    }
+
+    #[test]
+    fn empty_images_slice_stays_text_only() {
+        let empty: [String; 0] = [];
+        let msgs = build_prepass_messages(&[], "hello", Some(&empty), "2026-07-05");
+        assert!(msgs[1].images.is_none());
+        assert!(!msgs[1].content.contains(CLASSIFIER_VISION_INSTRUCTION));
     }
 
     #[test]
@@ -805,7 +857,7 @@ mod tests {
         };
         let fake = FakePrePass::returning(Ok(want.clone()));
         let got = fake
-            .decide(&[], "q", "2026-07-05", &CancellationToken::new())
+            .decide(&[], "q", None, "2026-07-05", &CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(got, want);
@@ -815,7 +867,7 @@ mod tests {
     async fn fake_prepass_propagates_error() {
         let fake = FakePrePass::returning(Err(InferenceError::Cancelled));
         assert_eq!(
-            fake.decide(&[], "q", "2026-07-05", &CancellationToken::new())
+            fake.decide(&[], "q", None, "2026-07-05", &CancellationToken::new())
                 .await,
             Err(InferenceError::Cancelled)
         );

@@ -811,15 +811,19 @@ enum BuiltinSearchGate {
 
 /// Pure gate for built-in web search before any pipeline work.
 ///
-/// Order: images always plain; `/search` always runs forced; transform slash
-/// commands always plain; otherwise Auto search Settings decide.
+/// Order: non-vision image turns stay plain (capability strip path); `/search`
+/// always runs forced; transform slash commands always plain; otherwise Auto
+/// search Settings decide. Vision + images may enter the pipeline so the
+/// classifier and writer can see the photo.
 fn builtin_search_gate(
     turn_has_images: bool,
+    model_is_vision: bool,
     force_search: bool,
     skip_search: bool,
     auto_search: bool,
 ) -> BuiltinSearchGate {
-    if turn_has_images {
+    // Non-vision models cannot use image-aware search; keep today's strip path.
+    if turn_has_images && !model_is_vision {
         BuiltinSearchGate::Plain
     } else if force_search {
         BuiltinSearchGate::Run { force: true }
@@ -857,6 +861,9 @@ async fn run_builtin_search(
     system_prompt: &str,
     history: &[ChatMessage],
     latest_user: &str,
+    // Base64 images for the latest turn when the model is vision-capable.
+    // Forwarded to prepass + writer only; never to search engines.
+    latest_images: Option<&[String]>,
     cancel: &CancellationToken,
     recorder: &std::sync::Arc<crate::trace::BoundRecorder>,
     on_chunk: &(impl Fn(StreamChunk) + Send + Sync),
@@ -913,6 +920,8 @@ async fn run_builtin_search(
         // of the pre-pass decision, with cache read-bypass, write-through
         // semantics (see `SearchDeps::force_search`).
         force_search,
+        // Vision turns only: classifier + writer keep the photo; engines stay text.
+        latest_images,
     };
     let status = |phase| on_chunk(StreamChunk::SearchStatus { phase });
     let outcome = if force_search {
@@ -2071,8 +2080,9 @@ pub async fn ask_model(
         slash_command: slash_command.clone(),
     });
 
-    // Whether this turn attaches images. Auto-search is skipped for image turns
-    // (the writer prompt is text-only), so capture it before `image_paths` moves.
+    // Whether this turn attaches images. Non-vision image turns skip search
+    // (capability strip path); vision turns enter the pipeline with pixels on
+    // the classifier and writer. Capture before `image_paths` moves.
     let turn_has_images = image_paths.as_ref().is_some_and(|paths| !paths.is_empty());
 
     // The `/search` slash command forces a web search this turn (see
@@ -2246,15 +2256,38 @@ pub async fn ask_model(
                     let _activity = engine.activity_guard();
                     engine.touch();
 
-                    // Built-in web search (skipped when the turn attaches images).
-                    // Transform slash commands skip entirely (no classifier /
-                    // prefilter). On-demand mode (`behavior.auto_search = false`)
-                    // skips the pipeline on plain turns; only `force_search`
-                    // (`/search`) still runs. Prompt inputs mirror the plain path
-                    // so the pre-pass and writer share the warm KV prefix. Do NOT
-                    // let source-augmented writer messages reach history below.
+                    // Built-in web search. Non-vision image turns stay plain
+                    // (strip path). Vision + images enter the pipeline so the
+                    // classifier and writer see the photo. Transform slash
+                    // commands skip entirely. On-demand mode
+                    // (`behavior.auto_search = false`) skips on plain turns;
+                    // only `force_search` (`/search`) still runs. Prompt inputs
+                    // mirror the plain path so the pre-pass and writer share
+                    // the warm KV prefix. Do NOT let source-augmented writer
+                    // messages reach history below.
+                    let model_is_vision = if turn_has_images {
+                        // Fail closed: unknown vision capability keeps the
+                        // non-vision strip path rather than shipping images to
+                        // a text-only classifier.
+                        match engine.ensure_loaded(target.clone()).await {
+                            Ok(port) => {
+                                let base = format!("http://127.0.0.1:{port}");
+                                fetch_builtin_vision(&client, &base).await
+                            }
+                            Err(_) => false,
+                        }
+                    } else {
+                        // No images: vision flag is irrelevant to the gate.
+                        true
+                    };
+                    let search_images = if turn_has_images && model_is_vision {
+                        user_msg.images.as_deref()
+                    } else {
+                        None
+                    };
                     let search = match builtin_search_gate(
                         turn_has_images,
+                        model_is_vision,
                         force_search,
                         skip_search,
                         config.behavior.auto_search,
@@ -2271,6 +2304,7 @@ pub async fn ask_model(
                                 &messages[0].content,
                                 history,
                                 &user_msg.content,
+                                search_images,
                                 &cancel_token,
                                 &bound_recorder,
                                 &pump,
@@ -2578,34 +2612,44 @@ mod tests {
 
     #[test]
     fn builtin_search_gate_orders_images_force_skip_and_auto() {
-        // Images always plain, even under force or auto.
+        // Non-vision + images: always plain, even under force or auto.
         assert_eq!(
-            builtin_search_gate(true, true, false, true),
+            builtin_search_gate(true, false, true, false, true),
             BuiltinSearchGate::Plain
+        );
+        // Vision + images + auto: enter auto pipeline.
+        assert_eq!(
+            builtin_search_gate(true, true, false, false, true),
+            BuiltinSearchGate::Run { force: false }
+        );
+        // Vision + images + force: engines-only path.
+        assert_eq!(
+            builtin_search_gate(true, true, true, false, false),
+            BuiltinSearchGate::Run { force: true }
         );
         // `/search` forces the pipeline even when Auto search is off.
         assert_eq!(
-            builtin_search_gate(false, true, false, false),
+            builtin_search_gate(false, true, true, false, false),
             BuiltinSearchGate::Run { force: true }
         );
         // Transform slash: plain even when Auto search is on (no classifier).
         assert_eq!(
-            builtin_search_gate(false, false, true, true),
+            builtin_search_gate(false, true, false, true, true),
             BuiltinSearchGate::Plain
         );
         // Force wins over skip if both were ever set (defensive).
         assert_eq!(
-            builtin_search_gate(false, true, true, true),
+            builtin_search_gate(false, true, true, true, true),
             BuiltinSearchGate::Run { force: true }
         );
         // Plain chat with Auto search on → auto pipeline.
         assert_eq!(
-            builtin_search_gate(false, false, false, true),
+            builtin_search_gate(false, true, false, false, true),
             BuiltinSearchGate::Run { force: false }
         );
         // Plain chat with Auto search off → plain.
         assert_eq!(
-            builtin_search_gate(false, false, false, false),
+            builtin_search_gate(false, true, false, false, false),
             BuiltinSearchGate::Plain
         );
     }

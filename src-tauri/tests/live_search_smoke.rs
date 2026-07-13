@@ -46,6 +46,7 @@ impl PrePass for ScriptedPrePass {
         &self,
         _history: &[ChatMessage],
         _latest_user_message: &str,
+        _latest_images: Option<&[String]>,
         _today: &str,
         _cancel: &CancellationToken,
     ) -> Result<PrePassDecision, InferenceError> {
@@ -118,6 +119,7 @@ async fn live_turn(
         web_cache: &web_cache,
         local_zone: None,
         force_search: false,
+        latest_images: None,
     };
     run_search(
         &deps,

@@ -8325,6 +8325,58 @@ describe('App', () => {
       );
     });
 
+    it('forwards attached images on /search for vision force-search', async () => {
+      enableChannelCaptureWithResponses({
+        save_image_command: '/tmp/staged/search-img.jpg',
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      const file = new File(['fake-img-data'], 'photo.png', {
+        type: 'image/png',
+      });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: {
+            getData: () => '',
+            items: [{ type: 'image/png', getAsFile: () => file }],
+          },
+        });
+      });
+      await act(async () => {
+        await vi.waitFor(() => {
+          expect(invoke).toHaveBeenCalledWith(
+            'save_image_command',
+            expect.anything(),
+          );
+        });
+      });
+
+      act(() => {
+        setAskValue('/search what is this product price');
+      });
+      invoke.mockClear();
+      enableChannelCapture();
+
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({
+          message: 'what is this product price',
+          forceSearch: true,
+          slashCommand: '/search',
+          imagePaths: ['/tmp/staged/search-img.jpg'],
+        }),
+      );
+      // Compose strip cleared (chat history may still show the user bubble image).
+      expect(getAskInput().textContent).toBe('');
+    });
+
     it('ignores /search with no query text after the trigger', async () => {
       enableChannelCapture();
       render(<App />);

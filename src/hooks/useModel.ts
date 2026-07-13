@@ -190,6 +190,8 @@ interface SearchRetrySnapshot {
   query: string;
   displayContent?: string;
   quotedText?: string;
+  /** Absolute image paths for vision force-search retries, if any. */
+  imagePaths?: string[];
   /** Ids of the failed turn's own user/assistant pair, so a retry can reuse
    *  them: leaving the user bubble untouched and resetting the assistant
    *  message in place rather than appending a duplicate pair. Reusing the id
@@ -464,6 +466,7 @@ export function useModel(
               query: promptOverride!,
               displayContent,
               quotedText,
+              imagePaths,
               userMessageId,
               assistantMessageId: assistantId,
             }
@@ -741,6 +744,7 @@ export function useModel(
    * @param query Text sent to the backend without the `/search` trigger.
    * @param displayContent Text shown in the user bubble. Defaults to `query`.
    * @param quotedText Selected host-app text shown above the user bubble, if any.
+   * @param imagePaths Absolute paths of attached images for vision force-search.
    * @param allowOversized Bypasses the pre-load memory gate (issue #296).
    * @param target How to establish the message pair: append a fresh pair or
    *   reuse a failed turn's ids and reset its assistant message in place.
@@ -750,6 +754,7 @@ export function useModel(
       query: string,
       displayContent: string | undefined,
       quotedText: string | undefined,
+      imagePaths: string[] | undefined,
       allowOversized: boolean | undefined,
       target: TurnTarget,
     ): Promise<SearchOutcome> => {
@@ -757,15 +762,16 @@ export function useModel(
       if (!trimmed) return { final: true };
 
       // Bubble shows what the user typed; backend gets the stripped query and
-      // forceSearch so the engines-only path runs. Reuses runChatTurn so
-      // allowOversized + TurnTarget (issue #296) stay single-sourced.
+      // forceSearch so the engines-only path runs. Images forward when present so
+      // vision models can ground force-search on the attachment. Reuses
+      // runChatTurn so allowOversized + TurnTarget (issue #296) stay single-sourced.
       await runChatTurn(
         displayContent ?? trimmed,
         quotedText,
-        undefined,
+        imagePaths,
         false,
         trimmed,
-        undefined,
+        imagePaths,
         undefined,
         allowOversized,
         target,
@@ -784,6 +790,7 @@ export function useModel(
    * @param query Text sent to the backend pipeline, without the `/search` trigger.
    * @param displayContent Text shown in the user bubble. Defaults to `query`.
    * @param quotedText Selected host-app text shown above the user bubble, if any.
+   * @param imagePaths Absolute paths of attached images for vision force-search.
    * @param allowOversized Bypasses the pre-load memory gate (issue #296). Set
    *   by `retryMessageWithOversized`; omitted by every normal caller.
    */
@@ -792,11 +799,19 @@ export function useModel(
       query: string,
       displayContent?: string,
       quotedText?: string,
+      imagePaths?: string[],
       allowOversized?: boolean,
     ): Promise<SearchOutcome> =>
-      runSearchTurn(query, displayContent, quotedText, allowOversized, {
-        mode: 'append',
-      }),
+      runSearchTurn(
+        query,
+        displayContent,
+        quotedText,
+        imagePaths,
+        allowOversized,
+        {
+          mode: 'append',
+        },
+      ),
     [runSearchTurn],
   );
 
@@ -844,6 +859,7 @@ export function useModel(
           snapshot.query,
           snapshot.displayContent,
           snapshot.quotedText,
+          snapshot.imagePaths,
           allowOversized,
           {
             mode: 'reuse',

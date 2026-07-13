@@ -3048,9 +3048,9 @@ function App() {
     }
 
     // `/search` force-search alias onto the built-in pipeline. One-shot only:
-    // follow-ups use normal auto-search. Ignores attached images (same as
-    // before). `/screen` still wins if both are present via command parsing
-    // above.
+    // follow-ups use normal auto-search. Attached images forward for vision
+    // models (backend keeps non-vision strip behavior). `/screen` still wins
+    // if both are present via command parsing above.
     if (hasSearch) {
       const searchQuery = strippedMessage.trim();
       if (!searchQuery) return;
@@ -3059,11 +3059,19 @@ function App() {
         quote.maxContextLength,
       );
       // Bubble shows the literal typed text (with `/search`); backend gets the
-      // stripped query without the trigger prefix.
+      // stripped query without the trigger prefix. Images use resolved paths only.
       const searchDisplay = trimmedQuery;
+      const readyPaths = attachedImages
+        .filter((img) => img.filePath !== null)
+        .map((img) => img.filePath as string);
+      const searchImages = readyPaths.length > 0 ? readyPaths : undefined;
       setQuery('');
       setSelectedContext(null);
-      void askSearch(searchQuery, searchDisplay, searchContext);
+      for (const img of attachedImages) {
+        URL.revokeObjectURL(img.blobUrl);
+      }
+      setAttachedImages([]);
+      void askSearch(searchQuery, searchDisplay, searchContext, searchImages);
       return;
     }
 

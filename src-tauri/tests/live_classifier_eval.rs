@@ -56,7 +56,7 @@ async fn would_search(
             // search. It still counts against accuracy, so timeouts show up in
             // the numbers instead of aborting the run.
             match prepass
-                .decide(&[], message, today, &CancellationToken::new())
+                .decide(&[], message, None, today, &CancellationToken::new())
                 .await
             {
                 Ok(decision) => (
@@ -132,7 +132,7 @@ async fn live_two_stage_decision_quality_on_eval_corpus() {
     for row in &routed {
         let want = row.route.as_deref().unwrap();
         let got = match prepass
-            .decide(&[], &row.message, today, &CancellationToken::new())
+            .decide(&[], &row.message, None, today, &CancellationToken::new())
             .await
         {
             Ok(decision) => route_label(decision.route).to_string(),

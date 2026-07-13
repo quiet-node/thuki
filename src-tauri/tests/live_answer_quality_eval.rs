@@ -799,6 +799,7 @@ impl PrePass for ScriptedWebPrePass {
         &self,
         _history: &[ChatMessage],
         latest_user_message: &str,
+        _latest_images: Option<&[String]>,
         _today: &str,
         _cancel: &CancellationToken,
     ) -> Result<PrePassDecision, InferenceError> {
@@ -870,6 +871,7 @@ async fn live_answer_for(
         web_cache: &web_cache,
         local_zone: None,
         force_search: false,
+        latest_images: None,
     };
     let cancel = CancellationToken::new();
     let outcome = run_search(
