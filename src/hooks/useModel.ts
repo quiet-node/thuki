@@ -1,13 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { Channel, invoke } from '@tauri-apps/api/core';
-import type {
-  SearchEvent,
-  SearchMetadata,
-  SearchResultPreview,
-  SearchStage,
-  SearchTraceStep,
-  SearchWarning,
-} from '../types/search';
+import type { SearchResultPreview, SearchStage } from '../types/search';
 
 /** Mirrors the Rust EngineErrorKind enum sent over IPC. */
 export type EngineErrorKind =
@@ -37,7 +30,7 @@ export interface Message {
   errorKind?: EngineErrorKind;
   /** Accumulated thinking content from the model, if thinking mode was used. */
   thinkingContent?: string;
-  /** Marks an assistant message produced through the `/search` pipeline. */
+  /** Marks an assistant message produced via web search (auto or `/search`). */
   fromSearch?: boolean;
   /** Marks an assistant message produced through a `/think` turn. */
   fromThink?: boolean;
@@ -45,16 +38,8 @@ export interface Message {
    *  produced this assistant message. Present only on those results; drives the
    *  in-chat Replace button and the auto-replace path. */
   replaceCommand?: string;
-  /** Source links forwarded by the search pipeline. */
+  /** Source links for a web-search answer. */
   searchSources?: SearchResultPreview[];
-  /** Warnings emitted by the `/search` pipeline during this turn. */
-  searchWarnings?: SearchWarning[];
-  /** When true, renders sandbox setup guidance instead of normal content. */
-  sandboxUnavailable?: boolean;
-  /** Ordered, user-facing timeline steps for a `/search` turn. */
-  searchTraces?: SearchTraceStep[];
-  /** Structured retrieval metadata emitted by the backend search pipeline. */
-  searchMetadata?: SearchMetadata;
   /**
    * Immutable snapshot of the request that produced this message, captured
    * once at dispatch time (issue #296). Lets `retryMessageWithOversized`
@@ -86,7 +71,16 @@ type RawStreamChunk =
   | { type: 'Done' }
   | { type: 'Cancelled' }
   | { type: 'Error'; data: { kind: EngineErrorKind; message: string } }
-  | { type: 'TurnAccepted' };
+  | { type: 'TurnAccepted' }
+  | { type: 'SearchStatus'; data: { phase: SearchPhase } }
+  | {
+      type: 'SearchSources';
+      data: Array<{ index: number; url: string; title: string }>;
+    }
+  | { type: 'SetContent'; data: string };
+
+/** Progress phase of the web-search pipeline (mirrors the Rust `SearchPhase`). */
+type SearchPhase = 'deciding' | 'searching' | 'reading' | 'verifying';
 
 /**
  * Normalized chat-stream chunk used inside the hook.
@@ -101,7 +95,10 @@ type StreamChunk =
   | { type: 'Done' }
   | { type: 'Cancelled' }
   | { type: 'Error'; error: { kind: EngineErrorKind; message: string } }
-  | { type: 'TurnAccepted' };
+  | { type: 'TurnAccepted' }
+  | { type: 'SearchStatus'; phase: SearchPhase }
+  | { type: 'SearchSources'; sources: SearchResultPreview[] }
+  | { type: 'SetContent'; content: string };
 
 /**
  * Shared swallow-all handler for fire-and-forget trace IPC calls.
@@ -130,8 +127,28 @@ function normalizeStreamChunk(chunk: RawStreamChunk): StreamChunk {
       return { type: 'Error', error: chunk.data };
     case 'TurnAccepted':
       return chunk;
+    case 'SearchStatus':
+      return { type: 'SearchStatus', phase: chunk.data.phase };
+    case 'SearchSources':
+      return {
+        type: 'SearchSources',
+        sources: chunk.data.map((source) => ({
+          title: source.title,
+          url: source.url,
+        })),
+      };
+    case 'SetContent':
+      return { type: 'SetContent', content: chunk.data };
   }
 }
+
+/** Maps an auto-search phase to the shared stage indicator. */
+const SEARCH_STAGE_BY_PHASE: Record<SearchPhase, SearchStage> = {
+  deciding: { kind: 'analyzing_query' },
+  searching: { kind: 'searching' },
+  reading: { kind: 'reading_sources' },
+  verifying: { kind: 'verifying_sources' },
+};
 
 /** Result payload delivered to callers when a `/search` pipeline turn finishes. */
 export interface SearchOutcome {
@@ -153,6 +170,11 @@ interface ChatRetrySnapshot {
   promptOverride?: string;
   displayImagePaths?: string[];
   replaceCommand?: string;
+  /**
+   * Slash trigger sent on `ask_model` for this turn (utility, `/think`, etc.).
+   * Replayed so transform utilities keep skipping auto-search on retry.
+   */
+  slashCommand?: string;
   /** Ids of the failed turn's own user/assistant pair, so a retry can reuse
    *  them: leaving the user bubble untouched and resetting the assistant
    *  message in place rather than appending a duplicate pair. Reusing the id
@@ -168,6 +190,8 @@ interface SearchRetrySnapshot {
   query: string;
   displayContent?: string;
   quotedText?: string;
+  /** Absolute image paths for vision force-search retries, if any. */
+  imagePaths?: string[];
   /** Ids of the failed turn's own user/assistant pair, so a retry can reuse
    *  them: leaving the user bubble untouched and resetting the assistant
    *  message in place rather than appending a duplicate pair. Reusing the id
@@ -211,35 +235,11 @@ interface ActiveGeneration {
   resolveSearch?: (outcome: SearchOutcome) => void;
 }
 
-function upsertSearchTraceStep(
-  steps: SearchTraceStep[],
-  nextStep: SearchTraceStep,
-): SearchTraceStep[] {
-  const index = steps.findIndex((step) => step.id === nextStep.id);
-  if (index === -1) {
-    return [...steps, nextStep];
-  }
-
-  const next = [...steps];
-  next[index] = nextStep;
-  return next;
-}
-
-function finalizeSearchTraceSteps(
-  steps: SearchTraceStep[],
-): SearchTraceStep[] | undefined {
-  if (steps.length === 0) return undefined;
-
-  return steps.map((step) =>
-    step.status === 'running' ? { ...step, status: 'completed' } : step,
-  );
-}
-
 /**
  * Simplifies interactions with the local Ollama backend.
  *
  * Manages message history, streaming state, and the Tauri IPC channels used by
- * both the normal chat path and the `/search` pipeline.
+ * the normal chat path and force-search (`/search` → `ask_model`).
  *
  * @param activeModel Ollama model slug that should be attributed to each
  *   assistant message produced by this hook. Passed as a hook parameter (not
@@ -255,7 +255,7 @@ export function useModel(
 ) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
-  /** Transient stage indicator for the active `/search` pipeline, if any. */
+  /** Transient stage indicator while web search is in flight, if any. */
   const [searchStage, setSearchStage] = useState<SearchStage>(null);
   const activeGenerationRef = useRef<ActiveGeneration | null>(null);
   const nextGenerationIdRef = useRef(0);
@@ -269,10 +269,9 @@ export function useModel(
    * `@eslint-react/purity`). Independent of the SQLite "saved
    * conversation" id (which is null until `useConversationHistory.save()`
    * runs); the trace recorder uses this id to route every event for the
-   * session into one `traces/chat/<id>.jsonl` and `traces/search/<id>.jsonl`
-   * pair. Refreshed on `reset()` and `loadMessages()`, both of which
-   * fire `record_conversation_end` for the outgoing id so the chat-domain
-   * file gets a clean closing line.
+   * session into one `traces/chat/<id>.jsonl` file. Refreshed on `reset()`
+   * and `loadMessages()`, both of which fire `record_conversation_end` for
+   * the outgoing id so the chat-domain file gets a clean closing line.
    */
   const traceConversationIdRef = useRef<string | null>(null);
   /**
@@ -389,6 +388,13 @@ export function useModel(
    * @param allowOversized Bypasses the pre-load memory gate (issue #296).
    * @param target How to establish the message pair: append a fresh pair or
    *   reuse a failed turn's ids and reset its assistant message in place.
+   * @param forceSearch When true, force built-in engines-only web search
+   *   (`/search` alias). Stamps the turn as a search turn for Variant B
+   *   progress chrome.
+   * @param slashCommand Explicit slash trigger for this turn (utility
+   *   commands). `/search` wins when `forceSearch` is set; otherwise this
+   *   value is sent as `slashCommand` (transform utilities use it to skip
+   *   auto-search). Falls back to `/think` when only `think` is set.
    */
   const runChatTurn = useCallback(
     async (
@@ -401,6 +407,8 @@ export function useModel(
       replaceCommand: string | undefined,
       allowOversized: boolean | undefined,
       target: TurnTarget,
+      forceSearch?: boolean,
+      slashCommand?: string,
     ) => {
       if (!displayContent.trim() && (!imagePaths || imagePaths.length === 0)) {
         return;
@@ -442,22 +450,39 @@ export function useModel(
         role: 'assistant',
         content: '',
         fromThink: think ? true : undefined,
+        // Force-search turns own the Variant B progress chrome immediately
+        fromSearch: forceSearch ? true : undefined,
         replaceCommand,
         modelName: resolvedModel ?? undefined,
         // Captured once, here, so a later turn can never overwrite the
-        // retry data this specific message needs (issue #296).
-        retrySnapshot: {
-          kind: 'chat',
-          displayContent,
-          quotedText,
-          imagePaths,
-          think,
-          promptOverride,
-          displayImagePaths,
-          replaceCommand,
-          userMessageId,
-          assistantMessageId: assistantId,
-        },
+        // retry data this specific message needs (issue #296). Force-search
+        // turns use the search snapshot shape so Load-anyway / Switch-model
+        // replay through `runSearchTurn` (and re-send forceSearch).
+        retrySnapshot: forceSearch
+          ? {
+              kind: 'search',
+              // `runSearchTurn` always passes the stripped query as
+              // `promptOverride`; forceSearch is never set from `ask()`.
+              query: promptOverride!,
+              displayContent,
+              quotedText,
+              imagePaths,
+              userMessageId,
+              assistantMessageId: assistantId,
+            }
+          : {
+              kind: 'chat',
+              displayContent,
+              quotedText,
+              imagePaths,
+              think,
+              promptOverride,
+              displayImagePaths,
+              replaceCommand,
+              slashCommand,
+              userMessageId,
+              assistantMessageId: assistantId,
+            },
       };
 
       if (target.mode === 'reuse') {
@@ -482,6 +507,7 @@ export function useModel(
       const channel = new Channel<RawStreamChunk>();
       let currentContent = '';
       let currentThinkingContent = '';
+      let pendingSources: SearchResultPreview[] | undefined;
 
       channel.onmessage = (rawChunk) => {
         const chunk = normalizeStreamChunk(rawChunk);
@@ -532,6 +558,48 @@ export function useModel(
           return;
         }
 
+        // Citation repair/strip changed the live draft: replace the full body.
+        if (chunk.type === 'SetContent') {
+          currentContent = chunk.content;
+          if (chunk.content) {
+            markVisibleOutput();
+          }
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === assistantId
+                ? { ...message, content: currentContent }
+                : message,
+            ),
+          );
+          return;
+        }
+
+        if (chunk.type === 'SearchStatus') {
+          // Stamp fromSearch early so the bubble owns Variant B progress chrome
+          // for the whole retrieval, not only after sources arrive.
+          setSearchStage(SEARCH_STAGE_BY_PHASE[chunk.phase]);
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === assistantId
+                ? { ...message, fromSearch: true }
+                : message,
+            ),
+          );
+          return;
+        }
+
+        if (chunk.type === 'SearchSources') {
+          pendingSources = chunk.sources;
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === assistantId
+                ? { ...message, fromSearch: true, searchSources: chunk.sources }
+                : message,
+            ),
+          );
+          return;
+        }
+
         if (chunk.type === 'Done') {
           completeGeneration();
           setIsGenerating(false);
@@ -540,6 +608,8 @@ export function useModel(
             ...assistantMsg,
             content: currentContent,
             thinkingContent: currentThinkingContent || undefined,
+            fromSearch: pendingSources ? true : assistantMsg.fromSearch,
+            searchSources: pendingSources,
           });
           return;
         }
@@ -579,6 +649,13 @@ export function useModel(
       // confirms it accepted the turn. Flipping here would burn the flag
       // on no-model bails that return before `ConversationStart` fires,
       // leaving the next attempt without an opening trace event.
+      // Prefer force-search, then an explicit utility/other trigger, then
+      // `/think`. Transform utilities must win over `think` so `/think /tldr`
+      // still skips auto-search on the backend.
+      const resolvedSlashCommand = forceSearch
+        ? '/search'
+        : (slashCommand ?? (think ? '/think' : null));
+
       try {
         await invoke('ask_model', {
           message: promptOverride ?? displayContent,
@@ -587,8 +664,9 @@ export function useModel(
           think: think ?? false,
           conversationId,
           isFirstTurn,
-          slashCommand: think ? '/think' : null,
+          slashCommand: resolvedSlashCommand,
           allowOversized: allowOversized ?? false,
+          forceSearch: forceSearch ?? false,
           onEvent: channel,
         });
       } catch {
@@ -634,6 +712,12 @@ export function useModel(
        *  `retryMessageWithOversized` when the user clicks "Load anyway";
        *  omitted by every normal caller. */
       allowOversized?: boolean,
+      /**
+       * Slash trigger for this turn (`/rewrite`, `/tldr`, `/explain`, ...).
+       * Sent as `slashCommand` on `ask_model` so the backend can skip
+       * auto-search for transform utilities. Omitted for plain chat.
+       */
+      slashCommand?: string,
     ) =>
       runChatTurn(
         displayContent,
@@ -645,19 +729,22 @@ export function useModel(
         replaceCommand,
         allowOversized,
         { mode: 'append' },
+        undefined,
+        slashCommand,
       ),
     [runChatTurn],
   );
 
   /**
-   * Core `/search` pipeline driver shared by the public {@link askSearch}
-   * wrapper and the retry path. Mirrors {@link runChatTurn}: establishes the
-   * message pair per `target`, then runs the single copy of the pipeline
-   * streaming logic (issue #296).
+   * Core `/search` force-search driver shared by the public {@link askSearch}
+   * wrapper and the retry path. Forces web search via `ask_model`
+   * (`forceSearch`). Always one-shot (`final: true`); follow-ups use normal
+   * auto-search rules.
    *
-   * @param query Text sent to the backend pipeline, without the `/search` trigger.
+   * @param query Text sent to the backend without the `/search` trigger.
    * @param displayContent Text shown in the user bubble. Defaults to `query`.
    * @param quotedText Selected host-app text shown above the user bubble, if any.
+   * @param imagePaths Absolute paths of attached images for vision force-search.
    * @param allowOversized Bypasses the pre-load memory gate (issue #296).
    * @param target How to establish the message pair: append a fresh pair or
    *   reuse a failed turn's ids and reset its assistant message in place.
@@ -667,324 +754,43 @@ export function useModel(
       query: string,
       displayContent: string | undefined,
       quotedText: string | undefined,
+      imagePaths: string[] | undefined,
       allowOversized: boolean | undefined,
       target: TurnTarget,
     ): Promise<SearchOutcome> => {
       const trimmed = query.trim();
       if (!trimmed) return { final: true };
 
-      if (activeGenerationRef.current) return { final: true };
-      const pendingCancel = pendingCancelRef.current;
-      if (pendingCancel) {
-        await pendingCancel;
-      }
-      if (activeGenerationRef.current) return { final: true };
-
-      // Reuse the failed turn's ids on a retry so React keeps the bubble
-      // mounted; mint fresh ids for a normal turn. Model attribution follows
-      // the override only on the retry path (issue #296).
-      const userMessageId =
-        target.mode === 'reuse' ? target.userMessageId : crypto.randomUUID();
-      const assistantId =
-        target.mode === 'reuse'
-          ? target.assistantMessageId
-          : crypto.randomUUID();
-      const resolvedModel =
-        target.mode === 'reuse'
-          ? (target.modelOverride ?? activeModel)
-          : activeModel;
-
-      const userMsg: Message = {
-        id: userMessageId,
-        role: 'user',
-        content: displayContent ?? trimmed,
+      // Bubble shows what the user typed; backend gets the stripped query and
+      // forceSearch so the engines-only path runs. Images forward when present so
+      // vision models can ground force-search on the attachment. Reuses
+      // runChatTurn so allowOversized + TurnTarget (issue #296) stay single-sourced.
+      await runChatTurn(
+        displayContent ?? trimmed,
         quotedText,
-      };
-      const assistantMsg: Message = {
-        id: assistantId,
-        role: 'assistant',
-        content: '',
-        fromSearch: true,
-        modelName: resolvedModel ?? undefined,
-        // Captured once, here, so a later turn can never overwrite the
-        // retry data this specific message needs (issue #296).
-        retrySnapshot: {
-          kind: 'search',
-          query: trimmed,
-          displayContent,
-          quotedText,
-          userMessageId,
-          assistantMessageId: assistantId,
-        },
-      };
-
-      if (target.mode === 'reuse') {
-        // Reset the assistant message in place (issue #296): same id, and the
-        // freshly built object carries none of the prior turn's search or
-        // error state (searchTraces, searchSources, errorKind, etc.), so it
-        // all clears at once. Same id -> no remount flash. The user message
-        // is byte-identical on a retry, so it is left untouched.
-        setMessages((prev) =>
-          prev.map((message) =>
-            message.id === assistantId ? assistantMsg : message,
-          ),
-        );
-      } else {
-        setMessages((prev) => [...prev, userMsg, assistantMsg]);
-      }
-      setIsGenerating(true);
-      setSearchStage(null);
-
-      const channel = new Channel<SearchEvent>();
-      let currentContent = '';
-      let sawToken = false;
-      let pendingSources: SearchResultPreview[] | undefined;
-      let warnings: SearchWarning[] = [];
-      let pendingTraces: SearchTraceStep[] = [];
-      let pendingMetadata: SearchMetadata | undefined;
-      let awaitingClarification = false;
-      let errored = false;
-      let cancelled = false;
-
-      const updateAssistant = (patch: Partial<Message>) => {
-        setMessages((prev) =>
-          prev.map((message) =>
-            message.id === assistantId ? { ...message, ...patch } : message,
-          ),
-        );
-      };
-
-      return new Promise<SearchOutcome>((resolve) => {
-        const generationId = beginGeneration(assistantId, resolve);
-
-        const finish = (final: boolean) => {
-          const active = completeGeneration();
-
-          setIsGenerating(false);
-          setSearchStage(null);
-
-          const finalizedTraces = finalizeSearchTraceSteps(pendingTraces);
-          if (finalizedTraces) {
-            pendingTraces = finalizedTraces;
-          }
-          const persistedTraces = finalizedTraces;
-
-          if (!errored && !cancelled && currentContent) {
-            updateAssistant({
-              searchSources: pendingSources,
-              searchWarnings: warnings.length > 0 ? warnings : undefined,
-              searchTraces: persistedTraces,
-              searchMetadata: pendingMetadata,
-            });
-            onTurnComplete?.(userMsg, {
-              ...assistantMsg,
-              content: currentContent,
-              searchSources: pendingSources,
-              searchWarnings: warnings.length > 0 ? warnings : undefined,
-              searchTraces: persistedTraces,
-              searchMetadata: pendingMetadata,
-            });
-          }
-
-          active.resolveSearch?.({ final });
-        };
-
-        // Once the backend emits RefiningSearch, every later searching or
-        // reading stage belongs to a follow-up round rather than the initial one.
-        let inGapRound = false;
-
-        channel.onmessage = (event) => {
-          // `TurnAccepted` is the backend's authoritative signal that
-          // the trace was opened for this conversation_id. Retire the
-          // flag BEFORE the active-generation guard so a
-          // cancel-mid-first-turn cannot leave the flag armed. The
-          // event is hook-internal and never reaches the UI.
-          if (event.type === 'TurnAccepted') {
-            isFirstTurnRef.current = false;
-            return;
-          }
-
-          if (!isActiveGeneration(generationId)) {
-            return;
-          }
-
-          switch (event.type) {
-            case 'Trace': {
-              pendingTraces = upsertSearchTraceStep(pendingTraces, event.step);
-              awaitingClarification ||= event.step.kind === 'clarify';
-              updateAssistant({ searchTraces: pendingTraces });
-              break;
-            }
-            case 'AnalyzingQuery': {
-              setSearchStage({ kind: 'analyzing_query' });
-              break;
-            }
-            case 'Searching': {
-              setSearchStage(
-                inGapRound
-                  ? { kind: 'searching', gap: true }
-                  : { kind: 'searching' },
-              );
-              break;
-            }
-            case 'FetchingUrl':
-            case 'ReadingSources': {
-              setSearchStage(
-                inGapRound
-                  ? { kind: 'reading_sources', gap: true }
-                  : { kind: 'reading_sources' },
-              );
-              break;
-            }
-            case 'RefiningSearch': {
-              inGapRound = true;
-              setSearchStage({
-                kind: 'refining_search',
-                attempt: event.attempt,
-                total: event.total,
-              });
-              break;
-            }
-            case 'Composing': {
-              setSearchStage(
-                inGapRound
-                  ? { kind: 'composing', gap: true }
-                  : { kind: 'composing' },
-              );
-              break;
-            }
-            case 'Sources': {
-              pendingSources = event.results;
-              break;
-            }
-            case 'Token': {
-              sawToken ||= event.content.length > 0;
-              currentContent += event.content;
-              if (event.content) {
-                markVisibleOutput();
-              }
-              setSearchStage(null);
-              updateAssistant({ content: currentContent });
-              break;
-            }
-            case 'IterationComplete': {
-              const finalizedTraces = finalizeSearchTraceSteps(pendingTraces);
-              if (finalizedTraces) {
-                pendingTraces = finalizedTraces;
-                updateAssistant({ searchTraces: finalizedTraces });
-              }
-              break;
-            }
-            case 'Warning': {
-              warnings = [...warnings, event.warning];
-              break;
-            }
-            case 'Done': {
-              pendingMetadata = event.metadata ?? pendingMetadata;
-              finish(!awaitingClarification && sawToken);
-              break;
-            }
-            case 'Cancelled': {
-              const active = completeGeneration();
-              cancelled = true;
-              if (!currentContent) {
-                setMessages((prev) =>
-                  prev.filter((message) => message.id !== assistantId),
-                );
-              }
-              setIsGenerating(false);
-              setSearchStage(null);
-              active.resolveSearch?.({ final: true });
-              break;
-            }
-            case 'Error': {
-              errored = true;
-              updateAssistant({
-                content: event.message,
-                errorKind: 'Other',
-              });
-              finish(true);
-              break;
-            }
-            case 'SandboxUnavailable': {
-              errored = true;
-              updateAssistant({ sandboxUnavailable: true });
-              finish(true);
-              break;
-            }
-            case 'NoModelSelected': {
-              errored = true;
-              // Mirror the chat path's `EngineErrorKind::NoModelSelected`
-              // bubble copy verbatim so the user sees a single canonical
-              // call-to-action regardless of which command tripped the gate.
-              updateAssistant({
-                content: 'No model selected\nPick a model in the picker.',
-                errorKind: 'NoModelSelected',
-              });
-              finish(true);
-              break;
-            }
-            case 'InsufficientMemory': {
-              errored = true;
-              // Mirror the chat path's `EngineErrorKind::InsufficientMemory`
-              // bail (issue #296) so a `/search` turn renders the same amber
-              // "load anyway" card as a normal chat turn. This fieldless
-              // event carries no figures; `ErrorCard` fetches the exact
-              // numbers itself via `estimate_model_fit` and this content is
-              // only the fallback shown until that resolves (or if it fails).
-              updateAssistant({
-                content:
-                  'This model may not fit in memory\nClose some apps, pick a smaller model, or load it anyway.',
-                errorKind: 'InsufficientMemory',
-              });
-              finish(true);
-              break;
-            }
-          }
-        };
-
-        const searchConversationId = ensureTraceConversationId();
-        const searchIsFirstTurn = isFirstTurnRef.current;
-        // The ref is flipped inside `channel.onmessage` once the backend
-        // emits anything other than the pre-`ConversationStart` bail
-        // signals (`NoModelSelected`, `SandboxUnavailable`). Flipping here
-        // would burn the flag on those bails and leave the next attempt
-        // without an opening trace event.
-        invoke('search_pipeline', {
-          message: trimmed,
-          conversationId: searchConversationId,
-          isFirstTurn: searchIsFirstTurn,
-          // `displayContent` is the literal text the user typed (with
-          // the `/search ` prefix preserved), used by the backend to
-          // populate the chat-domain `user_message.content` so the
-          // chat trace file shows exactly what the user submitted.
-          // `message` (the stripped query) is what the search engine
-          // receives.
-          displayedContent: displayContent ?? trimmed,
-          allowOversized: allowOversized ?? false,
-          onEvent: channel,
-        }).catch(() => {
-          if (!isActiveGeneration(generationId) || errored || cancelled) return;
-          errored = true;
-          updateAssistant({
-            content: 'Something went wrong\nCould not start search.',
-            errorKind: 'Other',
-          });
-          finish(true);
-        });
-      });
+        imagePaths,
+        false,
+        trimmed,
+        imagePaths,
+        undefined,
+        allowOversized,
+        target,
+        true,
+      );
+      return { final: true };
     },
-    [onTurnComplete, activeModel, ensureTraceConversationId],
+    [runChatTurn],
   );
 
   /**
-   * Submits a `/search` pipeline turn, appending a fresh user/assistant pair.
+   * Submits a `/search` force-search turn, appending a fresh user/assistant pair.
    * The normal, hot path for a new search turn. Public signature unchanged;
    * delegates to {@link runSearchTurn}.
    *
    * @param query Text sent to the backend pipeline, without the `/search` trigger.
    * @param displayContent Text shown in the user bubble. Defaults to `query`.
    * @param quotedText Selected host-app text shown above the user bubble, if any.
+   * @param imagePaths Absolute paths of attached images for vision force-search.
    * @param allowOversized Bypasses the pre-load memory gate (issue #296). Set
    *   by `retryMessageWithOversized`; omitted by every normal caller.
    */
@@ -993,11 +799,19 @@ export function useModel(
       query: string,
       displayContent?: string,
       quotedText?: string,
+      imagePaths?: string[],
       allowOversized?: boolean,
     ): Promise<SearchOutcome> =>
-      runSearchTurn(query, displayContent, quotedText, allowOversized, {
-        mode: 'append',
-      }),
+      runSearchTurn(
+        query,
+        displayContent,
+        quotedText,
+        imagePaths,
+        allowOversized,
+        {
+          mode: 'append',
+        },
+      ),
     [runSearchTurn],
   );
 
@@ -1037,12 +851,15 @@ export function useModel(
             assistantMessageId: snapshot.assistantMessageId,
             modelOverride,
           },
+          undefined,
+          snapshot.slashCommand,
         );
       } else {
         void runSearchTurn(
           snapshot.query,
           snapshot.displayContent,
           snapshot.quotedText,
+          snapshot.imagePaths,
           allowOversized,
           {
             mode: 'reuse',

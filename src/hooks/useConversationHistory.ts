@@ -1,13 +1,7 @@
 import { useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { Message } from './useModel';
-import type {
-  IterationTrace,
-  SearchMetadata,
-  SearchResultPreview,
-  SearchTraceStep,
-  SearchWarning,
-} from '../types/search';
+import type { SearchResultPreview } from '../types/search';
 import type {
   ConversationSummary,
   PersistedMessage,
@@ -18,10 +12,6 @@ import type {
 /**
  * Maps a frontend `Message` to the `SaveMessagePayload` shape expected by
  * the `save_conversation` and `generate_title` Tauri commands.
- *
- * `search_metadata` stores `SearchMetadata` on new rows. Older rows may still
- * contain `SearchTraceStep[]` or legacy `IterationTrace[]` payloads, so the
- * loader continues to accept all three shapes.
  */
 function toPayload(msg: Message): SaveMessagePayload {
   return {
@@ -31,184 +21,13 @@ function toPayload(msg: Message): SaveMessagePayload {
     image_paths: msg.imagePaths ?? null,
     thinking_content: msg.thinkingContent ?? null,
     search_sources: msg.searchSources ?? null,
-    search_warnings:
-      msg.searchWarnings && msg.searchWarnings.length > 0
-        ? JSON.stringify(msg.searchWarnings)
-        : null,
-    search_metadata:
-      msg.searchMetadata !== undefined
-        ? JSON.stringify(msg.searchMetadata)
-        : msg.searchTraces && msg.searchTraces.length > 0
-          ? JSON.stringify(msg.searchTraces)
-          : null,
     model_name: msg.modelName ?? null,
   };
-}
-
-interface ParsedSearchMetadata {
-  metadata?: SearchMetadata;
-  traces?: SearchTraceStep[];
-}
-
-function hostnameOrUrl(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, '');
-  } catch {
-    return url;
-  }
-}
-
-function isSearchTraceStep(value: unknown): value is SearchTraceStep {
-  if (!value || typeof value !== 'object') return false;
-
-  return (
-    'id' in value &&
-    'kind' in value &&
-    'status' in value &&
-    'title' in value &&
-    'summary' in value
-  );
-}
-
-function isIterationTrace(value: unknown): value is IterationTrace {
-  if (!value || typeof value !== 'object') return false;
-
-  return (
-    'stage' in value &&
-    'queries' in value &&
-    'judge_verdict' in value &&
-    'judge_reasoning' in value
-  );
-}
-
-function isSearchMetadata(value: unknown): value is SearchMetadata {
-  if (!value || typeof value !== 'object') return false;
-
-  return (
-    'iterations' in value &&
-    Array.isArray(value.iterations) &&
-    'total_duration_ms' in value &&
-    'retries_performed' in value
-  );
-}
-
-function convertLegacyTraces(traces: IterationTrace[]): SearchTraceStep[] {
-  return traces.flatMap((trace, index) => {
-    const round = trace.stage.kind === 'initial' ? 1 : trace.stage.round + 1;
-    const baseId = `legacy-round-${round}-${index}`;
-    const domains = [...new Set(trace.urls_fetched.map(hostnameOrUrl))];
-    const searchStep: SearchTraceStep = {
-      id: `${baseId}-search`,
-      kind: 'search',
-      status: 'completed',
-      round,
-      title: round === 1 ? 'Searched the web' : 'Searched the web again',
-      summary:
-        trace.queries.length > 0
-          ? 'Loaded a saved search round from an older trace format.'
-          : 'Loaded a saved search round.',
-      queries: trace.queries,
-      domains,
-    };
-
-    const judgeStep: SearchTraceStep = {
-      id: `${baseId}-judge`,
-      kind: trace.urls_fetched.length > 0 ? 'chunk_judge' : 'snippet_judge',
-      status: 'completed',
-      round,
-      title:
-        trace.urls_fetched.length > 0
-          ? 'Checked whether the evidence was enough'
-          : 'Checked whether the snippets were enough',
-      summary:
-        trace.judge_verdict === 'sufficient'
-          ? 'This saved round had enough evidence to answer confidently.'
-          : trace.judge_verdict === 'partial'
-            ? 'This saved round helped, but still left some gaps.'
-            : 'This saved round did not gather enough evidence yet.',
-      detail: trace.judge_reasoning,
-      verdict: trace.judge_verdict,
-    };
-
-    if (trace.urls_fetched.length === 0) {
-      return [searchStep, judgeStep];
-    }
-
-    const readStep: SearchTraceStep = {
-      id: `${baseId}-read`,
-      kind: 'read',
-      status: 'completed',
-      round,
-      title: 'Opened source pages',
-      summary: `Read ${trace.urls_fetched.length} saved page${
-        trace.urls_fetched.length === 1 ? '' : 's'
-      }.`,
-      domains,
-      counts: {
-        processed: trace.urls_fetched.length,
-        total: trace.urls_fetched.length,
-        empty:
-          trace.reader_empty_urls.length > 0
-            ? trace.reader_empty_urls.length
-            : undefined,
-      },
-    };
-
-    return [searchStep, readStep, judgeStep];
-  });
-}
-
-function parseSearchMetadata(raw: string | null): ParsedSearchMetadata {
-  if (!raw) return {};
-
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (Array.isArray(parsed)) {
-      if (parsed.length === 0) {
-        return {};
-      }
-
-      if (parsed.every(isSearchTraceStep)) {
-        return { traces: parsed };
-      }
-
-      if (parsed.every(isIterationTrace)) {
-        return {
-          metadata: {
-            iterations: parsed,
-            total_duration_ms: 0,
-            retries_performed: 0,
-          },
-          traces: convertLegacyTraces(parsed),
-        };
-      }
-
-      return {};
-    }
-
-    if (isSearchMetadata(parsed)) {
-      return {
-        metadata: parsed,
-        traces:
-          parsed.iterations.length > 0
-            ? convertLegacyTraces(parsed.iterations)
-            : undefined,
-      };
-    }
-
-    return {};
-  } catch {
-    return {};
-  }
 }
 
 /**
  * Maps a `PersistedMessage` returned by `load_conversation` back to a
  * frontend `Message`, preserving optional fields.
- *
- * `search_metadata` is deserialized as `SearchMetadata` on new rows. Older
- * `SearchTraceStep[]` and legacy `IterationTrace[]` payloads are still
- * accepted for backward compatibility.
  */
 function fromPersisted(msg: PersistedMessage): Message {
   const imagePaths = msg.image_paths
@@ -217,11 +36,6 @@ function fromPersisted(msg: PersistedMessage): Message {
   const searchSources = msg.search_sources
     ? (JSON.parse(msg.search_sources) as SearchResultPreview[])
     : undefined;
-  const searchWarnings = msg.search_warnings
-    ? (JSON.parse(msg.search_warnings) as SearchWarning[])
-    : undefined;
-  const { metadata: searchMetadata, traces: searchTraces } =
-    parseSearchMetadata(msg.search_metadata);
   return {
     id: msg.id,
     role: msg.role as 'user' | 'assistant',
@@ -232,16 +46,9 @@ function fromPersisted(msg: PersistedMessage): Message {
     searchSources:
       searchSources && searchSources.length > 0 ? searchSources : undefined,
     fromSearch:
-      (searchSources !== undefined && searchSources.length > 0) ||
-      (searchTraces !== undefined && searchTraces.length > 0) ||
-      searchMetadata !== undefined
+      searchSources !== undefined && searchSources.length > 0
         ? true
         : undefined,
-    searchWarnings:
-      searchWarnings && searchWarnings.length > 0 ? searchWarnings : undefined,
-    searchMetadata,
-    searchTraces:
-      searchTraces && searchTraces.length > 0 ? searchTraces : undefined,
     modelName: msg.model_name ?? undefined,
   };
 }
@@ -329,8 +136,6 @@ export function useConversationHistory() {
           imagePaths: userMsg.imagePaths ?? null,
           thinkingContent: null,
           searchSources: null,
-          searchWarnings: null,
-          searchMetadata: null,
           modelName: null,
         }),
         invoke('persist_message', {
@@ -341,18 +146,6 @@ export function useConversationHistory() {
           imagePaths: null,
           thinkingContent: assistantMsg.thinkingContent ?? null,
           searchSources: assistantMsg.searchSources ?? null,
-          searchWarnings:
-            assistantMsg.searchWarnings &&
-            assistantMsg.searchWarnings.length > 0
-              ? JSON.stringify(assistantMsg.searchWarnings)
-              : null,
-          searchMetadata:
-            assistantMsg.searchMetadata !== undefined
-              ? JSON.stringify(assistantMsg.searchMetadata)
-              : assistantMsg.searchTraces &&
-                  assistantMsg.searchTraces.length > 0
-                ? JSON.stringify(assistantMsg.searchTraces)
-                : null,
           modelName: assistantMsg.modelName ?? null,
         }),
       ]);

@@ -26,8 +26,6 @@
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" && cd src-tauri && cargo fmt",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" && cd src-tauri && cargo fmt -- --check",
     "typecheck": "tsc --noEmit",
-    "search-box:start": "docker compose -f sandbox/search-box/docker-compose.yml up -d --build",
-    "search-box:stop": "docker compose -f sandbox/search-box/docker-compose.yml down",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

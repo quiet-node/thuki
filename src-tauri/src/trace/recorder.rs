@@ -1,25 +1,21 @@
-//! Forensic per-conversation trace recorder shared by the chat path and
-//! the `/search` pipeline.
+//! Forensic per-conversation trace recorder for the chat path, including
+//! built-in websearch turns.
 //!
 //! When [`crate::config::schema::DebugSection::trace_enabled`] is on,
-//! every chat turn AND every search turn writes a forensic JSON-Lines
-//! record into a per-conversation file under
-//! `app_data_dir()/traces/<domain>/<conversation_id>.jsonl`. Files are
-//! grouped by domain so an analysis agent can be pointed at exactly the
-//! slice it cares about: `traces/chat/` for conversation patterns,
-//! `traces/search/` for retrieval quality, or `traces/` for end-to-end
-//! debugging.
+//! every chat turn (and its websearch events) writes a forensic
+//! JSON-Lines record into a per-conversation file under
+//! `app_data_dir()/traces/chat/<conversation_id>.jsonl`.
 //!
 //! Off in shipped builds. Intended for local quality investigation: open
-//! a `.jsonl` file and grep/jq across LLM prompts vs. judge verdicts vs.
+//! a `.jsonl` file and grep/jq across LLM prompts vs. retrieval events vs.
 //! user-visible assistant tokens to understand exactly what happened.
 //!
 //! # Architecture
 //!
-//! - [`TraceRecorder`] is the trait every callsite calls into. The chat
-//!   layer and the search pipeline both thread `&Arc<dyn TraceRecorder>`
-//!   through their execution contexts; no call site distinguishes the
-//!   live recorder from the noop.
+//! - [`TraceRecorder`] is the trait every callsite calls into. Chat and
+//!   websearch code paths both thread `&Arc<dyn TraceRecorder>` through
+//!   their execution contexts; no call site distinguishes the live
+//!   recorder from the noop.
 //! - [`NoopRecorder`] is the production default. Every method is a no-op.
 //! - [`FileRecorder`] writes events for ONE `(domain, conversation_id)`
 //!   pair into ONE file. Lazy directory + file creation on first record,
@@ -76,10 +72,10 @@ use super::ids::ConversationId;
 /// Schema version embedded in every record. Bump when the wire shape changes.
 ///
 /// `2` adds the `domain` and `conversation_id` top-level fields plus the
-/// chat-domain variants. Files produced by the v1 recorder (one file per
-/// search turn, no chat events) and files produced by v2 (one file per
-/// conversation, both chat and search events) are not interleaved on
-/// disk because the v2 layout uses different directories.
+/// chat-domain variants (including websearch events). Files produced by
+/// the v1 recorder (one file per search turn, no chat events) and files
+/// produced by v2 (one file per conversation under `traces/chat/`) are
+/// not interleaved on disk because the v2 layout uses different paths.
 pub const TRACE_SCHEMA_VERSION: u32 = 2;
 
 /// Coarse-grained classification of every recorded event. Determines
@@ -94,14 +90,11 @@ pub const TRACE_SCHEMA_VERSION: u32 = 2;
 #[serde(rename_all = "snake_case")]
 pub enum TraceDomain {
     /// Chat-layer events: user messages, assistant streaming, screen
-    /// captures, conversation lifecycle. One file per conversation,
-    /// rooted at `traces/chat/<conversation_id>.jsonl`.
+    /// captures, conversation lifecycle, and the built-in web-search
+    /// records (search decision, retrieval, escalation, requery, and
+    /// citation audit). One file per conversation, rooted at
+    /// `traces/chat/<conversation_id>.jsonl`.
     Chat,
-    /// Search-pipeline events: router/judge LLM calls, SearXNG queries,
-    /// reader batches, chunker output, rerank results, judge verdicts.
-    /// One file per conversation, rooted at
-    /// `traces/search/<conversation_id>.jsonl`.
-    Search,
 }
 
 impl TraceDomain {
@@ -111,20 +104,19 @@ impl TraceDomain {
     pub fn dir(self) -> &'static str {
         match self {
             TraceDomain::Chat => "chat",
-            TraceDomain::Search => "search",
         }
     }
 }
 
-/// Trait every chat or search callsite uses to emit forensic events.
+/// Trait every chat or websearch callsite uses to emit forensic events.
 /// Implementors must be cheap when tracing is off (the [`NoopRecorder`]
 /// case dominates production usage).
 pub trait TraceRecorder: Send + Sync {
     /// Records a single event for the given conversation. Implementors
     /// MUST NOT panic, MUST NOT block for arbitrary durations, and MUST
     /// NOT propagate errors. Trace I/O failures must be swallowed (with
-    /// a single rate-limited warning) so the chat path and the search
-    /// pipeline are unaffected.
+    /// a single rate-limited warning) so chat and websearch callsites
+    /// are unaffected.
     fn record(&self, conversation_id: &ConversationId, event: RecorderEvent);
 }
 
@@ -137,115 +129,51 @@ impl TraceRecorder for NoopRecorder {
     fn record(&self, _conversation_id: &ConversationId, _event: RecorderEvent) {}
 }
 
-/// Forensic trace events emitted by the chat layer or the search pipeline.
+/// One cited source recorded in a [`RecorderEvent::SearchRetrieved`] event: the
+/// URL that grounded the answer and its human-readable title. The title is what
+/// makes a vertical's generic homepage URL ("https://www.espn.com/",
+/// "https://news.google.com/") legible in the forensic trace: those URLs alone
+/// do not say which league or which headline set actually answered the turn, so
+/// the title is recorded alongside every URL.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RetrievedSource {
+    pub url: String,
+    pub title: String,
+}
+
+/// One keyless engine's outcome for a single query, recorded in
+/// [`RecorderEvent::SearchRetrieved`] for the general scraped-engine tier
+/// (`tier == "engine"`). Deliberately lean: name, status, and hit count only,
+/// matching the counts-not-payloads discipline the rest of the forensic
+/// trace's summary fields already follow. Populated by
+/// `crate::websearch::engine::web_search`, one entry per engine actually
+/// consulted, so a trace shows a silently-empty or silently-blocked engine
+/// even when the overall fused result looks healthy, instead of relying on
+/// the stderr `[search]` log alone.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct EngineStat {
+    pub name: String,
+    /// One of "ok", "empty", "blocked", "transport_error", "cache_hit", or
+    /// "cooling" -- mirrors the `[search] engine=... <outcome>` stderr log
+    /// line emitted alongside it.
+    pub status: String,
+    pub hit_count: usize,
+}
+
+/// Forensic trace events emitted by the chat layer, including built-in
+/// websearch.
 ///
-/// Each variant maps to one JSON-Lines record. Field shapes are
-/// intentionally permissive (`Value`, `String`) for the search-domain
-/// variants because the trace is a forensic dump, not a typed contract.
-/// Chat-domain variants carry typed payloads because the chat layer's
-/// surface is small and stable.
+/// Each variant maps to one JSON-Lines record. Field shapes for
+/// websearch events (`SearchDecided`, `SearchRetrieved`, etc.) are
+/// intentionally permissive (`Value`, `String`) because the trace is a
+/// forensic dump, not a typed contract. Lifecycle variants carry typed
+/// payloads because the chat layer's surface is small and stable.
 ///
 /// Every variant has a [`Self::domain`] method that returns its
 /// [`TraceDomain`], used by the registry to pick the destination file.
 #[derive(Debug, Clone)]
 pub enum RecorderEvent {
-    // ─── Search domain (existing variants from PR #126) ─────────────────
-    /// Search-pipeline turn starts. Captures the user query, model slug,
-    /// runtime search-config snapshot (so a trace is reproducible without
-    /// the config file), and conversation-history length.
-    TurnStart {
-        turn_id: String,
-        query: String,
-        model: String,
-        runtime_config: Value,
-        history_len: usize,
-    },
-    /// Single Ollama `/api/chat` non-streaming JSON request issued by the
-    /// search pipeline. Captures the stage label
-    /// (router / snippet_judge / chunk_judge / synthesis /
-    /// answer_from_context), the full request body the pipeline sent,
-    /// the raw response string Ollama returned, and the request latency.
-    /// `error` is `Some` when the call failed (timeout, transport, parse).
-    LlmCall {
-        stage: String,
-        endpoint: String,
-        request_body: Value,
-        response_raw: Option<String>,
-        latency_ms: u64,
-        error: Option<String>,
-    },
-    /// Streaming Ollama `/api/chat` request used by the search synthesis
-    /// path. `tokens` counts streamed pieces; `final_text` is the
-    /// accumulated assistant message; per-token records are NOT emitted
-    /// (would flood the file without adding signal).
-    StreamingLlmCall {
-        stage: String,
-        endpoint: String,
-        request_body: Value,
-        final_text: Option<String>,
-        tokens: u64,
-        latency_ms: u64,
-        error: Option<String>,
-    },
-    /// SearXNG search request: query string, full URL, raw HTTP response
-    /// body, and the normalized result list the pipeline forwarded to the
-    /// reranker.
-    SearxngQuery {
-        query: String,
-        url: String,
-        status: Option<u16>,
-        response_raw: Option<String>,
-        normalized_results: Value,
-        latency_ms: u64,
-        error: Option<String>,
-    },
-    /// Reader sidecar batch: per-URL fetch results including raw HTTP
-    /// body and extracted text. Latency is per-URL plus the overall batch.
-    ReaderBatch {
-        urls: Vec<String>,
-        per_url: Vec<ReaderUrlOutcome>,
-        batch_latency_ms: u64,
-        batch_error: Option<String>,
-    },
-    /// Page chunked into N pieces. `chunks` are the full chunk texts so
-    /// a downstream consumer can reconstruct what the judge actually saw.
-    ChunkerBatch {
-        page_url: String,
-        chunk_count: usize,
-        chunks: Vec<String>,
-    },
-    /// Reranker output: top-k chunks with scores, in selection order.
-    RerankResult {
-        query: String,
-        input_count: usize,
-        top_k: Vec<RerankedChunk>,
-    },
-    /// Parsed judge verdict at a given stage (snippet or chunk). Captures
-    /// the raw string the LLM returned plus the normalized verdict struct.
-    JudgeVerdict {
-        stage: String,
-        raw: String,
-        normalized: Value,
-    },
-    /// Warning surfaced by the search pipeline (e.g. JudgeFailed,
-    /// BudgetExhausted).
-    Warning { kind: String, payload: Value },
-    /// Mirrors a [`crate::search::types::SearchEvent`] emission so the
-    /// trace reflects the user-visible event stream alongside backend
-    /// internals.
-    SearchEventEmitted { event: Value },
-    /// Search-pipeline turn ends. Captures the final action taken and
-    /// total wall-clock latency. `error` is `Some` only on hard failure
-    /// paths.
-    TurnEnd {
-        turn_id: String,
-        final_action: String,
-        final_source_urls: Vec<String>,
-        total_latency_ms: u64,
-        error: Option<String>,
-    },
-
-    // ─── Chat domain (new in v2) ────────────────────────────────────────
+    // ─── Chat domain ────────────────────────────────────────────────────
     /// First event in a chat-domain file. Captures the model slug and
     /// the resolved system prompt at the moment the conversation began,
     /// so the trace is reproducible without snapshotting the live
@@ -268,13 +196,112 @@ pub enum RecorderEvent {
     AssistantThinking { chunk: String },
     /// Streaming chunk of the assistant's user-visible response.
     AssistantTokens { chunk: String },
-    /// Assistant turn ends. Captures the total streamed token count and
-    /// the wall-clock latency from `UserMessage` to stream-completion.
-    AssistantComplete { total_tokens: u64, latency_ms: u64 },
+    /// Assistant turn ends. Captures streamed token count, wall-clock latency
+    /// from `UserMessage` to stream-completion, and the **final** answer body
+    /// after citation repair/`SetContent` (capped; never image bytes). Lets a
+    /// trace match what history/UI stored without replaying the stream.
+    AssistantComplete {
+        total_tokens: u64,
+        latency_ms: u64,
+        final_content: String,
+    },
     /// User invoked the `/screen` slash command and the backend wrote a
     /// JPEG snapshot to `image_path`. `displays` is the number of
     /// monitors captured (multi-monitor setups produce one merged image).
     ScreenCaptured { image_path: String, displays: u8 },
+    /// Built-in search never entered the retrieval pipeline for this turn
+    /// (gate-level skip). `reason` is a closed string enum:
+    /// `non_vision_images` | `transform_slash` | `auto_off` | `engine_unavailable`.
+    /// Pipeline decisions that *do* run the classifier still use
+    /// [`Self::SearchDecided`] (with `decision` no/cached/web) instead.
+    SearchSkipped { reason: String },
+    /// Resolved auto-search decision for a chat turn that entered the
+    /// orchestrator: pre-filter verdict, search decision (`no`/`cached`/`web`),
+    /// whether `/search` forced the path, classifier route, standalone rewrite,
+    /// and keyword queries. Emitted once per such turn so a trace shows why a
+    /// turn did or did not retrieve and which source tier it aimed at.
+    SearchDecided {
+        prefilter: String,
+        /// `no` | `cached` | `web` after prefilter + classifier resolve.
+        decision: String,
+        /// True when the `/search` slash command forced engines-only this turn.
+        force: bool,
+        route: String,
+        standalone_question: String,
+        queries: Vec<String>,
+    },
+    /// Which source tier answered a chat turn's auto-search, and the sources
+    /// (URL + title) it cited. `tier` is one of "weather", "sports", "news",
+    /// "wiki", "engine", or "cache". Emitted once when retrieval produces a
+    /// grounded answer.
+    ///
+    /// `engine_stats` carries the general scraped-engine tier's per-query,
+    /// per-engine outcome summary (see [`EngineStat`]): populated only when
+    /// `tier == "engine"` (the direct engine-tier answer and the
+    /// vertical-insufficient escalation path both set it), empty for every
+    /// other tier, since those never race the keyless engines.
+    ///
+    /// `round` distinguishes the two records a requeried turn produces (see
+    /// `crate::websearch::orchestrator::judge_and_requery`): `Some(1)` marks
+    /// round one's sources, recorded just before the requery fires so they
+    /// stay auditable in the trace even though they are about to be merged
+    /// away and superseded. The terminal record for a turn (the only round,
+    /// or the post-merge result that follows a round-one record and a
+    /// `SearchRequeried` event) always carries `None`, the same shape this
+    /// event had before `round` existed. `round` is omitted from the
+    /// serialized JSON entirely when `None`, so no existing trace record's
+    /// shape changes.
+    SearchRetrieved {
+        tier: String,
+        sources: Vec<RetrievedSource>,
+        engine_stats: Vec<EngineStat>,
+        round: Option<u8>,
+    },
+    /// The sufficiency judge's verdict on a vertical's answer, and what the
+    /// orchestrator did with it. Emitted once per turn a keyless vertical
+    /// answered, so a trace shows why a vertical result was committed or
+    /// escalated to the scraped engines. `from_tier` is the vertical judged
+    /// ("weather", "sports", "news", "wiki"); `sufficient` is the verdict;
+    /// `missing` is the judge's short phrase for what the block lacked (empty
+    /// when sufficient); `escalated` is whether the scraped-engine tier was then
+    /// run (only when the block was insufficient AND an engine was not cooling);
+    /// `escalation_hit` is whether that escalation produced sources that
+    /// replaced the vertical block.
+    SearchEscalated {
+        from_tier: String,
+        sufficient: bool,
+        missing: String,
+        escalated: bool,
+        escalation_hit: bool,
+    },
+    /// Post-generation citation audit for a source-grounded chat turn: a purely
+    /// mechanical, zero-model check of how many of the writer's bracket
+    /// citations were actually backed by the source text they point at.
+    /// `cited` is the total citation references seen; `supported`, `weak`, and
+    /// `unsupported` partition them by support strength; `unsupported_indices`
+    /// lists the source numbers judged unsupported (including out-of-range
+    /// numbers). `numeric_checked`, `numeric_matched`, and `numeric_missing`
+    /// report the numeric-consistency guard's own counts (claim money
+    /// figures, numbers, and dates checked against the cited source, and how
+    /// many were absent), summed across every citation in the turn.
+    /// `unverifiable` counts citations whose cited source had too little
+    /// fetched text to check anything against (empty, or below
+    /// `crate::config::defaults::CITE_UNVERIFIABLE_MIN_SOURCE_BYTES`); these
+    /// are never double-counted in `unsupported` and never drive the
+    /// answer-facing hedge note. A flagged `unsupported` citation now also
+    /// may trigger repair / strip; total failure may surface
+    /// `crate::websearch::cite_check::honest_failure_note`.
+    CitationAudit {
+        cited: usize,
+        supported: usize,
+        weak: usize,
+        unsupported: usize,
+        unsupported_indices: Vec<usize>,
+        numeric_checked: usize,
+        numeric_matched: usize,
+        numeric_missing: usize,
+        unverifiable: usize,
+    },
     /// Final event in a chat-domain file. Emitted by the frontend when
     /// the user resets the conversation or by the backend on app quit
     /// (reason = "quit"). Window-hide does NOT emit this event because
@@ -284,31 +311,43 @@ pub enum RecorderEvent {
     /// Late events arriving after `ConversationEnd` are tolerated; see
     /// the module-level "Late-event tolerance" doc.
     ConversationEnd { reason: String },
+    /// The engine tier's own sufficiency judge (run after it assembles
+    /// sources for the standalone question, see
+    /// `crate::websearch::orchestrator::judge_and_requery`) found the
+    /// result insufficient and fired its one bounded requery. `missing`
+    /// is the judge's full, uncapped phrase for the gap; `requery` is the
+    /// standalone question with that phrase appended and capped to
+    /// `crate::config::defaults::REQUERY_MISSING_MAX_CHARS` at a word
+    /// boundary, the exact string searched (so `requery` can carry less of
+    /// `missing` than `missing` itself shows). Emitted at most once per turn
+    /// (`crate::config::defaults::ENGINE_REQUERY_MAX`); a sufficient
+    /// verdict, a judge failure, or an empty `missing` phrase never
+    /// emits this event.
+    SearchRequeried { missing: String, requery: String },
 }
 
 impl RecorderEvent {
     /// Returns the [`TraceDomain`] this event belongs to. Used by the
     /// registry to pick the destination file.
     pub fn domain(&self) -> TraceDomain {
+        // Every event belongs to the chat domain. The built-in web search
+        // (both the `/search` command and the auto-search pre-pass) rides the
+        // chat turn, so its decision/retrieval/escalation/requery and
+        // citation-audit records are chat-domain events too.
         match self {
-            RecorderEvent::TurnStart { .. }
-            | RecorderEvent::LlmCall { .. }
-            | RecorderEvent::StreamingLlmCall { .. }
-            | RecorderEvent::SearxngQuery { .. }
-            | RecorderEvent::ReaderBatch { .. }
-            | RecorderEvent::ChunkerBatch { .. }
-            | RecorderEvent::RerankResult { .. }
-            | RecorderEvent::JudgeVerdict { .. }
-            | RecorderEvent::Warning { .. }
-            | RecorderEvent::SearchEventEmitted { .. }
-            | RecorderEvent::TurnEnd { .. } => TraceDomain::Search,
             RecorderEvent::ConversationStart { .. }
             | RecorderEvent::UserMessage { .. }
             | RecorderEvent::AssistantThinking { .. }
             | RecorderEvent::AssistantTokens { .. }
             | RecorderEvent::AssistantComplete { .. }
             | RecorderEvent::ScreenCaptured { .. }
-            | RecorderEvent::ConversationEnd { .. } => TraceDomain::Chat,
+            | RecorderEvent::SearchSkipped { .. }
+            | RecorderEvent::SearchDecided { .. }
+            | RecorderEvent::SearchRetrieved { .. }
+            | RecorderEvent::SearchEscalated { .. }
+            | RecorderEvent::CitationAudit { .. }
+            | RecorderEvent::ConversationEnd { .. }
+            | RecorderEvent::SearchRequeried { .. } => TraceDomain::Chat,
         }
     }
 
@@ -318,45 +357,6 @@ impl RecorderEvent {
     pub fn is_conversation_end(&self) -> bool {
         matches!(self, RecorderEvent::ConversationEnd { .. })
     }
-
-    /// Returns true if this event terminates a turn in the search domain.
-    /// Used by the registry to evict the search-domain file handle from
-    /// its per-conversation cache so long-running sessions with many
-    /// `/search` turns do not accumulate one file handle per turn until
-    /// the process exits.
-    pub fn is_turn_end(&self) -> bool {
-        matches!(self, RecorderEvent::TurnEnd { .. })
-    }
-
-    /// Returns the `request_body` from an [`RecorderEvent::LlmCall`] event,
-    /// or `None` for any other variant. Provides a branch-free extraction
-    /// path for tests that assert on the recorded wire body.
-    #[cfg(test)]
-    pub(crate) fn llm_call_request_body(&self) -> Option<&serde_json::Value> {
-        match self {
-            RecorderEvent::LlmCall { request_body, .. } => Some(request_body),
-            _ => None,
-        }
-    }
-}
-
-/// Per-URL outcome inside a [`RecorderEvent::ReaderBatch`].
-#[derive(Debug, Clone, Serialize)]
-pub struct ReaderUrlOutcome {
-    pub url: String,
-    pub status: Option<u16>,
-    pub latency_ms: u64,
-    pub raw_body: Option<String>,
-    pub extracted_text: Option<String>,
-    pub error: Option<String>,
-}
-
-/// Single ranked chunk inside a [`RecorderEvent::RerankResult`].
-#[derive(Debug, Clone, Serialize)]
-pub struct RerankedChunk {
-    pub source_url: String,
-    pub score: f64,
-    pub text: String,
 }
 
 /// Lazy file-backed recorder for ONE `(domain, conversation_id)` pair.
@@ -555,9 +555,9 @@ fn serialize_failure_fallback(recorder: &FileRecorder, err: serde_json::Error) -
 ///
 /// Stamps the four standard top-level fields onto every line:
 /// `v` (schema version), `seq` (per-recorder monotonic counter),
-/// `ts_ms` (wall-clock UNIX millis), `domain` (chat or search), plus
-/// `conversation_id` (the ID passed to `record`). The remaining fields
-/// come from the event variant via the `Serialize` impl below.
+/// `ts_ms` (wall-clock UNIX millis), `domain` (currently always chat),
+/// plus `conversation_id` (the ID passed to `record`). The remaining
+/// fields come from the event variant via the `Serialize` impl below.
 fn serialize_event(
     seq: u64,
     ts_ms: u64,
@@ -591,140 +591,6 @@ impl Serialize for RecorderEvent {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(None)?;
         match self {
-            // ─── Search domain ────────────────────────────────────────
-            RecorderEvent::TurnStart {
-                turn_id,
-                query,
-                model,
-                runtime_config,
-                history_len,
-            } => {
-                map.serialize_entry("kind", "turn_start")?;
-                map.serialize_entry("turn_id", turn_id)?;
-                map.serialize_entry("query", query)?;
-                map.serialize_entry("model", model)?;
-                map.serialize_entry("runtime_config", runtime_config)?;
-                map.serialize_entry("history_len", history_len)?;
-            }
-            RecorderEvent::LlmCall {
-                stage,
-                endpoint,
-                request_body,
-                response_raw,
-                latency_ms,
-                error,
-            } => {
-                map.serialize_entry("kind", "llm_call")?;
-                map.serialize_entry("stage", stage)?;
-                map.serialize_entry("endpoint", endpoint)?;
-                map.serialize_entry("request_body", request_body)?;
-                map.serialize_entry("response_raw", response_raw)?;
-                map.serialize_entry("latency_ms", latency_ms)?;
-                map.serialize_entry("error", error)?;
-            }
-            RecorderEvent::StreamingLlmCall {
-                stage,
-                endpoint,
-                request_body,
-                final_text,
-                tokens,
-                latency_ms,
-                error,
-            } => {
-                map.serialize_entry("kind", "streaming_llm_call")?;
-                map.serialize_entry("stage", stage)?;
-                map.serialize_entry("endpoint", endpoint)?;
-                map.serialize_entry("request_body", request_body)?;
-                map.serialize_entry("final_text", final_text)?;
-                map.serialize_entry("tokens", tokens)?;
-                map.serialize_entry("latency_ms", latency_ms)?;
-                map.serialize_entry("error", error)?;
-            }
-            RecorderEvent::SearxngQuery {
-                query,
-                url,
-                status,
-                response_raw,
-                normalized_results,
-                latency_ms,
-                error,
-            } => {
-                map.serialize_entry("kind", "searxng_query")?;
-                map.serialize_entry("query", query)?;
-                map.serialize_entry("url", url)?;
-                map.serialize_entry("status", status)?;
-                map.serialize_entry("response_raw", response_raw)?;
-                map.serialize_entry("normalized_results", normalized_results)?;
-                map.serialize_entry("latency_ms", latency_ms)?;
-                map.serialize_entry("error", error)?;
-            }
-            RecorderEvent::ReaderBatch {
-                urls,
-                per_url,
-                batch_latency_ms,
-                batch_error,
-            } => {
-                map.serialize_entry("kind", "reader_batch")?;
-                map.serialize_entry("urls", urls)?;
-                map.serialize_entry("per_url", per_url)?;
-                map.serialize_entry("batch_latency_ms", batch_latency_ms)?;
-                map.serialize_entry("batch_error", batch_error)?;
-            }
-            RecorderEvent::ChunkerBatch {
-                page_url,
-                chunk_count,
-                chunks,
-            } => {
-                map.serialize_entry("kind", "chunker_batch")?;
-                map.serialize_entry("page_url", page_url)?;
-                map.serialize_entry("chunk_count", chunk_count)?;
-                map.serialize_entry("chunks", chunks)?;
-            }
-            RecorderEvent::RerankResult {
-                query,
-                input_count,
-                top_k,
-            } => {
-                map.serialize_entry("kind", "rerank_result")?;
-                map.serialize_entry("query", query)?;
-                map.serialize_entry("input_count", input_count)?;
-                map.serialize_entry("top_k", top_k)?;
-            }
-            RecorderEvent::JudgeVerdict {
-                stage,
-                raw,
-                normalized,
-            } => {
-                map.serialize_entry("kind", "judge_verdict")?;
-                map.serialize_entry("stage", stage)?;
-                map.serialize_entry("raw", raw)?;
-                map.serialize_entry("normalized", normalized)?;
-            }
-            RecorderEvent::Warning { kind, payload } => {
-                map.serialize_entry("kind", "warning")?;
-                map.serialize_entry("warning_kind", kind)?;
-                map.serialize_entry("payload", payload)?;
-            }
-            RecorderEvent::SearchEventEmitted { event } => {
-                map.serialize_entry("kind", "search_event")?;
-                map.serialize_entry("event", event)?;
-            }
-            RecorderEvent::TurnEnd {
-                turn_id,
-                final_action,
-                final_source_urls,
-                total_latency_ms,
-                error,
-            } => {
-                map.serialize_entry("kind", "turn_end")?;
-                map.serialize_entry("turn_id", turn_id)?;
-                map.serialize_entry("final_action", final_action)?;
-                map.serialize_entry("final_source_urls", final_source_urls)?;
-                map.serialize_entry("total_latency_ms", total_latency_ms)?;
-                map.serialize_entry("error", error)?;
-            }
-
-            // ─── Chat domain ──────────────────────────────────────────
             RecorderEvent::ConversationStart {
                 model,
                 system_prompt,
@@ -754,10 +620,12 @@ impl Serialize for RecorderEvent {
             RecorderEvent::AssistantComplete {
                 total_tokens,
                 latency_ms,
+                final_content,
             } => {
                 map.serialize_entry("kind", "assistant_complete")?;
                 map.serialize_entry("total_tokens", total_tokens)?;
                 map.serialize_entry("latency_ms", latency_ms)?;
+                map.serialize_entry("final_content", final_content)?;
             }
             RecorderEvent::ScreenCaptured {
                 image_path,
@@ -767,18 +635,96 @@ impl Serialize for RecorderEvent {
                 map.serialize_entry("image_path", image_path)?;
                 map.serialize_entry("displays", displays)?;
             }
+            RecorderEvent::SearchSkipped { reason } => {
+                map.serialize_entry("kind", "search_skipped")?;
+                map.serialize_entry("reason", reason)?;
+            }
+            RecorderEvent::SearchDecided {
+                prefilter,
+                decision,
+                force,
+                route,
+                standalone_question,
+                queries,
+            } => {
+                map.serialize_entry("kind", "search_decided")?;
+                map.serialize_entry("prefilter", prefilter)?;
+                map.serialize_entry("decision", decision)?;
+                map.serialize_entry("force", force)?;
+                map.serialize_entry("route", route)?;
+                map.serialize_entry("standalone_question", standalone_question)?;
+                map.serialize_entry("queries", queries)?;
+            }
+            RecorderEvent::SearchRetrieved {
+                tier,
+                sources,
+                engine_stats,
+                round,
+            } => {
+                map.serialize_entry("kind", "search_retrieved")?;
+                map.serialize_entry("tier", tier)?;
+                map.serialize_entry("sources", sources)?;
+                map.serialize_entry("engine_stats", engine_stats)?;
+                // Omitted (not `null`) when `None`, so a non-requery turn's
+                // record is byte-for-byte the same JSON it was before `round`
+                // existed (see the variant's rustdoc).
+                if let Some(round) = round {
+                    map.serialize_entry("round", round)?;
+                }
+            }
+            RecorderEvent::SearchEscalated {
+                from_tier,
+                sufficient,
+                missing,
+                escalated,
+                escalation_hit,
+            } => {
+                map.serialize_entry("kind", "search_escalated")?;
+                map.serialize_entry("from_tier", from_tier)?;
+                map.serialize_entry("sufficient", sufficient)?;
+                map.serialize_entry("missing", missing)?;
+                map.serialize_entry("escalated", escalated)?;
+                map.serialize_entry("escalation_hit", escalation_hit)?;
+            }
+            RecorderEvent::CitationAudit {
+                cited,
+                supported,
+                weak,
+                unsupported,
+                unsupported_indices,
+                numeric_checked,
+                numeric_matched,
+                numeric_missing,
+                unverifiable,
+            } => {
+                map.serialize_entry("kind", "citation_audit")?;
+                map.serialize_entry("cited", cited)?;
+                map.serialize_entry("supported", supported)?;
+                map.serialize_entry("weak", weak)?;
+                map.serialize_entry("unsupported", unsupported)?;
+                map.serialize_entry("unsupported_indices", unsupported_indices)?;
+                map.serialize_entry("numeric_checked", numeric_checked)?;
+                map.serialize_entry("numeric_matched", numeric_matched)?;
+                map.serialize_entry("numeric_missing", numeric_missing)?;
+                map.serialize_entry("unverifiable", unverifiable)?;
+            }
             RecorderEvent::ConversationEnd { reason } => {
                 map.serialize_entry("kind", "conversation_end")?;
                 map.serialize_entry("reason", reason)?;
+            }
+            RecorderEvent::SearchRequeried { missing, requery } => {
+                map.serialize_entry("kind", "search_requeried")?;
+                map.serialize_entry("missing", missing)?;
+                map.serialize_entry("requery", requery)?;
             }
         }
         map.end()
     }
 }
 
-/// In-memory recorder used by tests to assert what the chat layer or
-/// search pipeline emitted. Lives in a `cfg(test)` block so production
-/// builds never link it.
+/// In-memory recorder used by tests to assert what the chat layer
+/// (including websearch) emitted. Lives in a `cfg(test)` block so
+/// production builds never link it.
 #[cfg(test)]
 #[derive(Debug, Default)]
 pub(crate) struct MockRecorder {
@@ -833,7 +779,6 @@ mod tests {
     #[test]
     fn trace_domain_dir_strings_match_layout() {
         assert_eq!(TraceDomain::Chat.dir(), "chat");
-        assert_eq!(TraceDomain::Search.dir(), "search");
     }
 
     #[test]
@@ -842,85 +787,6 @@ mod tests {
             serde_json::to_string(&TraceDomain::Chat).unwrap(),
             "\"chat\""
         );
-        assert_eq!(
-            serde_json::to_string(&TraceDomain::Search).unwrap(),
-            "\"search\""
-        );
-    }
-
-    #[test]
-    fn search_variants_belong_to_search_domain() {
-        let cases = vec![
-            RecorderEvent::TurnStart {
-                turn_id: "t".into(),
-                query: "q".into(),
-                model: "m".into(),
-                runtime_config: json!({}),
-                history_len: 0,
-            },
-            RecorderEvent::LlmCall {
-                stage: "router".into(),
-                endpoint: "e".into(),
-                request_body: json!({}),
-                response_raw: None,
-                latency_ms: 0,
-                error: None,
-            },
-            RecorderEvent::StreamingLlmCall {
-                stage: "synthesis".into(),
-                endpoint: "e".into(),
-                request_body: json!({}),
-                final_text: None,
-                tokens: 0,
-                latency_ms: 0,
-                error: None,
-            },
-            RecorderEvent::SearxngQuery {
-                query: "q".into(),
-                url: "u".into(),
-                status: None,
-                response_raw: None,
-                normalized_results: json!([]),
-                latency_ms: 0,
-                error: None,
-            },
-            RecorderEvent::ReaderBatch {
-                urls: vec![],
-                per_url: vec![],
-                batch_latency_ms: 0,
-                batch_error: None,
-            },
-            RecorderEvent::ChunkerBatch {
-                page_url: "u".into(),
-                chunk_count: 0,
-                chunks: vec![],
-            },
-            RecorderEvent::RerankResult {
-                query: "q".into(),
-                input_count: 0,
-                top_k: vec![],
-            },
-            RecorderEvent::JudgeVerdict {
-                stage: "snippet".into(),
-                raw: "{}".into(),
-                normalized: json!({}),
-            },
-            RecorderEvent::Warning {
-                kind: "k".into(),
-                payload: json!({}),
-            },
-            RecorderEvent::SearchEventEmitted { event: json!({}) },
-            RecorderEvent::TurnEnd {
-                turn_id: "t".into(),
-                final_action: "answer".into(),
-                final_source_urls: vec![],
-                total_latency_ms: 0,
-                error: None,
-            },
-        ];
-        for e in cases {
-            assert_eq!(e.domain(), TraceDomain::Search, "{:?} should be search", e);
-        }
     }
 
     #[test]
@@ -944,13 +810,56 @@ mod tests {
             RecorderEvent::AssistantComplete {
                 total_tokens: 1,
                 latency_ms: 1,
+                final_content: "hi".into(),
             },
             RecorderEvent::ScreenCaptured {
                 image_path: "p".into(),
                 displays: 1,
             },
+            RecorderEvent::SearchSkipped {
+                reason: "auto_off".into(),
+            },
+            RecorderEvent::SearchDecided {
+                prefilter: "force_web".into(),
+                decision: "web".into(),
+                force: false,
+                route: "news".into(),
+                standalone_question: "q".into(),
+                queries: vec!["q".into()],
+            },
+            RecorderEvent::SearchRetrieved {
+                tier: "news".into(),
+                sources: vec![RetrievedSource {
+                    url: "https://news.google.com/".into(),
+                    title: "Google News headlines".into(),
+                }],
+                engine_stats: vec![],
+                round: None,
+            },
+            RecorderEvent::SearchEscalated {
+                from_tier: "sports".into(),
+                sufficient: false,
+                missing: "the full bracket".into(),
+                escalated: true,
+                escalation_hit: true,
+            },
+            RecorderEvent::CitationAudit {
+                cited: 3,
+                supported: 2,
+                weak: 0,
+                unsupported: 1,
+                unsupported_indices: vec![9],
+                numeric_checked: 1,
+                numeric_matched: 0,
+                numeric_missing: 1,
+                unverifiable: 0,
+            },
             RecorderEvent::ConversationEnd {
                 reason: "quit".into(),
+            },
+            RecorderEvent::SearchRequeried {
+                missing: "the treaty terms".into(),
+                requery: "when signed the treaty terms".into(),
             },
         ];
         for e in cases {
@@ -962,41 +871,11 @@ mod tests {
     fn is_conversation_end_only_true_for_conversation_end_variant() {
         assert!(RecorderEvent::ConversationEnd { reason: "x".into() }.is_conversation_end());
         assert!(!RecorderEvent::AssistantTokens { chunk: "x".into() }.is_conversation_end());
-        assert!(!RecorderEvent::Warning {
-            kind: "x".into(),
-            payload: json!({}),
+        assert!(!RecorderEvent::SearchRequeried {
+            missing: "x".into(),
+            requery: "y".into(),
         }
         .is_conversation_end());
-    }
-
-    #[test]
-    fn is_turn_end_only_true_for_turn_end_variant() {
-        assert!(RecorderEvent::TurnEnd {
-            turn_id: "t".into(),
-            final_action: "answered".into(),
-            final_source_urls: vec![],
-            total_latency_ms: 0,
-            error: None,
-        }
-        .is_turn_end());
-        assert!(!RecorderEvent::ConversationEnd { reason: "x".into() }.is_turn_end());
-        assert!(!RecorderEvent::AssistantTokens { chunk: "x".into() }.is_turn_end());
-    }
-
-    #[test]
-    fn llm_call_request_body_returns_body_for_llm_call_and_none_for_others() {
-        let ev = RecorderEvent::LlmCall {
-            stage: "router".into(),
-            endpoint: "http://x/v1/chat/completions".into(),
-            request_body: json!({"model": "m"}),
-            response_raw: None,
-            latency_ms: 1,
-            error: None,
-        };
-        assert_eq!(ev.llm_call_request_body(), Some(&json!({"model": "m"})));
-
-        let other = RecorderEvent::AssistantTokens { chunk: "hi".into() };
-        assert!(other.llm_call_request_body().is_none());
     }
 
     #[test]
@@ -1004,10 +883,7 @@ mod tests {
         let r = NoopRecorder;
         r.record(
             &cid("conv-x"),
-            RecorderEvent::Warning {
-                kind: "x".into(),
-                payload: json!({}),
-            },
+            RecorderEvent::AssistantTokens { chunk: "x".into() },
         );
         // No panic, no I/O.
     }
@@ -1073,146 +949,6 @@ mod tests {
     }
 
     #[test]
-    fn file_recorder_serializes_every_search_variant() {
-        let root = fresh_dir();
-        let r = FileRecorder::for_conversation(&root, TraceDomain::Search, &cid("conv-all"));
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::TurnStart {
-                turn_id: "t".into(),
-                query: "q".into(),
-                model: "m".into(),
-                runtime_config: json!({}),
-                history_len: 0,
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::LlmCall {
-                stage: "router".into(),
-                endpoint: "http://x/api/chat".into(),
-                request_body: json!({"messages": []}),
-                response_raw: Some("{}".into()),
-                latency_ms: 12,
-                error: None,
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::StreamingLlmCall {
-                stage: "synthesis".into(),
-                endpoint: "http://x/api/chat".into(),
-                request_body: json!({}),
-                final_text: Some("answer".into()),
-                tokens: 7,
-                latency_ms: 100,
-                error: None,
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::SearxngQuery {
-                query: "rust".into(),
-                url: "http://s/search".into(),
-                status: Some(200),
-                response_raw: Some("{}".into()),
-                normalized_results: json!([]),
-                latency_ms: 5,
-                error: None,
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::ReaderBatch {
-                urls: vec!["http://a".into()],
-                per_url: vec![ReaderUrlOutcome {
-                    url: "http://a".into(),
-                    status: Some(200),
-                    latency_ms: 9,
-                    raw_body: Some("<html/>".into()),
-                    extracted_text: Some("hi".into()),
-                    error: None,
-                }],
-                batch_latency_ms: 11,
-                batch_error: None,
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::ChunkerBatch {
-                page_url: "http://a".into(),
-                chunk_count: 1,
-                chunks: vec!["chunk".into()],
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::RerankResult {
-                query: "rust".into(),
-                input_count: 1,
-                top_k: vec![RerankedChunk {
-                    source_url: "http://a".into(),
-                    score: 0.8,
-                    text: "chunk".into(),
-                }],
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::JudgeVerdict {
-                stage: "snippet".into(),
-                raw: "{}".into(),
-                normalized: json!({"sufficiency": "Sufficient"}),
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::Warning {
-                kind: "JudgeFailed".into(),
-                payload: json!({"reason": "parse"}),
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::SearchEventEmitted {
-                event: json!({"type": "Done"}),
-            },
-        );
-        r.record(
-            &cid("conv-all"),
-            RecorderEvent::TurnEnd {
-                turn_id: "t".into(),
-                final_action: "answer".into(),
-                final_source_urls: vec!["http://a".into()],
-                total_latency_ms: 1234,
-                error: None,
-            },
-        );
-        let lines = read_lines(r.path());
-        let kinds: Vec<&str> = lines.iter().map(|l| l["kind"].as_str().unwrap()).collect();
-        assert_eq!(
-            kinds,
-            vec![
-                "turn_start",
-                "llm_call",
-                "streaming_llm_call",
-                "searxng_query",
-                "reader_batch",
-                "chunker_batch",
-                "rerank_result",
-                "judge_verdict",
-                "warning",
-                "search_event",
-                "turn_end"
-            ]
-        );
-        for line in &lines {
-            assert_eq!(line["domain"], "search");
-            assert_eq!(line["conversation_id"], "conv-all");
-        }
-    }
-
-    #[test]
     fn file_recorder_serializes_every_chat_variant() {
         let root = fresh_dir();
         let r = FileRecorder::for_conversation(&root, TraceDomain::Chat, &cid("conv-chat"));
@@ -1248,6 +984,7 @@ mod tests {
             RecorderEvent::AssistantComplete {
                 total_tokens: 42,
                 latency_ms: 500,
+                final_content: "Hi there".into(),
             },
         );
         r.record(
@@ -1255,6 +992,59 @@ mod tests {
             RecorderEvent::ScreenCaptured {
                 image_path: "/tmp/snap.jpg".into(),
                 displays: 2,
+            },
+        );
+        r.record(
+            &cid("conv-chat"),
+            RecorderEvent::SearchSkipped {
+                reason: "transform_slash".into(),
+            },
+        );
+        r.record(
+            &cid("conv-chat"),
+            RecorderEvent::SearchDecided {
+                prefilter: "ambiguous".into(),
+                decision: "web".into(),
+                force: false,
+                route: "wiki".into(),
+                standalone_question: "what is photosynthesis".into(),
+                queries: vec!["photosynthesis".into()],
+            },
+        );
+        r.record(
+            &cid("conv-chat"),
+            RecorderEvent::SearchRetrieved {
+                tier: "wiki".into(),
+                sources: vec![RetrievedSource {
+                    url: "https://en.wikipedia.org/wiki/Photosynthesis".into(),
+                    title: "Photosynthesis".into(),
+                }],
+                engine_stats: vec![],
+                round: None,
+            },
+        );
+        r.record(
+            &cid("conv-chat"),
+            RecorderEvent::SearchEscalated {
+                from_tier: "sports".into(),
+                sufficient: false,
+                missing: "round-of-32 results".into(),
+                escalated: true,
+                escalation_hit: false,
+            },
+        );
+        r.record(
+            &cid("conv-chat"),
+            RecorderEvent::CitationAudit {
+                cited: 4,
+                supported: 3,
+                weak: 0,
+                unsupported: 1,
+                unsupported_indices: vec![9],
+                numeric_checked: 2,
+                numeric_matched: 1,
+                numeric_missing: 1,
+                unverifiable: 1,
             },
         );
         r.record(
@@ -1274,13 +1064,168 @@ mod tests {
                 "assistant_tokens",
                 "assistant_complete",
                 "screen_captured",
+                "search_skipped",
+                "search_decided",
+                "search_retrieved",
+                "search_escalated",
+                "citation_audit",
                 "conversation_end"
             ]
         );
         assert_eq!(lines[1]["attached_images"], json!(["/tmp/img.jpg"]));
         assert_eq!(lines[1]["slash_command"], "/screen");
+        assert_eq!(lines[4]["final_content"], "Hi there");
         assert_eq!(lines[5]["displays"], 2);
-        assert_eq!(lines[6]["reason"], "quit");
+        assert_eq!(lines[6]["reason"], "transform_slash");
+        assert_eq!(lines[7]["decision"], "web");
+        assert_eq!(lines[7]["force"], false);
+        assert_eq!(lines[7]["route"], "wiki");
+        assert_eq!(lines[7]["queries"], json!(["photosynthesis"]));
+        assert_eq!(lines[8]["tier"], "wiki");
+        assert_eq!(
+            lines[8]["sources"],
+            json!([{"url": "https://en.wikipedia.org/wiki/Photosynthesis", "title": "Photosynthesis"}])
+        );
+        assert_eq!(lines[9]["from_tier"], "sports");
+        assert_eq!(lines[9]["sufficient"], false);
+        assert_eq!(lines[9]["missing"], "round-of-32 results");
+        assert_eq!(lines[9]["escalated"], true);
+        assert_eq!(lines[9]["escalation_hit"], false);
+        assert_eq!(lines[10]["cited"], 4);
+        assert_eq!(lines[10]["supported"], 3);
+        assert_eq!(lines[10]["weak"], 0);
+        assert_eq!(lines[10]["unsupported"], 1);
+        assert_eq!(lines[10]["unsupported_indices"], json!([9]));
+        assert_eq!(lines[10]["numeric_checked"], 2);
+        assert_eq!(lines[10]["numeric_matched"], 1);
+        assert_eq!(lines[10]["numeric_missing"], 1);
+        assert_eq!(lines[10]["unverifiable"], 1);
+        assert_eq!(lines[11]["reason"], "quit");
+    }
+
+    #[test]
+    fn search_retrieved_serializes_engine_stats() {
+        // The engine tier's per-query, per-engine outcome summary must reach
+        // the JSONL record intact: one silently-blocked engine sitting right
+        // next to a healthy one, exactly the case the trace previously had no
+        // way to show.
+        let root = fresh_dir();
+        let r = FileRecorder::for_conversation(&root, TraceDomain::Chat, &cid("conv-engine"));
+        r.record(
+            &cid("conv-engine"),
+            RecorderEvent::SearchRetrieved {
+                tier: "engine".into(),
+                sources: vec![RetrievedSource {
+                    url: "https://example.com/a".into(),
+                    title: "Example".into(),
+                }],
+                engine_stats: vec![
+                    EngineStat {
+                        name: "duckduckgo".into(),
+                        status: "ok".into(),
+                        hit_count: 10,
+                    },
+                    EngineStat {
+                        name: "mojeek".into(),
+                        status: "blocked".into(),
+                        hit_count: 0,
+                    },
+                ],
+                round: None,
+            },
+        );
+        let lines = read_lines(r.path());
+        assert_eq!(lines[0]["tier"], "engine");
+        assert_eq!(
+            lines[0]["engine_stats"],
+            json!([
+                {"name": "duckduckgo", "status": "ok", "hit_count": 10},
+                {"name": "mojeek", "status": "blocked", "hit_count": 0},
+            ])
+        );
+    }
+
+    #[test]
+    fn search_retrieved_round_one_serializes_the_round_field() {
+        // A round-one pre-requery record must carry an explicit `round: 1` so
+        // a trace consumer can tell it apart from the turn's terminal
+        // (post-requery) record.
+        let root = fresh_dir();
+        let r = FileRecorder::for_conversation(&root, TraceDomain::Chat, &cid("conv-round1"));
+        r.record(
+            &cid("conv-round1"),
+            RecorderEvent::SearchRetrieved {
+                tier: "engine".into(),
+                sources: vec![RetrievedSource {
+                    url: "https://round-one.example/".into(),
+                    title: "Round One".into(),
+                }],
+                engine_stats: vec![],
+                round: Some(1),
+            },
+        );
+        let lines = read_lines(r.path());
+        assert_eq!(lines[0]["round"], json!(1));
+    }
+
+    #[test]
+    fn search_retrieved_final_omits_the_round_key_entirely() {
+        // A terminal (non-round-tagged) record must not carry a `round` key
+        // at all, not even a `null` one: the exact same JSON shape this event
+        // had before the field existed, so no existing trace consumer's
+        // schema check needs updating.
+        let root = fresh_dir();
+        let r = FileRecorder::for_conversation(&root, TraceDomain::Chat, &cid("conv-final"));
+        r.record(
+            &cid("conv-final"),
+            RecorderEvent::SearchRetrieved {
+                tier: "engine".into(),
+                sources: vec![],
+                engine_stats: vec![],
+                round: None,
+            },
+        );
+        let lines = read_lines(r.path());
+        assert!(lines[0].as_object().unwrap().get("round").is_none());
+    }
+
+    #[test]
+    fn search_retrieved_engine_stats_empty_for_non_engine_tier() {
+        // Verticals and the cache tier never race the keyless engines, so
+        // their SearchRetrieved records must carry an empty engine_stats,
+        // not a stale or default-filled list.
+        let root = fresh_dir();
+        let r = FileRecorder::for_conversation(&root, TraceDomain::Chat, &cid("conv-wiki"));
+        r.record(
+            &cid("conv-wiki"),
+            RecorderEvent::SearchRetrieved {
+                tier: "wiki".into(),
+                sources: vec![],
+                engine_stats: vec![],
+                round: None,
+            },
+        );
+        let lines = read_lines(r.path());
+        assert_eq!(lines[0]["engine_stats"], json!([]));
+    }
+
+    #[test]
+    fn file_recorder_serializes_search_requeried() {
+        let root = fresh_dir();
+        let r = FileRecorder::for_conversation(&root, TraceDomain::Chat, &cid("conv-requery"));
+        r.record(
+            &cid("conv-requery"),
+            RecorderEvent::SearchRequeried {
+                missing: "the treaty terms".into(),
+                requery: "when signed the treaty terms".into(),
+            },
+        );
+        let lines = read_lines(r.path());
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["kind"], "search_requeried");
+        assert_eq!(lines[0]["missing"], "the treaty terms");
+        assert_eq!(lines[0]["requery"], "when signed the treaty terms");
+        assert_eq!(lines[0]["domain"], "chat");
     }
 
     #[test]
@@ -1288,8 +1233,6 @@ mod tests {
         let root = fresh_dir();
         let r = FileRecorder::for_conversation(&root, TraceDomain::Chat, &cid("conv-x"));
         assert_eq!(r.path(), root.join("chat").join("conv-x.jsonl"));
-        let r2 = FileRecorder::for_conversation(&root, TraceDomain::Search, &cid("conv-y"));
-        assert_eq!(r2.path(), root.join("search").join("conv-y.jsonl"));
     }
 
     #[test]
@@ -1302,10 +1245,7 @@ mod tests {
         ));
         r.record(
             &cid("conv-arc"),
-            RecorderEvent::Warning {
-                kind: "k".into(),
-                payload: json!({}),
-            },
+            RecorderEvent::AssistantTokens { chunk: "k".into() },
         );
     }
 
@@ -1322,10 +1262,7 @@ mod tests {
         );
         r.record(
             &cid("conv-fail"),
-            RecorderEvent::Warning {
-                kind: "k".into(),
-                payload: json!({}),
-            },
+            RecorderEvent::AssistantTokens { chunk: "k".into() },
         );
         assert!(
             r.failed.load(Ordering::SeqCst),
@@ -1334,10 +1271,7 @@ mod tests {
         // Second call exits at the latch check, exercising that branch.
         r.record(
             &cid("conv-fail"),
-            RecorderEvent::Warning {
-                kind: "k2".into(),
-                payload: json!({}),
-            },
+            RecorderEvent::AssistantTokens { chunk: "k2".into() },
         );
     }
 
@@ -1350,10 +1284,7 @@ mod tests {
         std::fs::create_dir_all(r.path()).unwrap();
         r.record(
             &cid("conv-dir"),
-            RecorderEvent::Warning {
-                kind: "k".into(),
-                payload: json!({}),
-            },
+            RecorderEvent::AssistantTokens { chunk: "k".into() },
         );
         assert!(
             r.failed.load(Ordering::SeqCst),
@@ -1373,10 +1304,7 @@ mod tests {
         );
         r.record(
             &cid("conv-warn"),
-            RecorderEvent::Warning {
-                kind: "k".into(),
-                payload: json!({}),
-            },
+            RecorderEvent::AssistantTokens { chunk: "k".into() },
         );
         assert!(r.warned.load(Ordering::SeqCst));
         r.warn_once("ignored");
@@ -1444,17 +1372,11 @@ mod tests {
         let m = MockRecorder::new();
         m.record(
             &cid("conv-a"),
-            RecorderEvent::Warning {
-                kind: "a".into(),
-                payload: json!({}),
-            },
+            RecorderEvent::AssistantTokens { chunk: "a".into() },
         );
         m.record(
             &cid("conv-b"),
-            RecorderEvent::Warning {
-                kind: "b".into(),
-                payload: json!({}),
-            },
+            RecorderEvent::AssistantTokens { chunk: "b".into() },
         );
         assert_eq!(m.len(), 2);
         let snap = m.snapshot();
@@ -1464,7 +1386,7 @@ mod tests {
             .iter()
             .map(|(_, e)| serde_json::to_value(e).unwrap())
             .collect();
-        assert_eq!(dump[0]["warning_kind"], "a");
-        assert_eq!(dump[1]["warning_kind"], "b");
+        assert_eq!(dump[0]["chunk"], "a");
+        assert_eq!(dump[1]["chunk"], "b");
     }
 }

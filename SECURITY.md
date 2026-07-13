@@ -10,7 +10,7 @@ We will acknowledge your report within **48 hours** and aim to release a fix wit
 
 ## Scope
 
-Thuki runs entirely on your local machine: no server, no cloud backend, no telemetry. Inference happens on-device through the bundled engine (or your own Ollama install). The only outbound network requests are ones you initiate: downloading a model from the Hugging Face Hub, and the optional `/search` pipeline. The attack surface is limited to:
+Thuki runs entirely on your local machine: no server, no cloud backend, no telemetry. Inference happens on-device through the bundled engine (or your own Ollama install). Two things reach the network: downloading a model from the Hugging Face Hub, and web search, either triggered automatically by **Auto search** (Settings → Behavior, on by default) when a plain turn needs live facts, or forced on demand with `/search`. Both can be turned off in Settings. The attack surface is limited to:
 
 - The Tauri IPC boundary between the frontend and Rust backend
 - The macOS Accessibility API integration that captures selected text and screen bounds at activation (`context.rs`)

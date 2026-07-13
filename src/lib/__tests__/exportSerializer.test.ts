@@ -177,7 +177,7 @@ describe('serializeForFile', () => {
       }),
     ];
     const result = await serializeForFile(messages, CTX, NOW, stubImageLoader);
-    expect(result).toContain('**Sources** (`/search`):');
+    expect(result).toContain('**Sources**:');
     expect(result).toContain('1. [First](<https://example.com/one>)');
     expect(result).toContain('2. [Second](<https://example.com/two>)');
   });

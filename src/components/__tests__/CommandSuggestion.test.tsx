@@ -27,7 +27,7 @@ function makeCommand(
 
 const SEARCH_CMD = makeCommand(
   '/search',
-  'Agentic web search: iterative reasoning & cited synthesis',
+  'Force a live web look-up for current or cutoff-sensitive questions',
 );
 
 const SCREEN_CMD = makeCommand(

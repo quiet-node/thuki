@@ -85,19 +85,7 @@ function makeConfig(
       max_display_chars: 300,
       max_context_length: 4096,
     },
-    behavior: { auto_replace: false, auto_close: false },
-    search: {
-      searxng_url: '',
-      reader_url: '',
-      max_iterations: 3,
-      top_k_urls: 10,
-      searxng_max_results: 10,
-      search_timeout_s: 20,
-      reader_per_url_timeout_s: 10,
-      reader_batch_timeout_s: 30,
-      judge_timeout_s: 30,
-      router_timeout_s: 45,
-    },
+    behavior: { auto_replace: false, auto_close: false, auto_search: true },
     debug: { trace_enabled: false },
   };
 }

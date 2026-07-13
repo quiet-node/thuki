@@ -1,0 +1,103 @@
+{"message": "what's the latest stable version of Rust?", "label": "search", "category": "versions", "route": "web", "volatility": "slow"}
+{"message": "weather in Tokyo", "label": "search", "category": "weather", "route": "weather", "volatility": "fast"}
+{"message": "who won the most recent F1 race", "label": "search", "category": "sports", "route": "news", "volatility": "fast"}
+{"message": "what's the current price of Bitcoin", "label": "search", "category": "prices", "route": "web", "volatility": "fast"}
+{"message": "any news about the merger", "label": "search", "category": "current_events", "route": "news", "volatility": "fast"}
+{"message": "who is the president of France right now", "label": "search", "category": "current_events", "route": "web", "volatility": "slow"}
+{"message": "latest iPhone specs", "label": "search", "category": "versions", "route": "web", "volatility": "slow"}
+{"message": "what's the score of the Lakers game", "label": "search", "category": "sports", "route": "news", "volatility": "fast"}
+{"message": "stock price of Apple", "label": "search", "category": "prices", "route": "web", "volatility": "fast"}
+{"message": "what time is the SpaceX launch today", "label": "search", "category": "current_events", "route": "news", "volatility": "fast"}
+{"message": "is it going to rain tomorrow in London", "label": "search", "category": "weather", "route": "weather", "volatility": "fast"}
+{"message": "what are the top headlines", "label": "search", "category": "current_events", "route": "news", "volatility": "fast"}
+{"message": "how is the stock market doing", "label": "search", "category": "prices", "route": "web", "volatility": "fast"}
+{"message": "who is the current CEO of Twitter", "label": "search", "category": "current_events", "route": "web", "volatility": "slow"}
+{"message": "what's new in Python 3.13", "label": "search", "category": "versions", "route": "web", "volatility": "slow"}
+{"message": "exchange rate USD to EUR", "label": "search", "category": "prices", "route": "web", "volatility": "fast"}
+{"message": "what happened at the climate summit", "label": "search", "category": "current_events", "route": "news", "volatility": "fast"}
+{"message": "recent advances in battery tech", "label": "search", "category": "current_events", "route": "news", "volatility": "fast"}
+{"message": "box office numbers for the new Dune", "label": "search", "category": "current_events", "route": "news", "volatility": "fast"}
+{"message": "is ChatGPT down right now", "label": "search", "category": "current_events", "route": "web", "volatility": "fast"}
+{"message": "and what about Brazil?", "label": "search", "category": "followup_current", "volatility": "fast"}
+{"message": "what's the latest status of the World Cup 2026", "label": "search", "category": "sports", "route": "news", "volatility": "fast"}
+{"message": "what's happening with the World Cup 2026", "label": "search", "category": "sports", "route": "news", "volatility": "fast"}
+{"message": "current standings in the Premier League", "label": "search", "category": "sports", "route": "news", "volatility": "fast"}
+{"message": "what is the status of the Artemis mission right now", "label": "search", "category": "current_events", "route": "news", "volatility": "fast"}
+{"message": "latest on the OpenAI lawsuit", "label": "search", "category": "current_events", "route": "news", "volatility": "fast"}
+{"message": "who is winning the 2026 election", "label": "search", "category": "current_events", "route": "news", "volatility": "fast"}
+{"message": "what is the score of the World Cup final", "label": "search", "category": "sports", "route": "news", "volatility": "fast"}
+{"message": "is the World Cup 2026 still going on", "label": "search", "category": "sports", "route": "news", "volatility": "fast"}
+{"message": "what's the current state of the writers strike", "label": "search", "category": "current_events", "route": "news", "volatility": "fast"}
+{"message": "what is the reigning F1 champion right now", "label": "search", "category": "sports", "route": "news", "volatility": "slow"}
+{"message": "what's the score of the Lakers game right now", "label": "search", "category": "sports", "route": "sports", "volatility": "fast"}
+{"message": "current standings in the NBA", "label": "search", "category": "sports", "route": "sports", "volatility": "fast"}
+{"message": "is the World Cup 2026 final over yet", "label": "search", "category": "sports", "route": "sports", "volatility": "fast"}
+{"message": "who is playing in the Premier League today", "label": "search", "category": "sports", "route": "sports", "volatility": "fast"}
+{"message": "who won the last NFL Super Bowl", "label": "search", "category": "sports", "route": "news", "volatility": "slow"}
+{"message": "what's the price of an NBA League Pass subscription", "label": "search", "category": "prices", "route": "web", "volatility": "fast"}
+{"message": "what is the capital of France", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "never"}
+{"message": "explain how photosynthesis works", "label": "no", "category": "definition", "route": "wiki", "volatility": "never"}
+{"message": "2 + 2", "label": "no", "category": "math", "route": "web", "volatility": "never"}
+{"message": "what is 15% of 240", "label": "no", "category": "math", "route": "web", "volatility": "never"}
+{"message": "write a haiku about the ocean", "label": "no", "category": "creative", "route": "web", "volatility": "never"}
+{"message": "hi there", "label": "no", "category": "greeting", "route": "web", "volatility": "never"}
+{"message": "thank you so much", "label": "no", "category": "greeting", "route": "web", "volatility": "never"}
+{"message": "summarize this paragraph for me", "label": "no", "category": "creative", "route": "web", "volatility": "never"}
+{"message": "translate hello into Spanish", "label": "no", "category": "creative", "route": "web", "volatility": "never"}
+{"message": "what does HTTP stand for", "label": "no", "category": "definition", "route": "wiki", "volatility": "never"}
+{"message": "how do I reverse a string in Python", "label": "no", "category": "code_gen", "route": "web", "volatility": "never"}
+{"message": "explain the theory of relativity", "label": "no", "category": "definition", "route": "wiki", "volatility": "never"}
+{"message": "what is the boiling point of water", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "never"}
+{"message": "define entropy", "label": "no", "category": "definition", "route": "wiki", "volatility": "never"}
+{"message": "who wrote Pride and Prejudice", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "never"}
+{"message": "rephrase this to be more formal", "label": "no", "category": "creative", "route": "web", "volatility": "never"}
+{"message": "good morning", "label": "no", "category": "greeting", "route": "web", "volatility": "never"}
+{"message": "what's the difference between TCP and UDP", "label": "no", "category": "definition", "route": "wiki", "volatility": "never"}
+{"message": "draft an email declining the meeting", "label": "no", "category": "creative", "route": "web", "volatility": "never"}
+{"message": "what is 12 times 8", "label": "no", "category": "math", "route": "web", "volatility": "never"}
+{"message": "list the primary colors", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "never"}
+{"message": "why is the sky blue", "label": "no", "category": "definition", "route": "wiki", "volatility": "never"}
+{"message": "proofread this sentence", "label": "no", "category": "creative", "route": "web", "volatility": "never"}
+{"message": "what are the rules of chess", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "never"}
+{"message": "ok thanks", "label": "no", "category": "greeting", "route": "web", "volatility": "never"}
+{"message": "how many continents are there", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "never"}
+{"message": "summarize the plot of Romeo and Juliet", "label": "no", "category": "creative", "route": "web", "volatility": "never"}
+{"message": "and its population?", "label": "no", "category": "followup_stable", "route": "wiki", "volatility": "slow"}
+{"message": "what is the population of France", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "slow"}
+{"message": "what time is it", "label": "no", "category": "clock", "route": "web", "volatility": "fast"}
+{"message": "what's today's date", "label": "no", "category": "clock", "route": "web", "volatility": "fast"}
+{"message": "what day is it", "label": "no", "category": "clock", "route": "web", "volatility": "fast"}
+{"message": "current time", "label": "no", "category": "clock", "route": "web", "volatility": "fast"}
+{"message": "what's today", "label": "no", "category": "clock", "route": "web", "volatility": "fast"}
+{"message": "what time is it in Tokyo", "label": "no", "category": "clock", "route": "web", "volatility": "fast"}
+{"message": "how old is Elon Musk now", "label": "search", "category": "entity_attribute", "route": "web", "volatility": "slow"}
+{"message": "and how old is he now?", "label": "search", "category": "followup_current", "volatility": "slow"}
+{"message": "who is the CEO of OpenAI now", "label": "search", "category": "entity_attribute", "route": "web", "volatility": "slow"}
+{"message": "is Taylor Swift still married", "label": "search", "category": "entity_attribute", "route": "web", "volatility": "slow"}
+{"message": "what team does LeBron James play for now", "label": "search", "category": "entity_attribute", "route": "web", "volatility": "slow"}
+{"message": "who is the current prime minister of Canada", "label": "search", "category": "entity_attribute", "route": "web", "volatility": "slow"}
+{"message": "what is Jeff Bezos's net worth these days", "label": "search", "category": "entity_attribute", "route": "web", "volatility": "fast"}
+{"message": "who is Tesla's CEO now", "label": "search", "category": "entity_attribute", "route": "web", "volatility": "slow"}
+{"message": "how old was Napoleon when he died", "label": "no", "category": "historical_attribute", "route": "wiki", "volatility": "never"}
+{"message": "who was the first president of the United States", "label": "no", "category": "historical_attribute", "route": "wiki", "volatility": "never"}
+{"message": "how old was Einstein when he published the theory of relativity", "label": "no", "category": "historical_attribute", "route": "wiki", "volatility": "never"}
+{"message": "what year did Queen Elizabeth II die", "label": "no", "category": "historical_attribute", "route": "wiki", "volatility": "never"}
+{"message": "how many children did Abraham Lincoln have", "label": "no", "category": "historical_attribute", "route": "wiki", "volatility": "never"}
+{"message": "who wrote the Harry Potter books", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "never"}
+{"message": "and at what exact time?", "label": "search", "category": "followup_drilldown", "volatility": "fast"}
+{"message": "what was the exact final score", "label": "search", "category": "followup_drilldown", "volatility": "fast"}
+{"message": "can you look it up please?", "label": "search", "category": "explicit_search", "volatility": "fast"}
+{"message": "double-check that for me", "label": "search", "category": "explicit_search", "volatility": "fast"}
+{"message": "search for the kickoff time", "label": "search", "category": "explicit_search", "volatility": "fast"}
+{"message": "how many days until christmas", "label": "search", "category": "date_arithmetic", "route": "web", "volatility": "fast"}
+{"message": "how many days until my flight on august 5th", "label": "search", "category": "date_arithmetic", "route": "web", "volatility": "fast"}
+{"message": "how many weeks since january 1st", "label": "search", "category": "date_arithmetic", "route": "web", "volatility": "fast"}
+{"message": "how long until new year's eve", "label": "search", "category": "date_arithmetic", "route": "web", "volatility": "fast"}
+{"message": "how many days are in february", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "never"}
+{"message": "how long is a marathon", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "never"}
+{"message": "how old is Tom Cruise", "label": "search", "category": "entity_attribute", "route": "web", "volatility": "slow"}
+{"message": "what age is the current CEO of Tesla", "label": "search", "category": "entity_attribute", "route": "web", "volatility": "slow"}
+{"message": "what is Rihanna's age", "label": "search", "category": "entity_attribute", "route": "web", "volatility": "slow"}
+{"message": "how long ago did the company IPO", "label": "search", "category": "date_arithmetic", "route": "web", "volatility": "fast"}
+{"message": "how old is the universe", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "never"}
+{"message": "how old are the pyramids of Giza", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "never"}

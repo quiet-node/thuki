@@ -23,20 +23,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::defaults::{
     ALLOWED_FONT_WEIGHTS, BOUNDS_KEEP_WARM_INACTIVITY_MINUTES, BOUNDS_MAX_CHAT_HEIGHT,
-    BOUNDS_MAX_IMAGES, BOUNDS_MAX_ITERATIONS, BOUNDS_NUM_CTX, BOUNDS_OVERLAY_WIDTH,
-    BOUNDS_PIPELINE_WALL_CLOCK_BUDGET_S, BOUNDS_QUOTE_MAX_CONTEXT_LENGTH,
-    BOUNDS_QUOTE_MAX_DISPLAY_CHARS, BOUNDS_QUOTE_MAX_DISPLAY_LINES, BOUNDS_SEARXNG_MAX_RESULTS,
-    BOUNDS_TEXT_BASE_PX, BOUNDS_TEXT_LETTER_SPACING_PX, BOUNDS_TEXT_LINE_HEIGHT, BOUNDS_TIMEOUT_S,
-    BOUNDS_TOP_K_URLS, BOUNDS_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_JUDGE_TIMEOUT_S,
+    BOUNDS_MAX_IMAGES, BOUNDS_NUM_CTX, BOUNDS_OVERLAY_WIDTH, BOUNDS_QUOTE_MAX_CONTEXT_LENGTH,
+    BOUNDS_QUOTE_MAX_DISPLAY_CHARS, BOUNDS_QUOTE_MAX_DISPLAY_LINES, BOUNDS_TEXT_BASE_PX,
+    BOUNDS_TEXT_LETTER_SPACING_PX, BOUNDS_TEXT_LINE_HEIGHT, BOUNDS_UPDATER_CHECK_INTERVAL_HOURS,
     DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
-    DEFAULT_MAX_ITERATIONS, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
-    DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
-    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
-    DEFAULT_READER_BATCH_TIMEOUT_S, DEFAULT_READER_PER_URL_TIMEOUT_S, DEFAULT_READER_URL,
-    DEFAULT_ROUTER_TIMEOUT_S, DEFAULT_SEARCH_TIMEOUT_S, DEFAULT_SEARXNG_MAX_RESULTS,
-    DEFAULT_SEARXNG_URL, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX,
-    DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT,
-    DEFAULT_TOP_K_URLS, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
+    DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
+    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_SYSTEM_PROMPT_BASE,
+    DEFAULT_TEXT_BASE_PX, DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX,
+    DEFAULT_TEXT_LINE_HEIGHT, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
     SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
@@ -215,83 +209,6 @@ pub(crate) fn resolve(config: &mut AppConfig) {
         DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
         "quote.max_context_length",
     );
-
-    // Search section: service URLs.
-    if config.search.searxng_url.trim().is_empty() {
-        config.search.searxng_url = DEFAULT_SEARXNG_URL.to_string();
-    }
-    if config.search.reader_url.trim().is_empty() {
-        config.search.reader_url = DEFAULT_READER_URL.to_string();
-    }
-
-    // Search section: pipeline knobs.
-    clamp_u32(
-        &mut config.search.max_iterations,
-        BOUNDS_MAX_ITERATIONS,
-        DEFAULT_MAX_ITERATIONS,
-        "search.max_iterations",
-    );
-    clamp_u32(
-        &mut config.search.top_k_urls,
-        BOUNDS_TOP_K_URLS,
-        DEFAULT_TOP_K_URLS,
-        "search.top_k_urls",
-    );
-    clamp_u32(
-        &mut config.search.searxng_max_results,
-        BOUNDS_SEARXNG_MAX_RESULTS,
-        DEFAULT_SEARXNG_MAX_RESULTS,
-        "search.searxng_max_results",
-    );
-
-    // Search section: timeouts.
-    clamp_u64(
-        &mut config.search.search_timeout_s,
-        BOUNDS_TIMEOUT_S,
-        DEFAULT_SEARCH_TIMEOUT_S,
-        "search.search_timeout_s",
-    );
-    clamp_u64(
-        &mut config.search.reader_per_url_timeout_s,
-        BOUNDS_TIMEOUT_S,
-        DEFAULT_READER_PER_URL_TIMEOUT_S,
-        "search.reader_per_url_timeout_s",
-    );
-    clamp_u64(
-        &mut config.search.reader_batch_timeout_s,
-        BOUNDS_TIMEOUT_S,
-        DEFAULT_READER_BATCH_TIMEOUT_S,
-        "search.reader_batch_timeout_s",
-    );
-    clamp_u64(
-        &mut config.search.judge_timeout_s,
-        BOUNDS_TIMEOUT_S,
-        DEFAULT_JUDGE_TIMEOUT_S,
-        "search.judge_timeout_s",
-    );
-    clamp_u64(
-        &mut config.search.router_timeout_s,
-        BOUNDS_TIMEOUT_S,
-        DEFAULT_ROUTER_TIMEOUT_S,
-        "search.router_timeout_s",
-    );
-    clamp_u64(
-        &mut config.search.pipeline_wall_clock_budget_s,
-        BOUNDS_PIPELINE_WALL_CLOCK_BUDGET_S,
-        DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S,
-        "search.pipeline_wall_clock_budget_s",
-    );
-
-    // Invariant: batch timeout must exceed per-URL timeout.
-    if config.search.reader_batch_timeout_s <= config.search.reader_per_url_timeout_s {
-        let corrected = config.search.reader_per_url_timeout_s + 5;
-        eprintln!(
-            "thuki: [config] search.reader_batch_timeout_s ({}) must exceed \
-             reader_per_url_timeout_s ({}); correcting to {corrected}",
-            config.search.reader_batch_timeout_s, config.search.reader_per_url_timeout_s,
-        );
-        config.search.reader_batch_timeout_s = corrected;
-    }
 
     // Behavior section: boolean flag has no resolution step (any value is valid).
 

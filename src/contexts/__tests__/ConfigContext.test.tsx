@@ -114,6 +114,7 @@ describe('ConfigContext', () => {
         behavior: {
           auto_replace: true,
           auto_close: true,
+          auto_search: true,
         },
       });
 
@@ -170,7 +171,7 @@ describe('ConfigContext', () => {
           max_display_chars: 300,
           max_context_length: 4096,
         },
-        behavior: { auto_replace: false, auto_close: false },
+        behavior: { auto_replace: false, auto_close: false, auto_search: true },
       });
 
       render(
@@ -213,7 +214,7 @@ describe('ConfigContext', () => {
           max_display_chars: 300,
           max_context_length: 4096,
         },
-        behavior: { auto_replace: false, auto_close: false },
+        behavior: { auto_replace: false, auto_close: false, auto_search: true },
       });
 
       render(
@@ -301,6 +302,7 @@ describe('ConfigContext', () => {
         },
         behavior: {
           auto_replace: false,
+          auto_search: true,
         },
       };
       const updated = {
@@ -348,7 +350,7 @@ describe('ConfigContext', () => {
           max_display_chars: 300,
           max_context_length: 4096,
         },
-        behavior: { auto_replace: false },
+        behavior: { auto_replace: false, auto_close: false, auto_search: true },
       };
       const updated = {
         ...initial,
@@ -390,7 +392,7 @@ describe('ConfigContext', () => {
           max_display_chars: 300,
           max_context_length: 4096,
         },
-        behavior: { auto_replace: false },
+        behavior: { auto_replace: false, auto_close: false, auto_search: true },
       };
       invoke.mockResolvedValue(initial);
 
@@ -437,6 +439,7 @@ describe('ConfigContext', () => {
         },
         behavior: {
           auto_replace: false,
+          auto_search: true,
         },
       };
       invoke
@@ -490,6 +493,7 @@ describe('ConfigContext', () => {
         },
         behavior: {
           auto_replace: false,
+          auto_search: true,
         },
       });
 
@@ -533,6 +537,7 @@ describe('ConfigContext', () => {
         },
         behavior: {
           auto_replace: false,
+          auto_search: true,
         },
       });
 
@@ -640,6 +645,7 @@ describe('ConfigContext', () => {
         },
         behavior: {
           auto_replace: false,
+          auto_search: true,
         },
       });
 

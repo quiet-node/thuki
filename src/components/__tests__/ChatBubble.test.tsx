@@ -1,11 +1,16 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ChatBubble } from '../ChatBubble';
 import { invoke } from '../../testUtils/mocks/tauri';
-import type { SearchTraceStep } from '../../types/search';
-
+import {
+  SEARCH_HANDOFF_COLLAPSE_LEAD_MS,
+  SEARCH_HANDOFF_EXIT_FALLBACK_MS,
+} from '../searchHandoffPhase';
+import { mockReducedMotion } from '../../testUtils/mocks/framer-motion';
+import { HONEST_FAILURE_NOTE_BODY } from '../../utils/honestFailureNote';
 beforeEach(() => {
   invoke.mockClear();
+  mockReducedMotion.current = false;
 });
 
 function openSources(container: HTMLElement) {
@@ -86,6 +91,64 @@ describe('ChatBubble', () => {
       expect(
         screen.getByRole('button', { name: 'Copy message' }),
       ).toBeInTheDocument();
+    });
+
+    it('renders trailing honesty note as L3 rail, not markdown cream italic', () => {
+      const content = `Fake number 999.\n\n${HONEST_FAILURE_NOTE_BODY}`;
+      const { container } = render(
+        <ChatBubble role="assistant" content={content} index={0} />,
+      );
+      const note = screen.getByTestId('honest-failure-note');
+      expect(note.tagName).toBe('P');
+      expect(note).toHaveClass('honest-failure-note');
+      expect(note.textContent).toBe(HONEST_FAILURE_NOTE_BODY);
+      // Answer body still visible outside the note rail.
+      expect(container.textContent).toContain('Fake number 999.');
+      // Note must not also render as Streamdown emphasis (legacy *...* path).
+      expect(
+        container.querySelector('[data-streamdown="emphasis"]'),
+      ).toBeNull();
+      // Markdown tree must not contain the note string (rail is the only host).
+      const bubble = screen.getByTestId('chat-bubble');
+      const noteHost = bubble.querySelector(
+        '[data-testid="honest-failure-note"]',
+      );
+      expect(noteHost).not.toBeNull();
+      // Walk non-note text: body present, note phrase only inside rail.
+      const withoutNote = Array.from(bubble.querySelectorAll('*'))
+        .filter((el) => !el.closest('[data-testid="honest-failure-note"]'))
+        .map((el) => el.textContent ?? '')
+        .join(' ');
+      // Coarse check: note key phrase not duplicated outside the rail.
+      // (Answer body alone never carries "could not verify".)
+      const noteOnlyInRail =
+        (bubble.textContent?.match(/could not verify/g) ?? []).length === 1;
+      expect(noteOnlyInRail).toBe(true);
+      expect(withoutNote).toContain('Fake number 999.');
+    });
+
+    it('renders note-only answer without double-painting the body', () => {
+      const { container } = render(
+        <ChatBubble
+          role="assistant"
+          content={HONEST_FAILURE_NOTE_BODY}
+          index={0}
+        />,
+      );
+      const note = screen.getByTestId('honest-failure-note');
+      expect(note.textContent).toBe(HONEST_FAILURE_NOTE_BODY);
+      // Rail is the only place the note string appears as full text.
+      expect(
+        container.querySelectorAll('[data-testid="honest-failure-note"]'),
+      ).toHaveLength(1);
+      expect(
+        container.querySelector('[data-streamdown="emphasis"]'),
+      ).toBeNull();
+    });
+
+    it('does not render honesty rail when note absent', () => {
+      render(<ChatBubble role="assistant" content="plain answer" index={0} />);
+      expect(screen.queryByTestId('honest-failure-note')).toBeNull();
     });
 
     it('renders the Replace button when onReplace is provided', () => {
@@ -442,7 +505,7 @@ describe('ChatBubble', () => {
       expect(screen.getByTestId('loading-label').textContent).toBe(
         'Reasoning...',
       );
-      expect(screen.getByTestId('loading-label-prefix')).toBeInTheDocument();
+      expect(screen.getByTestId('reasoning-chevron')).toBeInTheDocument();
     });
   });
 
@@ -1023,89 +1086,6 @@ describe('ChatBubble', () => {
     });
   });
 
-  describe('search warning icon', () => {
-    it('renders the warning icon beside Sources when message has searchWarnings', () => {
-      render(
-        <ChatBubble
-          role="assistant"
-          content="answer"
-          index={0}
-          searchSources={[{ title: 'A', url: 'https://a.com' }]}
-          searchWarnings={['reader_unavailable']}
-        />,
-      );
-      expect(screen.getByRole('img', { name: /warning/i })).toBeInTheDocument();
-    });
-
-    it('renders the warning icon even when there are no sources', () => {
-      render(
-        <ChatBubble
-          role="assistant"
-          content="answer"
-          index={0}
-          searchWarnings={['no_results_initial']}
-        />,
-      );
-      expect(screen.getByRole('img', { name: /error/i })).toBeInTheDocument();
-    });
-
-    it('does not render the warning icon when searchWarnings is absent', () => {
-      render(
-        <ChatBubble
-          role="assistant"
-          content="answer"
-          index={0}
-          searchSources={[{ title: 'A', url: 'https://a.com' }]}
-        />,
-      );
-      expect(screen.queryByRole('img', { name: /warning/i })).toBeNull();
-    });
-
-    it('does not render the warning icon when searchWarnings is empty', () => {
-      render(
-        <ChatBubble
-          role="assistant"
-          content="answer"
-          index={0}
-          searchWarnings={[]}
-        />,
-      );
-      expect(screen.queryByRole('img')).toBeNull();
-    });
-
-    it('applies search-bubble--error class when any warning is error-severity', () => {
-      render(
-        <ChatBubble
-          role="assistant"
-          content="answer"
-          index={0}
-          searchWarnings={['router_failure']}
-        />,
-      );
-      const bubble = screen.getByTestId('chat-bubble');
-      expect(bubble.className).toContain('search-bubble--error');
-    });
-
-    it('does not apply search-bubble--error class for warn-severity warnings', () => {
-      render(
-        <ChatBubble
-          role="assistant"
-          content="answer"
-          index={0}
-          searchWarnings={['reader_unavailable']}
-        />,
-      );
-      const bubble = screen.getByTestId('chat-bubble');
-      expect(bubble.className).not.toContain('search-bubble--error');
-    });
-
-    it('does not apply search-bubble--error class when no warnings', () => {
-      render(<ChatBubble role="assistant" content="answer" index={0} />);
-      const bubble = screen.getByTestId('chat-bubble');
-      expect(bubble.className).not.toContain('search-bubble--error');
-    });
-  });
-
   describe('inline citation wrapping and hover linking', () => {
     const SOURCES = [
       { title: 'Rust Docs', url: 'https://doc.rust-lang.org' },
@@ -1131,6 +1111,23 @@ describe('ChatBubble', () => {
       expect(anchors[1].getAttribute('data-citation')).toBe('2');
       expect(anchors[2].getAttribute('data-citation')).toBe('2');
       expect(anchors[0].textContent).toBe('[1]');
+    });
+
+    it('wraps fullwidth 【N】 citations as ASCII [N] chips', () => {
+      const { container } = render(
+        <ChatBubble
+          role="assistant"
+          content="Rust 【1】 is fast and Tokio 【2】 is async."
+          index={0}
+          searchSources={SOURCES}
+        />,
+      );
+      const anchors = container.querySelectorAll('a.citation-link');
+      expect(anchors).toHaveLength(2);
+      expect(anchors[0].getAttribute('data-citation')).toBe('1');
+      expect(anchors[0].textContent).toBe('[1]');
+      expect(anchors[1].getAttribute('data-citation')).toBe('2');
+      expect(anchors[1].textContent).toBe('[2]');
     });
 
     it('skips [N] markers that reference a source index past the end of the array', () => {
@@ -1309,103 +1306,383 @@ describe('ChatBubble', () => {
     });
   });
 
-  describe('sandboxUnavailable', () => {
-    it('renders SandboxSetupCard when sandboxUnavailable is true', () => {
-      render(
-        <ChatBubble role="assistant" content="" index={0} sandboxUnavailable />,
-      );
-      expect(screen.getByTestId('sandbox-setup-card')).toBeInTheDocument();
-    });
-
-    it('does not render MarkdownRenderer when sandboxUnavailable is true', () => {
-      const { container } = render(
-        <ChatBubble
-          role="assistant"
-          content="some content"
-          index={0}
-          sandboxUnavailable
-        />,
-      );
-      // MarkdownRenderer wraps output in a streamdown element; absence confirms it was not rendered.
-      expect(container.querySelector('[data-streamdown]')).toBeNull();
-    });
-
-    it('does not render ErrorCard when sandboxUnavailable is true', () => {
-      const { container } = render(
-        <ChatBubble
-          role="assistant"
-          content="error text"
-          index={0}
-          sandboxUnavailable
-          errorKind="Other"
-        />,
-      );
-      expect(container.querySelector('[data-error-bar]')).toBeNull();
-      expect(screen.getByTestId('sandbox-setup-card')).toBeInTheDocument();
-    });
-
-    it('hides the action bar (copy button / sources) when sandboxUnavailable', () => {
-      render(
-        <ChatBubble role="assistant" content="" index={0} sandboxUnavailable />,
-      );
-      expect(screen.queryByRole('button', { name: 'Copy message' })).toBeNull();
-    });
-  });
-
-  describe('search trace', () => {
-    const trace: SearchTraceStep = {
-      id: 'round-1-search',
-      kind: 'search',
-      status: 'completed',
-      round: 1,
-      title: 'Searching the web',
-      summary: 'Found 3 results across 2 sites.',
-      queries: ['test query'],
-      domains: ['example.com'],
-    };
-
-    it('does not render SearchTraceBlock when no searchTraces and not searching', () => {
+  describe('search progress', () => {
+    it('does not render SearchProgressBlock when not searching', () => {
       render(<ChatBubble role="assistant" content="answer" index={0} />);
       expect(
-        screen.queryByTestId('search-trace-block'),
+        screen.queryByTestId('search-progress-block'),
       ).not.toBeInTheDocument();
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'done',
+      );
     });
 
-    it('renders SearchTraceBlock when searchTraces has items', () => {
+    it('renders SearchProgressBlock when isSearching', () => {
       render(
         <ChatBubble
           role="assistant"
-          content="answer"
+          content=""
           index={0}
-          searchTraces={[trace]}
+          isSearching
+          searchStage={{ kind: 'searching' }}
         />,
       );
-      expect(screen.getByTestId('search-trace-block')).toBeInTheDocument();
+      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'live',
+      );
     });
 
-    it('renders SearchTraceBlock in loading state when isSearching with no traces', () => {
-      render(<ChatBubble role="assistant" content="" index={0} isSearching />);
-      expect(screen.getByTestId('search-trace-block')).toBeInTheDocument();
-      expect(screen.getByTestId('search-trace-loading')).toBeInTheDocument();
-    });
-
-    it('renders SearchTraceBlock above thinking block', () => {
+    it('skips exit when thinking mounts without a prior live search (Option D)', () => {
+      // First paint already handed off: never entered `live`, so no exit
+      // retention and Reasoning shows immediately.
       render(
         <ChatBubble
           role="assistant"
-          content="answer"
+          content=""
           index={0}
-          searchTraces={[trace]}
+          isSearching
+          searchStage={{ kind: 'searching' }}
           thinkingContent="thoughts"
           isThinking={false}
         />,
       );
-      const traceBlock = screen.getByTestId('search-trace-block');
-      const reasoningBlock = screen.getByTestId('reasoning-block');
       expect(
-        traceBlock.compareDocumentPosition(reasoningBlock) &
-          Node.DOCUMENT_POSITION_FOLLOWING,
-      ).toBeTruthy();
+        screen.queryByTestId('search-progress-block'),
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'done',
+      );
+    });
+
+    it('skips exit when isThinkingPending mounts without prior live search', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching
+          searchStage={{ kind: 'composing' }}
+          isThinkingPending
+        />,
+      );
+      expect(
+        screen.queryByTestId('search-progress-block'),
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'done',
+      );
+    });
+
+    it('skips exit when answer mounts without prior live search', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="Partial answer"
+          index={0}
+          isSearching
+          searchStage={{ kind: 'composing' }}
+        />,
+      );
+      expect(
+        screen.queryByTestId('search-progress-block'),
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'done',
+      );
+    });
+
+    it('keeps SearchProgress with isExiting and defers Reasoning mid-handoff', () => {
+      const { rerender } = render(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching
+          searchStage={{ kind: 'searching' }}
+        />,
+      );
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'live',
+      );
+
+      rerender(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching
+          searchStage={{ kind: 'searching' }}
+          thinkingContent="thoughts"
+          isThinking
+        />,
+      );
+
+      // Collapse window: search retained with isExiting, Reasoning deferred.
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'exiting',
+      );
+      const progress = screen.getByTestId('search-progress-block');
+      expect(progress).toHaveAttribute('data-exiting', 'true');
+      expect(progress).toHaveAttribute('aria-busy', 'true');
+      expect(screen.queryByTestId('reasoning-block')).not.toBeInTheDocument();
+
+      // isSearching may flip off mid-handoff; still force-mount for exit.
+      rerender(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching={false}
+          searchStage={null}
+          thinkingContent="thoughts"
+          isThinking
+        />,
+      );
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'exiting',
+      );
+      expect(screen.getByTestId('search-progress-block')).toHaveAttribute(
+        'data-exiting',
+        'true',
+      );
+    });
+
+    it('unmounts search after collapse lead then completes via onExitComplete', async () => {
+      vi.useFakeTimers();
+      try {
+        const { rerender } = render(
+          <ChatBubble
+            role="assistant"
+            content=""
+            index={0}
+            isSearching
+            searchStage={{ kind: 'searching' }}
+          />,
+        );
+
+        rerender(
+          <ChatBubble
+            role="assistant"
+            content=""
+            index={0}
+            isSearching
+            searchStage={{ kind: 'searching' }}
+            isThinkingPending
+          />,
+        );
+        expect(screen.getByTestId('search-progress-block')).toHaveAttribute(
+          'data-exiting',
+          'true',
+        );
+        expect(screen.queryByTestId('reasoning-block')).not.toBeInTheDocument();
+
+        // Collapse lead elapses → outer unmount → mock onExitComplete → done.
+        await act(async () => {
+          vi.advanceTimersByTime(SEARCH_HANDOFF_COLLAPSE_LEAD_MS);
+        });
+
+        expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+          'data-search-handoff-phase',
+          'done',
+        );
+        expect(
+          screen.queryByTestId('search-progress-block'),
+        ).not.toBeInTheDocument();
+        expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
+        expect(
+          screen.getByTestId('reasoning-handoff-enter'),
+        ).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('completes handoff via exit-fallback when exit unmount stalls', async () => {
+      vi.useFakeTimers();
+      try {
+        const { rerender } = render(
+          <ChatBubble
+            role="assistant"
+            content=""
+            index={0}
+            isSearching
+            searchStage={{ kind: 'composing' }}
+          />,
+        );
+
+        rerender(
+          <ChatBubble
+            role="assistant"
+            content="Partial answer"
+            index={0}
+            isSearching
+            searchStage={{ kind: 'composing' }}
+          />,
+        );
+
+        expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+          'data-search-handoff-phase',
+          'exiting',
+        );
+        expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+        expect(screen.queryByTestId('reasoning-block')).not.toBeInTheDocument();
+        expect(screen.getByText('Partial answer')).toBeInTheDocument();
+
+        // Skip past lead without flushing the unmount effect's follow-up by
+        // jumping to the hard fallback; completeSearchHandoffExit must clear
+        // exiting even if onExitComplete never ran.
+        await act(async () => {
+          vi.advanceTimersByTime(SEARCH_HANDOFF_EXIT_FALLBACK_MS);
+        });
+
+        expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+          'data-search-handoff-phase',
+          'done',
+        );
+        expect(
+          screen.queryByTestId('search-progress-block'),
+        ).not.toBeInTheDocument();
+        expect(screen.getByText('Partial answer')).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('resets handoff phase to idle when search cancels without content', () => {
+      const { rerender } = render(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching
+          searchStage={{ kind: 'searching' }}
+        />,
+      );
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'live',
+      );
+
+      rerender(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching={false}
+          searchStage={null}
+        />,
+      );
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'idle',
+      );
+      expect(
+        screen.queryByTestId('search-progress-block'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('uses near-instant handoff timings under reduced motion', async () => {
+      mockReducedMotion.current = true;
+      vi.useFakeTimers();
+      try {
+        const { rerender } = render(
+          <ChatBubble
+            role="assistant"
+            content=""
+            index={0}
+            isSearching
+            searchStage={{ kind: 'searching' }}
+          />,
+        );
+        rerender(
+          <ChatBubble
+            role="assistant"
+            content=""
+            index={0}
+            isSearching
+            searchStage={{ kind: 'searching' }}
+            thinkingContent="thoughts"
+            isThinking
+          />,
+        );
+        expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+          'data-search-handoff-phase',
+          'exiting',
+        );
+        // collapseLeadMs is 0 under reduced motion; flush microtask timeout.
+        await act(async () => {
+          vi.advanceTimersByTime(0);
+        });
+        expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+          'data-search-handoff-phase',
+          'done',
+        );
+        expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+        mockReducedMotion.current = false;
+      }
+    });
+
+    it('shows C3 verifying pill while streaming during citation audit', () => {
+      const sources = [
+        { title: 'Adobe', url: 'https://adobe.com' },
+        { title: 'Reuters', url: 'https://reuters.com' },
+        { title: 'Figma', url: 'https://figma.com' },
+      ];
+      render(
+        <ChatBubble
+          role="assistant"
+          content="Adobe acquired Figma."
+          index={0}
+          isStreaming
+          isSearching
+          searchStage={{ kind: 'verifying_sources' }}
+          searchSources={sources}
+        />,
+      );
+      // Progress chrome yields to the sources-row pill during audit.
+      expect(
+        screen.queryByTestId('search-progress-block'),
+      ).not.toBeInTheDocument();
+      const pill = screen.getByTestId('sources-verifying-pill');
+      expect(pill).toHaveTextContent('Verifying sources...');
+      expect(pill).toHaveAttribute('role', 'status');
+      // Copy stays gated until Done (isStreaming still true).
+      expect(
+        screen.queryByRole('button', { name: /copy/i }),
+      ).not.toBeInTheDocument();
+      // Mini chips render inside the pill (up to 3).
+      expect(pill.querySelectorAll('span.rounded-full')).toHaveLength(3);
+    });
+
+    it('hides the verifying pill once the turn is done', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="Adobe acquired Figma."
+          index={0}
+          searchStage={null}
+          searchSources={[{ title: 'Adobe', url: 'https://adobe.com' }]}
+        />,
+      );
+      expect(
+        screen.queryByTestId('sources-verifying-pill'),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: /1 source/i }),
+      ).toBeInTheDocument();
     });
   });
 
@@ -1470,19 +1747,6 @@ describe('ChatBubble', () => {
           index={0}
           modelName="gemma4:e2b"
           errorKind="Other"
-        />,
-      );
-      expect(screen.queryByTestId('model-attribution')).toBeNull();
-    });
-
-    it('does not render the attribution chip when sandbox is unavailable', () => {
-      render(
-        <ChatBubble
-          role="assistant"
-          content=""
-          index={0}
-          modelName="gemma4:e2b"
-          sandboxUnavailable
         />,
       );
       expect(screen.queryByTestId('model-attribution')).toBeNull();

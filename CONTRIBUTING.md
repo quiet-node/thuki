@@ -49,10 +49,6 @@ No AI backend setup is required: Thuki bundles its own llama.cpp inference engin
 
 - Install via [ollama.com](https://ollama.com)
 
-**Docker:** only needed to run the local `/search` stack (`bun run search-box:start`)
-
-- Install via [docker.com](https://www.docker.com/get-started)
-
 ---
 
 ## Development Setup

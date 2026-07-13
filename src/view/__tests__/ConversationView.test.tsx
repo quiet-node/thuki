@@ -40,7 +40,7 @@ describe('ConversationView', () => {
     expect(container.textContent).toContain('response...');
   });
 
-  it('shows TypingIndicator when isGenerating with empty assistant content', () => {
+  it('shows RequestStatusStrip when isGenerating with empty assistant content', () => {
     const { container } = render(
       <ConversationView
         messages={[{ id: '1', role: 'assistant' as const, content: '' }]}
@@ -48,12 +48,13 @@ describe('ConversationView', () => {
         onClose={vi.fn()}
       />,
     );
-    // New indicator: 9-dot spiral grid
-    const dots = container.querySelectorAll('.rounded-full');
-    expect(dots.length).toBeGreaterThanOrEqual(9);
+    // Unified strip: Y1 three-dot motion host
+    expect(
+      container.querySelectorAll('[data-testid="three-dot-motion"]').length,
+    ).toBeGreaterThanOrEqual(1);
   });
 
-  it('hides TypingIndicator when assistant content arrives', () => {
+  it('hides RequestStatusStrip when assistant content arrives', () => {
     const { container } = render(
       <ConversationView
         messages={[
@@ -63,8 +64,9 @@ describe('ConversationView', () => {
         onClose={vi.fn()}
       />,
     );
-    const dots = container.querySelectorAll('.rounded-full.bg-primary\\/70');
-    expect(dots).toHaveLength(0);
+    expect(
+      container.querySelectorAll('[data-testid="three-dot-motion"]'),
+    ).toHaveLength(0);
   });
 
   it('renders WindowControls with onClose', () => {
@@ -634,8 +636,8 @@ describe('ConversationView', () => {
       );
     });
 
-    it('does not show TypingIndicator when assistant has thinkingContent but no content', () => {
-      const { container } = render(
+    it('does not show a duplicate external status strip when reasoning owns chrome', () => {
+      render(
         <ConversationView
           messages={[
             {
@@ -649,9 +651,9 @@ describe('ConversationView', () => {
           onClose={vi.fn()}
         />,
       );
-      // TypingIndicator renders 9 pulsing dots
-      const dots = container.querySelectorAll('.rounded-full.bg-primary\\/70');
-      expect(dots).toHaveLength(0);
+      // Reasoning path owns chrome via ReasoningBlock's RequestStatusStrip.
+      // No second external ConversationView loading row for /think.
+      expect(screen.getByTestId('loading-label')).toBeInTheDocument();
     });
   });
 
@@ -828,7 +830,7 @@ describe('ConversationView', () => {
       );
     });
 
-    it('renders SearchTraceBlock immediately when fromSearch=true during generation (no traces yet)', () => {
+    it('shows C3 verifying pill on the search bubble during citation audit', () => {
       render(
         <ConversationView
           messages={[
@@ -836,63 +838,47 @@ describe('ConversationView', () => {
             {
               id: 'a',
               role: 'assistant',
-              content: '',
+              content: 'Adobe acquired Figma.',
               fromSearch: true,
-            },
-          ]}
-          isGenerating={true}
-          onClose={vi.fn()}
-          searchStage={{ kind: 'searching' }}
-        />,
-      );
-      expect(screen.getByTestId('search-trace-block')).toBeInTheDocument();
-      expect(screen.getByTestId('search-trace-loading')).toBeInTheDocument();
-    });
-
-    it('threads searchTraces from message to SearchTraceBlock', () => {
-      render(
-        <ConversationView
-          messages={[
-            { id: 'u', role: 'user', content: 'q' },
-            {
-              id: 'a',
-              role: 'assistant',
-              content: '',
-              fromSearch: true,
-              searchTraces: [
-                {
-                  id: 'round-1-read',
-                  kind: 'read' as const,
-                  status: 'running' as const,
-                  round: 1,
-                  title: 'Reading the shortlisted pages',
-                  summary: 'Opened 1 of 3 pages so far.',
-                  domains: ['example.com'],
-                  counts: { processed: 1, total: 3 },
-                },
+              searchSources: [
+                { title: 'Adobe', url: 'https://adobe.com' },
+                { title: 'Reuters', url: 'https://reuters.com' },
               ],
             },
           ]}
           isGenerating={true}
           onClose={vi.fn()}
+          searchStage={{ kind: 'verifying_sources' }}
         />,
       );
-
-      expect(screen.getByTestId('search-trace-block')).toBeInTheDocument();
-      expect(screen.getByTestId('loading-label')).toHaveTextContent(
-        'Reading the shortlisted pages',
-      );
-
-      fireEvent.click(
-        screen.getByRole('button', { name: /toggle search trace/i }),
-      );
-
       expect(
-        screen.getByText('Opened 1 of 3 pages so far.'),
-      ).toBeInTheDocument();
+        screen.queryByTestId('search-progress-block'),
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId('sources-verifying-pill')).toHaveTextContent(
+        'Verifying sources...',
+      );
     });
 
-    it('hides external LoadingStage for search turns (SearchTraceBlock takes over)', () => {
+    it('maps verifying_sources on the loading-row label helper', () => {
+      // Non-fromSearch empty assistant still hits ConversationView's
+      // searchStageLabel switch (fromSearch owns chrome in ChatBubble).
+      render(
+        <ConversationView
+          messages={[
+            { id: 'u', role: 'user', content: 'q' },
+            { id: 'a', role: 'assistant', content: '' },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          searchStage={{ kind: 'verifying_sources' }}
+        />,
+      );
+      expect(screen.getByTestId('loading-label').textContent).toBe(
+        'Verifying sources...',
+      );
+    });
+
+    it('renders SearchProgressBlock for web search when fromSearch is true', () => {
       render(
         <ConversationView
           messages={[
@@ -909,12 +895,504 @@ describe('ConversationView', () => {
           searchStage={{ kind: 'searching' }}
         />,
       );
-      // External LoadingStage shows "Searching the web"; SearchTraceBlock's
-      // internal label shows "Searching..." - assert the external one is gone.
-      const labels = screen.getAllByTestId('loading-label');
-      expect(labels.every((el) => el.textContent !== 'Searching the web')).toBe(
-        true,
+      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+      expect(screen.getByTestId('loading-label')).toHaveAttribute(
+        'data-label',
+        'Searching the web',
       );
+    });
+
+    it('hides external RequestStatusStrip for search turns (bubble progress chrome takes over)', () => {
+      render(
+        <ConversationView
+          messages={[
+            { id: 'u', role: 'user', content: 'q' },
+            {
+              id: 'a',
+              role: 'assistant',
+              content: '',
+              fromSearch: true,
+            },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          searchStage={{ kind: 'searching' }}
+        />,
+      );
+      // External stage row is suppressed via !fromSearch; the label lives inside
+      // SearchProgressBlock (auto-search) instead of a second ConversationView row.
+      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+      const labels = screen.getAllByTestId('loading-label');
+      expect(labels).toHaveLength(1);
+      expect(labels[0]).toHaveAttribute('data-label', 'Searching the web');
+    });
+
+    it('forwards its auto-scroll gate to the search progress block pin', () => {
+      // A live search turn with sources (empty answer) mounts the expanded
+      // SearchProgressBlock, whose pin reads back this view's auto-scroll gate
+      // (`isPinnedToBottom`). Gate is open by default, so the pin proceeds and
+      // the scroller lands at the bottom.
+      const { container } = render(
+        <ConversationView
+          messages={[
+            { id: 'u', role: 'user', content: 'q' },
+            {
+              id: 'a',
+              role: 'assistant',
+              content: '',
+              fromSearch: true,
+              searchSources: [
+                { title: 'A', url: 'https://a.example' },
+                { title: 'B', url: 'https://b.example' },
+              ],
+            },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          searchStage={{ kind: 'reading_sources' }}
+        />,
+      );
+
+      // Block is mounted and expanded: its mount-time re-pin effect runs, which
+      // is the path that invokes the forwarded gate callback.
+      expect(screen.getByTestId('search-progress-body')).toBeInTheDocument();
+      const scrollEl = container.querySelector(
+        '.chat-messages-scroll',
+      ) as HTMLElement;
+      expect(scrollEl.scrollTop).toBe(scrollEl.scrollHeight);
+    });
+
+    it('re-pins scroll to bottom when searchSources grow while auto-scroll is on', async () => {
+      const { container, rerender } = render(
+        <ConversationView
+          messages={[
+            { id: 'u', role: 'user', content: 'q' },
+            {
+              id: 'a',
+              role: 'assistant',
+              content: 'long prior answer text',
+              fromSearch: true,
+              searchSources: [],
+            },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          searchStage={{ kind: 'reading_sources' }}
+        />,
+      );
+
+      const scrollEl = container.querySelector(
+        '.chat-messages-scroll',
+      ) as HTMLElement;
+      expect(scrollEl).not.toBeNull();
+
+      let scrollTopValue = 0;
+      Object.defineProperty(scrollEl, 'scrollHeight', {
+        get: () => 800,
+        configurable: true,
+      });
+      Object.defineProperty(scrollEl, 'clientHeight', {
+        get: () => 400,
+        configurable: true,
+      });
+      Object.defineProperty(scrollEl, 'scrollTop', {
+        get: () => scrollTopValue,
+        set: (v: number) => {
+          scrollTopValue = v;
+        },
+        configurable: true,
+      });
+
+      act(() => {
+        rerender(
+          <ConversationView
+            messages={[
+              { id: 'u', role: 'user', content: 'q' },
+              {
+                id: 'a',
+                role: 'assistant',
+                content: 'long prior answer text',
+                fromSearch: true,
+                searchSources: [
+                  { title: 'A', url: 'https://a.example' },
+                  { title: 'B', url: 'https://b.example' },
+                ],
+              },
+            ]}
+            isGenerating={true}
+            onClose={vi.fn()}
+            searchStage={{ kind: 'reading_sources' }}
+          />,
+        );
+      });
+
+      // Double rAF: React commit frame + layout settle frame.
+      await act(async () => {
+        await new Promise((r) => requestAnimationFrame(r));
+        await new Promise((r) => requestAnimationFrame(r));
+      });
+
+      expect(scrollTopValue).toBe(800);
+    });
+
+    it('does not force-scroll when searchSources grow after user scrolled up', async () => {
+      const { container, rerender } = render(
+        <ConversationView
+          messages={[
+            { id: 'u', role: 'user', content: 'q' },
+            {
+              id: 'a',
+              role: 'assistant',
+              content: 'long prior answer text',
+              fromSearch: true,
+              searchSources: [],
+            },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          searchStage={{ kind: 'reading_sources' }}
+        />,
+      );
+
+      const scrollEl = container.querySelector(
+        '.chat-messages-scroll',
+      ) as HTMLElement;
+      expect(scrollEl).not.toBeNull();
+
+      let scrollTopValue = 0;
+      Object.defineProperty(scrollEl, 'scrollTop', {
+        get: () => scrollTopValue,
+        set: (v: number) => {
+          scrollTopValue = v;
+        },
+        configurable: true,
+      });
+
+      act(() => {
+        scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
+      });
+
+      act(() => {
+        rerender(
+          <ConversationView
+            messages={[
+              { id: 'u', role: 'user', content: 'q' },
+              {
+                id: 'a',
+                role: 'assistant',
+                content: 'long prior answer text',
+                fromSearch: true,
+                searchSources: [
+                  { title: 'A', url: 'https://a.example' },
+                  { title: 'B', url: 'https://b.example' },
+                ],
+              },
+            ]}
+            isGenerating={true}
+            onClose={vi.fn()}
+            searchStage={{ kind: 'reading_sources' }}
+          />,
+        );
+      });
+
+      await act(async () => {
+        await new Promise((r) => requestAnimationFrame(r));
+        await new Promise((r) => requestAnimationFrame(r));
+      });
+
+      expect(scrollTopValue).toBe(0);
+    });
+
+    it('aborts in-flight double-rAF scroll when user scrolls up mid-settle', async () => {
+      // Spy rAF so we can run the outer frame, flip auto-scroll off, then
+      // run the inner settle frame and assert it no-ops.
+      const nativeRaf = globalThis.requestAnimationFrame.bind(globalThis);
+      const pending: FrameRequestCallback[] = [];
+      const rafSpy = vi
+        .spyOn(globalThis, 'requestAnimationFrame')
+        .mockImplementation((cb: FrameRequestCallback) => {
+          pending.push(cb);
+          return pending.length;
+        });
+      const cafSpy = vi
+        .spyOn(globalThis, 'cancelAnimationFrame')
+        .mockImplementation((id: number) => {
+          pending[id - 1] = () => {};
+        });
+
+      try {
+        const { container, rerender } = render(
+          <ConversationView
+            messages={[
+              { id: 'u', role: 'user', content: 'q' },
+              {
+                id: 'a',
+                role: 'assistant',
+                content: 'answer',
+                fromSearch: true,
+                searchSources: [],
+              },
+            ]}
+            isGenerating={true}
+            onClose={vi.fn()}
+            searchStage={{ kind: 'reading_sources' }}
+          />,
+        );
+
+        const scrollEl = container.querySelector(
+          '.chat-messages-scroll',
+        ) as HTMLElement;
+
+        let scrollTopValue = 0;
+        Object.defineProperty(scrollEl, 'scrollHeight', {
+          get: () => 900,
+          configurable: true,
+        });
+        Object.defineProperty(scrollEl, 'scrollTop', {
+          get: () => scrollTopValue,
+          set: (v: number) => {
+            scrollTopValue = v;
+          },
+          configurable: true,
+        });
+
+        // Drop any rAFs from the initial mount; we only care about the
+        // sources-growth effect below.
+        pending.length = 0;
+
+        act(() => {
+          rerender(
+            <ConversationView
+              messages={[
+                { id: 'u', role: 'user', content: 'q' },
+                {
+                  id: 'a',
+                  role: 'assistant',
+                  content: 'answer',
+                  fromSearch: true,
+                  searchSources: [{ title: 'A', url: 'https://a.example' }],
+                },
+              ]}
+              isGenerating={true}
+              onClose={vi.fn()}
+              searchStage={{ kind: 'reading_sources' }}
+            />,
+          );
+        });
+
+        // Outer settle frame schedules the inner frame.
+        expect(pending.length).toBeGreaterThanOrEqual(1);
+        act(() => {
+          const outer = pending.shift()!;
+          outer(0);
+        });
+
+        // User scrolls up before the inner frame runs.
+        act(() => {
+          scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
+        });
+        scrollTopValue = 12;
+
+        act(() => {
+          while (pending.length > 0) {
+            const cb = pending.shift()!;
+            cb(0);
+          }
+        });
+
+        expect(scrollTopValue).toBe(12);
+      } finally {
+        rafSpy.mockRestore();
+        cafSpy.mockRestore();
+        void nativeRaf;
+      }
+    });
+
+    it('re-pins scroll when searchStage advances during a generating search turn', async () => {
+      const { container, rerender } = render(
+        <ConversationView
+          messages={[
+            { id: 'u', role: 'user', content: 'q' },
+            {
+              id: 'a',
+              role: 'assistant',
+              content: '',
+              fromSearch: true,
+            },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          searchStage={{ kind: 'searching' }}
+        />,
+      );
+
+      const scrollEl = container.querySelector(
+        '.chat-messages-scroll',
+      ) as HTMLElement;
+
+      let scrollTopValue = 0;
+      Object.defineProperty(scrollEl, 'scrollHeight', {
+        get: () => 700,
+        configurable: true,
+      });
+      Object.defineProperty(scrollEl, 'scrollTop', {
+        get: () => scrollTopValue,
+        set: (v: number) => {
+          scrollTopValue = v;
+        },
+        configurable: true,
+      });
+
+      act(() => {
+        rerender(
+          <ConversationView
+            messages={[
+              { id: 'u', role: 'user', content: 'q' },
+              {
+                id: 'a',
+                role: 'assistant',
+                content: '',
+                fromSearch: true,
+              },
+            ]}
+            isGenerating={true}
+            onClose={vi.fn()}
+            searchStage={{ kind: 'composing' }}
+          />,
+        );
+      });
+
+      await act(async () => {
+        await new Promise((r) => requestAnimationFrame(r));
+        await new Promise((r) => requestAnimationFrame(r));
+      });
+
+      expect(scrollTopValue).toBe(700);
+    });
+
+    it('ResizeObserver pins scroller when content resizes and auto-scroll is on', () => {
+      let roCallback: ResizeObserverCallback | null = null;
+      const Original = globalThis.ResizeObserver;
+      const roSpy = vi
+        .spyOn(globalThis, 'ResizeObserver')
+        .mockImplementation(function (cb: ResizeObserverCallback) {
+          roCallback = cb;
+          return new Original(cb) as ResizeObserver;
+        });
+
+      try {
+        const { container } = render(
+          <ConversationView
+            messages={[
+              { id: 'u', role: 'user', content: 'q' },
+              {
+                id: 'a',
+                role: 'assistant',
+                content: 'long answer',
+                fromSearch: true,
+                searchSources: [{ title: 'A', url: 'https://a.example' }],
+              },
+            ]}
+            isGenerating={true}
+            onClose={vi.fn()}
+            searchStage={{ kind: 'reading_sources' }}
+          />,
+        );
+
+        const scrollEl = container.querySelector(
+          '.chat-messages-scroll',
+        ) as HTMLElement;
+        expect(scrollEl).not.toBeNull();
+        expect(roCallback).not.toBeNull();
+
+        let scrollTopValue = 0;
+        Object.defineProperty(scrollEl, 'scrollHeight', {
+          get: () => 1500,
+          configurable: true,
+        });
+        Object.defineProperty(scrollEl, 'scrollTop', {
+          get: () => scrollTopValue,
+          set: (v: number) => {
+            scrollTopValue = v;
+          },
+          configurable: true,
+        });
+
+        // Simulate Framer sources-body height growth mid-animation.
+        act(() => {
+          roCallback!(
+            [] as unknown as ResizeObserverEntry[],
+            {} as ResizeObserver,
+          );
+        });
+
+        expect(scrollTopValue).toBe(1500);
+      } finally {
+        roSpy.mockRestore();
+      }
+    });
+
+    it('ResizeObserver does not pin when user has scrolled up', () => {
+      let roCallback: ResizeObserverCallback | null = null;
+      const Original = globalThis.ResizeObserver;
+      const roSpy = vi
+        .spyOn(globalThis, 'ResizeObserver')
+        .mockImplementation(function (cb: ResizeObserverCallback) {
+          roCallback = cb;
+          return new Original(cb) as ResizeObserver;
+        });
+
+      try {
+        const { container } = render(
+          <ConversationView
+            messages={[
+              { id: 'u', role: 'user', content: 'q' },
+              {
+                id: 'a',
+                role: 'assistant',
+                content: 'long answer',
+                fromSearch: true,
+                searchSources: [{ title: 'A', url: 'https://a.example' }],
+              },
+            ]}
+            isGenerating={true}
+            onClose={vi.fn()}
+            searchStage={{ kind: 'reading_sources' }}
+          />,
+        );
+
+        const scrollEl = container.querySelector(
+          '.chat-messages-scroll',
+        ) as HTMLElement;
+
+        let scrollTopValue = 40;
+        Object.defineProperty(scrollEl, 'scrollHeight', {
+          get: () => 1500,
+          configurable: true,
+        });
+        Object.defineProperty(scrollEl, 'scrollTop', {
+          get: () => scrollTopValue,
+          set: (v: number) => {
+            scrollTopValue = v;
+          },
+          configurable: true,
+        });
+
+        act(() => {
+          scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
+        });
+
+        act(() => {
+          roCallback!(
+            [] as unknown as ResizeObserverEntry[],
+            {} as ResizeObserver,
+          );
+        });
+
+        expect(scrollTopValue).toBe(40);
+      } finally {
+        roSpy.mockRestore();
+      }
     });
   });
 

@@ -6,11 +6,11 @@
 //! # Why a wrapper
 //!
 //! `Arc<dyn TraceRecorder>` is locked in once at startup: the chat
-//! command, the search pipeline, and the screenshot command all hold
-//! their own `Arc` clones of the initial managed state, and Tauri's
-//! managed-state surface has no way to swap a value out from under
-//! existing State<'_> handles. `LiveTraceRecorder` solves this by
-//! being the trait implementation itself; it forwards every
+//! command (including built-in websearch) and the screenshot command
+//! all hold their own `Arc` clones of the initial managed state, and
+//! Tauri's managed-state surface has no way to swap a value out from
+//! under existing State<'_> handles. `LiveTraceRecorder` solves this
+//! by being the trait implementation itself; it forwards every
 //! `record()` call to whatever inner recorder is currently installed.
 //! Swap = write-lock + replace.
 //!
@@ -94,7 +94,6 @@ impl TraceRecorder for LiveTraceRecorder {
 mod tests {
     use super::*;
     use parking_lot::Mutex;
-    use serde_json::json;
 
     /// Test-local recorder that counts the events it sees, tagged with
     /// a label so the swap test can tell which inner was active for
@@ -124,18 +123,15 @@ mod tests {
         ConversationId::new(s)
     }
 
-    fn warning() -> RecorderEvent {
-        RecorderEvent::Warning {
-            kind: "k".into(),
-            payload: json!({}),
-        }
+    fn sample_event() -> RecorderEvent {
+        RecorderEvent::AssistantTokens { chunk: "k".into() }
     }
 
     #[test]
     fn record_routes_to_initial_inner() {
         let counter = Arc::new(LabeledCounter::new("initial"));
         let live = LiveTraceRecorder::new(counter.clone());
-        live.record(&cid("conv-a"), warning());
+        live.record(&cid("conv-a"), sample_event());
         let seen = counter.seen.lock().clone();
         assert_eq!(seen, vec![("conv-a".to_owned(), "initial")]);
     }
@@ -145,10 +141,10 @@ mod tests {
         let first = Arc::new(LabeledCounter::new("before"));
         let second = Arc::new(LabeledCounter::new("after"));
         let live = LiveTraceRecorder::new(first.clone());
-        live.record(&cid("conv-1"), warning());
+        live.record(&cid("conv-1"), sample_event());
         live.replace(second.clone());
-        live.record(&cid("conv-1"), warning());
-        live.record(&cid("conv-2"), warning());
+        live.record(&cid("conv-1"), sample_event());
+        live.record(&cid("conv-2"), sample_event());
         assert_eq!(
             first.seen.lock().clone(),
             vec![("conv-1".to_owned(), "before")],
@@ -170,13 +166,13 @@ mod tests {
         let b = Arc::new(LabeledCounter::new("b"));
         let c = Arc::new(LabeledCounter::new("c"));
         let live = LiveTraceRecorder::new(a.clone());
-        live.record(&cid("x"), warning());
+        live.record(&cid("x"), sample_event());
         live.replace(b.clone());
-        live.record(&cid("x"), warning());
+        live.record(&cid("x"), sample_event());
         live.replace(c.clone());
-        live.record(&cid("x"), warning());
+        live.record(&cid("x"), sample_event());
         live.replace(a.clone());
-        live.record(&cid("x"), warning());
+        live.record(&cid("x"), sample_event());
         assert_eq!(a.seen.lock().len(), 2, "first + final emits land on a");
         assert_eq!(b.seen.lock().len(), 1, "single emit lands on b");
         assert_eq!(c.seen.lock().len(), 1, "single emit lands on c");
@@ -186,11 +182,11 @@ mod tests {
     fn noop_constructor_swallows_events_until_replaced() {
         let live = LiveTraceRecorder::noop();
         // No panic, no observable side effect.
-        live.record(&cid("conv-noop"), warning());
+        live.record(&cid("conv-noop"), sample_event());
 
         let counter = Arc::new(LabeledCounter::new("active"));
         live.replace(counter.clone());
-        live.record(&cid("conv-noop"), warning());
+        live.record(&cid("conv-noop"), sample_event());
         assert_eq!(
             counter.seen.lock().clone(),
             vec![("conv-noop".to_owned(), "active")],
@@ -205,7 +201,7 @@ mod tests {
         // impl that lib.rs depends on for `Arc<dyn TraceRecorder>`
         // coercion.
         let live: Arc<dyn TraceRecorder> = Arc::new(LiveTraceRecorder::noop());
-        live.record(&cid("trait-obj"), warning());
+        live.record(&cid("trait-obj"), sample_event());
     }
 
     #[test]

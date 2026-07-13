@@ -274,6 +274,21 @@ pub(crate) fn chat_request_body(
 
 // ─── Streaming chat ──────────────────────────────────────────────────────────
 
+/// Formats the diagnostic stderr line emitted when an SSE chat stream ends
+/// without a `data: [DONE]` marker (the `None` arm of [`stream_openai_chat`]'s
+/// loop). This is a diagnostic hook for an unreproduced bug (J6): some
+/// first-turn submissions complete instantly with zero tokens, and the prime
+/// suspect is this EOF-without-`[DONE]` arm silently turning a premature stream
+/// close into a normal `Done`. Recording the accumulated byte count and
+/// token-event count lets a live dogfood session tell an empty premature close
+/// (0 bytes, 0 events) from a full one. Pure so the wire path's diagnostic
+/// string stays unit-tested without a live server.
+fn eof_without_done_diagnostic(accumulated_bytes: usize, token_events: usize) -> String {
+    format!(
+        "openai: SSE stream closed without [DONE]; accumulated {accumulated_bytes} bytes across {token_events} token events"
+    )
+}
+
 /// Streams a `/v1/chat/completions` request (`stream: true`) and emits the
 /// same [`StreamChunk`] contract as `stream_ollama_chat`:
 /// `choices[0].delta.content` becomes [`StreamChunk::Token`],
@@ -307,6 +322,11 @@ pub async fn stream_openai_chat(
     }
 
     let mut accumulated = String::new();
+    // Diagnostic-only (J6 unreproduced zero-token bug): counts content token
+    // events so the EOF-without-`[DONE]` arm can report how many actually
+    // arrived. Observationally invisible; thinking tokens are excluded so the
+    // count stays paired to `accumulated`.
+    let mut token_events: usize = 0;
 
     let response = match request.send().await {
         Ok(response) => response,
@@ -385,6 +405,7 @@ pub async fn stream_openai_chat(
                                     choice.delta.content.as_deref().filter(|s| !s.is_empty())
                                 {
                                     accumulated.push_str(token);
+                                    token_events += 1;
                                     on_chunk(StreamChunk::Token(token.to_string()));
                                 }
                             }
@@ -406,6 +427,19 @@ pub async fn stream_openai_chat(
                         // marker. Emit a terminal Done so the frontend always
                         // leaves its streaming state (mirrors the native
                         // path's missing-done-marker handling).
+                        //
+                        // Diagnostic hook for the unreproduced J6 zero-token
+                        // bug: this arm is the prime suspect for silently
+                        // converting a premature/empty stream close into a
+                        // normal completion. Log to stderr (never the frontend)
+                        // how much content actually arrived before the EOF so a
+                        // live occurrence separates an empty close from a full
+                        // one. Zero-cost on the normal [DONE] path, which
+                        // returns before ever reaching this arm.
+                        eprintln!(
+                            "{}",
+                            eof_without_done_diagnostic(accumulated.len(), token_events)
+                        );
                         on_chunk(StreamChunk::Done);
                         return accumulated;
                     }
@@ -718,6 +752,21 @@ mod tests {
         assert!(matches!(&chunks[2], StreamChunk::Done));
         assert_eq!(chunks.len(), 3);
         assert_eq!(accumulated, "AB");
+    }
+
+    /// Locks the exact tagged string of the J6 EOF-without-`[DONE]` diagnostic
+    /// so the byte/token-event contract a live dogfood session greps for cannot
+    /// drift silently.
+    #[test]
+    fn eof_without_done_diagnostic_format() {
+        assert_eq!(
+            eof_without_done_diagnostic(0, 0),
+            "openai: SSE stream closed without [DONE]; accumulated 0 bytes across 0 token events"
+        );
+        assert_eq!(
+            eof_without_done_diagnostic(42, 7),
+            "openai: SSE stream closed without [DONE]; accumulated 42 bytes across 7 token events"
+        );
     }
 
     /// Mirrors the native path's policy for unparseable lines: malformed data

@@ -57,26 +57,27 @@ export const COMMANDS: readonly Command[] = [
   {
     trigger: '/search',
     label: '/search',
-    description: 'Agentic web search: iterative reasoning & cited synthesis',
+    description: 'Force a live web look-up with citations',
     docs: {
       summary:
-        'Runs agentic web search and answers from live sources with citations.',
+        'Forces a live web look-up and answers with citations (zero-setup).',
       usage: '/search <question>',
       examples: [
         '`/search who owns Figma now?`: searches live sources for a current answer',
         '`/search latest React 19 release notes`: retrieves recent release information from the web',
       ],
       behavior:
-        "Routes the message through Thuki's local search pipeline instead of plain chat. Answers are grounded in retrieved web sources and typically include inline citations plus a Sources footer.",
+        'Forces engines-only web search even when Auto search is off or would skip. Answers are grounded in retrieved sources with inline citations and a Sources footer. With Auto search on (Settings → Behavior, default), plain messages may also search when live facts are needed.',
       limit:
-        'Requires the search sandbox to be running. See [agentic-search.md#setup](agentic-search.md#setup) for setup steps. Use it for current, changing, or cutoff-sensitive information.',
+        'Use when you want a forced look-up, Auto search is off, or a plain turn skipped the web.',
     },
     promptHelp: {
-      summary: 'agentic web search for current or cutoff-sensitive questions.',
+      summary:
+        'force a live web look-up for current or cutoff-sensitive questions.',
       whenToSuggest:
-        'Mention this when the user asks for current web information, live prices, recent releases, current ownership, or facts likely newer than the model cutoff.',
+        'Mention this when the user asks for current web information, live prices, recent releases, current ownership, or facts likely newer than the model cutoff, or when they want a forced look-up instead of auto search.',
       limit:
-        'Do not claim to have searched the web without `/search`. `/search` requires the local search sandbox.',
+        'Do not claim to have searched the web without actually searching. Prefer `/search` when the user needs a forced live look-up.',
     },
   },
   {
@@ -92,7 +93,7 @@ export const COMMANDS: readonly Command[] = [
         '`/screen /extract`: captures the screen and extracts all visible text',
       ],
       behavior:
-        'Text is extracted using the macOS Vision framework and returned verbatim in a code block. No prose or explanation is added. When multiple images are provided, each result is separated by a horizontal rule. Returns "[No text detected]" when no readable text is found.',
+        'Text is extracted using the macOS Vision framework and returned verbatim in a code block. No prose or explanation is added. When multiple images are provided, each result is separated by a horizontal rule. Returns "[No text detected]" when no readable text is found. Does not trigger web search.',
       composability:
         '`/extract` can combine with `/screen` to capture then extract in one step.',
       permission:
@@ -170,7 +171,7 @@ export const COMMANDS: readonly Command[] = [
         '`/translate Spanish meeting notes here`: translates typed text to Spanish',
       ],
       behavior:
-        'Outputs only the translation with no commentary or explanation.',
+        'Outputs only the translation with no commentary or explanation. Does not trigger web search.',
       languageFormat:
         'The target language can be a full name (`French`), ISO code (`fr`, `fra`), or common shorthand.',
       defaultBehavior:
@@ -198,7 +199,7 @@ export const COMMANDS: readonly Command[] = [
         '`/rewrite so basically what happened was i was trying to fix the bug`: rewrites typed text in a natural, casual voice',
       ],
       behavior:
-        'Rewrites text to sound like a fluent native speaker talking day to day: relaxed and casual by default, while keeping your meaning, personality, and point of view. It mirrors your original formatting instead of flattening it: Markdown headings, bold, lists, links, blockquotes, and code all stay, and only the text inside them is improved. Quoted lines, code, URLs, @mentions, #channels, and the emoji or expressive spellings you used are kept exactly as written. It fixes what reads awkwardly and leaves what already reads well alone, only stays formal when the original clearly is, and will not bolt a "we" voice onto an imperative or impersonal note. Outputs only the rewritten text. A Replace button on the result writes the rewritten text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button. Follow-up tweaks in the same chat, like asking for a longer or more formal version, keep the Replace button too.',
+        'Rewrites text to sound like a fluent native speaker talking day to day: relaxed and casual by default, while keeping your meaning, personality, and point of view. It mirrors your original formatting instead of flattening it: Markdown headings, bold, lists, links, blockquotes, and code all stay, and only the text inside them is improved. Quoted lines, code, URLs, @mentions, #channels, and the emoji or expressive spellings you used are kept exactly as written. It fixes what reads awkwardly and leaves what already reads well alone, only stays formal when the original clearly is, and will not bolt a "we" voice onto an imperative or impersonal note. Outputs only the rewritten text. A Replace button on the result writes the rewritten text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button. Follow-up tweaks in the same chat, like asking for a longer or more formal version, keep the Replace button too. Does not trigger web search.',
       composability:
         '`/rewrite` works with attached images or `/screen`. Vision OCR extracts the text first, then rewrites it.',
     },
@@ -221,7 +222,7 @@ export const COMMANDS: readonly Command[] = [
         '`/tldr [paste a long article]`: summarizes typed or pasted text',
       ],
       behavior:
-        'Captures the core message, key decision, or critical takeaway. Skips background detail and qualifications.',
+        'Captures the core message, key decision, or critical takeaway. Skips background detail and qualifications. Does not trigger web search.',
       composability:
         '`/tldr` works with attached images or `/screen`. Vision OCR extracts the text first, then summarizes it.',
     },
@@ -245,7 +246,7 @@ export const COMMANDS: readonly Command[] = [
         '`/refine hey just wanted to follow up on the thing we discussed`: cleans up typed text',
       ],
       behavior:
-        'Corrects errors and smooths rough phrasing without restructuring or adding new ideas. Your original tone and meaning stay intact. A Replace button on the result writes the refined text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button. Follow-up tweaks in the same chat, like asking for a longer or more formal version, keep the Replace button too.',
+        'Corrects errors and smooths rough phrasing without restructuring or adding new ideas. Your original tone and meaning stay intact. A Replace button on the result writes the refined text straight back into the app you were using, replacing your selection; turn on auto-replace in Settings to skip the button. Follow-up tweaks in the same chat, like asking for a longer or more formal version, keep the Replace button too. Does not trigger web search.',
       composability:
         '`/refine` works with attached images or `/screen`. Vision OCR extracts the text first, then refines it.',
     },
@@ -268,7 +269,7 @@ export const COMMANDS: readonly Command[] = [
         '`/bullets [paste meeting notes]`: extracts key points from typed or pasted content',
       ],
       behavior:
-        'Each point is a concise, self-contained statement. Ordered by importance or logical sequence. Filler and repetition are removed. Output uses `- ` prefixed markdown bullets.',
+        'Each point is a concise, self-contained statement. Ordered by importance or logical sequence. Filler and repetition are removed. Output uses `- ` prefixed markdown bullets. Does not trigger web search.',
       composability:
         '`/bullets` works with attached images or `/screen`. Vision OCR extracts the text first, then extracts key points.',
     },
@@ -320,7 +321,7 @@ export const COMMANDS: readonly Command[] = [
         '`/todos [paste a conversation or notes]`: processes typed or pasted content',
       ],
       behavior:
-        'Responds in two parts: a short paragraph explaining the context and what is at stake, followed by a `- [ ]` checkbox list of all tasks. Each to-do includes who is responsible, plus any deadline or timeframe if mentioned.',
+        'Responds in two parts: a short paragraph explaining the context and what is at stake, followed by a `- [ ]` checkbox list of all tasks. Each to-do includes who is responsible, plus any deadline or timeframe if mentioned. Does not trigger web search.',
       composability:
         '`/todos` works with attached images or `/screen`. Vision OCR extracts the text first, then extracts to-dos.',
     },

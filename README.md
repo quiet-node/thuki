@@ -98,7 +98,7 @@ Prefer to download by hand? Grab the DMG and clear the quarantine flag yourself.
 <details>
 <summary><strong>Build from source</strong></summary>
 
-**Prerequisites:** [Bun](https://bun.sh), [Rust](https://rustup.rs), and optionally [Docker](https://www.docker.com/get-started)
+**Prerequisites:** [Bun](https://bun.sh) and [Rust](https://rustup.rs)
 
 ```bash
 # Clone and install dependencies
@@ -132,7 +132,7 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 - **It works everywhere.** Double-tap Control <kbd>⌃</kbd> and Thuki appears on your desktop, inside a browser, inside a terminal, and even in fullscreen apps. Your favorite AI chat apps can't do that.
 - **100% free local AI.** You run the model on your own machine, so there is no per-query cost, ever.
 - **Private by design.** No remote server, no cloud backend, no analytics, no telemetry. Conversations live in a local SQLite database on your machine and nowhere else.
-- **Works offline.** Once your model is downloaded, Thuki runs without an internet connection.
+- **Works offline.** Once your model is downloaded, inference runs without an internet connection. Downloads and web search still need the network; turn off Auto search in Settings → Behavior to keep chat fully offline.
 
 ## Features
 
@@ -142,7 +142,7 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 - **Instant follow-ups:** Thuki can keep your model warm in memory between messages, so replies start right away instead of stalling to reload the model on every ask.
 - **Image input and screen capture:** paste or drag images directly into the chat, or type `/screen` to capture your entire screen and attach it as context.
 - **Read text in images, on any model:** commands like `/extract`, `/explain`, `/tldr`, and `/translate` pull the _text_ out of an attached image with on-device macOS Vision OCR, so they work on screenshots and documents even when the active model has no vision capability. They read text, not scenes: describing a textless image (say, a photo of the sky) still needs a vision model. See [docs/ocr-commands.md](docs/ocr-commands.md).
-- **Agentic search:** type `/search` to run a multi-step, fully local search pipeline with a live trace of every query, fetch, and judgement step. Requires a [one-time setup](docs/agentic-search.md#setup).
+- **Built-in web search:** With Auto search on (Settings → Behavior, default), Thuki may search the web when a plain message needs current information. Turn it off to stay fully local and use `/search` only when you want an on-demand look-up. Zero-setup, keyless; answers are grounded in retrieved sources with inline citations.
 - **Slash commands:** built-in shortcuts for search and prompt actions: `/search`, `/extract`, `/explain`, `/translate`, `/rewrite`, `/tldr`, `/refine`, `/bullets`, `/todos`.
 - **On-demand reasoning:** on models that support reasoning (not every model does), add `/think` to any message to make it work through the problem step by step before answering. It is off by default, so everyday asks stay fast.
 - **Cross-model continuity:** swap models mid-conversation and Thuki sanitizes history and filters capabilities (vision, reasoning) to whatever the new model supports.
@@ -163,12 +163,6 @@ Thuki can also run inference through an external provider instead of the built-i
 - **Your own OpenAI-compatible server (coming soon).** Support for pointing Thuki at any OpenAI-compatible endpoint you run yourself (a local or self-hosted server) is on the [roadmap](#whats-next-for-thuki).
 
 See [docs/models-and-providers.md](docs/models-and-providers.md) for the full model library and provider guide.
-
-### Optional: enable `/search`
-
-The `/search` command runs a fully local agentic search pipeline backed by two Docker services (SearXNG + a Trafilatura reader). It is **not yet bundled with the app**: enabling it currently requires cloning this repository to run the local services. Every other Thuki feature works without it. A built-in, zero-setup `/search` (no Docker to run yourself) is on the roadmap.
-
-See [docs/agentic-search.md#setup](docs/agentic-search.md#setup) for the setup steps.
 
 ## Privacy
 
@@ -236,10 +230,9 @@ Thuki is just getting started. Here's where it's headed:
 - **Type with your voice:** press a key, speak, and get clean text in any app.
 - **Notes from any meeting:** live transcripts and summaries of any meeting.
 - **Automate the routine:** teach Thuki multi-step tasks and run them on a word.
-- **Built-in search:** `/search` bundled into the app with no Docker to run yourself.
 - **More providers:** bring your own OpenAI-compatible server (a local or self-hosted endpoint) alongside the built-in engine and Ollama.
 
-Whatever comes next, the aim stays the same: a local-first secretary that runs open models on your own machine. Anything that reaches beyond your Mac will always be opt-in.
+Whatever comes next, the aim stays the same: a local-first secretary that runs open models on your own machine. Network use stays minimal and user-controlled, from Auto search (on by default, one toggle away from off) to any future integration.
 
 ---
 
