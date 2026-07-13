@@ -14,12 +14,10 @@ use serde::Serialize;
 
 /// Tuple representing a message for batch insertion:
 /// (role, content, quoted_text, image_paths, thinking_content, search_sources,
-///  search_warnings, search_metadata, model_name).
+///  model_name).
 pub type MessageBatchRow = (
     String,
     String,
-    Option<String>,
-    Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -47,14 +45,8 @@ pub struct PersistedMessage {
     pub image_paths: Option<String>,
     pub thinking_content: Option<String>,
     /// JSON-serialized `Vec<SearchResultPreview>` for assistant messages
-    /// produced through the `/search` pipeline. `None` for all other messages.
+    /// produced through web search. `None` for all other messages.
     pub search_sources: Option<String>,
-    /// JSON-serialized `Vec<SearchWarning>` recorded during this search turn.
-    /// `None` for non-search messages and for rows written before Task 17.
-    pub search_warnings: Option<String>,
-    /// JSON-serialized `SearchMetadata` (iteration traces, timing) for this
-    /// search turn. `None` for non-search messages and pre-Task-17 rows.
-    pub search_metadata: Option<String>,
     /// Slug of the Ollama model that produced this assistant message. `None`
     /// for user messages and rows written before the model_name migration.
     pub model_name: Option<String>,
@@ -221,7 +213,8 @@ fn run_migrations(conn: &Connection) -> SqlResult<()> {
     ensure_column(conn, "messages", "thinking_content", "TEXT")?;
     // JSON-encoded SearchResultPreview[] for /search assistant messages.
     ensure_column(conn, "messages", "search_sources", "TEXT")?;
-    // JSON-encoded Vec<SearchWarning> and SearchMetadata (Task 17).
+    // Unused columns retained so existing SQLite files open without ALTER
+    // failures. Application SQL neither reads nor writes these columns.
     ensure_column(conn, "messages", "search_warnings", "TEXT")?;
     ensure_column(conn, "messages", "search_metadata", "TEXT")?;
     // Per-message model attribution (slug of the Ollama model that produced
@@ -346,6 +339,7 @@ pub fn delete_conversation(conn: &Connection, conversation_id: &str) -> SqlResul
 // ─── Message CRUD ───────────────────────────────────────────────────────────
 
 /// Inserts a single message and touches the conversation's `updated_at`.
+/// Omits unused reserved columns so they stay NULL by SQLite default.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::too_many_arguments)]
 pub fn insert_message(
@@ -357,8 +351,6 @@ pub fn insert_message(
     image_paths: Option<&str>,
     thinking_content: Option<&str>,
     search_sources: Option<&str>,
-    search_warnings: Option<&str>,
-    search_metadata: Option<&str>,
     model_name: Option<&str>,
 ) -> SqlResult<String> {
     let id = uuid::Uuid::new_v4().to_string();
@@ -366,9 +358,8 @@ pub fn insert_message(
     conn.execute(
         "INSERT INTO messages \
          (id, conversation_id, role, content, quoted_text, image_paths, \
-          thinking_content, search_sources, search_warnings, search_metadata, \
-          model_name, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+          thinking_content, search_sources, model_name, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             id,
             conversation_id,
@@ -378,8 +369,6 @@ pub fn insert_message(
             image_paths,
             thinking_content,
             search_sources,
-            search_warnings,
-            search_metadata,
             model_name,
             now
         ],
@@ -392,6 +381,7 @@ pub fn insert_message(
 }
 
 /// Bulk-inserts messages for the initial save. Runs inside a transaction.
+/// Omits unused reserved columns so they stay NULL by SQLite default.
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub fn insert_messages_batch(
     conn: &Connection,
@@ -404,9 +394,8 @@ pub fn insert_messages_batch(
         let mut stmt = tx.prepare(
             "INSERT INTO messages \
              (id, conversation_id, role, content, quoted_text, image_paths, \
-              thinking_content, search_sources, search_warnings, search_metadata, \
-              model_name, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+              thinking_content, search_sources, model_name, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )?;
         for (
             role,
@@ -415,8 +404,6 @@ pub fn insert_messages_batch(
             image_paths,
             thinking_content,
             search_sources,
-            search_warnings,
-            search_metadata,
             model_name,
         ) in messages
         {
@@ -430,8 +417,6 @@ pub fn insert_messages_batch(
                 image_paths.as_deref(),
                 thinking_content.as_deref(),
                 search_sources.as_deref(),
-                search_warnings.as_deref(),
-                search_metadata.as_deref(),
                 model_name.as_deref(),
                 now
             ])?;
@@ -445,11 +430,12 @@ pub fn insert_messages_batch(
 }
 
 /// Loads all messages for a conversation in chronological order.
+/// Does not SELECT unused reserved columns.
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub fn load_messages(conn: &Connection, conversation_id: &str) -> SqlResult<Vec<PersistedMessage>> {
     let mut stmt = conn.prepare(
         "SELECT id, role, content, quoted_text, image_paths, thinking_content, \
-                search_sources, search_warnings, search_metadata, model_name, created_at
+                search_sources, model_name, created_at
          FROM messages
          WHERE conversation_id = ?1
          ORDER BY created_at ASC",
@@ -463,10 +449,8 @@ pub fn load_messages(conn: &Connection, conversation_id: &str) -> SqlResult<Vec<
             image_paths: row.get(4)?,
             thinking_content: row.get(5)?,
             search_sources: row.get(6)?,
-            search_warnings: row.get(7)?,
-            search_metadata: row.get(8)?,
-            model_name: row.get(9)?,
-            created_at: row.get(10)?,
+            model_name: row.get(7)?,
+            created_at: row.get(8)?,
         })
     })?;
     rows.collect()
@@ -593,17 +577,12 @@ mod tests {
     fn delete_conversation_cascades_messages() {
         let conn = open_in_memory().unwrap();
         let id = create_conversation(&conn, Some("To Delete"), "gemma4:e2b").unwrap();
-        insert_message(
-            &conn, &id, "user", "hello", None, None, None, None, None, None, None,
-        )
-        .unwrap();
+        insert_message(&conn, &id, "user", "hello", None, None, None, None, None).unwrap();
         insert_message(
             &conn,
             &id,
             "assistant",
             "hi there",
-            None,
-            None,
             None,
             None,
             None,
@@ -636,8 +615,6 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
         )
         .unwrap();
         insert_message(
@@ -645,8 +622,6 @@ mod tests {
             &id,
             "assistant",
             "Rust is a systems language.",
-            None,
-            None,
             None,
             None,
             None,
@@ -679,14 +654,10 @@ mod tests {
                 None,
                 None,
                 None,
-                None,
-                None,
             ),
             (
                 "assistant".to_string(),
                 "hi".to_string(),
-                None,
-                None,
                 None,
                 None,
                 None,
@@ -697,8 +668,6 @@ mod tests {
                 "user".to_string(),
                 "how are you?".to_string(),
                 Some("context".to_string()),
-                None,
-                None,
                 None,
                 None,
                 None,
@@ -725,10 +694,7 @@ mod tests {
         // Small delay to ensure timestamp changes.
         std::thread::sleep(std::time::Duration::from_millis(5));
 
-        insert_message(
-            &conn, &id, "user", "test", None, None, None, None, None, None, None,
-        )
-        .unwrap();
+        insert_message(&conn, &id, "user", "test", None, None, None, None, None).unwrap();
         let after = list_conversations(&conn, None).unwrap()[0].updated_at;
 
         assert!(after >= before);
@@ -747,10 +713,7 @@ mod tests {
 
         // Updating a message in the first conversation bumps it to the top.
         std::thread::sleep(std::time::Duration::from_millis(5));
-        insert_message(
-            &conn, &id1, "user", "bump", None, None, None, None, None, None, None,
-        )
-        .unwrap();
+        insert_message(&conn, &id1, "user", "bump", None, None, None, None, None).unwrap();
 
         let convos = list_conversations(&conn, None).unwrap();
         assert_eq!(convos[0].title.as_deref(), Some("First"));
@@ -804,8 +767,6 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
         )
         .unwrap();
 
@@ -819,10 +780,7 @@ mod tests {
         let conn = open_in_memory().unwrap();
         let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
 
-        insert_message(
-            &conn, &id, "user", "hello", None, None, None, None, None, None, None,
-        )
-        .unwrap();
+        insert_message(&conn, &id, "user", "hello", None, None, None, None, None).unwrap();
 
         let msgs = load_messages(&conn, &id).unwrap();
         assert_eq!(msgs.len(), 1);
@@ -843,14 +801,10 @@ mod tests {
                 None,
                 None,
                 None,
-                None,
-                None,
             ),
             (
                 "assistant".to_string(),
                 "I see".to_string(),
-                None,
-                None,
                 None,
                 None,
                 None,
@@ -882,8 +836,6 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
         )
         .unwrap();
         insert_message(
@@ -896,8 +848,6 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
         )
         .unwrap();
         // Message without images.
@@ -906,8 +856,6 @@ mod tests {
             &c1,
             "assistant",
             "reply",
-            None,
-            None,
             None,
             None,
             None,
@@ -927,10 +875,7 @@ mod tests {
     fn get_all_image_paths_empty_when_no_images() {
         let conn = open_in_memory().unwrap();
         let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
-        insert_message(
-            &conn, &id, "user", "hello", None, None, None, None, None, None, None,
-        )
-        .unwrap();
+        insert_message(&conn, &id, "user", "hello", None, None, None, None, None).unwrap();
 
         let paths = get_all_image_paths(&conn).unwrap();
         assert!(paths.is_empty());
@@ -1056,8 +1001,6 @@ mod tests {
             Some("Let me reason through this step by step..."),
             None,
             None,
-            None,
-            None,
         )
         .unwrap();
 
@@ -1074,10 +1017,7 @@ mod tests {
         let conn = open_in_memory().unwrap();
         let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
 
-        insert_message(
-            &conn, &id, "user", "hello", None, None, None, None, None, None, None,
-        )
-        .unwrap();
+        insert_message(&conn, &id, "user", "hello", None, None, None, None, None).unwrap();
 
         let msgs = load_messages(&conn, &id).unwrap();
         assert_eq!(msgs.len(), 1);
@@ -1098,8 +1038,6 @@ mod tests {
                 None,
                 None,
                 None,
-                None,
-                None,
             ),
             (
                 "assistant".to_string(),
@@ -1109,14 +1047,10 @@ mod tests {
                 Some("Internal reasoning here".to_string()),
                 None,
                 None,
-                None,
-                None,
             ),
             (
                 "user".to_string(),
                 "Follow-up question".to_string(),
-                None,
-                None,
                 None,
                 None,
                 None,
@@ -1252,54 +1186,6 @@ mod tests {
         assert!(result.is_err(), "expected error for empty column name");
     }
 
-    // ── search_warnings / search_metadata round-trip ─────────────────────────
-
-    #[test]
-    fn persist_and_load_round_trip_includes_warnings_and_metadata() {
-        let conn = open_in_memory().unwrap();
-        let conv_id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
-
-        let warnings_json = r#"["reader_unavailable"]"#;
-        let metadata_json = r#"{"iterations":[],"total_duration_ms":42,"retries_performed":0}"#;
-
-        insert_message(
-            &conn,
-            &conv_id,
-            "assistant",
-            "Here is your answer.",
-            None,
-            None,
-            None,
-            None,
-            Some(warnings_json),
-            Some(metadata_json),
-            None,
-        )
-        .unwrap();
-
-        let msgs = load_messages(&conn, &conv_id).unwrap();
-        assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].search_warnings.as_deref(), Some(warnings_json));
-        assert_eq!(msgs[0].search_metadata.as_deref(), Some(metadata_json));
-    }
-
-    #[test]
-    fn persist_and_load_tolerates_null_search_metadata() {
-        let conn = open_in_memory().unwrap();
-        let conv_id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
-
-        // No warnings or metadata (ordinary non-search message).
-        insert_message(
-            &conn, &conv_id, "user", "hello", None, None, None, None, None, None, None,
-        )
-        .unwrap();
-
-        let msgs = load_messages(&conn, &conv_id).unwrap();
-        assert_eq!(msgs.len(), 1);
-        assert!(msgs[0].search_warnings.is_none());
-        assert!(msgs[0].search_metadata.is_none());
-    }
-
     // ── model_name column + round-trip ───────────────────────────────────────
 
     #[test]
@@ -1329,8 +1215,6 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
             Some("gemma4:e2b"),
         )
         .unwrap();
@@ -1345,10 +1229,7 @@ mod tests {
         let conn = open_in_memory().unwrap();
         let id = create_conversation(&conn, None, "gemma4:e2b").unwrap();
 
-        insert_message(
-            &conn, &id, "user", "hi there", None, None, None, None, None, None, None,
-        )
-        .unwrap();
+        insert_message(&conn, &id, "user", "hi there", None, None, None, None, None).unwrap();
 
         let msgs = load_messages(&conn, &id).unwrap();
         assert_eq!(msgs.len(), 1);
@@ -1368,15 +1249,11 @@ mod tests {
                 None,
                 None,
                 None,
-                None,
-                None,
                 Some("gemma4:e2b".to_string()),
             ),
             (
                 "assistant".to_string(),
                 "answer from qwen".to_string(),
-                None,
-                None,
                 None,
                 None,
                 None,

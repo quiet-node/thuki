@@ -1,0 +1,66 @@
+import { describe, it, expect } from 'vitest';
+import {
+  HONEST_FAILURE_NOTE_BODY,
+  splitHonestFailureNote,
+} from '../honestFailureNote';
+
+describe('splitHonestFailureNote', () => {
+  it('splits body + blank-line + note', () => {
+    const content = `Fake number 999.\n\n${HONEST_FAILURE_NOTE_BODY}`;
+    expect(splitHonestFailureNote(content)).toEqual({
+      body: 'Fake number 999.',
+      note: HONEST_FAILURE_NOTE_BODY,
+    });
+  });
+
+  it('returns body only when note absent', () => {
+    const content = 'Normal answer with [1] citation.';
+    expect(splitHonestFailureNote(content)).toEqual({
+      body: content,
+      note: null,
+    });
+  });
+
+  it('returns note-only when answer is just the honesty note', () => {
+    expect(splitHonestFailureNote(HONEST_FAILURE_NOTE_BODY)).toEqual({
+      body: '',
+      note: HONEST_FAILURE_NOTE_BODY,
+    });
+  });
+
+  it('accepts legacy markdown italic wrappers', () => {
+    const wrapped = `*${HONEST_FAILURE_NOTE_BODY}*`;
+    const content = `Claim text.\n\n${wrapped}`;
+    expect(splitHonestFailureNote(content)).toEqual({
+      body: 'Claim text.',
+      note: HONEST_FAILURE_NOTE_BODY,
+    });
+  });
+
+  it('returns note-only for legacy wrapped-only content', () => {
+    expect(splitHonestFailureNote(`*${HONEST_FAILURE_NOTE_BODY}*`)).toEqual({
+      body: '',
+      note: HONEST_FAILURE_NOTE_BODY,
+    });
+  });
+
+  it('ignores note body mid-answer (not trailing)', () => {
+    const content = `${HONEST_FAILURE_NOTE_BODY}\n\nMore after.`;
+    expect(splitHonestFailureNote(content)).toEqual({
+      body: content,
+      note: null,
+    });
+  });
+
+  it('preserves empty string', () => {
+    expect(splitHonestFailureNote('')).toEqual({ body: '', note: null });
+  });
+
+  it('trims trailing whitespace on match without mutating body interior', () => {
+    const content = `Line one.\n\n${HONEST_FAILURE_NOTE_BODY}  \n`;
+    expect(splitHonestFailureNote(content)).toEqual({
+      body: 'Line one.',
+      note: HONEST_FAILURE_NOTE_BODY,
+    });
+  });
+});

@@ -23,16 +23,11 @@
 //!
 //! # Eviction and late-event tolerance
 //!
-//! Two events trigger eviction:
-//! - `RecorderEvent::ConversationEnd` evicts the chat-domain entry.
-//! - `RecorderEvent::TurnEnd` evicts the search-domain entry, so a
-//!   long-lived chat session with many `/search` turns does not
-//!   accumulate one open file handle per turn until process exit.
-//!
-//! In both cases the registry flushes the file before dropping its
-//! strong reference. In-flight `Arc<FileRecorder>` clones held by the
-//! emitting task keep the file handle alive until they drop; `Arc`
-//! semantics handle the ordering with no explicit synchronization.
+//! `RecorderEvent::ConversationEnd` evicts the conversation's entry. The
+//! registry flushes the file before dropping its strong reference.
+//! In-flight `Arc<FileRecorder>` clones held by the emitting task keep the
+//! file handle alive until they drop; `Arc` semantics handle the ordering
+//! with no explicit synchronization.
 //!
 //! Late events arriving after the eviction-triggering event (e.g. a
 //! cancelled stream's final `AssistantTokens` arriving after the
@@ -41,8 +36,7 @@
 //! file in append mode, the late event lands as a benign trailing line
 //! in the existing file. Consumers MUST tolerate post-end lines: the
 //! canonical end of a conversation is the LAST line with
-//! `kind: "conversation_end"` (chat) or the LAST `kind: "turn_end"`
-//! for that turn id (search), not the first.
+//! `kind: "conversation_end"`, not the first.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -128,13 +122,12 @@ impl RegistryRecorder {
 }
 
 impl TraceRecorder for RegistryRecorder {
-    /// Routes the event to the right file and, on the per-domain
-    /// terminal events, flushes + evicts the entry from the map.
-    /// Chat domain evicts on `ConversationEnd`; search domain evicts on
-    /// `TurnEnd`.
+    /// Routes the event to the right file and, on the conversation's
+    /// terminal event (`ConversationEnd`), flushes + evicts the entry
+    /// from the map.
     fn record(&self, conversation_id: &ConversationId, event: RecorderEvent) {
         let domain = event.domain();
-        let evict = event.is_conversation_end() || event.is_turn_end();
+        let evict = event.is_conversation_end();
         let recorder = self.recorder_for(domain, conversation_id);
         recorder.record(conversation_id, event);
         if evict {
@@ -154,8 +147,7 @@ impl TraceRecorder for RegistryRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trace::recorder::ReaderUrlOutcome;
-    use serde_json::{json, Value};
+    use serde_json::Value;
     use std::path::Path;
 
     fn fresh_dir() -> PathBuf {
@@ -242,40 +234,6 @@ mod tests {
         assert_eq!(reg.len(), 2);
         assert_eq!(read_lines(&root.join("chat").join("conv-x.jsonl")).len(), 1);
         assert_eq!(read_lines(&root.join("chat").join("conv-y.jsonl")).len(), 1);
-    }
-
-    #[test]
-    fn chat_and_search_for_same_conv_get_separate_files_in_separate_folders() {
-        let root = fresh_dir();
-        let reg = RegistryRecorder::new(&root);
-        reg.record(
-            &cid("conv-z"),
-            RecorderEvent::UserMessage {
-                content: "z".into(),
-                attached_images: vec![],
-                slash_command: None,
-            },
-        );
-        reg.record(
-            &cid("conv-z"),
-            RecorderEvent::SearxngQuery {
-                query: "q".into(),
-                url: "u".into(),
-                status: Some(200),
-                response_raw: None,
-                normalized_results: json!([]),
-                latency_ms: 1,
-                error: None,
-            },
-        );
-        assert_eq!(reg.len(), 2, "two domains × one conv → two entries");
-        assert!(reg.contains(TraceDomain::Chat, &cid("conv-z")));
-        assert!(reg.contains(TraceDomain::Search, &cid("conv-z")));
-        assert_eq!(read_lines(&root.join("chat").join("conv-z.jsonl")).len(), 1);
-        assert_eq!(
-            read_lines(&root.join("search").join("conv-z.jsonl")).len(),
-            1
-        );
     }
 
     #[test]
@@ -378,175 +336,5 @@ mod tests {
         for (i, line) in lines.iter().enumerate() {
             assert_eq!(line["chunk"], format!("tok-{i}"));
         }
-    }
-
-    #[test]
-    fn turn_end_evicts_search_entry() {
-        let root = fresh_dir();
-        let reg = RegistryRecorder::new(&root);
-        reg.record(
-            &cid("conv-search-end"),
-            RecorderEvent::SearxngQuery {
-                query: "q".into(),
-                url: "u".into(),
-                status: Some(200),
-                response_raw: None,
-                normalized_results: json!([]),
-                latency_ms: 1,
-                error: None,
-            },
-        );
-        assert!(reg.contains(TraceDomain::Search, &cid("conv-search-end")));
-        reg.record(
-            &cid("conv-search-end"),
-            RecorderEvent::TurnEnd {
-                turn_id: "t-1".into(),
-                final_action: "answered".into(),
-                final_source_urls: vec![],
-                total_latency_ms: 42,
-                error: None,
-            },
-        );
-        assert!(
-            !reg.contains(TraceDomain::Search, &cid("conv-search-end")),
-            "TurnEnd must evict the search-domain entry"
-        );
-    }
-
-    #[test]
-    fn turn_end_leaves_chat_entry_intact() {
-        // Search-domain TurnEnd must not evict the chat-domain entry
-        // for the same conversation id; the chat trace continues across
-        // multiple `/search` turns.
-        let root = fresh_dir();
-        let reg = RegistryRecorder::new(&root);
-        reg.record(
-            &cid("conv-mixed"),
-            RecorderEvent::UserMessage {
-                content: "before search".into(),
-                attached_images: vec![],
-                slash_command: None,
-            },
-        );
-        reg.record(
-            &cid("conv-mixed"),
-            RecorderEvent::TurnEnd {
-                turn_id: "t-1".into(),
-                final_action: "answered".into(),
-                final_source_urls: vec![],
-                total_latency_ms: 10,
-                error: None,
-            },
-        );
-        assert!(
-            reg.contains(TraceDomain::Chat, &cid("conv-mixed")),
-            "TurnEnd is search-domain; the chat-domain entry must remain"
-        );
-        assert!(!reg.contains(TraceDomain::Search, &cid("conv-mixed")));
-    }
-
-    #[test]
-    fn many_search_turns_do_not_accumulate_entries() {
-        // Long-lived chat session that fires many `/search` turns: the
-        // map size must not grow without bound. Each TurnEnd evicts.
-        let root = fresh_dir();
-        let reg = RegistryRecorder::new(&root);
-        for i in 0..20 {
-            let conv = format!("conv-{i}");
-            reg.record(
-                &cid(&conv),
-                RecorderEvent::SearxngQuery {
-                    query: "q".into(),
-                    url: "u".into(),
-                    status: Some(200),
-                    response_raw: None,
-                    normalized_results: json!([]),
-                    latency_ms: 1,
-                    error: None,
-                },
-            );
-            reg.record(
-                &cid(&conv),
-                RecorderEvent::TurnEnd {
-                    turn_id: format!("t-{i}"),
-                    final_action: "answered".into(),
-                    final_source_urls: vec![],
-                    total_latency_ms: 1,
-                    error: None,
-                },
-            );
-        }
-        assert_eq!(
-            reg.len(),
-            0,
-            "every search-only conversation must evict on TurnEnd"
-        );
-    }
-
-    #[test]
-    fn late_search_event_after_turn_end_appends_via_lazy_recreate() {
-        let root = fresh_dir();
-        let reg = RegistryRecorder::new(&root);
-        reg.record(
-            &cid("conv-late-search"),
-            RecorderEvent::SearxngQuery {
-                query: "q".into(),
-                url: "u".into(),
-                status: Some(200),
-                response_raw: None,
-                normalized_results: json!([]),
-                latency_ms: 1,
-                error: None,
-            },
-        );
-        reg.record(
-            &cid("conv-late-search"),
-            RecorderEvent::TurnEnd {
-                turn_id: "t-late".into(),
-                final_action: "answered".into(),
-                final_source_urls: vec![],
-                total_latency_ms: 1,
-                error: None,
-            },
-        );
-        // Stray late event from a delayed reader callback. Must
-        // append, not panic, not duplicate the file.
-        reg.record(
-            &cid("conv-late-search"),
-            RecorderEvent::Warning {
-                kind: "reader_partial_failure".into(),
-                payload: json!({}),
-            },
-        );
-        let path = root.join("search").join("conv-late-search.jsonl");
-        let lines = read_lines(&path);
-        assert_eq!(lines.len(), 3);
-        let kinds: Vec<&str> = lines.iter().map(|l| l["kind"].as_str().unwrap()).collect();
-        assert_eq!(kinds, vec!["searxng_query", "turn_end", "warning"]);
-    }
-
-    #[test]
-    fn search_event_with_reader_batch_payload_serializes_through_registry() {
-        let root = fresh_dir();
-        let reg = RegistryRecorder::new(&root);
-        reg.record(
-            &cid("conv-r"),
-            RecorderEvent::ReaderBatch {
-                urls: vec!["http://a".into()],
-                per_url: vec![ReaderUrlOutcome {
-                    url: "http://a".into(),
-                    status: Some(200),
-                    latency_ms: 9,
-                    raw_body: Some("<html/>".into()),
-                    extracted_text: Some("hi".into()),
-                    error: None,
-                }],
-                batch_latency_ms: 11,
-                batch_error: None,
-            },
-        );
-        let lines = read_lines(&root.join("search").join("conv-r.jsonl"));
-        assert_eq!(lines[0]["kind"], "reader_batch");
-        assert_eq!(lines[0]["domain"], "search");
     }
 }

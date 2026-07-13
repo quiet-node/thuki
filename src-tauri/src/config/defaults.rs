@@ -295,116 +295,23 @@ pub const BOUNDS_QUOTE_MAX_DISPLAY_LINES: (u32, u32) = (1, 100);
 pub const BOUNDS_QUOTE_MAX_DISPLAY_CHARS: (u32, u32) = (1, 10_000);
 pub const BOUNDS_QUOTE_MAX_CONTEXT_LENGTH: (u32, u32) = (1, 65_536);
 
-/// Search service default URLs. Match the Docker sandbox bindings in
-/// `sandbox/docker-compose.yml`. Users running SearXNG or the reader
-/// service on a different port override these in `[search]` in config.toml.
-pub const DEFAULT_SEARXNG_URL: &str = "http://127.0.0.1:25017";
-pub const DEFAULT_READER_URL: &str = "http://127.0.0.1:25018";
-
-/// Default values for user-configurable search pipeline tuning knobs.
-/// `max_iterations` caps the search-refine loop count; `top_k_urls` limits
-/// how many reranked URLs are forwarded to the reader;
-/// `searxng_max_results` caps how many results each SearXNG query
-/// contributes before reranking. All are overridable under `[search]` in
-/// config.toml.
-pub const DEFAULT_MAX_ITERATIONS: u32 = 3;
-pub const DEFAULT_TOP_K_URLS: u32 = 10;
-pub const DEFAULT_SEARXNG_MAX_RESULTS: u32 = 10;
-
-/// Wall-clock budget for an entire `/search` pipeline turn (seconds). When
-/// exceeded, the gap-refinement loop exits early and the pipeline force-
-/// synthesizes on whatever evidence has been gathered so far, emitting a
-/// `BudgetExhausted` warning. Bounds the worst-case latency a user can
-/// observe regardless of how often the LLM produces fresh gap queries.
-/// Raise for deeper research turns; lower for snappier interactive use.
-pub const DEFAULT_PIPELINE_WALL_CLOCK_BUDGET_S: u64 = 90;
-
-/// Defense-in-depth caps on data flowing in/out of SearXNG. These are NOT
-/// exposed in config.toml: `MAX_QUERY_CHARS` bounds outgoing queries to the
-/// external engines (so a malformed prompt cannot DOS them), and
-/// `MAX_SNIPPET_CHARS` bounds the per-result text Thuki accepts back (so a
-/// malicious search result cannot flood the rerank prompt). Both apply
-/// before any user-controllable knob, in unicode scalar values.
-pub const DEFAULT_MAX_SNIPPET_CHARS: usize = 500;
-pub const DEFAULT_MAX_QUERY_CHARS: usize = 500;
-
-// Pipeline-internal defaults: not exposed in config.toml because they are
-// part of the prompt and retry contract. Changing these values alters output
-// shape and quality, not only latency, so they are intentionally not
-// user-tunable at runtime.
-
-/// Gap-filling queries generated per iteration round. Drives the judge
-/// normalization cap in `search::judge::normalize_verdict`.
-pub const DEFAULT_GAP_QUERIES_PER_ROUND: usize = 3;
-/// Maximum tokens the sufficiency judge can generate per call. Larger than
-/// ROUTER_MAX_TOKENS because thinking-capable models spend internal tokens on
-/// chain-of-thought before emitting JSON content; 512 exhausts the budget on
-/// thinking and leaves nothing for the JSON output, causing a parse failure
-/// and a synthetic-partial fallback. 2048 gives headroom for ~1500 thinking
-/// tokens plus ~200 JSON tokens. Not user-tunable: changing this value alters
-/// the parse-success rate (a quality property), not just latency.
-pub const JUDGE_MAX_TOKENS: i32 = 2048;
-/// Approximate token budget for each retrieved page chunk. Drives the
-/// chunker split heuristic; downstream prompts assume this exact size.
-pub const DEFAULT_CHUNK_TOKEN_SIZE: usize = 500;
-/// Number of highest-scoring chunks forwarded to the synthesis prompt.
-pub const DEFAULT_TOP_K_CHUNKS: usize = 8;
-/// Milliseconds before retrying a failed reader fetch.
-pub const DEFAULT_READER_RETRY_DELAY_MS: u64 = 500;
-
 /// Interval between background polls of Ollama `/api/ps` for external VRAM
 /// changes (user-initiated `ollama stop`, TTL expiry, daemon restart). Not
 /// user-tunable: tuning this trades responsiveness against localhost load but
 /// the 5 s value is already generous for a loopback call.
 pub const VRAM_POLL_INTERVAL_SECS: u64 = 5;
 
-/// Search timeout defaults (seconds).
-pub const DEFAULT_SEARCH_TIMEOUT_S: u64 = 20;
-pub const DEFAULT_READER_PER_URL_TIMEOUT_S: u64 = 10;
-pub const DEFAULT_READER_BATCH_TIMEOUT_S: u64 = 30;
-pub const DEFAULT_JUDGE_TIMEOUT_S: u64 = 30;
-pub const DEFAULT_ROUTER_TIMEOUT_S: u64 = 45;
-
-/// Bounds for search pipeline counts.
-pub const BOUNDS_MAX_ITERATIONS: (u32, u32) = (1, 10);
-pub const BOUNDS_TOP_K_URLS: (u32, u32) = (1, 20);
-pub const BOUNDS_SEARXNG_MAX_RESULTS: (u32, u32) = (1, 20);
-
-/// Accepted range for the pipeline wall-clock budget (seconds). 15 s is the
-/// floor: anything tighter would force budget exhaustion on every gap-loop
-/// turn that needs more than one reader fetch. 600 s (10 min) is the ceiling:
-/// a single user search should never tie up the daemon longer than that.
-pub const BOUNDS_PIPELINE_WALL_CLOCK_BUDGET_S: (u64, u64) = (15, 600);
-
-/// Cumulative cap on bytes of judge user-message input across all judge calls
-/// in a single pipeline turn. Tracked as bytes (not tokens) because the byte
-/// length of the source list is the cheapest reliable upper bound on prompt
-/// size; chars-to-tokens varies per tokenizer. 200 KB ~ 50k tokens which is
-/// well above what any reasonable agentic search consumes. Defense-in-depth
-/// against a runaway loop that keeps fetching huge pages. Not user-tunable
-/// because it bounds attacker-influenced data (page content from the reader)
-/// and the wall-clock budget is the user-facing knob.
-pub const PIPELINE_INPUT_CHAR_BUDGET: usize = 200_000;
-
-/// Bounds for all search timeout fields (seconds). 300 s (5 min) is the
-/// ceiling: a timeout longer than that indicates a misconfiguration, not a
-/// slow service.
-pub const BOUNDS_TIMEOUT_S: (u64, u64) = (1, 300);
-
 /// Whether the unified trace recorder writes forensic per-conversation
-/// trace files for the chat layer AND the `/search` pipeline.
+/// trace files for the chat layer (which includes the built-in web-search
+/// turns that the `/search` command and the auto-search pre-pass drive).
 ///
 /// Off by default. Intended for local quality investigation only: when on,
 /// the recorder writes every chat turn (user message, assistant streaming
-/// tokens, screen captures, conversation lifecycle) AND every search-pipeline
-/// step (LLM requests/responses, SearXNG queries, reader batches, judge
-/// verdicts) to JSON-Lines files under
-/// `~/Library/Application Support/com.quietnode.thuki/traces/`. Files are
-/// grouped by domain (`traces/chat/<conversation_id>.jsonl` and
-/// `traces/search/<conversation_id>.jsonl`) so an analysis agent can be
-/// pointed at exactly the slice it cares about. Toggleable from the
-/// Settings panel (Web tab, Diagnostics section). Off in shipped builds
-/// by default.
+/// tokens + final answer body, screen captures, conversation lifecycle, and
+/// the search skip/decision/retrieval/escalation/requery/citation-audit
+/// records the built-in search emits) to JSON-Lines files under
+/// `~/Library/Application Support/com.quietnode.thuki/traces/chat/<conversation_id>.jsonl`.
+/// Toggleable from the Settings panel (Diagnostics). Off by default.
 pub const DEFAULT_DEBUG_TRACE_ENABLED: bool = false;
 
 /// Whether `/rewrite` and `/refine` results are written straight back into the
@@ -426,6 +333,13 @@ pub const DEFAULT_AUTO_REPLACE: bool = false;
 /// Off by default. Independent of auto-replace: usable with either trigger.
 /// Toggleable from the Settings panel (Behavior tab).
 pub const DEFAULT_AUTO_CLOSE: bool = false;
+
+/// When `true` (default), the built-in engine may open the web on a plain turn
+/// when the classifier decides live facts are needed. When `false`, plain
+/// turns stay local-only and only an explicit `/search` (`force_search`) runs
+/// the web pipeline. Independent of auto-replace / auto-close. Toggleable from
+/// Settings › Behavior.
+pub const DEFAULT_AUTO_SEARCH: bool = true;
 
 // Ollama API baked-in limits: not exposed in config.toml because they bound
 // attacker-controlled data (response bodies from the local Ollama daemon) and
@@ -589,18 +503,7 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     // [behavior]
     ("behavior", "auto_replace"),
     ("behavior", "auto_close"),
-    // [search]
-    ("search", "searxng_url"),
-    ("search", "reader_url"),
-    ("search", "max_iterations"),
-    ("search", "top_k_urls"),
-    ("search", "searxng_max_results"),
-    ("search", "search_timeout_s"),
-    ("search", "reader_per_url_timeout_s"),
-    ("search", "reader_batch_timeout_s"),
-    ("search", "judge_timeout_s"),
-    ("search", "router_timeout_s"),
-    ("search", "pipeline_wall_clock_budget_s"),
+    ("behavior", "auto_search"),
     // [debug]
     ("debug", "trace_enabled"),
     // [updater]
@@ -617,7 +520,6 @@ pub const ALLOWED_SECTIONS: &[&str] = &[
     "window",
     "quote",
     "behavior",
-    "search",
     "debug",
     "updater",
 ];
@@ -717,3 +619,789 @@ pub const STRIP_PATTERNS: &[&str] = &[
     "<think>",
     "</think>",
 ];
+
+// ─── SSRF-safe HTTP transport ────────────────────────────────────────────────
+
+/// Hard cap on the decompressed body Thuki reads from any single outbound
+/// request in the web-search stack (bytes). The transport streams the response
+/// and aborts once this many bytes have accumulated, so a hostile server (or a
+/// gzip bomb, since the cap counts post-decompression bytes) cannot exhaust
+/// memory. 4 MiB is far above any real HTML page or vertical-API JSON payload.
+///
+/// Not user-tunable: a defense-in-depth bound on attacker-controlled response
+/// size, not a latency or quality knob.
+pub const MAX_HTTP_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
+/// Maximum number of redirect hops the transport follows before failing the
+/// request. Every hop is re-screened by the SSRF guard, so this is a
+/// belt-and-suspenders bound on redirect loops and redirect-based latency, not
+/// the security boundary itself. 5 covers legitimate chains (e.g. Google News
+/// RSS opaque-token redirects) with margin.
+///
+/// Not user-tunable: a protocol-hardening bound on attacker-controlled
+/// redirect chains.
+pub const MAX_HTTP_REDIRECTS: usize = 5;
+
+/// Backstop wall-clock timeout for a single outbound request (seconds). This
+/// is a coarse safety net so a stuck connection cannot hang forever; callers
+/// that need a tighter per-request or whole-fan-out deadline (e.g. the page
+/// fetcher's ~6 s global budget) impose it themselves with `tokio::time`.
+///
+/// Not user-tunable: an internal robustness bound, not a user-facing knob.
+pub const HTTP_REQUEST_TIMEOUT_S: u64 = 15;
+
+/// Connection-establishment timeout for a single outbound request (seconds).
+/// Tighter than the overall request timeout so an unreachable host fails fast
+/// during engine rotation instead of stalling the whole turn.
+///
+/// Not user-tunable: an internal robustness bound.
+pub const HTTP_CONNECT_TIMEOUT_S: u64 = 8;
+
+// ─── Web-search decision (pre-filter + classifier) ───────────────────────────
+
+/// Maximum number of leading characters of the user's message the deterministic
+/// search pre-filter scans for its keyword and phrase signals. The request text
+/// that carries a temporal or freshness signal is short and lives at the front;
+/// a signal buried deep inside a large pasted document is better resolved by the
+/// classifier than force-matched here. Bounding the scan keeps the pre-filter's
+/// tokenisation strictly linear in a small constant, so a multi-megabyte pasted
+/// message cannot turn the per-turn decision into a CPU-bound denial-of-service.
+///
+/// Not user-tunable: a defense-in-depth bound on attacker-controlled input size,
+/// not a quality knob.
+pub const PREFILTER_MAX_SCAN_CHARS: usize = 4096;
+
+/// Maximum number of most-recent conversation turns the persona-free classifier
+/// embeds as context when rewriting a follow-up into a standalone question. Only
+/// a few turns are needed to resolve pronouns ("what about there?"); embedding
+/// the whole history would bloat the classifier prompt and slow the warm-slot
+/// decision without improving disambiguation.
+///
+/// Not user-tunable: a classifier-prompt shape constant.
+pub const CLASSIFIER_HISTORY_TURNS: usize = 4;
+
+/// Maximum number of leading characters of each embedded *assistant* answer the
+/// classifier sees when rewriting a follow-up into a standalone question. The
+/// referent for an elliptical follow-up ("how about him?", "what about X?")
+/// usually lives in the assistant's previous answer, not the user's question, so
+/// the answers must be embedded; but a full answer can run to hundreds of tokens
+/// and would blow the warm-slot classifier budget if embedded whole. The opening
+/// sentences carry the named entities that resolve the reference, so a bounded
+/// prefix is enough. User turns are embedded whole (they are short questions).
+///
+/// Not user-tunable: a classifier-prompt shape constant, same rationale as
+/// [`CLASSIFIER_HISTORY_TURNS`].
+pub const CLASSIFIER_ASSISTANT_PREFIX_CHARS: usize = 300;
+
+/// Token cap for the grammar-constrained classifier response. The JSON itself is
+/// tiny (~60 tokens), but reasoning-family models (e.g. gpt-oss) spend internal
+/// tokens on chain-of-thought before emitting the JSON, and ignore the
+/// `enable_thinking:false` hint the structured-output path sets. If the budget is
+/// too small the reasoning exhausts it before any JSON is produced, yielding an
+/// empty body that degrades to a `no` decision: silent under-searching, the exact
+/// failure the two-stage trigger exists to prevent.
+///
+/// The persona-free classifier prompt is a richer task (a few-shot classification
+/// header) than the old single-line pre-pass instruction, and a richer prompt
+/// draws *more* reasoning from these models, so the budget carries generous
+/// headroom over the ~500 reasoning tokens measured on the older prompt. The cap
+/// only bites when reasoning would otherwise truncate the JSON; the real
+/// wall-clock guard is [`PREPASS_TIMEOUT_S`], so erring high costs nothing on
+/// normal turns.
+///
+/// Not user-tunable: part of the classifier prompt/parse contract, not a latency
+/// or quality knob the user should tune.
+pub const PREPASS_MAX_TOKENS: i32 = 1536;
+
+/// Per-call wall-clock timeout for the classifier call (seconds). Sized to fit
+/// [`PREPASS_MAX_TOKENS`] at the observed ~60 tok/s decode of the largest
+/// bundled model plus prefill headroom: a reasoning-family model that ignores
+/// the thinking-off hint can legitimately need most of the token budget, and a
+/// timeout tighter than the budget silently converts those calls into failed
+/// decisions (observed live on gpt-oss-20b at 20 s). The `Reasoning: low`
+/// directive in the classifier prompt keeps typical calls far below this;
+/// exceeding it means the engine is wedged, and the caller degrades rather
+/// than stalling.
+///
+/// Not user-tunable: an internal robustness bound.
+pub const PREPASS_TIMEOUT_S: u64 = 35;
+
+/// TTL (seconds) for the multi-turn source cache: how long the sources of the
+/// most recent successful search stay reusable for a `cached` classifier
+/// decision (a follow-up that repeats or rephrases the question just
+/// answered) before a later turn falls back to a fresh search. 10 minutes
+/// covers the realistic follow-up window without risking a stale answer on a
+/// slow-moving conversation. The cache holds at most one entry (the most
+/// recent search only, replaced whole by every new one), so this TTL is its
+/// only expiry mechanism.
+///
+/// Not user-tunable: an internal robustness bound, the same rationale as
+/// [`PREPASS_TIMEOUT_S`].
+pub const SEARCH_CACHE_TTL_S: u64 = 600;
+
+/// Token cap for the grammar-constrained sufficiency-judge response. The judge
+/// decides whether a retrieved vertical block actually answers the specific
+/// question before the pipeline commits to it, so an insufficient fast-path
+/// result escalates to the scraped engines instead of dead-ending on a "the
+/// sources do not contain that" refusal.
+///
+/// Matched to [`PREPASS_MAX_TOKENS`], NOT sized down on the theory that a yes/no
+/// is a lighter task than the classifier's three-way route. Reasoning-family
+/// models (gpt-oss) spend internal tokens on chain-of-thought before the JSON
+/// and IGNORE the `enable_thinking:false` hint, and their reasoning volume
+/// tracks the model's effort on the task, not the prompt's length: "do these
+/// sources contain X" is not obviously less reasoning than a route decision.
+/// This budget went the same 768 -> 1536 route the classifier's did after a
+/// truncating body was observed live degrading to an empty parse. Here that same
+/// truncation is MORE dangerous, not less: an empty judge body degrades to
+/// "sufficient" (commit the block), silently restoring the exact dead-end this
+/// stage exists to remove, and it only surfaces on gpt-oss (gemma emits JSON
+/// with no reasoning tokens and never truncates, so a gemma smoke would show a
+/// false green). The cap only bites on truncation; the real wall-clock guard is
+/// [`SUFFICIENCY_JUDGE_TIMEOUT_S`], so erring high costs nothing on normal turns.
+///
+/// Not user-tunable: part of the judge prompt/parse contract, same rationale as
+/// [`PREPASS_MAX_TOKENS`].
+pub const SUFFICIENCY_JUDGE_MAX_TOKENS: i32 = 1536;
+
+/// Per-call wall-clock timeout for the sufficiency-judge call (seconds). Matched
+/// to [`PREPASS_TIMEOUT_S`] to fit [`SUFFICIENCY_JUDGE_MAX_TOKENS`] at the
+/// observed decode rate plus prefill: a timeout tighter than the token budget
+/// silently converts a reasoning-heavy judge call into a failure. A judge
+/// failure degrades to "sufficient" (commit the fast-path block), so an
+/// over-tight timeout would only ever suppress an escalation, never wall the
+/// user; the `Reasoning: low` directive in the judge prompt keeps typical calls
+/// well under this.
+///
+/// Not user-tunable: an internal robustness bound.
+pub const SUFFICIENCY_JUDGE_TIMEOUT_S: u64 = 35;
+
+/// Freshness markers that disqualify a question from the Wikipedia vertical even
+/// when the classifier routed it there. Wikipedia's lead summary describes the
+/// stable subject, not its live state, so a question carrying any of these words
+/// (a volatile "latest/current status of X" phrasing) must never be answered
+/// from a static encyclopedia extract; it falls through to the news / engine
+/// tiers instead. Matched as whole tokens of the lowercased standalone question.
+///
+/// `anniversary` covers the age/biography class documented on
+/// [`WIKI_VOLATILITY_PHRASES`]: "X years since" a fixed past date is a duration
+/// that changes every year, so it needs the same fresh grounding as an explicit
+/// "latest"/"current" question.
+///
+/// Not user-tunable: a prompt/routing contract guarding a model-routed decision
+/// against a known non-answer failure mode, not a quality knob.
+pub const WIKI_VOLATILITY_MARKERS: &[&str] = &[
+    "latest",
+    "current",
+    "status",
+    "today",
+    "recent",
+    "upcoming",
+    "anniversary",
+];
+
+/// Multi-word freshness phrases that disqualify the Wikipedia vertical, matched
+/// as whole phrases of the lowercased standalone question. Split out from
+/// [`WIKI_VOLATILITY_MARKERS`] because they span a word boundary.
+///
+/// `"how old is"`, `"what age is"`, and `"s age"` (the tokenised form of the
+/// possessive `"'s age"`, since tokenisation splits on the apostrophe) are the
+/// age/biography class: a present-tense age question ("how old is Tom Cruise")
+/// is computed from the subject's birth date and the CURRENT date, so it is a
+/// duration that changes every year exactly like an explicit "latest"/"current"
+/// question — the live-smoke regression this addition fixes (2026-07-11:
+/// Tom Cruise's age answered stale/wrong because no freshness signal fired).
+/// `"how long ago"` is the same duration-from-a-fixed-past-date shape.
+///
+/// Two related phrasings are deliberately NOT included, each for a reason
+/// specific to this guard (not a general safety net):
+/// - **Past-tense age** ("how old WAS Napoleon when he died", "what age WAS
+///   Einstein") names a duration between two fixed historical dates, which
+///   never changes; flagging it would wrongly disqualify the Wikipedia vertical
+///   for a question it answers well (see the `historical_attribute` rows in
+///   `search_decision_eval.jsonl`, which exist to keep exactly these turns wiki-
+///   eligible).
+/// - **Birth date itself** ("when was Einstein born") names a fixed historical
+///   date with no yearly-changing component, so it carries no freshness need;
+///   Wikipedia's lead paragraph is the best source for it and should stay
+///   eligible.
+///
+/// A bare `"age of"` is also deliberately excluded rather than added: idiomatic
+/// English overwhelmingly uses it for eternal/historical-era facts ("age of the
+/// universe", "Age of Enlightenment", "age of consent"), not living people, so it
+/// would trigger far more over-matches than the "how old is" pattern it would be
+/// meant to catch.
+///
+/// This module accepts one known over-match without a guard: `"how old is"`
+/// still fires on an eternal-fact subject ("how old is the universe/Earth/the
+/// pyramids"). No cheap deterministic check tells "a person" from "an era"
+/// apart, and building real subject detection is out of scope for a keyword
+/// guard. The cost of firing anyway is bounded and never wrong: it only adds a
+/// mild recency bias to the engine tier (see `DDG_FRESHNESS_DF_VALUE`,
+/// `NEWS_FRESHNESS_OPERATOR`, `RECENCY_ALPHA`) and, when the classifier had
+/// routed to `wiki`, sends the turn to the engines instead of the static
+/// summary — never an incorrect answer, at most a slightly less direct one.
+///
+/// Not user-tunable: same routing-contract rationale as the single-word markers.
+pub const WIKI_VOLATILITY_PHRASES: &[&str] = &[
+    "right now",
+    "this year",
+    "how old is",
+    "what age is",
+    "s age",
+    "how long ago",
+];
+
+/// Earliest 4-digit year that reads as a present/future freshness signal in a
+/// standalone question, disqualifying the Wikipedia vertical. A year at or above
+/// this is about the live world, which a static encyclopedia extract cannot
+/// answer; a year below it is history, which Wikipedia serves well.
+///
+/// Not user-tunable: a routing-contract bound tied to the volatility guard.
+pub const WIKI_VOLATILITY_MIN_YEAR: u32 = 2025;
+
+/// Deterministic keyword-to-league map for the sports vertical (ESPN's public
+/// scoreboard API): `(keyword, sport, league)`, where `sport`/`league` are the
+/// path segments of `https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/scoreboard`.
+/// Matched against the lowercased standalone question: a multi-word keyword
+/// (containing a space) matches as a whole phrase, a single-word keyword
+/// matches as a whole token. The first match wins; no match means the sports
+/// vertical does not run for this turn.
+///
+/// Not user-tunable: a routing contract mapping known competitions/leagues to
+/// their ESPN path segments, the same rationale as [`WIKI_VOLATILITY_MARKERS`].
+/// Exposing it as a knob would let a bad edit silently break the vertical for a
+/// whole league.
+pub const SPORTS_LEAGUE_MAP: &[(&str, &str, &str)] = &[
+    ("world cup", "soccer", "fifa.world"),
+    ("premier league", "soccer", "eng.1"),
+    ("champions league", "soccer", "uefa.champions"),
+    ("nba", "basketball", "nba"),
+    ("nfl", "football", "nfl"),
+    ("mlb", "baseball", "mlb"),
+    ("nhl", "hockey", "nhl"),
+    ("f1", "racing", "f1"),
+    ("formula 1", "racing", "f1"),
+];
+
+/// Length, in days, of the forward date window the sports vertical requests from
+/// ESPN's scoreboard (`?dates=<today>-<today+N>`). ESPN's default scoreboard
+/// returns only the current day's slate, which cannot answer "when is the next
+/// match" once today's fixtures are all live or finished; requesting a window
+/// forward from today makes the next fixture part of the same one response.
+///
+/// Not user-tunable: a pipeline-shape constant. Wide enough to always contain
+/// the next fixture of an active competition, narrow enough to keep the block
+/// within its source budget (the per-event listing the block renders is capped
+/// independently in the sports module).
+pub const SPORTS_SCHEDULE_WINDOW_DAYS: i64 = 7;
+
+// ─── Web-search engine results ───────────────────────────────────────────────
+
+/// Maximum result rows kept from one keyless search-engine query after dedupe.
+/// Enough breadth for the fetch stage to pick the top pages plus snippet
+/// fallbacks, without flooding the extractive filter. Matches the 8-10 band
+/// every surveyed pipeline converges on.
+///
+/// Not user-tunable: a pipeline-shape constant, not a latency knob.
+pub const SERP_MAX_RESULTS_PER_QUERY: usize = 10;
+
+/// Maximum results kept from any single domain in one query, so a
+/// content-farm that owns the whole first page cannot crowd out diverse
+/// sources before the fetch/extract stages run.
+///
+/// Not user-tunable: a result-diversity bound.
+pub const SERP_MAX_RESULTS_PER_DOMAIN: usize = 2;
+
+/// Hard ceiling on the raw row count kept from a SINGLE engine's parsed SERP
+/// before it is cached and fed into cross-engine fusion. A keyless engine's
+/// `html` endpoint returns on the order of 30 organic rows, so this generous cap
+/// never truncates a normal result page: every real row still reaches Reciprocal
+/// Rank Fusion, preserving recall. It exists only to bound the pathological case
+/// where an oversized or format-changed response parses into an unbounded row
+/// list (one `SearchHit` per DOM node), which
+/// would otherwise let a single response cache an arbitrarily large `Vec` under
+/// up to [`SERP_CACHE_MAX_ENTRIES`] keys for [`SERP_CACHE_TTL_S`]. Sits above the
+/// post-fusion [`SERP_MAX_RESULTS_PER_QUERY`] output cap on purpose: fusion still
+/// sees the full page, and only the final fused list is trimmed to the output
+/// ceiling.
+///
+/// Not user-tunable: a defense-in-depth bound on external, attacker-influenceable
+/// SERP HTML, not a recall/latency knob.
+pub const SERP_MAX_RAW_HITS_PER_QUERY: usize = 64;
+
+/// Hit count at which the orchestrator stops issuing further search queries for
+/// the turn. The classifier may emit up to 3 queries, but firing them all
+/// back-to-back is a self-inflicted burst that trips the keyless engines' rate
+/// limits (observed live: Mojeek served queries 1-2 then throttled query 3).
+/// Once one query has returned this many usable hits, the remaining queries add
+/// burst risk and latency for marginal recall, so they are skipped.
+///
+/// Not user-tunable: a rate-limit-survival bound on third-party request volume.
+pub const SERP_EARLY_STOP_HITS: usize = 8;
+
+/// Reciprocal Rank Fusion constant `k`. The keyless engine tier races all live
+/// engines for a query and fuses their ranked lists with RRF: each URL scores
+/// `sum over engines of 1 / (RRF_K + rank)`, where `rank` is its 1-based
+/// position in that engine's list. `k = 60` is the parameter-free value from the
+/// original RRF paper (Cormack et al., 2009) and the same constant Elasticsearch
+/// ships as its default.
+///
+/// Not user-tunable: RRF is famously insensitive to `k`, so it is a fixed
+/// algorithm constant, not a quality knob a user would ever benefit from turning.
+pub const RRF_K: u32 = 60;
+
+/// Rank offset added to a credibility-penalized URL's position in RRF fusion, so
+/// a listed spam or copycat domain contributes `1 / (RRF_K + rank + this)` per
+/// list instead of `1 / (RRF_K + rank)`. RRF at `k = 60` is nearly flat at the
+/// top, so a score multiplier would do almost nothing; a rank offset is the sound
+/// lever. This is a soft penalty, not a drop, because the penalize set is
+/// bulk-imported and unaudited: a false-positive domain must still surface when
+/// it is the only real answer. At `40` a rank-1 spam page (`1 / (60 + 1 + 40) =
+/// 0.0099`) sits below a rank-10 page agreed on by two engines (`2 / (60 + 10) =
+/// 0.0286`), so cross-engine agreement always beats a single-engine penalized hit.
+///
+/// Not user-tunable: an algorithm constant of the fusion step, tuned against the
+/// RRF math, not a latency or quality knob.
+pub const CREDIBILITY_PENALTY_RANK_OFFSET: u32 = 40;
+
+// ─── Web-search freshness operators ──────────────────────────────────────────
+
+/// DuckDuckGo `df` (date filter) value applied to the POST form and mirrored as
+/// a `df` cookie when the standalone question carries a freshness signal (see
+/// [`WIKI_VOLATILITY_MARKERS`]). `"w"` restricts results to the past week. The
+/// dual form+cookie placement matches the common DuckDuckGo HTML client pattern,
+/// which sets the filter both ways because the HTML endpoint honours either.
+///
+/// Not user-tunable: a fixed protocol convention of an external service, not a
+/// quality knob.
+pub const DDG_FRESHNESS_DF_VALUE: &str = "w";
+
+/// Google News RSS search-operator suffix appended to the query when the
+/// standalone question carries a freshness signal. `when:7d` narrows the feed
+/// to the past 7 days, correcting the feed's default ordering, which otherwise
+/// skews stale.
+///
+/// Not user-tunable: a fixed protocol convention of an external service.
+pub const NEWS_FRESHNESS_OPERATOR: &str = "when:7d";
+
+/// How long a search engine is skipped after it returns a bot challenge or
+/// rate-limit response (seconds), keyed per engine. Re-hammering a blocked
+/// engine wastes a request per query, adds latency, and feeds the very volume
+/// signal that keeps the block alive (DuckDuckGo's IP block is multi-hour and
+/// volume-triggered, per the T1 spike). DuckDuckGo gets a long cooldown to
+/// match its observed multi-hour blocks; the fallback engines get a short one
+/// because their throttles are soft and clear quickly.
+///
+/// Not user-tunable: rate-limit-survival bounds on third-party request volume.
+pub const ENGINE_COOLDOWN_PRIMARY_S: u64 = 1800;
+/// Cooldown for fallback engines (seconds). See [`ENGINE_COOLDOWN_PRIMARY_S`].
+pub const ENGINE_COOLDOWN_FALLBACK_S: u64 = 120;
+
+// ─── Web-search in-memory result cache (process-lifetime, never persisted) ────
+
+/// How long a per-engine SERP result list stays reusable in the in-memory web
+/// cache (seconds). A repeat scrape of the same query within this window is
+/// served from memory instead of re-hitting the keyless engine, which both cuts
+/// latency and starves the engines' volume-triggered rate limits (a burst of
+/// identical requests is exactly what earns a multi-hour DuckDuckGo IP block).
+/// 5 minutes matches the realistic turn-to-turn repeat window while keeping SERP
+/// freshness tight, since ranked results shift faster than page bodies.
+///
+/// Not user-tunable: an internal robustness bound, the same rationale as
+/// [`SEARCH_CACHE_TTL_S`] and [`ENGINE_COOLDOWN_PRIMARY_S`].
+pub const SERP_CACHE_TTL_S: u64 = 300;
+
+/// How long an extracted page body stays reusable in the in-memory web cache
+/// (seconds). Longer than [`SERP_CACHE_TTL_S`] because article text drifts more
+/// slowly than the ranked result set that points at it, so a fetched page is
+/// safe to reuse across a longer window.
+///
+/// Not user-tunable: an internal robustness bound, the same rationale as
+/// [`SERP_CACHE_TTL_S`].
+pub const PAGE_CACHE_TTL_S: u64 = 900;
+
+/// Hard cap on the number of per-engine SERP lists held in the in-memory web
+/// cache at once. When the cache is full the oldest-inserted entry is evicted to
+/// make room, so the cache's memory footprint is bounded regardless of how many
+/// distinct queries a session runs. Sized to comfortably cover a session's
+/// recent-query working set without letting a long session grow the map without
+/// limit.
+///
+/// Not user-tunable: an internal memory-safety bound.
+pub const SERP_CACHE_MAX_ENTRIES: usize = 64;
+
+/// Hard cap on the number of extracted page bodies held in the in-memory web
+/// cache at once. Larger than [`SERP_CACHE_MAX_ENTRIES`] because a single SERP
+/// fans out to several fetched pages, so the page working set is larger than the
+/// query working set. Oldest-inserted entries are evicted at the cap, bounding
+/// memory.
+///
+/// Not user-tunable: an internal memory-safety bound.
+pub const PAGE_CACHE_MAX_ENTRIES: usize = 128;
+
+// ─── Web-search fetch + extract ──────────────────────────────────────────────
+
+/// `num_ctx` at or above which the fetch stage is allowed the larger page
+/// budget. Below it, only a couple of extracted pages plus snippets fit
+/// alongside the conversation; at or above it, more full pages fit.
+///
+/// Not user-tunable: a pipeline-shape threshold tied to the context budget, not
+/// a user knob (the user tunes `num_ctx`, and this reads it).
+pub const FETCH_LARGE_CTX_THRESHOLD: u32 = 16384;
+
+/// Pages fully fetched and extracted per turn on a small context window
+/// (`num_ctx` < [`FETCH_LARGE_CTX_THRESHOLD`]). The rest of the SERP contributes
+/// snippets only, so recall is preserved without overrunning the budget.
+///
+/// Not user-tunable: derived pipeline shape gated by `num_ctx`.
+pub const FETCH_MAX_PAGES_SMALL_CTX: usize = 2;
+
+/// Pages fully fetched and extracted per turn on a large context window
+/// (`num_ctx` >= [`FETCH_LARGE_CTX_THRESHOLD`]).
+///
+/// Not user-tunable: derived pipeline shape gated by `num_ctx`.
+pub const FETCH_MAX_PAGES_LARGE_CTX: usize = 5;
+
+/// Per-URL wall-clock timeout for a single page fetch (seconds). Each of the
+/// budgeted page fetches is capped here; a URL that misses it degrades to its
+/// SERP snippet. This is the hard backstop on any one fetch: [`FETCH_SOFT_DEADLINE_MS`]
+/// can end the fan-out sooner, but nothing extends a single fetch past this.
+///
+/// Not user-tunable: an internal latency bound on the fetch fan-out.
+pub const FETCH_PER_URL_TIMEOUT_S: u64 = 5;
+
+/// Number of budgeted page fetches that must complete before the fetch stage
+/// proceeds to ranking, out of up to [`FETCH_MAX_PAGES_LARGE_CTX`] raced
+/// concurrently. Waiting on every one of them means one slow host holds up
+/// the whole turn even though [`FETCH_PER_URL_TIMEOUT_S`] already bounds how
+/// slow "slow" can be; racing to the first few completions instead bounds tail
+/// latency on the common case where most hosts answer quickly. Whichever
+/// hits fewer complete first (see [`FETCH_SOFT_DEADLINE_MS`]) applies; a
+/// smaller fetch budget (`FETCH_MAX_PAGES_SMALL_CTX`) is capped by
+/// `to_fetch.len()` at the call site, so this never blocks on more pages than
+/// are actually being fetched.
+///
+/// Not user-tunable: an internal latency bound on the fetch fan-out.
+pub const FETCH_FIRST_K_COMPLETIONS: usize = 3;
+
+/// Soft aggregate deadline (milliseconds) for the whole page-fetch fan-out.
+/// Once this elapses the fetch stage proceeds with whatever has completed so
+/// far, regardless of [`FETCH_FIRST_K_COMPLETIONS`]; still-in-flight fetches
+/// are abandoned and degrade to their SERP snippet exactly like a genuine
+/// per-URL failure. This only ever shortens the wait: [`FETCH_PER_URL_TIMEOUT_S`]
+/// remains the hard cap on any single fetch, so this soft deadline never
+/// extends it.
+///
+/// Not user-tunable: an internal latency bound on the fetch fan-out.
+pub const FETCH_SOFT_DEADLINE_MS: u64 = 2000;
+
+/// Hard cap on DOM elements the readability extractor will parse from one page,
+/// also reused as the cheap pre-parse element-count estimate that gates BOTH
+/// the readability extraction and the freshness-gated published-date parse
+/// (see `websearch::fetch::estimate_element_count`) before either pays for a
+/// real parse. Defense-in-depth beyond [`MAX_HTTP_RESPONSE_BYTES`]: the byte
+/// cap bounds download size (up to several MB), but a pathological page well
+/// within that size can still contain far more elements than a real article,
+/// and building a DOM tree at all (readability's own internal check only
+/// stops the post-build algorithm, not the initial parse) is the expensive
+/// step this cap is meant to avoid paying for twice. 9 000 covers real
+/// articles with wide margin.
+///
+/// Not user-tunable: a defense-in-depth bound on attacker-controlled page
+/// structure.
+pub const FETCH_MAX_ELEMENTS_TO_PARSE: usize = 9000;
+
+// ─── Web-search extractive filter (chunking + BM25) ──────────────────────────
+
+/// Target size, in whitespace-separated words, of one page chunk fed to the
+/// extractive filter. ~350 words lands in the 300-500 token band the retrieval
+/// literature converges on: large enough to hold a coherent passage, small
+/// enough that the ranker can discard the irrelevant remainder of a page.
+///
+/// Not user-tunable: a retrieval-pipeline shape constant.
+pub const CHUNK_TARGET_WORDS: usize = 350;
+
+/// BM25 term-frequency saturation parameter `k1`. The Okapi default; higher
+/// values let repeated query terms keep raising a chunk's score, lower values
+/// saturate sooner. 1.5 is the standard baseline.
+///
+/// Not user-tunable: a ranking-algorithm constant.
+pub const BM25_K1: f64 = 1.5;
+
+/// BM25 length-normalisation parameter `b`. The Okapi default; 1.0 fully
+/// penalises long chunks, 0.0 ignores length. 0.75 is the standard baseline.
+///
+/// Not user-tunable: a ranking-algorithm constant.
+pub const BM25_B: f64 = 0.75;
+
+/// Maximum chunks kept from any single page after ranking, so one long page
+/// cannot dominate the citation budget and source diversity is preserved.
+///
+/// Not user-tunable: a retrieval-pipeline diversity bound.
+pub const RANK_MAX_CHUNKS_PER_PAGE: usize = 3;
+
+/// Deterministic BM25 score nudge added to a chunk from a credibility-boosted
+/// reference-grade domain when the chunk also carries a quote or an inline
+/// statistic. GEO (arXiv:2311.09735) found LLM answer synthesis preferentially
+/// cites quote- and statistic-bearing passages; without this nudge a reference
+/// domain's plainer prose can lose a close BM25 tie to a distractor chunk that
+/// happens to phrase the same fact more citably. Additive and only applied to
+/// a chunk that already scored above zero (a real term match), so it can never
+/// resurrect an irrelevant chunk, only tip an already-relevant one higher.
+/// Moderate relative to typical query-matched BM25 scores so it tips ties
+/// without overriding a genuinely stronger relevance match elsewhere.
+///
+/// Not user-tunable: a ranking-algorithm constant.
+pub const QUOTE_STAT_SCORE_NUDGE: f64 = 0.5;
+
+/// Minimum run of consecutive ASCII digits that counts as an inline statistic
+/// for [`QUOTE_STAT_SCORE_NUDGE`] (a count, year, or other reported figure;
+/// `%`-suffixed figures are recognized separately regardless of digit count).
+/// Three digits excludes single- and double-digit incidental numbers (list
+/// markers, small counts) while still catching years, percentages written
+/// without a `%`, and larger reported figures.
+///
+/// Not user-tunable: a ranking-algorithm heuristic bound.
+pub const STATISTIC_MIN_DIGIT_RUN: usize = 3;
+
+// ─── Web-search recency-prior fusion ─────────────────────────────────────────
+
+/// Weight given to a source's recency in the freshness-gated fusion score:
+/// `final_score = RECENCY_ALPHA * recency + (1 - RECENCY_ALPHA) * relevance_norm`
+/// (see [`crate::websearch::recency`]). `0.3` lets a clearly newer source
+/// out-rank a marginally more relevant one without letting recency alone
+/// override a strong relevance gap; the pass only ever reorders sources that
+/// already survived credibility filtering and BM25 relevance thresholding, it
+/// never introduces or resurrects one.
+///
+/// Not user-tunable: a corpus-sensitive ranking parameter. This is a
+/// conservative first guess (see arXiv:2509.19376), pending tuning against a
+/// real evaluation corpus rather than a value a user could sensibly set.
+pub const RECENCY_ALPHA: f64 = 0.3;
+
+/// Half-life, in days, of the exponential recency decay
+/// `recency = exp(-ln(2) * age_days / RECENCY_HALF_LIFE_DAYS)`. A source
+/// published exactly one half-life ago scores `0.5`, the same value assigned
+/// to an undated source (see [`RECENCY_NEUTRAL_SCORE`]), so an undated source
+/// is treated exactly as "moderately fresh" rather than favoured or
+/// penalised. 14 days keeps last week's coverage strongly favoured while
+/// still letting a several-week-old primary source compete on relevance.
+///
+/// Not user-tunable: a corpus-sensitive ranking parameter, a conservative
+/// first guess pending tuning against a real evaluation corpus.
+pub const RECENCY_HALF_LIFE_DAYS: f64 = 14.0;
+
+/// Recency score assigned to a source with no extractable published or
+/// modified date. Never `0.0` (an undated source is not evidence of
+/// staleness) and never high enough to look like a fresh cracker: `0.5`
+/// exactly matches the recency of a source published one half-life ago (see
+/// [`RECENCY_HALF_LIFE_DAYS`]), so an undated source competes purely on
+/// relevance instead of being dropped or boosted for a fetch-stage extraction
+/// gap.
+///
+/// Not user-tunable: an algorithm invariant of the fusion formula, not a
+/// tuning knob.
+pub const RECENCY_NEUTRAL_SCORE: f64 = 0.5;
+
+/// Clock-skew tolerance, in hours, applied when validating an extracted
+/// published/modified date against the current time. A date more than this
+/// far in the future is untrustworthy (a misconfigured server clock or a
+/// malformed/hostile timestamp) and is treated as undated rather than
+/// assigned a nonsensical negative age.
+///
+/// Not user-tunable: a defense-in-depth bound on attacker-controlled page
+/// metadata.
+pub const RECENCY_FUTURE_TOLERANCE_HOURS: i64 = 24;
+
+// ─── Web-search context assembly ─────────────────────────────────────────────
+
+/// Hard ceiling on the retrieved-source context injected into the writer call,
+/// in estimated tokens. The effective budget is the smaller of this and a
+/// fraction of `num_ctx` (see [`CONTEXT_BUDGET_CTX_PERCENT`]), so retrieval
+/// never crowds out the conversation or the answer even on a huge context
+/// window. 4 000 tokens holds several substantial source passages.
+///
+/// Not user-tunable: a pipeline budget bound derived alongside `num_ctx`.
+pub const CONTEXT_MAX_TOKENS: usize = 4000;
+
+/// Fraction of `num_ctx`, as a percentage, that retrieved sources may occupy.
+/// Combined with [`CONTEXT_MAX_TOKENS`] via a min, this leaves the majority of
+/// the window for the system prompt, conversation, and the generated answer.
+///
+/// Not user-tunable: a pipeline budget bound derived alongside `num_ctx`.
+pub const CONTEXT_BUDGET_CTX_PERCENT: usize = 40;
+
+/// Rough characters-per-token divisor for estimating token counts of source
+/// text without invoking a tokenizer. ~4 characters per token is the standard
+/// English approximation; the budget rounds up (over-estimates) so the real
+/// token count stays under the ceiling.
+///
+/// Not user-tunable: an internal estimation constant.
+pub const CHARS_PER_TOKEN: usize = 4;
+
+/// Maximum chunks a domain absent from the credibility list ("unlisted") may
+/// contribute to the assembled context once a credibility-boosted
+/// reference-grade domain has already contributed at least one chunk.
+/// Realistic-RAG research (arXiv:2505.15561) found that distracting passages
+/// admitted into the top-K context, not their rank position, are what drive an
+/// LLM to cite junk over a reference source sitting right beside it; capping a
+/// thin unlisted aggregator's share once a reference is present keeps it from
+/// crowding out that reference without discarding the aggregator outright (it
+/// still contributes up to this many chunks). The cap never fires on a result
+/// set with no boosted domain, since there is no reference chunk yet to
+/// protect.
+///
+/// Not user-tunable: a retrieval-pipeline diversity bound conditioned on an
+/// upstream credibility signal, not a user preference.
+pub const UNLISTED_DOMAIN_CHUNK_CAP: usize = 2;
+
+/// Length, in lowercase hex characters, of the per-request random token that
+/// wraps retrieved web sources in the writer prompt (see
+/// `websearch::writer`). The token is minted fresh from a CSPRNG for every
+/// search turn so an attacker page, authored before the request exists, cannot
+/// know it and therefore cannot forge the closing delimiter to break out of the
+/// quoted untrusted-content region (prompt-injection spotlighting). 32 hex
+/// characters carry the full 122 random bits of a v4 UUID: astronomically
+/// unguessable, and the model never has to reason about the token's contents.
+///
+/// Not user-tunable: a defense-in-depth parameter over attacker-controlled web
+/// content; exposing it could only weaken the delimiter, never help a user.
+pub const SOURCE_DELIMITER_TOKEN_HEX_LEN: usize = 32;
+
+/// Support-score threshold at or above which a citation is classified
+/// "supported": at least this fraction of the citing sentence's content tokens
+/// appear in the cited source's text. A baked-in heuristic bound for the
+/// post-generation citation audit (a diagnostic that measures how often the
+/// writer's bracket citations are actually backed by the cited source), not a
+/// user preference.
+///
+/// Not user-tunable: an internal audit heuristic bound.
+pub const CITE_SUPPORTED_MIN: f64 = 0.6;
+
+/// Support-score threshold at or above which a citation is classified "weak"
+/// (below [`CITE_SUPPORTED_MIN`]); below this it is "unsupported". A baked-in
+/// heuristic bound for the post-generation citation audit, not a user
+/// preference.
+///
+/// Not user-tunable: an internal audit heuristic bound.
+pub const CITE_WEAK_MIN: f64 = 0.3;
+
+/// Defensive upper bound, in bytes, on an answer the post-generation citation
+/// audit will scan. Real grounded answers are far smaller; this only guards
+/// against a runaway stream so the audit's work can never grow unbounded. An
+/// answer past this size is skipped entirely (logged as skipped) rather than
+/// audited.
+///
+/// Not user-tunable: an internal defensive bound.
+pub const CITE_AUDIT_MAX_ANSWER_BYTES: usize = 262_144;
+
+/// Maximum number of targeted writer repair rounds after a citation audit
+/// finds unsupported claims. Each round is one extra LLM call with a critique
+/// of the failed `[n]` indices; 0 means never repair (strip-only path). Cap
+/// is small on purpose: repairs cost latency and KV, and after this many tries
+/// Thuki falls back to deterministic strip / total-failure wording instead of
+/// looping forever.
+///
+/// Not user-tunable: fixed product budget for the grounded-answer repair loop.
+pub const CITE_REPAIR_MAX_ATTEMPTS: u32 = 2;
+
+/// Minimum byte length a cited source's fetched text must reach before the
+/// post-generation citation audit will score a claim against it. Below this
+/// (including a source whose text is empty), there is not enough substantive
+/// content to run a meaningful lexical or numeric check, so the citation is
+/// classified "unverifiable" rather than "unsupported": this is the
+/// live-observed shape of a JS-widget single-page-app result (a Binance or
+/// MEXC price page, for example), whose readable-text extraction succeeds but
+/// collapses to a short loading placeholder or an empty SERP-snippet
+/// fallback, never real content to check a claim against.
+///
+/// Not user-tunable: a defense-in-depth bound over externally fetched web
+/// content, not a user preference.
+pub const CITE_UNVERIFIABLE_MIN_SOURCE_BYTES: usize = 20;
+
+/// Attached letter magnitude suffixes the citation audit's numeric-consistency
+/// guard recognizes directly after a digit run (`615B`, `1.2mn`), paired with
+/// the power-of-ten exponent each one adds. Checked in this order, but order
+/// does not affect correctness: a truncated match (matching `b` when the
+/// text is actually `bn`) always fails its own word-boundary check and falls
+/// through to the longer entry.
+///
+/// Not user-tunable: fixed English financial-shorthand vocabulary for a
+/// parsing guard, not a preference. Editing it would silently change which
+/// figures the guard recognizes as matching.
+pub const CITE_MAGNITUDE_ABBREVIATIONS: [(&str, u32); 7] = [
+    ("bn", 9),
+    ("mn", 6),
+    ("tn", 12),
+    ("b", 9),
+    ("m", 6),
+    ("t", 12),
+    ("k", 3),
+];
+
+/// Spelled-out magnitude words the citation audit's numeric-consistency guard
+/// recognizes after a digit run and whitespace (`615 billion`), paired with
+/// the power-of-ten exponent each one adds.
+///
+/// Not user-tunable: fixed English magnitude vocabulary for a parsing guard,
+/// same rationale as [`CITE_MAGNITUDE_ABBREVIATIONS`].
+pub const CITE_MAGNITUDE_WORDS: [(&str, u32); 4] = [
+    ("thousand", 3),
+    ("million", 6),
+    ("billion", 9),
+    ("trillion", 12),
+];
+
+/// English month names, lowercase, paired with their calendar month number.
+/// Used by the citation audit's numeric-consistency guard to recognize a
+/// `July 9, 2026`-style date mention alongside the numeric `M/D/YYYY` and
+/// ISO `YYYY-MM-DD` forms.
+///
+/// Not user-tunable: fixed English calendar vocabulary for a parsing guard,
+/// same rationale as [`CITE_MAGNITUDE_ABBREVIATIONS`].
+pub const CITE_MONTH_NAMES: [(&str, u32); 12] = [
+    ("january", 1),
+    ("february", 2),
+    ("march", 3),
+    ("april", 4),
+    ("may", 5),
+    ("june", 6),
+    ("july", 7),
+    ("august", 8),
+    ("september", 9),
+    ("october", 10),
+    ("november", 11),
+    ("december", 12),
+];
+
+// ─── Web-search engine-tier requery ──────────────────────────────────────────
+
+/// Maximum number of bounded requeries the engine tier's own sufficiency judge
+/// (`crate::websearch::orchestrator::judge_and_requery`) may fire per turn.
+/// After the engine tier assembles its sources for the standalone question,
+/// one additional judge call checks whether they actually answer it; on a
+/// confident insufficient verdict naming what is missing, the orchestrator
+/// requeries once with the missing phrase appended, merges the new sources in,
+/// and never judges again. The flow has no loop back into itself, so `1` is
+/// the only value that fires a requery; `0` disables the requery outright
+/// (the judge still runs and its verdict is still recorded, but an
+/// insufficient result simply commits round-one's sources) and is the gate's
+/// only other meaningful setting.
+///
+/// Not user-tunable: fixed LLM-call budget per turn is a product invariant.
+pub const ENGINE_REQUERY_MAX: usize = 1;
+
+/// Maximum characters of the sufficiency judge's `missing` phrase appended to
+/// the standalone question when `judge_and_requery` builds its one bounded
+/// requery. `missing` is free-form model prose and can run to a full
+/// sentence; a long tail of prose degrades keyless-engine SERP quality far
+/// more than a whole trailing word left out does, so the appended text is
+/// truncated at the last word boundary within this cap
+/// (`crate::websearch::orchestrator::truncate_missing`). The trace's
+/// `RecorderEvent::SearchRequeried::missing` field still carries the judge's
+/// full, uncapped phrase; only the text actually searched is capped.
+///
+/// Not user-tunable: engine query hygiene is a pipeline-shape constant, not a
+/// preference.
+pub const REQUERY_MISSING_MAX_CHARS: usize = 80;

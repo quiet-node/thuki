@@ -983,8 +983,8 @@ pub fn reveal_config_in_finder(app: AppHandle) -> Result<(), String> {
 // ─── Document I/O + JSON→TOML coercion (testable internals) ─────────────────
 
 /// Information returned to the frontend in the rare case where `set_config_field`
-/// is called with a value the loader silently corrected (e.g. the cross-field
-/// invariant `reader_batch_timeout_s > reader_per_url_timeout_s`).
+/// is called with a value the loader silently corrected (e.g. a numeric outside
+/// its `BOUNDS_*` range, reset to the compiled default).
 ///
 /// The corrected value is already in the returned `AppConfig`; this struct
 /// exists for test harnesses that want to assert on the correction path.

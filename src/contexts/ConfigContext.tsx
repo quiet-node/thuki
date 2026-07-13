@@ -68,6 +68,7 @@ interface RawAppConfig {
   behavior: {
     auto_replace: boolean;
     auto_close: boolean;
+    auto_search: boolean;
   };
 }
 
@@ -104,6 +105,11 @@ export interface AppConfig {
     autoReplace: boolean;
     /** Dismiss the overlay after a `/rewrite` or `/refine` result is replaced. */
     autoClose: boolean;
+    /**
+     * When true, the built-in engine may search the web on plain turns.
+     * When false, only `/search` forces a live look-up.
+     */
+    autoSearch: boolean;
   };
 }
 
@@ -153,6 +159,7 @@ function transform(raw: RawAppConfig): AppConfig {
     behavior: {
       autoReplace: raw.behavior.auto_replace,
       autoClose: raw.behavior.auto_close,
+      autoSearch: raw.behavior.auto_search,
     },
   };
 }
@@ -298,5 +305,6 @@ export const DEFAULT_CONFIG: AppConfig = {
   behavior: {
     autoReplace: false,
     autoClose: false,
+    autoSearch: true,
   },
 };

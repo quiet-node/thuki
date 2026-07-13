@@ -17,9 +17,11 @@ describe('TIPS', () => {
   });
 
   it('includes an images tip pointing to Settings', () => {
-    const imagesTip = TIPS.find((t) => tipText(t).includes('Settings'));
+    const imagesTip = TIPS.find((t) => {
+      const s = tipText(t).toLowerCase();
+      return s.includes('settings') && s.includes('image');
+    });
     expect(imagesTip).toBeDefined();
-    expect(tipText(imagesTip!).toLowerCase()).toContain('image');
   });
 
   it('includes a tip about replacing rewritten text back into the source app', () => {
@@ -27,6 +29,13 @@ describe('TIPS', () => {
       tipText(t).toLowerCase().includes('replace'),
     );
     expect(replaceTip).toBeDefined();
+  });
+
+  it('includes Auto search and /search tips for the current web pipeline', () => {
+    const texts = TIPS.map(tipText).join('\n').toLowerCase();
+    expect(texts).toContain('auto search');
+    expect(texts).toContain('/search');
+    expect(texts).not.toMatch(/agentic|searxng|docker/);
   });
 
   it('linked tips carry an https URL', () => {

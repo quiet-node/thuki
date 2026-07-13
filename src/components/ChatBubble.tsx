@@ -1,5 +1,5 @@
-import { AnimatePresence, motion } from 'framer-motion';
-import { useEffect, useRef, useState } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ErrorCard } from './ErrorCard';
 import { CopyButton } from './CopyButton';
@@ -10,70 +10,24 @@ import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { formatQuotedText } from '../utils/formatQuote';
 import { useConfig } from '../contexts/ConfigContext';
 import { COMMANDS, SCREEN_CAPTURE_PLACEHOLDER } from '../config/commands';
-import { SearchWarningIcon } from './SearchWarningIcon';
 import type { EngineErrorKind } from '../hooks/useModel';
-import type {
-  SearchResultPreview,
-  SearchTraceStep,
-  SearchWarning,
-} from '../types/search';
-import { SEARCH_WARNING_SEVERITY } from '../config/searchWarnings';
-import { SearchTraceBlock } from './SearchTraceBlock';
-import { SandboxSetupCard } from './SandboxSetupCard';
+import type { SearchResultPreview, SearchStage } from '../types/search';
+import { SearchProgressBlock } from './SearchProgressBlock';
+import { avatarColor, domainOf } from '../utils/domainAvatar';
 import { cleanForRender } from '../utils/sanitizeAssistantContent';
+import { splitHonestFailureNote } from '../utils/honestFailureNote';
+import {
+  completeSearchHandoffExit,
+  nextSearchHandoffPhase,
+  SEARCH_HANDOFF_COLLAPSE_LEAD_MS,
+  SEARCH_HANDOFF_EXIT_FALLBACK_MS,
+  type SearchHandoffPhase,
+} from './searchHandoffPhase';
 
-/**
- * Extracts a bare hostname from a URL for the sources footer. Strips the
- * leading `www.` prefix; falls back to the raw input if parsing fails.
- */
-function domainOf(url: string): string {
-  try {
-    const host = new URL(url).hostname;
-    return host.startsWith('www.') ? host.slice(4) : host;
-  } catch {
-    return url;
-  }
-}
-
-/** Pseudo-random but deterministic 0–359 hue derived from a domain string.
- *  Lets every source get a distinct yet consistent color across renders. */
-function domainHue(domain: string): number {
-  let h = 0;
-  for (let i = 0; i < domain.length; i++) {
-    h = (h * 31 + domain.charCodeAt(i)) >>> 0;
-  }
-  return h % 360;
-}
-
-/**
- * Hand-picked palette of light, summery, slightly-cool gradient pairs for
- * letter avatars. Each entry is a two-stop linear-gradient suitable as the
- * `background` of a small circular badge. The domain hash selects one pair
- * deterministically so a given source always renders the same color.
- *
- * Picked to keep the palette pleasant and varied without clashing: no neon,
- * no muddy shades, all readable under white/90 letter text.
- */
-const AVATAR_PALETTE: readonly string[] = [
-  'linear-gradient(135deg, #ffb8a1, #ff8c77)', // peach coral
-  'linear-gradient(135deg, #ffc3d5, #ff9cbd)', // cotton candy pink
-  'linear-gradient(135deg, #a8d8ff, #7cb8ff)', // sky blue
-  'linear-gradient(135deg, #a8e6cf, #7ecfb0)', // mint
-  'linear-gradient(135deg, #c7b8ff, #a896ff)', // lavender
-  'linear-gradient(135deg, #ffd3a5, #ffa978)', // sunset
-  'linear-gradient(135deg, #9ee6d7, #6fc9b5)', // seafoam
-  'linear-gradient(135deg, #fff0a5, #ffd96b)', // lemon sorbet
-  'linear-gradient(135deg, #b8e0ff, #85b9ff)', // periwinkle
-  'linear-gradient(135deg, #ffb6e1, #ff8cc8)', // bubblegum
-  'linear-gradient(135deg, #c4eaa8, #9bd076)', // kiwi
-  'linear-gradient(135deg, #ffc8a8, #ff9e78)', // papaya
-] as const;
-
-/** CSS gradient background for a letter avatar. Picks one of a hand-curated
- *  palette based on the domain hash for consistent but varied coloring. */
-function avatarColor(domain: string): string {
-  return AVATAR_PALETTE[domainHue(domain) % AVATAR_PALETTE.length];
-}
+/** Outer search chrome fade during handoff (ChatBubble owns this exit). */
+const SEARCH_HANDOFF_FADE_S = 0.2;
+/** Reasoning enter after search exit: opacity + tiny y, ~0.2s. */
+const REASONING_HANDOFF_ENTER_S = 0.2;
 
 /**
  * Friendly model name for the `InsufficientMemory` card title (issue #296):
@@ -88,9 +42,6 @@ function resolveMemoryModelName(
 ): string {
   return (modelName && displayNames?.[modelName]) ?? modelName ?? 'This model';
 }
-
-/** Regex matching inline `[N]` citation markers in plain text. Captures the N. */
-const CITATION_RE = /\[(\d+)\]/g;
 
 /**
  * Hoisted static SVG glyph for the model attribution chip. Mirrors the
@@ -123,69 +74,6 @@ const ATTRIB_CHIP_ICON = (
     />
   </svg>
 );
-
-/**
- * Walks the rendered answer DOM and replaces every plain-text `[N]` occurrence
- * with an anchor element that links to the matching source URL. Called inside
- * a `useEffect` that re-runs whenever the answer content or sources change so
- * streaming tokens stay in sync. Idempotent: already-wrapped `[N]` elements
- * carry a `data-citation` attribute and are skipped on subsequent passes.
- *
- * Security: only creates `<a>` elements with `textContent` - never inserts
- * arbitrary HTML - and caps the URL via the precomputed sources array. There
- * is no path for user input to reach this function other than through the
- * same SearXNG-validated URLs that populate the sources footer.
- */
-function wrapCitations(
-  root: HTMLElement,
-  sources: SearchResultPreview[],
-): void {
-  // Collect text nodes first so we don't mutate the tree while iterating it.
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  const targets: Text[] = [];
-  let node = walker.nextNode() as Text | null;
-  while (node) {
-    const value = node.nodeValue;
-    if (value && CITATION_RE.test(value)) {
-      CITATION_RE.lastIndex = 0;
-      targets.push(node);
-    }
-    node = walker.nextNode() as Text | null;
-  }
-
-  for (const text of targets) {
-    const value = text.nodeValue as string;
-    const parent = text.parentNode as ParentNode;
-    const frag = document.createDocumentFragment();
-    let lastIndex = 0;
-    CITATION_RE.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = CITATION_RE.exec(value)) !== null) {
-      const n = Number.parseInt(match[1], 10);
-      const source = sources[n - 1];
-      if (!source) continue;
-      if (match.index > lastIndex) {
-        frag.appendChild(
-          document.createTextNode(value.slice(lastIndex, match.index)),
-        );
-      }
-      const a = document.createElement('a');
-      a.textContent = match[0];
-      a.className = 'citation-link';
-      a.setAttribute('data-citation', String(n));
-      a.setAttribute('data-url', source.url);
-      a.setAttribute('title', source.title || source.url);
-      a.setAttribute('role', 'button');
-      frag.appendChild(a);
-      lastIndex = match.index + match[0].length;
-    }
-    if (lastIndex === 0) continue; // no valid numbered-source matches
-    if (lastIndex < value.length) {
-      frag.appendChild(document.createTextNode(value.slice(lastIndex)));
-    }
-    parent.replaceChild(frag, text);
-  }
-}
 
 /**
  * Renders user message content with slash commands styled distinctly.
@@ -280,19 +168,21 @@ interface ChatBubbleProps {
   /** When set, renders a Replace button in the action bar that writes this
    * message's content back into the source app (for `/rewrite` & `/refine`). */
   onReplace?: (text: string) => Promise<boolean>;
-  /** Source URLs forwarded from the SearXNG results. Rendered as a clickable
-   * footer below the answer; clicking opens the URL in the default browser. */
+  /** Source URLs for a web-search answer. Click opens the URL in the browser. */
   searchSources?: SearchResultPreview[];
-  /** Warnings emitted by the `/search` pipeline for this turn. Renders a
-   * `SearchWarningIcon` beside the Sources collapsible when non-empty. */
-  searchWarnings?: SearchWarning[];
-  /** When true, renders a `SandboxSetupCard` instead of markdown or error bubble. */
-  sandboxUnavailable?: boolean;
-  /** User-facing search timeline data for `/search` turns. */
-  searchTraces?: SearchTraceStep[];
-  /** Whether the search pipeline is currently running. When true, renders a
-   * `SearchTraceBlock` in loading state even before any traces arrive. */
+  /**
+   * Coarse web-search phase (`SearchStatus`). Drives
+   * {@link SearchProgressBlock} while the turn is searching.
+   */
+  searchStage?: SearchStage;
+  /** True while web search is in flight for this assistant message. */
   isSearching?: boolean;
+  /**
+   * Live read of ConversationView's auto-scroll gate, forwarded to
+   * {@link SearchProgressBlock} so its hard-pin honors the same manual-scroll
+   * state the rest of the chat obeys (never yanks a user who scrolled up).
+   */
+  shouldAutoScroll?: () => boolean;
   /** When set on an assistant message, renders a chip-style attribution badge beside the CopyButton so the user sees which model produced this response. */
   modelName?: string;
   /**
@@ -360,16 +250,16 @@ export function ChatBubble({
   pendingLabel,
   isThinking,
   searchSources,
-  searchWarnings,
-  sandboxUnavailable = false,
-  searchTraces,
+  searchStage = null,
   isSearching = false,
+  shouldAutoScroll,
   modelName,
   displayNames,
   memoryFit,
 }: ChatBubbleProps) {
   const isUser = role === 'user';
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const reduceMotion = useReducedMotion();
   const quote = useConfig().quote;
   // Render-time defense for legacy assistant content that may carry
   // special turn-boundary tokens leaked by older Ollama versions or
@@ -378,15 +268,104 @@ export function ChatBubble({
   // relies on it. User input never contains these markers naturally so we
   // skip the scrub for user bubbles.
   const displayContent = isUser ? content : cleanForRender(content);
+  // Peel trailing total-citation-failure note so MarkdownRenderer does not
+  // paint it as cream italic prose; L3 hairline rail owns the note style.
+  const { body: answerBody, note: honestFailureNote } = isUser
+    ? { body: displayContent, note: null as string | null }
+    : splitHonestFailureNote(displayContent);
 
-  const activeWarnings = searchWarnings ?? [];
-  const warningSeverity: 'error' | 'warn' | null = activeWarnings.some(
-    (w) => SEARCH_WARNING_SEVERITY[w] === 'error',
-  )
-    ? 'error'
-    : activeWarnings.length > 0
-      ? 'warn'
-      : null;
+  /** Citation audit/repair after answer tokens; Done is still withheld. */
+  const isVerifyingSources = searchStage?.kind === 'verifying_sources';
+  const hasSearchSources = Boolean(searchSources && searchSources.length > 0);
+  /**
+   * Reasoning or answer body has started. Triggers sequential handoff:
+   * search chrome exits, then Reasoning (if any) enters. After exit
+   * completes, search stays gone (Option D). Sources remain via footer.
+   */
+  const handedOffFromSearch = Boolean(
+    thinkingContent || isThinkingPending || displayContent,
+  );
+  /**
+   * Pure search only: retrieve/read/compose while no reasoning/answer yet.
+   * False during verifying (C3 pill) and after handoff signal.
+   */
+  const showLiveSearch =
+    isSearching && !isVerifyingSources && !handedOffFromSearch;
+
+  /**
+   * Exit-retention phase. `exiting` holds until outer fade finishes
+   * (`onExitComplete` or fallback). Adjusted during render from pure
+   * reducer so the first handed-off frame still paints search with
+   * `isExiting` (force-collapse) before the outer unmount step.
+   */
+  const [handoffPhase, setHandoffPhase] = useState<SearchHandoffPhase>('idle');
+  /**
+   * After collapse lead, remove search from the tree so AnimatePresence
+   * runs the outer opacity exit. False while `live` or during the brief
+   * collapse-only window of `exiting`.
+   */
+  const [exitUnmount, setExitUnmount] = useState(false);
+  const nextPhase = nextSearchHandoffPhase(handoffPhase, {
+    showLiveSearch,
+    handedOff: handedOffFromSearch,
+  });
+  if (nextPhase !== handoffPhase) {
+    setHandoffPhase(nextPhase);
+  }
+  const phase = nextPhase;
+  // live: always show. exiting: show until collapse lead elapses, then
+  // unmount so outer fade can run (AnimatePresence only exits removed kids).
+  const renderSearchProgress =
+    phase === 'live' || (phase === 'exiting' && !exitUnmount);
+  /** Delay Reasoning until search exit finishes when we were showing search. */
+  const showReasoning =
+    Boolean(thinkingContent || isThinkingPending) && phase !== 'exiting';
+
+  const handoffFadeS = reduceMotion ? 0.01 : SEARCH_HANDOFF_FADE_S;
+  const reasoningEnterS = reduceMotion ? 0.01 : REASONING_HANDOFF_ENTER_S;
+  const collapseLeadMs = reduceMotion ? 0 : SEARCH_HANDOFF_COLLAPSE_LEAD_MS;
+
+  // Clear unmount latch once handoff leaves `exiting` (done/idle/live).
+  // Render-time adjust avoids setState-in-effect lint and keeps next
+  // search turn starting with the latch off.
+  if (phase !== 'exiting' && exitUnmount) {
+    setExitUnmount(false);
+  }
+
+  /**
+   * Step 1 of exit: keep block mounted with isExiting (list collapses).
+   * Step 2: after lead, unmount for outer fade (AnimatePresence exit).
+   */
+  useEffect(() => {
+    if (phase !== 'exiting') return;
+    const id = window.setTimeout(() => {
+      setExitUnmount(true);
+    }, collapseLeadMs);
+    return () => window.clearTimeout(id);
+  }, [phase, collapseLeadMs]);
+
+  /**
+   * Fallback if `onExitComplete` never fires (unfocused panel rAF stall).
+   * Clears stuck `exiting` so Reasoning is not blocked forever.
+   */
+  useEffect(() => {
+    if (phase !== 'exiting') return;
+    const id = window.setTimeout(() => {
+      setHandoffPhase((prev) => completeSearchHandoffExit(prev));
+    }, SEARCH_HANDOFF_EXIT_FALLBACK_MS);
+    return () => window.clearTimeout(id);
+  }, [phase]);
+
+  const onSearchExitComplete = useCallback(() => {
+    setHandoffPhase((prev) => completeSearchHandoffExit(prev));
+  }, []);
+
+  /**
+   * Action bar is hidden while tokens stream. Re-open for the C3 verifying
+   * pill (still isStreaming, only when sources exist) and for the finished turn.
+   */
+  const showActionBar =
+    !errorKind && (!isStreaming || (isVerifyingSources && hasSearchSources));
 
   /**
    * Machine-readable figures for the `InsufficientMemory` error card
@@ -449,16 +428,40 @@ export function ChatBubble({
       }
     : insufficientMemoryInfo;
 
-  /** Ref on the markdown container so `wrapCitations` can post-process
-   *  the rendered DOM after every token update. */
-  const answerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!searchSources || searchSources.length === 0) return;
-    // Ref attaches synchronously on the JSX below, so `.current` is never
-    // null when the effect fires on mount or any subsequent update.
-    wrapCitations(answerRef.current!, searchSources);
-  }, [content, searchSources]);
+  /**
+   * Stacks up to three domain letter avatars for the sources trigger or the
+   * verifying pill. Call only when `hasSearchSources` is true. `pulse`
+   * enables the C3 chip-pulse while citation audit runs.
+   */
+  function renderSourceAvatars(pulse: boolean): React.ReactNode {
+    return (
+      <span
+        aria-hidden
+        className={`inline-flex items-center${pulse ? ' sources-chips-pulse' : ''}`}
+      >
+        {searchSources!.slice(0, 3).map((src, i) => {
+          const domain = domainOf(src.url);
+          /* v8 ignore start */
+          const letter = (domain[0] ?? '?').toUpperCase();
+          /* v8 ignore stop */
+          const bg = avatarColor(domain);
+          return (
+            <span
+              key={src.url}
+              className="shrink-0 h-4.5 w-4.5 rounded-full inline-flex items-center justify-center text-[9px] font-semibold text-white/90"
+              style={{
+                background: bg,
+                border: '1.5px solid var(--avatar-ring, rgba(26,26,26,1))',
+                marginLeft: i === 0 ? 0 : -6,
+              }}
+            >
+              {letter}
+            </span>
+          );
+        })}
+      </span>
+    );
+  }
 
   /**
    * Two-way hover linking between inline citation anchors and the pill
@@ -499,8 +502,8 @@ export function ChatBubble({
     ) as HTMLElement | null;
     if (!target) return;
     e.preventDefault();
-    // `data-url` is always set when we build citation anchors in wrapCitations,
-    // so the non-null assertion is safe.
+    // `data-url` is always set when MarkdownRenderer builds citation
+    // anchors, so the non-null assertion is safe.
     void invoke('open_url', { url: target.getAttribute('data-url')! });
   };
 
@@ -561,33 +564,61 @@ export function ChatBubble({
         <div
           ref={containerRef}
           data-testid="chat-bubble"
-          className={`search-bubble flex flex-col w-full${warningSeverity === 'error' ? ' search-bubble--error' : ''}`}
+          data-search-handoff-phase={phase}
+          className="search-bubble flex flex-col w-full"
           onMouseOver={onAnswerMouseOver}
           onMouseOut={onAnswerMouseOut}
           onClick={onAnswerClick}
         >
-          <div
-            ref={answerRef}
-            className="text-sm leading-relaxed select-text py-1"
-          >
-            {(isSearching || (searchTraces && searchTraces.length > 0)) && (
-              <SearchTraceBlock
-                traces={searchTraces ?? []}
-                isSearching={isSearching}
-                sources={searchSources}
-              />
-            )}
-            {(thinkingContent || isThinkingPending) && (
-              <ReasoningBlock
-                thinkingContent={thinkingContent}
-                isPending={isThinkingPending ?? false}
-                pendingLabel={pendingLabel}
-                isThinking={isThinking ?? false}
-              />
-            )}
-            {sandboxUnavailable ? (
-              <SandboxSetupCard />
-            ) : errorKind ? (
+          <div className="text-sm leading-relaxed select-text py-1">
+            <AnimatePresence
+              initial={false}
+              onExitComplete={onSearchExitComplete}
+            >
+              {renderSearchProgress ? (
+                <motion.div
+                  key="search-progress"
+                  data-testid="search-progress-exit-wrap"
+                  initial={false}
+                  animate={{ opacity: 1 }}
+                  exit={{
+                    opacity: 0,
+                    transition: { duration: handoffFadeS, ease: 'easeOut' },
+                  }}
+                >
+                  <SearchProgressBlock
+                    stage={searchStage}
+                    sources={searchSources}
+                    isSearching={isSearching || phase === 'exiting'}
+                    isExiting={phase === 'exiting'}
+                    shouldAutoScroll={shouldAutoScroll}
+                  />
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
+            {showReasoning ? (
+              <motion.div
+                key="reasoning-handoff"
+                data-testid="reasoning-handoff-enter"
+                initial={{ opacity: 0, y: 4 }}
+                animate={{
+                  opacity: 1,
+                  y: 0,
+                  transition: {
+                    duration: reasoningEnterS,
+                    ease: [0.33, 1, 0.68, 1],
+                  },
+                }}
+              >
+                <ReasoningBlock
+                  thinkingContent={thinkingContent}
+                  isPending={isThinkingPending ?? false}
+                  pendingLabel={pendingLabel}
+                  isThinking={isThinking ?? false}
+                />
+              </motion.div>
+            ) : null}
+            {errorKind ? (
               <ErrorCard
                 kind={errorKind}
                 message={content}
@@ -596,15 +627,26 @@ export function ChatBubble({
                 insufficientMemoryInfo={resolvedMemoryInfo}
               />
             ) : (
-              <MarkdownRenderer
-                content={displayContent}
-                isStreaming={isStreaming}
-              />
+              <>
+                <MarkdownRenderer
+                  content={answerBody}
+                  isStreaming={isStreaming}
+                  citationSources={searchSources}
+                />
+                {honestFailureNote ? (
+                  <p
+                    className="honest-failure-note"
+                    data-testid="honest-failure-note"
+                  >
+                    {honestFailureNote}
+                  </p>
+                ) : null}
+              </>
             )}
           </div>
-          {!errorKind && !sandboxUnavailable && !isStreaming && (
+          {!errorKind && !isStreaming && (
             <AnimatePresence initial={false}>
-              {sourcesOpen && searchSources && searchSources.length > 0 && (
+              {sourcesOpen && hasSearchSources && (
                 <motion.div
                   key="sources"
                   data-testid="search-sources"
@@ -625,7 +667,7 @@ export function ChatBubble({
                       Sources
                     </p>
                     <div className="flex flex-col gap-0.5">
-                      {searchSources.map((src, i) => {
+                      {searchSources!.map((src, i) => {
                         const n = i + 1;
                         return (
                           <button
@@ -659,70 +701,63 @@ export function ChatBubble({
               )}
             </AnimatePresence>
           )}
-          {!errorKind && !sandboxUnavailable && !isStreaming && (
-            <div className="h-6 flex items-center gap-3">
-              {/* shrink-0 wrapper prevents CopyButton's internal w-full from
-                  pushing the sources trigger to the opposite end. */}
-              <div className="shrink-0">
-                <CopyButton content={displayContent} align="left" />
-              </div>
-              {onReplace && (
-                <ReplaceButton content={displayContent} onReplace={onReplace} />
-              )}
-              {searchSources && searchSources.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setSourcesOpen((v) => !v)}
-                  aria-expanded={sourcesOpen}
-                  className="sources-trigger inline-flex items-center gap-2 cursor-pointer"
-                >
-                  <span aria-hidden className="inline-flex items-center">
-                    {searchSources.slice(0, 3).map((src, i) => {
-                      const domain = domainOf(src.url);
-                      // SearXNG filters out empty-URL results before they reach
-                      // the frontend, so `domain[0]` is always defined here -
-                      // the `?` fallback is a belt-and-braces defensive default.
-                      /* v8 ignore start */
-                      const letter = (domain[0] ?? '?').toUpperCase();
-                      /* v8 ignore stop */
-                      const bg = avatarColor(domain);
-                      return (
-                        <span
-                          key={src.url}
-                          className="shrink-0 h-4.5 w-4.5 rounded-full inline-flex items-center justify-center text-[9px] font-semibold text-white/90"
-                          style={{
-                            background: bg,
-                            border:
-                              '1.5px solid var(--avatar-ring, rgba(26,26,26,1))',
-                            marginLeft: i === 0 ? 0 : -6,
-                          }}
-                        >
-                          {letter}
-                        </span>
-                      );
-                    })}
-                  </span>
-                  <span className="text-[11px] text-white/50">
-                    {searchSources.length}{' '}
-                    {searchSources.length === 1 ? 'source' : 'sources'}
-                  </span>
-                </button>
-              )}
-              <SearchWarningIcon warnings={activeWarnings} />
-              {/* Model attribution chip: visually couples the response to the
-                  model-picker UI so users can see which model produced it. */}
-              {modelName && (
+          {showActionBar && (
+            <div
+              className={`h-6 flex items-center gap-3${isVerifyingSources ? ' mt-1.5' : ''}`}
+            >
+              {isVerifyingSources && hasSearchSources ? (
                 <span
-                  data-testid="model-attribution"
-                  className="inline-flex items-center gap-[5px] px-[6px] py-[2px] pr-[8px] rounded-md border border-primary/15 bg-primary/5 text-[10.5px] tracking-[0.01em] text-text-secondary w-fit transition-[background-color,border-color,color] duration-150 hover:text-text-primary hover:bg-primary/10 hover:border-primary/25"
+                  data-testid="sources-verifying-pill"
+                  role="status"
+                  aria-live="polite"
+                  className="sources-verifying-pill"
                 >
-                  <span className="text-primary/85 shrink-0 flex items-center">
-                    {ATTRIB_CHIP_ICON}
-                  </span>
-                  <span className="max-w-[100px] truncate">
-                    {displayNames?.[modelName] ?? modelName}
-                  </span>
+                  {renderSourceAvatars(true)}
+                  Verifying sources...
                 </span>
+              ) : (
+                <>
+                  {/* shrink-0 wrapper prevents CopyButton's internal w-full from
+                      pushing the sources trigger to the opposite end. */}
+                  <div className="shrink-0">
+                    <CopyButton content={displayContent} align="left" />
+                  </div>
+                  {onReplace && (
+                    <ReplaceButton
+                      content={displayContent}
+                      onReplace={onReplace}
+                    />
+                  )}
+                  {hasSearchSources && (
+                    <button
+                      type="button"
+                      onClick={() => setSourcesOpen((v) => !v)}
+                      aria-expanded={sourcesOpen}
+                      className="sources-trigger inline-flex items-center gap-2 cursor-pointer"
+                    >
+                      {renderSourceAvatars(false)}
+                      <span className="text-[11px] text-white/50">
+                        {searchSources!.length}{' '}
+                        {searchSources!.length === 1 ? 'source' : 'sources'}
+                      </span>
+                    </button>
+                  )}
+                  {/* Model attribution chip: visually couples the response to the
+                      model-picker UI so users can see which model produced it. */}
+                  {modelName && (
+                    <span
+                      data-testid="model-attribution"
+                      className="inline-flex items-center gap-[5px] px-[6px] py-[2px] pr-[8px] rounded-md border border-primary/15 bg-primary/5 text-[10.5px] tracking-[0.01em] text-text-secondary w-fit transition-[background-color,border-color,color] duration-150 hover:text-text-primary hover:bg-primary/10 hover:border-primary/25"
+                    >
+                      <span className="text-primary/85 shrink-0 flex items-center">
+                        {ATTRIB_CHIP_ICON}
+                      </span>
+                      <span className="max-w-[100px] truncate">
+                        {displayNames?.[modelName] ?? modelName}
+                      </span>
+                    </span>
+                  )}
+                </>
               )}
             </div>
           )}

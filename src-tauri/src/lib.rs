@@ -23,17 +23,18 @@ pub mod export;
 pub mod history;
 pub mod images;
 pub mod models;
+pub mod net;
 pub mod ocr;
 pub mod onboarding;
 pub mod openai;
 pub mod screenshot;
-pub mod search;
 pub mod settings_commands;
 pub mod startup_guard;
 pub mod subscribe;
 pub mod trace;
 pub mod updater;
 pub mod warmup;
+pub mod websearch;
 
 #[cfg(target_os = "macos")]
 mod activator;
@@ -2821,10 +2822,10 @@ pub fn run() {
             // ── Unified trace recorder ─────────────────────────────
             // Off by default: when `[debug] trace_enabled = false` in
             // config.toml the live recorder wraps a `NoopRecorder` and
-            // every chat / search / screenshot event is a constant-time
+            // every chat / websearch / screenshot event is a constant-time
             // call. When on, it wraps a `RegistryRecorder` that routes
             // events to per-conversation JSONL files under
-            // `app_data_dir()/traces/{chat,search}/`.
+            // `app_data_dir()/traces/chat/`.
             //
             // Wrapped in a `LiveTraceRecorder` so toggling
             // `[debug] trace_enabled` from the Settings panel hot-swaps
@@ -2973,8 +2974,6 @@ pub fn run() {
             commands::cancel_generation,
             #[cfg(not(coverage))]
             commands::open_url,
-            #[cfg(not(coverage))]
-            search::search_pipeline,
             #[cfg(not(coverage))]
             commands::reset_conversation,
             #[cfg(not(coverage))]

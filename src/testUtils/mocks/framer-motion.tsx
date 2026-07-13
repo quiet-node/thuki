@@ -129,8 +129,46 @@ export const motion = {
   ),
 };
 
+/**
+ * Synchronous AnimatePresence stand-in. Does not retain exiting children
+ * (unlike real Framer), but fires `onExitComplete` when children go from
+ * present → empty so handoff tests can assert the exit-complete path
+ * without fake timers.
+ */
 export const AnimatePresence = ({
   children,
+  onExitComplete,
 }: {
   children: React.ReactNode;
-}) => <>{children}</>;
+  onExitComplete?: () => void;
+  initial?: boolean;
+  mode?: string;
+}) => {
+  const hadChildrenRef = React.useRef(false);
+  // Conditionals pass `null` / `false` when empty; truthy node = present.
+  const hasChildren = Boolean(children);
+
+  React.useEffect(() => {
+    if (hadChildrenRef.current && !hasChildren && onExitComplete) {
+      onExitComplete();
+    }
+    hadChildrenRef.current = hasChildren;
+  }, [hasChildren, onExitComplete]);
+
+  return <>{children}</>;
+};
+
+/**
+ * Tests default to motion on. Mutate `.current` in a test to cover
+ * reduced-motion duration branches, then restore to false.
+ */
+export const mockReducedMotion = { current: false };
+
+/**
+ * Framer `useReducedMotion` stand-in; reads {@link mockReducedMotion}.
+ * Name must match the real export for alias resolution.
+ */
+// eslint-disable-next-line @eslint-react/no-unnecessary-use-prefix -- mirrors framer-motion API
+export function useReducedMotion(): boolean {
+  return mockReducedMotion.current;
+}

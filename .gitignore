@@ -30,7 +30,7 @@ coverage
 # Rust build output
 target/
 
-# Python dev environments (reader sandbox pytest venv, etc.)
+# Python dev environments
 .venv/
 __pycache__/
 *.pyc
@@ -46,9 +46,6 @@ docs/superpowers/
 # Superpowers brainstorming visual-companion working files
 .superpowers/
 *.profraw
-
-# SearXNG container dumps upstream defaults here on each start
-sandbox/search-box/searxng/settings.yml.new
 
 
 # Bundled inference engine artifacts (fetched by scripts/ensure-llama-server.ts)

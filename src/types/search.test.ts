@@ -1,54 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import type {
-  IterationTrace,
-  SearchEvent,
-  SearchStage,
-  SearchTraceStep,
-  SearchWarning,
-} from './search';
+import type { SearchResultPreview, SearchStage } from './search';
 
 describe('search types', () => {
-  it('SearchEvent allows the new Trace variant', () => {
-    const step: SearchTraceStep = {
-      id: 'analyze',
-      kind: 'analyze',
-      status: 'running',
-      title: 'Understanding the question',
-      summary: 'Deciding whether to search.',
+  it('SearchResultPreview carries title and url', () => {
+    const source: SearchResultPreview = {
+      title: 'Tokio tutorial',
+      url: 'https://tokio.rs/tokio/tutorial',
     };
-
-    const event: SearchEvent = { type: 'Trace', step };
-    expect(event.type).toBe('Trace');
-    if (event.type === 'Trace') {
-      expect(event.step.kind).toBe('analyze');
-    }
-  });
-
-  it('SearchTraceStep supports verdicts, counts, queries, urls, and domains', () => {
-    const step: SearchTraceStep = {
-      id: 'round-1-snippet-judge',
-      kind: 'snippet_judge',
-      status: 'completed',
-      round: 1,
-      title: 'Checking what the results already cover',
-      summary:
-        'The results point in the right direction, but a few details are still missing.',
-      detail: 'Still missing the exact version number.',
-      queries: ['tokio runtime version'],
-      urls: ['https://tokio.rs/tokio/tutorial'],
-      domains: ['tokio.rs', 'docs.rs'],
-      verdict: 'partial',
-      counts: {
-        sources: 2,
-        kept: 2,
-      },
-    };
-
-    expect(step.round).toBe(1);
-    expect(step.verdict).toBe('partial');
-    expect(step.counts?.sources).toBe(2);
-    expect(step.urls).toEqual(['https://tokio.rs/tokio/tutorial']);
-    expect(step.domains).toEqual(['tokio.rs', 'docs.rs']);
+    expect(source.title).toBe('Tokio tutorial');
+    expect(source.url).toContain('tokio.rs');
   });
 
   it('SearchStage refining_search carries attempt and total', () => {
@@ -63,47 +23,13 @@ describe('search types', () => {
     }
   });
 
-  it('SearchWarning union still includes the backend warning variants', () => {
-    const variants: SearchWarning[] = [
-      'reader_unavailable',
-      'reader_partial_failure',
-      'no_results_initial',
-      'iteration_cap_exhausted',
-      'router_failure',
-      'judge_failure',
-      'budget_exhausted',
-      'no_progress',
-      'synthesis_interrupted',
-    ];
-
-    expect(variants).toHaveLength(9);
+  it('SearchStage verifying_sources marks post-stream citation audit', () => {
+    const stage: SearchStage = { kind: 'verifying_sources' };
+    expect(stage?.kind).toBe('verifying_sources');
   });
 
-  it('legacy IterationComplete payloads still type-check for compatibility', () => {
-    const trace: IterationTrace = {
-      stage: { kind: 'initial' },
-      queries: ['legacy query'],
-      urls_fetched: ['https://example.com'],
-      reader_empty_urls: [],
-      judge_verdict: 'sufficient',
-      judge_reasoning: 'covers the topic',
-      duration_ms: 200,
-    };
-
-    const event: SearchEvent = { type: 'IterationComplete', trace };
-    expect(event.type).toBe('IterationComplete');
-    if (event.type === 'IterationComplete') {
-      expect(event.trace.duration_ms).toBe(200);
-    }
-  });
-
-  it('SearchEvent still allows SandboxUnavailable', () => {
-    const event: SearchEvent = { type: 'SandboxUnavailable' };
-    expect(event.type).toBe('SandboxUnavailable');
-  });
-
-  it('SearchEvent still allows InsufficientMemory', () => {
-    const event: SearchEvent = { type: 'InsufficientMemory' };
-    expect(event.type).toBe('InsufficientMemory');
+  it('SearchStage idle is null', () => {
+    const stage: SearchStage = null;
+    expect(stage).toBeNull();
   });
 });

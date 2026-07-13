@@ -24,7 +24,7 @@ import { clearEventHandlers } from '../../testUtils/mocks/tauri';
 import { ModelTab } from './ModelTab';
 import { DownloadsProvider } from '../../contexts/DownloadsContext';
 import { DisplayTab } from './DisplayTab';
-import { SearchTab } from './SearchTab';
+
 import { AboutTab } from './AboutTab';
 import { BehaviorTab } from './BehaviorTab';
 import type { RawAppConfig } from '../types';
@@ -73,18 +73,7 @@ const CONFIG: RawAppConfig = {
   behavior: {
     auto_replace: false,
     auto_close: false,
-  },
-  search: {
-    searxng_url: 'http://127.0.0.1:25017',
-    reader_url: 'http://127.0.0.1:25018',
-    max_iterations: 3,
-    top_k_urls: 10,
-    searxng_max_results: 10,
-    search_timeout_s: 20,
-    reader_per_url_timeout_s: 10,
-    reader_batch_timeout_s: 30,
-    judge_timeout_s: 30,
-    router_timeout_s: 45,
+    auto_search: true,
   },
   debug: {
     trace_enabled: false,
@@ -250,25 +239,6 @@ describe('DisplayTab', () => {
     // The chip + screen-reader text surface the descriptive weight label
     // (e.g. "Medium") rather than the raw numeric font-weight value.
     expect(slider).toHaveAttribute('aria-valuetext', 'Medium');
-  });
-});
-
-describe('SearchTab', () => {
-  it('renders Services, Pipeline, and Timeouts sections', () => {
-    render(<SearchTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
-    expect(screen.getByText('Services')).toBeInTheDocument();
-    expect(screen.getByText('Pipeline')).toBeInTheDocument();
-    expect(screen.getByText('Timeouts')).toBeInTheDocument();
-    expect(screen.getByText('SearXNG URL')).toBeInTheDocument();
-    expect(screen.getByText('Per-URL timeout')).toBeInTheDocument();
-    expect(screen.getByText('Batch timeout')).toBeInTheDocument();
-    expect(screen.getByText('Router timeout')).toBeInTheDocument();
-  });
-
-  it('does not render any Diagnostics affordance', () => {
-    render(<SearchTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
-    expect(screen.queryByText(/Diagnostics/i)).not.toBeInTheDocument();
-    expect(screen.queryByText('Trace recording')).not.toBeInTheDocument();
   });
 });
 
@@ -551,6 +521,36 @@ describe('AboutTab', () => {
 
 describe('BehaviorTab', () => {
   const TOGGLE_NAME = /Auto-replace selected text after \/rewrite or \/refine/;
+  const AUTO_SEARCH_NAME = /Auto search the web when needed without \/search/;
+
+  it('renders the Web search section with Auto search on by default', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    expect(screen.getByText('Web search')).toBeInTheDocument();
+    expect(screen.getByText('Auto search')).toBeInTheDocument();
+    expect(
+      screen.getByRole('switch', { name: AUTO_SEARCH_NAME }),
+    ).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('reflects a disabled auto_search value on the toggle', () => {
+    render(
+      <BehaviorTab
+        config={{
+          ...CONFIG,
+          behavior: {
+            auto_replace: false,
+            auto_close: false,
+            auto_search: false,
+          },
+        }}
+        resyncToken={0}
+        onSaved={() => {}}
+      />,
+    );
+    expect(
+      screen.getByRole('switch', { name: AUTO_SEARCH_NAME }),
+    ).toHaveAttribute('aria-checked', 'false');
+  });
 
   it('renders the Text Replacement section with the Auto-replace toggle', () => {
     render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
@@ -568,7 +568,11 @@ describe('BehaviorTab', () => {
       <BehaviorTab
         config={{
           ...CONFIG,
-          behavior: { auto_replace: true, auto_close: false },
+          behavior: {
+            auto_replace: true,
+            auto_close: false,
+            auto_search: true,
+          },
         }}
         resyncToken={0}
         onSaved={() => {}}
@@ -596,7 +600,11 @@ describe('BehaviorTab', () => {
       <BehaviorTab
         config={{
           ...CONFIG,
-          behavior: { auto_replace: false, auto_close: true },
+          behavior: {
+            auto_replace: false,
+            auto_close: true,
+            auto_search: true,
+          },
         }}
         resyncToken={0}
         onSaved={() => {}}
@@ -608,13 +616,23 @@ describe('BehaviorTab', () => {
     );
   });
 
-  it('opens the help tooltip upward so it is not clipped at the short window edge', () => {
+  it('opens the Auto search help tooltip downward so it is not clipped at the top edge', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const help = screen.getByRole('button', { name: 'About Auto search' });
+    fireEvent.mouseEnter(help.parentElement!);
+    // placement="bottom" uses translateX(-50%) (below the trigger).
+    expect(
+      document.body.querySelector('[style*="translateX(-50%)"]'),
+    ).not.toBeNull();
+    expect(screen.getByText(/live facts/i)).toBeInTheDocument();
+  });
+
+  it('opens Text Replacement help tooltips upward so they are not clipped at the bottom edge', () => {
     render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
     const help = screen.getByRole('button', { name: 'About Auto-replace' });
     fireEvent.mouseEnter(help.parentElement!);
     // placement="top" positions the tooltip box with a `translate(..., -100%)`
-    // transform (it sits above the trigger). The default "bottom" placement
-    // uses `translateX(-50%)`, which here would overflow the bottom edge.
+    // transform (it sits above the trigger).
     expect(
       document.body.querySelector('[style*="translate(-50%, -100%)"]'),
     ).not.toBeNull();
@@ -629,5 +647,12 @@ describe('BehaviorTab', () => {
     expect(
       screen.getByText(/Applies only to \/rewrite and \/refine/),
     ).toBeInTheDocument();
+  });
+
+  it('does not show a section-level help control on Web search', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    expect(
+      screen.queryByRole('button', { name: 'About Web search' }),
+    ).not.toBeInTheDocument();
   });
 });

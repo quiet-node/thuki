@@ -126,6 +126,23 @@ body {
     inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
+/**
+ * L3 citation total-failure honesty note: hairline left rail only, no box
+ * fill. Italic muted secondary so it reads as Thuki-owned caveats under the
+ * cream answer body and above sources chrome.
+ */
+.honest-failure-note {
+  margin: 0.75rem 0 0;
+  padding: 0 0 0 10px;
+  border-left: 1.5px solid rgba(232, 184, 109, 0.45);
+  font-size: 12.5px;
+  line-height: 1.5;
+  font-style: italic;
+  color: rgba(200, 198, 192, 0.88);
+  background: none;
+  border-radius: 0;
+}
+
 /* ─── Stop Button Border Trace ───
  * SVG border-trace using pathLength="100" so all dash math is in clean
  * percentages. Three layered strokes staggered via animation-delay (NOT
@@ -400,6 +417,42 @@ body {
   color: rgba(255, 255, 255, 0.85);
 }
 
+/* C3: compact "Verifying sources..." pill after answer tokens, before Done.
+ * Mini chips pulse so the sources row still reads as live work. */
+.sources-verifying-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px 3px 6px;
+  border-radius: 999px;
+  background: rgba(255, 141, 92, 0.1);
+  border: 1px solid rgba(255, 141, 92, 0.22);
+  font-size: 11px;
+  font-weight: 700;
+  color: #ffc4a8;
+  line-height: 1.2;
+}
+.sources-chips-pulse > span {
+  animation: sources-chip-pulse 1s ease-in-out infinite;
+}
+.sources-chips-pulse > span:nth-child(2) {
+  animation-delay: 0.12s;
+}
+.sources-chips-pulse > span:nth-child(3) {
+  animation-delay: 0.24s;
+}
+@keyframes sources-chip-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+}
+
 /* /search: minimal source list rows
  * Plain numbered list. Title + domain brighten on hover OR when the matching
  * citation anchor elsewhere is hovered. No layout-shifting transforms.
@@ -505,6 +558,32 @@ body {
   animation: search-stage-shimmer 3s ease-in-out infinite;
 }
 
+/**
+ * G tracking-settle on status copy change (RequestStatusStrip).
+ * Opacity + letter-spacing; shimmer keeps running on the same glyphs.
+ */
+.loading-label-track {
+  transition:
+    opacity 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    letter-spacing 520ms cubic-bezier(0.22, 1, 0.36, 1);
+  letter-spacing: 0.01em;
+}
+
+.loading-label-track-out {
+  opacity: 0;
+  letter-spacing: 0.06em;
+}
+
+.loading-label-track-enter {
+  opacity: 0;
+  letter-spacing: 0.08em;
+}
+
+.loading-label-track-in {
+  opacity: 1;
+  letter-spacing: 0.01em;
+}
+
 @keyframes search-stage-shimmer {
   0% {
     background-position: 100% 0;
@@ -515,6 +594,60 @@ body {
   100% {
     background-position: 0% 0;
   }
+}
+
+/* ─── RequestStatusStrip: single layout contract for all hosts ───
+ * gap, type size, and min-height live only here so engine / search / think
+ * rows cannot drift. Parents wrap with the same vertical margin (mb-2) when
+ * they own a feature block; they must not restyle the strip itself.
+ */
+.request-status-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem; /* 8px — dots to label */
+  min-height: 1.375rem; /* 22px, matches tdm-host */
+  line-height: 1;
+}
+
+.request-status-strip__title {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  font-size: 0.75rem; /* text-xs */
+  line-height: 1rem;
+}
+
+.request-status-strip__label {
+  display: inline-block;
+}
+
+/* ─── ThreeDotMotion (Y1 suite) ─── */
+.tdm-host {
+  position: relative;
+  width: 24px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+.tdm-dot,
+.tdm-trail {
+  position: absolute;
+  width: 4.25px;
+  height: 4.25px;
+  margin-left: -2.125px;
+  margin-top: -2.125px;
+  border-radius: 50%;
+  will-change: left, top, opacity, transform;
+  pointer-events: none;
+}
+
+.tdm-dot {
+  z-index: 2;
+}
+
+.tdm-trail {
+  z-index: 1;
+  opacity: 0;
 }
 
 /* ─── Update window: Settings-panel parity ───

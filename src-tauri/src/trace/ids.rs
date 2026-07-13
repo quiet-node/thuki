@@ -5,9 +5,9 @@
 //! that touches both. The chat layer is the only producer; SQLite stores
 //! the same value for the user-facing conversation history UI.
 //!
-//! `new_turn_id()` is the canonical search-pipeline turn-id generator,
-//! kept here so both the chat-domain and search-domain code paths source
-//! their identifiers from a single module.
+//! `new_turn_id()` is the canonical turn-id generator for chat-domain
+//! websearch events, kept here so every callsite sources identifiers
+//! from a single module.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -40,7 +40,7 @@ pub const SANITIZED_FALLBACK: &str = "invalid-conversation-id";
 /// depth: production callers route `crypto.randomUUID()` through this
 /// constructor, but the IPC boundary accepts arbitrary strings, so the
 /// recorder must never let an attacker steer the path that `FileRecorder`
-/// joins onto `app_data_dir/traces/{chat,search}/`.
+/// joins onto `app_data_dir/traces/chat/`.
 fn sanitize(raw: String) -> String {
     // Step 1: collapse the path separators and NUL into a benign filler.
     let separator_safe: String = raw
@@ -101,8 +101,8 @@ impl From<ConversationId> for String {
     }
 }
 
-/// Builds a fresh, sortable, collision-resistant turn id for the search
-/// pipeline.
+/// Builds a fresh, sortable, collision-resistant turn id for chat-domain
+/// websearch events.
 ///
 /// Format: `<unix_secs>-<uuid_v4>`. Seconds prefix is eyeball-readable when
 /// browsing the traces directory; the v4 UUID guarantees uniqueness across

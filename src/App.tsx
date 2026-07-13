@@ -637,9 +637,9 @@ function App() {
    * Sticky rewrite mode: the trigger of the most recent replaceable command
    * (`/rewrite` or `/refine`) in this conversation, or `null`. Plain follow-up
    * turns inherit it so refinements ("make it longer") keep the Replace button;
-   * any other command exits the mode. Mirrors `searchActive`'s lifecycle. A ref,
-   * not state, because nothing re-renders on change — each message carries its
-   * own `replaceCommand`, fixed at creation.
+   * any other command exits the mode. A ref, not state, because nothing
+   * re-renders on change: each message carries its own `replaceCommand`, fixed
+   * at creation.
    */
   const stickyReplaceCommandRef = useRef<string | null>(null);
 
@@ -701,15 +701,6 @@ function App() {
    */
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
-
-  /**
-   * Sticky flag: once the user invokes `/search`, subsequent submits in the
-   * same conversation route through the search pipeline automatically until
-   * the pipeline delivers a final answer (or the conversation is reset/loaded
-   * /closed). The backend LLM classifies each turn and decides whether to
-   * clarify, answer from context, or perform a fresh web search.
-   */
-  const [searchActive, setSearchActive] = useState(false);
 
   const inputRef = useRef<HTMLDivElement>(null);
 
@@ -1251,7 +1242,6 @@ function App() {
       setIsSubmitPending(false);
       setPendingUserMessage(null);
       setCaptureError(null);
-      setSearchActive(false);
       stickyReplaceCommandRef.current = null;
 
       void refreshModels();
@@ -1272,7 +1262,6 @@ function App() {
     setGrowsUpward(false);
     screenCapturePendingRef.current = false;
     screenCaptureInputSnapshotRef.current = null;
-    setSearchActive(false);
     stickyReplaceCommandRef.current = null;
     setSelectedContext(null);
     setPreviewImageUrl(null);
@@ -1925,7 +1914,6 @@ function App() {
       try {
         const loaded = await loadConversation(id);
         loadMessages(loaded);
-        setSearchActive(false);
         stickyReplaceCommandRef.current = null;
       } catch {
         // Load failed - current session is preserved intact.
@@ -1956,7 +1944,6 @@ function App() {
       try {
         const loaded = await loadConversation(id);
         loadMessages(loaded);
-        setSearchActive(false);
         stickyReplaceCommandRef.current = null;
       } catch {
         // Load failed - save already committed; dismiss panel, keep current view.
@@ -2004,7 +1991,6 @@ function App() {
     screenCaptureInputSnapshotRef.current = null;
     setIsSubmitPending(false);
     setPendingUserMessage(null);
-    setSearchActive(false);
     stickyReplaceCommandRef.current = null;
   }, [reset, resetHistory]);
 
@@ -2422,6 +2408,10 @@ function App() {
             readyPaths,
             undefined,
             'Extract all text visible in this image verbatim. Output only the extracted text with no commentary, preamble, or formatting.',
+            undefined,
+            undefined,
+            undefined,
+            '/extract',
           );
         } else {
           setQuery(fullQuery);
@@ -2593,6 +2583,8 @@ function App() {
         /* v8 ignore next -- dispatch guard ensures at least one image source; empty path is defensive */
         readyPaths.length > 0 ? readyPaths : undefined,
         REPLACEABLE_COMMANDS.has(trigger) ? trigger : undefined,
+        undefined,
+        trigger,
       );
     },
     [
@@ -3055,30 +3047,31 @@ function App() {
       return;
     }
 
-    // `/search` entry point AND sticky follow-ups. Search ignores attached
-    // images entirely (the pipeline never sends image bytes), so it does
-    // NOT route through the pending-images gate below. An explicit /screen
-    // command takes precedence over search continuation so users can always
-    // attach a screenshot mid-conversation.
-    if (hasSearch || (searchActive && !hasScreen && found.size === 0)) {
+    // `/search` force-search alias onto the built-in pipeline. One-shot only:
+    // follow-ups use normal auto-search. Attached images forward for vision
+    // models (backend keeps non-vision strip behavior). `/screen` still wins
+    // if both are present via command parsing above.
+    if (hasSearch) {
       const searchQuery = strippedMessage.trim();
       if (!searchQuery) return;
       const searchContext = sanitizeContext(
         selectedContext,
         quote.maxContextLength,
       );
-      // Pass the full typed query (with `/search`) as bubble display content so
-      // the user sees exactly what they typed; the backend receives only the
-      // stripped query without the trigger prefix.
-      const searchDisplay = hasSearch ? trimmedQuery : undefined;
+      // Bubble shows the literal typed text (with `/search`); backend gets the
+      // stripped query without the trigger prefix. Images use resolved paths only.
+      const searchDisplay = trimmedQuery;
+      const readyPaths = attachedImages
+        .filter((img) => img.filePath !== null)
+        .map((img) => img.filePath as string);
+      const searchImages = readyPaths.length > 0 ? readyPaths : undefined;
       setQuery('');
       setSelectedContext(null);
-      setSearchActive(true);
-      void askSearch(searchQuery, searchDisplay, searchContext).then(
-        ({ final }) => {
-          if (final) setSearchActive(false);
-        },
-      );
+      for (const img of attachedImages) {
+        URL.revokeObjectURL(img.blobUrl);
+      }
+      setAttachedImages([]);
+      void askSearch(searchQuery, searchDisplay, searchContext, searchImages);
       return;
     }
 
@@ -3209,6 +3202,8 @@ function App() {
         composedPrompt,
         undefined,
         REPLACEABLE_COMMANDS.has(utilityTrigger) ? utilityTrigger : undefined,
+        undefined,
+        utilityTrigger,
       );
       setSelectedContext(null);
       setQuery('');
@@ -3230,7 +3225,6 @@ function App() {
     setCaptureError,
     ask,
     askSearch,
-    searchActive,
     quote.maxContextLength,
     hasBlockingConflict,
     isBuiltinDownloadActive,
@@ -3354,9 +3348,8 @@ function App() {
       return;
     }
     void cancel();
-    setSearchActive(false);
     requestAnimationFrame(() => inputRef.current?.focus());
-  }, [isSubmitPending, cancel, setSearchActive, setSelectedContext]);
+  }, [isSubmitPending, cancel, setSelectedContext]);
 
   /**
    * Turn to replay once the model picker's next selection succeeds (issue

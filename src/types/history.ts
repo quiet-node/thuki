@@ -35,16 +35,8 @@ export interface PersistedMessage {
   /** Thinking/reasoning content from the model, if thinking mode was used. */
   thinking_content: string | null;
   /** JSON-encoded `SearchResultPreview[]` for assistant messages produced
-   *  through the `/search` pipeline. Null for other messages. */
+   *  through web search. Null for other messages. */
   search_sources: string | null;
-  /** JSON-encoded `SearchWarning[]` emitted during a `/search` turn.
-   *  Null for non-search messages or turns with no warnings. */
-  search_warnings: string | null;
-  /** JSON-encoded search metadata for this search turn.
-   *  Newer turns store `SearchMetadata`; older turns may still contain
-   *  `SearchTraceStep[]` or legacy iteration traces. Null for non-search
-   *  messages. */
-  search_metadata: string | null;
   /** Ollama model slug attributed to this message. Null for user messages
    *  and legacy messages written before the model_name migration. */
   model_name: string | null;
@@ -70,10 +62,6 @@ export interface SaveMessagePayload {
   image_paths: string[] | null;
   thinking_content: string | null;
   search_sources: { title: string; url: string }[] | null;
-  /** Pre-serialized JSON string of `SearchWarning[]`, or null. */
-  search_warnings: string | null;
-  /** Pre-serialized JSON string of SearchMetadata or a legacy trace payload. */
-  search_metadata: string | null;
   /** Ollama model slug that produced this response. Null for user messages
    *  and messages from pre-migration conversations. */
   model_name: string | null;

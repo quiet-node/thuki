@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { MarkdownRenderer } from './MarkdownRenderer';
-import { LoadingStage } from './LoadingStage';
+import { RequestStatusStrip } from './RequestStatusStrip';
 
 export interface ReasoningBlockProps {
   thinkingContent?: string;
@@ -50,11 +50,12 @@ export function ReasoningBlock({
     // purely to reserve the exact width the real chevron occupies once
     // thinking starts, using the identical classes/markup that state uses
     // below, so the label lands at the same x position in both.
+    // Passed as RequestStatusStrip accessory so order is dots → chevron → label.
     const chevronSpacer = (
       <span
         data-testid="reasoning-chevron"
         aria-hidden="true"
-        className="loading-label inline-block shrink-0 text-[9px] transition-transform duration-150 opacity-0"
+        className="inline-block shrink-0 text-[9px] transition-transform duration-150 opacity-0"
         style={{ transform: 'rotate(90deg)' }}
       >
         &#9650;
@@ -63,9 +64,7 @@ export function ReasoningBlock({
     return (
       <div data-testid="reasoning-block" className="mb-2">
         <div data-testid="reasoning-pending" className={SUMMARY_ROW_CLASS}>
-          <span className="inline-flex min-w-0">
-            <LoadingStage label={pendingLabel} labelPrefix={chevronSpacer} />
-          </span>
+          <RequestStatusStrip label={pendingLabel} accessory={chevronSpacer} />
         </div>
       </div>
     );
@@ -79,7 +78,7 @@ export function ReasoningBlock({
   const chevron = (
     <span
       data-testid="reasoning-chevron"
-      className="loading-label inline-block shrink-0 text-[9px] transition-transform duration-150"
+      className="inline-block shrink-0 text-[9px] text-text-secondary/55 transition-transform duration-150"
       style={{
         transform: isExpanded ? 'rotate(180deg)' : 'rotate(90deg)',
       }}
@@ -90,8 +89,8 @@ export function ReasoningBlock({
 
   return (
     <div data-testid="reasoning-block" className="mb-2">
-      {/* Clickable summary row: chevron + label. Same SUMMARY_ROW_CLASS the
-          pending row above uses, plus the interactive-only extras. */}
+      {/* Live: chevron as strip accessory (dots → chevron → label).
+          Done: chevron left of static title only (no dots). */}
       <button
         type="button"
         onClick={() => setIsExpanded((prev) => !prev)}
@@ -100,23 +99,13 @@ export function ReasoningBlock({
         aria-label="Toggle reasoning details"
       >
         {isThinking ? (
-          <span className="inline-flex min-w-0">
-            <LoadingStage label={summaryLabel} labelPrefix={chevron} />
-          </span>
+          <RequestStatusStrip label={summaryLabel} accessory={chevron} />
         ) : (
           <>
-            <span
-              data-testid="reasoning-chevron"
-              className="inline-block text-[9px] text-text-secondary/55 transition-transform duration-150"
-              style={{
-                transform: isExpanded ? 'rotate(180deg)' : 'rotate(90deg)',
-              }}
-            >
-              &#9650;
-            </span>
+            {chevron}
             <span
               data-testid="reasoning-summary-label"
-              className="text-[11px] font-medium tracking-[0.01em] text-text-secondary/58"
+              className="request-status-strip__title font-medium tracking-[0.01em] text-text-secondary/58"
             >
               {summaryLabel}
             </span>
