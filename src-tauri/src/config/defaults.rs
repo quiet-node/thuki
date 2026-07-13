@@ -307,12 +307,11 @@ pub const VRAM_POLL_INTERVAL_SECS: u64 = 5;
 ///
 /// Off by default. Intended for local quality investigation only: when on,
 /// the recorder writes every chat turn (user message, assistant streaming
-/// tokens, screen captures, conversation lifecycle, and the search decision,
-/// retrieval, escalation, requery, and citation-audit records the built-in
-/// search emits) to JSON-Lines files under
+/// tokens + final answer body, screen captures, conversation lifecycle, and
+/// the search skip/decision/retrieval/escalation/requery/citation-audit
+/// records the built-in search emits) to JSON-Lines files under
 /// `~/Library/Application Support/com.quietnode.thuki/traces/chat/<conversation_id>.jsonl`.
-/// Toggleable from the Settings panel (Models tab, Providers section).
-/// Off in shipped builds by default.
+/// Toggleable from the Settings panel (Diagnostics). Off by default.
 pub const DEFAULT_DEBUG_TRACE_ENABLED: bool = false;
 
 /// Whether `/rewrite` and `/refine` results are written straight back into the

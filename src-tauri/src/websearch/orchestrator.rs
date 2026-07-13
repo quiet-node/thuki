@@ -285,6 +285,8 @@ async fn run_search_inner(
     if verdict == PreFilterVerdict::ForceNo && !deps.force_search {
         deps.recorder.record(RecorderEvent::SearchDecided {
             prefilter: prefilter_label(verdict).to_string(),
+            decision: "no".to_string(),
+            force: false,
             route: String::new(),
             standalone_question: latest_user.trim().to_string(),
             queries: Vec::new(),
@@ -316,6 +318,8 @@ async fn run_search_inner(
             if verdict != PreFilterVerdict::ForceWeb && !deps.force_search {
                 deps.recorder.record(RecorderEvent::SearchDecided {
                     prefilter: prefilter_label(verdict).to_string(),
+                    decision: "no".to_string(),
+                    force: false,
                     route: String::new(),
                     standalone_question: latest_user.trim().to_string(),
                     queries: Vec::new(),
@@ -344,6 +348,8 @@ async fn run_search_inner(
     );
     deps.recorder.record(RecorderEvent::SearchDecided {
         prefilter: prefilter_label(verdict).to_string(),
+        decision: decision_label(decision.decision).to_string(),
+        force: deps.force_search,
         route: route_label(decision.route).to_string(),
         standalone_question: decision.standalone_question.clone(),
         queries: decision.queries.clone(),
@@ -429,6 +435,15 @@ async fn run_search_inner(
             )
             .await
         }
+    }
+}
+
+/// Wire label for a resolved [`SearchDecision`] on [`RecorderEvent::SearchDecided`].
+fn decision_label(decision: SearchDecision) -> &'static str {
+    match decision {
+        SearchDecision::No => "no",
+        SearchDecision::Cached => "cached",
+        SearchDecision::Web => "web",
     }
 }
 
@@ -545,6 +560,8 @@ async fn force_explicit_web(
     );
     deps.recorder.record(RecorderEvent::SearchDecided {
         prefilter: "force_search".to_string(),
+        decision: "web".to_string(),
+        force: true,
         route: route_label(classified.route).to_string(),
         standalone_question: standalone.clone(),
         queries: queries.clone(),
@@ -4279,8 +4296,16 @@ mod tests {
         // route hint, the standalone rewrite, and the queries.
         assert!(matches!(
             &events[0],
-            RecorderEvent::SearchDecided { prefilter, route, standalone_question, queries }
-            if prefilter == "force_web"
+            RecorderEvent::SearchDecided {
+                prefilter,
+                decision,
+                force,
+                route,
+                standalone_question,
+                queries
+            } if prefilter == "force_web"
+                && decision == "web"
+                && !*force
                 && route == "news"
                 && standalone_question == "who won the most recent F1 race"
                 && queries == &vec!["f1 race winner".to_string()]
@@ -4321,8 +4346,13 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(matches!(
             &events[0],
-            RecorderEvent::SearchDecided { prefilter, route, .. }
-            if prefilter == "force_no" && route.is_empty()
+            RecorderEvent::SearchDecided {
+                prefilter,
+                decision,
+                force,
+                route,
+                ..
+            } if prefilter == "force_no" && decision == "no" && !*force && route.is_empty()
         ));
     }
 

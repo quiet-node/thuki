@@ -836,6 +836,36 @@ fn builtin_search_gate(
     }
 }
 
+/// Closed `reason` strings for [`crate::trace::RecorderEvent::SearchSkipped`].
+/// Keep in lockstep with gate order and docs consumers of the JSONL.
+fn search_skip_reason_for_plain_gate(
+    turn_has_images: bool,
+    model_is_vision: bool,
+    skip_search: bool,
+) -> &'static str {
+    if turn_has_images && !model_is_vision {
+        "non_vision_images"
+    } else if skip_search {
+        "transform_slash"
+    } else {
+        "auto_off"
+    }
+}
+
+/// Caps the final answer body stored on [`RecorderEvent::AssistantComplete`] so
+/// a pathological long answer cannot balloon the JSONL. Prefer a char boundary.
+fn capped_trace_final_content(content: &str) -> String {
+    let max = crate::config::defaults::CITE_AUDIT_MAX_ANSWER_BYTES;
+    if content.len() <= max {
+        return content.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…[truncated]", &content[..end])
+}
+
 /// Runs the built-in search pre-pass and, if it fires, the retrieval pipeline
 /// on the warm engine, emitting progress through `on_chunk`. The prompt inputs
 /// MUST be the same strings the plain chat path streams (system prompt, filtered
@@ -873,9 +903,17 @@ async fn run_builtin_search(
     // The engine is already warm (the caller holds an activity guard); this
     // re-ensure just reads back the live port for the pre-pass and writer.
     let Ok(port) = engine.ensure_loaded(target.clone()).await else {
+        // Gate said Run but the engine is not loadable: still mark the skip so
+        // traces do not look like the turn never considered search.
+        recorder.record(crate::trace::RecorderEvent::SearchSkipped {
+            reason: "engine_unavailable".to_string(),
+        });
         return BuiltinSearchResult::Plain;
     };
     let Ok(transport) = crate::net::transport::ReqwestTransport::new() else {
+        recorder.record(crate::trace::RecorderEvent::SearchSkipped {
+            reason: "engine_unavailable".to_string(),
+        });
         return BuiltinSearchResult::Plain;
     };
     let prepass = crate::websearch::prepass::BuiltinPrePass::new(
@@ -2292,7 +2330,17 @@ pub async fn ask_model(
                         skip_search,
                         config.behavior.auto_search,
                     ) {
-                        BuiltinSearchGate::Plain => BuiltinSearchResult::Plain,
+                        BuiltinSearchGate::Plain => {
+                            bound_recorder.record(crate::trace::RecorderEvent::SearchSkipped {
+                                reason: search_skip_reason_for_plain_gate(
+                                    turn_has_images,
+                                    model_is_vision,
+                                    skip_search,
+                                )
+                                .to_string(),
+                            });
+                            BuiltinSearchResult::Plain
+                        }
                         BuiltinSearchGate::Run { force } => {
                             let history = &messages[1..messages.len().saturating_sub(1)];
                             run_builtin_search(
@@ -2455,6 +2503,8 @@ pub async fn ask_model(
     bound_recorder.record(crate::trace::RecorderEvent::AssistantComplete {
         total_tokens: token_count_atomic.load(Ordering::Relaxed),
         latency_ms: stream_ended_ms.saturating_sub(stream_started_ms),
+        // Final body after repair/`SetContent`, not the raw stream only.
+        final_content: capped_trace_final_content(&sanitize_assistant_content(&accumulated)),
     });
 
     // Persist user + assistant messages to in-memory history when the epoch
@@ -2652,6 +2702,53 @@ mod tests {
             builtin_search_gate(false, true, false, false, false),
             BuiltinSearchGate::Plain
         );
+    }
+
+    #[test]
+    fn search_skip_reason_matches_gate_order() {
+        assert_eq!(
+            search_skip_reason_for_plain_gate(true, false, false),
+            "non_vision_images"
+        );
+        assert_eq!(
+            search_skip_reason_for_plain_gate(false, true, true),
+            "transform_slash"
+        );
+        assert_eq!(
+            search_skip_reason_for_plain_gate(false, true, false),
+            "auto_off"
+        );
+    }
+
+    #[test]
+    fn capped_trace_final_content_leaves_short_text() {
+        assert_eq!(capped_trace_final_content("hello"), "hello");
+    }
+
+    #[test]
+    fn capped_trace_final_content_truncates_oversize() {
+        let max = crate::config::defaults::CITE_AUDIT_MAX_ANSWER_BYTES;
+        let big = "a".repeat(max + 10);
+        let out = capped_trace_final_content(&big);
+        assert!(out.ends_with("…[truncated]"));
+        // Body before the marker is at most `max` bytes.
+        let body = out.trim_end_matches("…[truncated]");
+        assert!(body.len() <= max);
+        assert_eq!(body.len(), max);
+    }
+
+    #[test]
+    fn capped_trace_final_content_respects_utf8_char_boundary() {
+        // Place a multi-byte character straddling the cap so the walk-back
+        // branch runs and the cut stays on a char boundary.
+        let max = crate::config::defaults::CITE_AUDIT_MAX_ANSWER_BYTES;
+        let prefix = "a".repeat(max - 1);
+        let big = format!("{prefix}éxxx");
+        let out = capped_trace_final_content(&big);
+        assert!(out.ends_with("…[truncated]"));
+        let body = out.trim_end_matches("…[truncated]");
+        assert!(body.is_char_boundary(body.len()));
+        assert!(body.len() < max);
     }
 
     #[test]

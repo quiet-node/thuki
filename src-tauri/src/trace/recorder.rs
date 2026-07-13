@@ -196,20 +196,36 @@ pub enum RecorderEvent {
     AssistantThinking { chunk: String },
     /// Streaming chunk of the assistant's user-visible response.
     AssistantTokens { chunk: String },
-    /// Assistant turn ends. Captures the total streamed token count and
-    /// the wall-clock latency from `UserMessage` to stream-completion.
-    AssistantComplete { total_tokens: u64, latency_ms: u64 },
+    /// Assistant turn ends. Captures streamed token count, wall-clock latency
+    /// from `UserMessage` to stream-completion, and the **final** answer body
+    /// after citation repair/`SetContent` (capped; never image bytes). Lets a
+    /// trace match what history/UI stored without replaying the stream.
+    AssistantComplete {
+        total_tokens: u64,
+        latency_ms: u64,
+        final_content: String,
+    },
     /// User invoked the `/screen` slash command and the backend wrote a
     /// JPEG snapshot to `image_path`. `displays` is the number of
     /// monitors captured (multi-monitor setups produce one merged image).
     ScreenCaptured { image_path: String, displays: u8 },
-    /// Resolved auto-search decision for a chat turn: the deterministic
-    /// pre-filter verdict, the classifier's routing hint, the standalone
-    /// question rewrite, and the keyword queries. Emitted once per turn that
-    /// reaches the built-in auto-search decision, so a trace shows why a turn
-    /// did or did not search and which source tier it aimed at.
+    /// Built-in search never entered the retrieval pipeline for this turn
+    /// (gate-level skip). `reason` is a closed string enum:
+    /// `non_vision_images` | `transform_slash` | `auto_off` | `engine_unavailable`.
+    /// Pipeline decisions that *do* run the classifier still use
+    /// [`Self::SearchDecided`] (with `decision` no/cached/web) instead.
+    SearchSkipped { reason: String },
+    /// Resolved auto-search decision for a chat turn that entered the
+    /// orchestrator: pre-filter verdict, search decision (`no`/`cached`/`web`),
+    /// whether `/search` forced the path, classifier route, standalone rewrite,
+    /// and keyword queries. Emitted once per such turn so a trace shows why a
+    /// turn did or did not retrieve and which source tier it aimed at.
     SearchDecided {
         prefilter: String,
+        /// `no` | `cached` | `web` after prefilter + classifier resolve.
+        decision: String,
+        /// True when the `/search` slash command forced engines-only this turn.
+        force: bool,
         route: String,
         standalone_question: String,
         queries: Vec<String>,
@@ -325,6 +341,7 @@ impl RecorderEvent {
             | RecorderEvent::AssistantTokens { .. }
             | RecorderEvent::AssistantComplete { .. }
             | RecorderEvent::ScreenCaptured { .. }
+            | RecorderEvent::SearchSkipped { .. }
             | RecorderEvent::SearchDecided { .. }
             | RecorderEvent::SearchRetrieved { .. }
             | RecorderEvent::SearchEscalated { .. }
@@ -603,10 +620,12 @@ impl Serialize for RecorderEvent {
             RecorderEvent::AssistantComplete {
                 total_tokens,
                 latency_ms,
+                final_content,
             } => {
                 map.serialize_entry("kind", "assistant_complete")?;
                 map.serialize_entry("total_tokens", total_tokens)?;
                 map.serialize_entry("latency_ms", latency_ms)?;
+                map.serialize_entry("final_content", final_content)?;
             }
             RecorderEvent::ScreenCaptured {
                 image_path,
@@ -616,14 +635,22 @@ impl Serialize for RecorderEvent {
                 map.serialize_entry("image_path", image_path)?;
                 map.serialize_entry("displays", displays)?;
             }
+            RecorderEvent::SearchSkipped { reason } => {
+                map.serialize_entry("kind", "search_skipped")?;
+                map.serialize_entry("reason", reason)?;
+            }
             RecorderEvent::SearchDecided {
                 prefilter,
+                decision,
+                force,
                 route,
                 standalone_question,
                 queries,
             } => {
                 map.serialize_entry("kind", "search_decided")?;
                 map.serialize_entry("prefilter", prefilter)?;
+                map.serialize_entry("decision", decision)?;
+                map.serialize_entry("force", force)?;
                 map.serialize_entry("route", route)?;
                 map.serialize_entry("standalone_question", standalone_question)?;
                 map.serialize_entry("queries", queries)?;
@@ -783,13 +810,19 @@ mod tests {
             RecorderEvent::AssistantComplete {
                 total_tokens: 1,
                 latency_ms: 1,
+                final_content: "hi".into(),
             },
             RecorderEvent::ScreenCaptured {
                 image_path: "p".into(),
                 displays: 1,
             },
+            RecorderEvent::SearchSkipped {
+                reason: "auto_off".into(),
+            },
             RecorderEvent::SearchDecided {
                 prefilter: "force_web".into(),
+                decision: "web".into(),
+                force: false,
                 route: "news".into(),
                 standalone_question: "q".into(),
                 queries: vec!["q".into()],
@@ -951,6 +984,7 @@ mod tests {
             RecorderEvent::AssistantComplete {
                 total_tokens: 42,
                 latency_ms: 500,
+                final_content: "Hi there".into(),
             },
         );
         r.record(
@@ -962,8 +996,16 @@ mod tests {
         );
         r.record(
             &cid("conv-chat"),
+            RecorderEvent::SearchSkipped {
+                reason: "transform_slash".into(),
+            },
+        );
+        r.record(
+            &cid("conv-chat"),
             RecorderEvent::SearchDecided {
                 prefilter: "ambiguous".into(),
+                decision: "web".into(),
+                force: false,
                 route: "wiki".into(),
                 standalone_question: "what is photosynthesis".into(),
                 queries: vec!["photosynthesis".into()],
@@ -1022,6 +1064,7 @@ mod tests {
                 "assistant_tokens",
                 "assistant_complete",
                 "screen_captured",
+                "search_skipped",
                 "search_decided",
                 "search_retrieved",
                 "search_escalated",
@@ -1031,29 +1074,33 @@ mod tests {
         );
         assert_eq!(lines[1]["attached_images"], json!(["/tmp/img.jpg"]));
         assert_eq!(lines[1]["slash_command"], "/screen");
+        assert_eq!(lines[4]["final_content"], "Hi there");
         assert_eq!(lines[5]["displays"], 2);
-        assert_eq!(lines[6]["route"], "wiki");
-        assert_eq!(lines[6]["queries"], json!(["photosynthesis"]));
-        assert_eq!(lines[7]["tier"], "wiki");
+        assert_eq!(lines[6]["reason"], "transform_slash");
+        assert_eq!(lines[7]["decision"], "web");
+        assert_eq!(lines[7]["force"], false);
+        assert_eq!(lines[7]["route"], "wiki");
+        assert_eq!(lines[7]["queries"], json!(["photosynthesis"]));
+        assert_eq!(lines[8]["tier"], "wiki");
         assert_eq!(
-            lines[7]["sources"],
+            lines[8]["sources"],
             json!([{"url": "https://en.wikipedia.org/wiki/Photosynthesis", "title": "Photosynthesis"}])
         );
-        assert_eq!(lines[8]["from_tier"], "sports");
-        assert_eq!(lines[8]["sufficient"], false);
-        assert_eq!(lines[8]["missing"], "round-of-32 results");
-        assert_eq!(lines[8]["escalated"], true);
-        assert_eq!(lines[8]["escalation_hit"], false);
-        assert_eq!(lines[9]["cited"], 4);
-        assert_eq!(lines[9]["supported"], 3);
-        assert_eq!(lines[9]["weak"], 0);
-        assert_eq!(lines[9]["unsupported"], 1);
-        assert_eq!(lines[9]["unsupported_indices"], json!([9]));
-        assert_eq!(lines[9]["numeric_checked"], 2);
-        assert_eq!(lines[9]["numeric_matched"], 1);
-        assert_eq!(lines[9]["numeric_missing"], 1);
-        assert_eq!(lines[9]["unverifiable"], 1);
-        assert_eq!(lines[10]["reason"], "quit");
+        assert_eq!(lines[9]["from_tier"], "sports");
+        assert_eq!(lines[9]["sufficient"], false);
+        assert_eq!(lines[9]["missing"], "round-of-32 results");
+        assert_eq!(lines[9]["escalated"], true);
+        assert_eq!(lines[9]["escalation_hit"], false);
+        assert_eq!(lines[10]["cited"], 4);
+        assert_eq!(lines[10]["supported"], 3);
+        assert_eq!(lines[10]["weak"], 0);
+        assert_eq!(lines[10]["unsupported"], 1);
+        assert_eq!(lines[10]["unsupported_indices"], json!([9]));
+        assert_eq!(lines[10]["numeric_checked"], 2);
+        assert_eq!(lines[10]["numeric_matched"], 1);
+        assert_eq!(lines[10]["numeric_missing"], 1);
+        assert_eq!(lines[10]["unverifiable"], 1);
+        assert_eq!(lines[11]["reason"], "quit");
     }
 
     #[test]
