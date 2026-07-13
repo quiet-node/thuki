@@ -28,7 +28,7 @@ use futures_util::StreamExt;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-use super::storage::{ModelStore, StorageError};
+use super::storage::{hex_digest, HashWriter, ModelStore, StorageError};
 use crate::config::defaults::DOWNLOAD_PROGRESS_MIN_INTERVAL_MS;
 
 /// Progress events streamed to the frontend while a model downloads.
@@ -628,7 +628,9 @@ async fn fetch_into_partial(
                     file: spec.file.clone(),
                 });
                 store
-                    .feed_partial(&spec.sha256, &mut hasher, &|| cancel.is_cancelled())
+                    .feed_partial(&spec.sha256, &mut HashWriter(&mut hasher), &|| {
+                        cancel.is_cancelled()
+                    })
                     .map_err(DownloadIoError::Write)?;
             }
         }
@@ -698,7 +700,7 @@ async fn fetch_into_partial(
     }
     file.flush().map_err(DownloadIoError::Write)?;
     Ok(FetchOutcome::Done {
-        sha256: format!("{:x}", hasher.finalize()),
+        sha256: hex_digest(&hasher.finalize()),
     })
 }
 
@@ -824,7 +826,7 @@ mod tests {
 
     /// Compute the hex SHA-256 of `data`.
     fn sha256_of(data: &[u8]) -> String {
-        format!("{:x}", Sha256::digest(data))
+        hex_digest(&Sha256::digest(data))
     }
 
     /// Event sink: returns the shared event log and an `emit` closure.

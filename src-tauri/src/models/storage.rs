@@ -25,6 +25,27 @@ use sha2::{Digest, Sha256};
 use super::HfGgufPart;
 use crate::config::defaults::BLOB_HASH_BUFFER_BYTES;
 
+/// Renders a SHA-256 digest as a lowercase hex string.
+pub(crate) fn hex_digest(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Adapts a [`Digest`] hasher to [`io::Write`] so it can be used as a
+/// [`ModelStore::feed_partial`] sink. sha2 0.11 dropped hashers' own `Write`
+/// impl; this forwards each write straight into [`Digest::update`].
+pub(crate) struct HashWriter<'a, D: Digest>(pub &'a mut D);
+
+impl<D: Digest> io::Write for HashWriter<'_, D> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Errors returned by [`ModelStore`] operations.
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
@@ -165,8 +186,8 @@ impl ModelStore {
         let mut hasher = Sha256::new();
         // A full-length-partial verify always runs to completion: there is no
         // pause surface for it, so it never cancels.
-        self.feed_partial(sha256, &mut hasher, &|| false)?;
-        let actual = format!("{:x}", hasher.finalize());
+        self.feed_partial(sha256, &mut HashWriter(&mut hasher), &|| false)?;
+        let actual = hex_digest(&hasher.finalize());
         self.install_if_matches(sha256, &actual)
     }
 
@@ -327,7 +348,19 @@ pub fn free_disk_bytes(path: &std::path::Path) -> Option<u64> {
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+    use std::io::Write as _;
     use tempfile::TempDir;
+
+    #[test]
+    fn hash_writer_forwards_writes_and_flush_is_a_no_op() {
+        let mut hasher = Sha256::new();
+        {
+            let mut writer = HashWriter(&mut hasher);
+            writer.write_all(b"abc").unwrap();
+            writer.flush().unwrap();
+        }
+        assert_eq!(hex_digest(&hasher.finalize()), sha256_of(b"abc"));
+    }
 
     /// Build a fresh store rooted at a temporary directory.
     fn make_store() -> (TempDir, ModelStore) {
@@ -338,7 +371,7 @@ mod tests {
 
     /// Compute the hex SHA-256 of `data`.
     fn sha256_of(data: &[u8]) -> String {
-        format!("{:x}", Sha256::digest(data))
+        hex_digest(&Sha256::digest(data))
     }
 
     /// Write `data` into the store's partial slot for `sha256`.
@@ -467,7 +500,7 @@ mod tests {
         // result must equal hashing the whole stream in one pass.
         let mut taken = store.take_suspended_hash("aa", 3).unwrap();
         taken.update(b"def");
-        assert_eq!(format!("{:x}", taken.finalize()), sha256_of(b"abcdef"));
+        assert_eq!(hex_digest(&taken.finalize()), sha256_of(b"abcdef"));
     }
 
     #[test]
