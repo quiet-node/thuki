@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion';
-import { useRef, useEffect } from 'react';
+import { useCallback, useRef, useEffect } from 'react';
 import { ChatBubble } from '../components/ChatBubble';
 import { RequestStatusStrip } from '../components/RequestStatusStrip';
 import { WindowControls } from '../components/WindowControls';
@@ -225,6 +225,17 @@ export function ConversationView({
   const messagesContentRef = useRef<HTMLDivElement>(null);
 
   /**
+   * Live read of the manual-scroll gate, handed to each ChatBubble's
+   * SearchProgressBlock so its own hard-pin obeys the same rule as every pin
+   * in this view: only follow bottom-growing search chrome while the user is
+   * pinned to the bottom, never yank them down after they scrolled up. A
+   * function (not a boolean prop) because `shouldAutoScrollRef` flips inside
+   * the wheel handler without a re-render, so a snapshot would be stale by the
+   * time the block pins. Stable identity keeps the block's pin callback stable.
+   */
+  const isPinnedToBottom = useCallback(() => shouldAutoScrollRef.current, []);
+
+  /**
    * Wheel listener - the only mechanism that can disable auto-scroll.
    * Wheel events are exclusively user-initiated (never fired by programmatic
    * scrollTop changes or layout reflows), making them a reliable signal for
@@ -431,6 +442,7 @@ export function ConversationView({
                   msg.fromSearch === true &&
                   i === messages.length - 1
                 }
+                shouldAutoScroll={isPinnedToBottom}
               />
             );
           })}

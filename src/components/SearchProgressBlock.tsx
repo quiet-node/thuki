@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { invoke } from '@tauri-apps/api/core';
 import type { SearchResultPreview, SearchStage } from '../types/search';
 import { pinChatMessagesToBottom } from '../utils/scrollChat';
+import { avatarColor, domainOf } from '../utils/domainAvatar';
 import { RequestStatusStrip } from './RequestStatusStrip';
 
 /** Inner sources list: ~8–10 rows before scroll; keeps header on screen. */
@@ -32,57 +33,17 @@ export interface SearchProgressBlockProps {
    * Parent owns the outer opacity exit; this block owns collapse only.
    */
   isExiting?: boolean;
-}
-
-/**
- * Extracts a bare hostname from a URL for source rows. Strips a leading
- * `www.` prefix; falls back to the raw input if URL parsing fails.
- */
-function domainOf(url: string): string {
-  try {
-    const host = new URL(url).hostname;
-    return host.startsWith('www.') ? host.slice(4) : host;
-  } catch {
-    return url;
-  }
-}
-
-/**
- * Deterministic 0–359 hue from a domain string so each source keeps a stable
- * letter-avatar color across re-renders without network favicon fetches.
- */
-function domainHue(domain: string): number {
-  let h = 0;
-  for (let i = 0; i < domain.length; i++) {
-    h = (h * 31 + domain.charCodeAt(i)) >>> 0;
-  }
-  return h % 360;
-}
-
-/**
- * Hand-picked gradient pairs for letter avatars (same palette as ChatBubble
- * source chips). Domain hash picks one pair deterministically.
- */
-const AVATAR_PALETTE: readonly string[] = [
-  'linear-gradient(135deg, #ffb8a1, #ff8c77)',
-  'linear-gradient(135deg, #ffc3d5, #ff9cbd)',
-  'linear-gradient(135deg, #a8d8ff, #7cb8ff)',
-  'linear-gradient(135deg, #a8e6cf, #7ecfb0)',
-  'linear-gradient(135deg, #c7b8ff, #a896ff)',
-  'linear-gradient(135deg, #ffd3a5, #ffa978)',
-  'linear-gradient(135deg, #9ee6d7, #6fc9b5)',
-  'linear-gradient(135deg, #fff0a5, #ffd96b)',
-  'linear-gradient(135deg, #b8e0ff, #85b9ff)',
-  'linear-gradient(135deg, #ffb6e1, #ff8cc8)',
-  'linear-gradient(135deg, #c4eaa8, #9bd076)',
-  'linear-gradient(135deg, #ffc8a8, #ff9e78)',
-] as const;
-
-/**
- * Returns a CSS gradient background for a letter avatar keyed by domain.
- */
-function avatarColor(domain: string): string {
-  return AVATAR_PALETTE[domainHue(domain) % AVATAR_PALETTE.length];
+  /**
+   * Live read of ConversationView's auto-scroll gate (owner of
+   * `shouldAutoScrollRef`). Returns `true` while the user is pinned to the
+   * bottom and `false` the instant they wheel up to read history. The block
+   * only hard-pins the chat scroller when this returns non-`false`, so a
+   * user who scrolled up mid-search is never yanked back down. A function
+   * (not a boolean) because the gate flips on a ref the wheel handler mutates
+   * without a re-render, so a snapshot would be stale by pin time. Absent in
+   * isolation tests, where an unconditional pin is the intended behavior.
+   */
+  shouldAutoScroll?: () => boolean;
 }
 
 /**
@@ -136,6 +97,7 @@ export function SearchProgressBlock({
   sources = [],
   isSearching,
   isExiting = false,
+  shouldAutoScroll,
 }: SearchProgressBlockProps) {
   const panelId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -151,14 +113,23 @@ export function SearchProgressBlock({
    * Handoff exit always forces collapsed so body AnimatePresence can run.
    */
   const autoExpanded = isSearching && hasSources;
-  const expanded = isExiting ? false : (userExpanded ?? autoExpanded);
 
-  // When sources first arrive during a live search, re-open unless the user
-  // already forced collapse. Skip while exiting so we do not fight collapse.
-  useEffect(() => {
-    if (isExiting || !isSearching || !hasSources) return;
-    setUserExpanded(null);
-  }, [hasSources, isSearching, isExiting]);
+  // When a live search first gains sources (enters the auto-expand state),
+  // drop any user override so the fresh batch re-opens the list. Done as a
+  // render-time transition adjustment keyed on the auto-expand condition
+  // rather than a state-in-effect, so it lands in the same commit and never a
+  // frame late. React bails out once the condition stops changing; the
+  // `userExpanded !== null` guard keeps the setState converging.
+  const autoExpandActive = isSearching && !isExiting && hasSources;
+  const prevAutoExpandActiveRef = useRef(autoExpandActive);
+  if (prevAutoExpandActiveRef.current !== autoExpandActive) {
+    prevAutoExpandActiveRef.current = autoExpandActive;
+    if (autoExpandActive && userExpanded !== null) {
+      setUserExpanded(null);
+    }
+  }
+
+  const expanded = isExiting ? false : (userExpanded ?? autoExpanded);
 
   // Latest expand/exit flags for animation callbacks (exit must not pin).
   const expandedRef = useRef(expanded);
@@ -179,8 +150,12 @@ export function SearchProgressBlock({
     // Exit / collapse can still fire onAnimationComplete; skip pin then.
     /* v8 ignore next -- defensive guard; expand path always has both true */
     if (!expandedRef.current || isExitingRef.current) return;
+    // Honor ConversationView's manual-scroll gate: never yank a user who
+    // scrolled up to read history back to the bottom. Absent gate (isolation
+    // tests) pins unconditionally, preserving follow-live-output behavior.
+    if (shouldAutoScroll?.() === false) return;
     pinChatMessagesToBottom(rootRef.current);
-  }, []);
+  }, [shouldAutoScroll]);
 
   // Re-pin when source count grows while expanded (no expand animation).
   useEffect(() => {

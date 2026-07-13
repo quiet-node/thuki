@@ -927,6 +927,41 @@ describe('ConversationView', () => {
       expect(labels[0]).toHaveAttribute('data-label', 'Searching the web');
     });
 
+    it('forwards its auto-scroll gate to the search progress block pin', () => {
+      // A live search turn with sources (empty answer) mounts the expanded
+      // SearchProgressBlock, whose pin reads back this view's auto-scroll gate
+      // (`isPinnedToBottom`). Gate is open by default, so the pin proceeds and
+      // the scroller lands at the bottom.
+      const { container } = render(
+        <ConversationView
+          messages={[
+            { id: 'u', role: 'user', content: 'q' },
+            {
+              id: 'a',
+              role: 'assistant',
+              content: '',
+              fromSearch: true,
+              searchSources: [
+                { title: 'A', url: 'https://a.example' },
+                { title: 'B', url: 'https://b.example' },
+              ],
+            },
+          ]}
+          isGenerating={true}
+          onClose={vi.fn()}
+          searchStage={{ kind: 'reading_sources' }}
+        />,
+      );
+
+      // Block is mounted and expanded: its mount-time re-pin effect runs, which
+      // is the path that invokes the forwarded gate callback.
+      expect(screen.getByTestId('search-progress-body')).toBeInTheDocument();
+      const scrollEl = container.querySelector(
+        '.chat-messages-scroll',
+      ) as HTMLElement;
+      expect(scrollEl.scrollTop).toBe(scrollEl.scrollHeight);
+    });
+
     it('re-pins scroll to bottom when searchSources grow while auto-scroll is on', async () => {
       const { container, rerender } = render(
         <ConversationView

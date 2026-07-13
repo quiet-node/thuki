@@ -13,6 +13,7 @@ import { COMMANDS, SCREEN_CAPTURE_PLACEHOLDER } from '../config/commands';
 import type { EngineErrorKind } from '../hooks/useModel';
 import type { SearchResultPreview, SearchStage } from '../types/search';
 import { SearchProgressBlock } from './SearchProgressBlock';
+import { avatarColor, domainOf } from '../utils/domainAvatar';
 import { cleanForRender } from '../utils/sanitizeAssistantContent';
 import { splitHonestFailureNote } from '../utils/honestFailureNote';
 import {
@@ -27,59 +28,6 @@ import {
 const SEARCH_HANDOFF_FADE_S = 0.2;
 /** Reasoning enter after search exit: opacity + tiny y, ~0.2s. */
 const REASONING_HANDOFF_ENTER_S = 0.2;
-
-/**
- * Extracts a bare hostname from a URL for the sources footer. Strips the
- * leading `www.` prefix; falls back to the raw input if parsing fails.
- */
-function domainOf(url: string): string {
-  try {
-    const host = new URL(url).hostname;
-    return host.startsWith('www.') ? host.slice(4) : host;
-  } catch {
-    return url;
-  }
-}
-
-/** Pseudo-random but deterministic 0–359 hue derived from a domain string.
- *  Lets every source get a distinct yet consistent color across renders. */
-function domainHue(domain: string): number {
-  let h = 0;
-  for (let i = 0; i < domain.length; i++) {
-    h = (h * 31 + domain.charCodeAt(i)) >>> 0;
-  }
-  return h % 360;
-}
-
-/**
- * Hand-picked palette of light, summery, slightly-cool gradient pairs for
- * letter avatars. Each entry is a two-stop linear-gradient suitable as the
- * `background` of a small circular badge. The domain hash selects one pair
- * deterministically so a given source always renders the same color.
- *
- * Picked to keep the palette pleasant and varied without clashing: no neon,
- * no muddy shades, all readable under white/90 letter text.
- */
-const AVATAR_PALETTE: readonly string[] = [
-  'linear-gradient(135deg, #ffb8a1, #ff8c77)', // peach coral
-  'linear-gradient(135deg, #ffc3d5, #ff9cbd)', // cotton candy pink
-  'linear-gradient(135deg, #a8d8ff, #7cb8ff)', // sky blue
-  'linear-gradient(135deg, #a8e6cf, #7ecfb0)', // mint
-  'linear-gradient(135deg, #c7b8ff, #a896ff)', // lavender
-  'linear-gradient(135deg, #ffd3a5, #ffa978)', // sunset
-  'linear-gradient(135deg, #9ee6d7, #6fc9b5)', // seafoam
-  'linear-gradient(135deg, #fff0a5, #ffd96b)', // lemon sorbet
-  'linear-gradient(135deg, #b8e0ff, #85b9ff)', // periwinkle
-  'linear-gradient(135deg, #ffb6e1, #ff8cc8)', // bubblegum
-  'linear-gradient(135deg, #c4eaa8, #9bd076)', // kiwi
-  'linear-gradient(135deg, #ffc8a8, #ff9e78)', // papaya
-] as const;
-
-/** CSS gradient background for a letter avatar. Picks one of a hand-curated
- *  palette based on the domain hash for consistent but varied coloring. */
-function avatarColor(domain: string): string {
-  return AVATAR_PALETTE[domainHue(domain) % AVATAR_PALETTE.length];
-}
 
 /**
  * Friendly model name for the `InsufficientMemory` card title (issue #296):
@@ -229,6 +177,12 @@ interface ChatBubbleProps {
   searchStage?: SearchStage;
   /** True while web search is in flight for this assistant message. */
   isSearching?: boolean;
+  /**
+   * Live read of ConversationView's auto-scroll gate, forwarded to
+   * {@link SearchProgressBlock} so its hard-pin honors the same manual-scroll
+   * state the rest of the chat obeys (never yanks a user who scrolled up).
+   */
+  shouldAutoScroll?: () => boolean;
   /** When set on an assistant message, renders a chip-style attribution badge beside the CopyButton so the user sees which model produced this response. */
   modelName?: string;
   /**
@@ -298,6 +252,7 @@ export function ChatBubble({
   searchSources,
   searchStage = null,
   isSearching = false,
+  shouldAutoScroll,
   modelName,
   displayNames,
   memoryFit,
@@ -636,6 +591,7 @@ export function ChatBubble({
                     sources={searchSources}
                     isSearching={isSearching || phase === 'exiting'}
                     isExiting={phase === 'exiting'}
+                    shouldAutoScroll={shouldAutoScroll}
                   />
                 </motion.div>
               ) : null}

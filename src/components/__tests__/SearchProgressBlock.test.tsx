@@ -152,12 +152,13 @@ describe('SearchProgressBlock', () => {
     expect(list.className).toContain('overflow-y-auto');
   });
 
-  it('pins chat scroller when the sources list expands', () => {
+  it('pins chat scroller on expand when the user is pinned to the bottom', () => {
     render(
       <SearchProgressBlock
         stage={{ kind: 'reading_sources' }}
         isSearching
         sources={SOURCES}
+        shouldAutoScroll={() => true}
       />,
     );
     // Expand path: effect and/or onAnimationComplete hard-pin scroller
@@ -172,12 +173,32 @@ describe('SearchProgressBlock', () => {
     expect(pinChatMessagesToBottomMock).toHaveBeenCalled();
   });
 
-  it('re-pins when sourceCount grows while expanded', () => {
+  it('does NOT pin on expand when the user has scrolled up', () => {
+    render(
+      <SearchProgressBlock
+        stage={{ kind: 'reading_sources' }}
+        isSearching
+        sources={SOURCES}
+        shouldAutoScroll={() => false}
+      />,
+    );
+    // Manual-scroll gate is closed: the block follows live output only while
+    // the user is at the bottom, so no hard-pin fights their scroll position.
+    expect(pinChatMessagesToBottomMock).not.toHaveBeenCalled();
+
+    // Re-expand after a collapse cycle must stay gated too.
+    fireEvent.click(screen.getByTestId('search-progress-toggle')); // collapse
+    fireEvent.click(screen.getByTestId('search-progress-toggle')); // re-expand
+    expect(pinChatMessagesToBottomMock).not.toHaveBeenCalled();
+  });
+
+  it('re-pins when sourceCount grows while expanded and pinned to bottom', () => {
     const { rerender } = render(
       <SearchProgressBlock
         stage={{ kind: 'reading_sources' }}
         isSearching
         sources={[SOURCES[0]]}
+        shouldAutoScroll={() => true}
       />,
     );
     pinChatMessagesToBottomMock.mockClear();
@@ -187,9 +208,32 @@ describe('SearchProgressBlock', () => {
         stage={{ kind: 'reading_sources' }}
         isSearching
         sources={SOURCES}
+        shouldAutoScroll={() => true}
       />,
     );
     expect(pinChatMessagesToBottomMock).toHaveBeenCalled();
+  });
+
+  it('does NOT re-pin when sourceCount grows after the user scrolled up', () => {
+    const { rerender } = render(
+      <SearchProgressBlock
+        stage={{ kind: 'reading_sources' }}
+        isSearching
+        sources={[SOURCES[0]]}
+        shouldAutoScroll={() => false}
+      />,
+    );
+    pinChatMessagesToBottomMock.mockClear();
+
+    rerender(
+      <SearchProgressBlock
+        stage={{ kind: 'reading_sources' }}
+        isSearching
+        sources={SOURCES}
+        shouldAutoScroll={() => false}
+      />,
+    );
+    expect(pinChatMessagesToBottomMock).not.toHaveBeenCalled();
   });
 
   it('does not pin after collapse or while exiting', () => {
@@ -249,6 +293,45 @@ describe('SearchProgressBlock', () => {
     expect(screen.getByTestId('search-progress-chevron')).toHaveStyle({
       transform: 'rotate(90deg)',
     });
+  });
+
+  it('re-opens a user-collapsed list when a fresh sources batch re-enters auto-expand', () => {
+    const { rerender } = render(
+      <SearchProgressBlock
+        stage={{ kind: 'reading_sources' }}
+        isSearching
+        sources={SOURCES}
+      />,
+    );
+    // User collapses the auto-expanded list (sets the override to false).
+    fireEvent.click(screen.getByTestId('search-progress-toggle'));
+    expect(
+      screen.queryByTestId('search-progress-body'),
+    ).not.toBeInTheDocument();
+
+    // Sources momentarily clear, dropping the auto-expand condition, then a
+    // fresh batch arrives. Re-entering the auto-expand state drops the stale
+    // override so the new batch re-opens (render-time transition reset).
+    rerender(
+      <SearchProgressBlock
+        stage={{ kind: 'searching' }}
+        isSearching
+        sources={[]}
+      />,
+    );
+    rerender(
+      <SearchProgressBlock
+        stage={{ kind: 'reading_sources' }}
+        isSearching
+        sources={SOURCES}
+      />,
+    );
+
+    expect(screen.getByTestId('search-progress-body')).toBeInTheDocument();
+    expect(screen.getByTestId('search-progress-toggle')).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
   });
 
   it('lets the user re-expand after collapsing', () => {
