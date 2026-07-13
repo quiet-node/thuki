@@ -41,8 +41,23 @@ export function RequestStatusStrip({
 }: RequestStatusStripProps) {
   const [displayLabel, setDisplayLabel] = useState(label ?? '');
   const [phase, setPhase] = useState<'in' | 'out' | 'enter-from'>('in');
-  /** Mirrors displayed text so the effect can key only on `label`. */
-  const displayRef = useRef(label ?? '');
+  /**
+   * Last label value reconciled against, used only to detect prop changes
+   * during render (see below). Mirrors what `displayRef` used to do as a
+   * plain ref.
+   */
+  const [lastLabel, setLastLabel] = useState(label ?? '');
+  /**
+   * Non-null while an out→enter→in transition is pending or in flight; a
+   * fresh object every time so the timer effect below always restarts even
+   * if the target text repeats. Reset to null by the immediate (untimed)
+   * branches so the effect only fires for real animated transitions, and so
+   * internal `phase` churn (out → enter-from → in) never retriggers or
+   * cancels it early.
+   */
+  const [pendingTransition, setPendingTransition] = useState<{
+    target: string;
+  } | null>(null);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   /**
@@ -55,32 +70,38 @@ export function RequestStatusStrip({
     timersRef.current = [];
   }
 
-  useEffect(() => {
-    const next = label ?? '';
-    if (next === displayRef.current) {
-      return;
-    }
-    // Empty label: drop text immediately (dots-only mode).
+  // Derive display state from the `label` prop during render (React's
+  // "adjusting state when a prop changes" pattern) rather than in an
+  // effect, since these branches are pure reactions to the prop and need
+  // no side effect of their own; only the animated out→enter→in sequence
+  // below needs a real effect (it schedules timers).
+  const next = label ?? '';
+  if (next !== lastLabel) {
+    setLastLabel(next);
     if (!next) {
-      clearTimers();
-      displayRef.current = '';
+      // Empty label: drop text immediately (dots-only mode).
       setDisplayLabel('');
       setPhase('in');
-      return;
-    }
-    // First paint with a label: no exit animation.
-    if (!displayRef.current) {
-      displayRef.current = next;
+      setPendingTransition(null);
+    } else if (!lastLabel) {
+      // First paint with a label: no exit animation.
       setDisplayLabel(next);
       setPhase('in');
-      return;
+      setPendingTransition(null);
+    } else {
+      // Mid-flight change: flip to 'out' and hand the target to the timer
+      // effect below, which owns the out → enter → in timing.
+      setPhase('out');
+      setPendingTransition({ target: next });
     }
-    // Prior transition timers are cleared by this effect's cleanup when
-    // `label` changes mid-flight, then we start a fresh out → enter → in.
-    setPhase('out');
+  }
+
+  useEffect(() => {
+    if (!pendingTransition) return;
+    const { target } = pendingTransition;
+    // eslint-disable-next-line @eslint-react/web-api-no-leaked-timeout -- tracked in timersRef, cleared in cleanup below
     const tOut = setTimeout(() => {
-      displayRef.current = next;
-      setDisplayLabel(next);
+      setDisplayLabel(target);
       setPhase('enter-from');
       // Double rAF so the browser applies enter-from before transitioning to in.
       requestAnimationFrame(() => {
@@ -88,6 +109,7 @@ export function RequestStatusStrip({
           setPhase('in');
         });
       });
+      // eslint-disable-next-line @eslint-react/web-api-no-leaked-timeout -- tracked in timersRef, cleared in cleanup below
       const tIn = setTimeout(() => {
         /* settle complete */
       }, TRACK_IN_MS);
@@ -97,7 +119,7 @@ export function RequestStatusStrip({
     return () => {
       clearTimers();
     };
-  }, [label]);
+  }, [pendingTransition]);
 
   const showLabel = Boolean(displayLabel);
 

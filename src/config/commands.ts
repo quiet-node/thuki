@@ -51,12 +51,6 @@ export interface Command {
   readonly promptHelp: CommandPromptHelp;
   /** Prompt template with $INPUT / $LANG placeholders. Absent for non-template commands. */
   readonly promptTemplate?: string;
-  /**
-   * When true, this command never runs auto-search or the search classifier.
-   * Transform utilities operate on supplied text only. `/search` forces search
-   * instead; `/explain` and `/think` still honor Auto search Settings.
-   */
-  readonly skipSearch?: boolean;
 }
 
 export const COMMANDS: readonly Command[] = [
@@ -113,7 +107,6 @@ export const COMMANDS: readonly Command[] = [
       limit:
         'Returns raw extracted text only, never a description or interpretation of the image.',
     },
-    skipSearch: true,
   },
   {
     trigger: '/screen',
@@ -193,7 +186,6 @@ export const COMMANDS: readonly Command[] = [
     },
     promptTemplate:
       'You are a translation assistant. Translate the following text to the specified target language. The user may specify the target language by its full name (e.g., "Vietnamese"), ISO code (e.g., "vi", "vie"), abbreviation, or informal shorthand. Interpret the language identifier flexibly and use your best judgment. If no target language is specified, translate to Vietnamese. Output only the translation with no commentary or explanation.\n\nTarget language: $LANG\n\nText: $INPUT',
-    skipSearch: true,
   },
   {
     trigger: '/rewrite',
@@ -217,7 +209,6 @@ export const COMMANDS: readonly Command[] = [
     },
     promptTemplate:
       'Rewrite the text below so it sounds like a fluent native English speaker saying it naturally in everyday conversation. Make it read like a real person talking, not stiff or robotic.\n\nRules:\n- Tone: default to relaxed, casual, conversational English, and match the writer\'s energy. Keep it formal only if the original clearly is, and never sound more formal, stiffer, louder, or more casual than they did.\n- Change only what needs it. Rephrase awkward or non-native wording so it reads like a native speaker, and leave anything that already reads well alone. Keep every key point; do not add ideas or drop information. No edit beats a pointless edit.\n- Mirror the original\'s formatting exactly. Keep its Markdown (headings, bold, italics, bullet and numbered lists, links, blockquotes, code) along with its structure and order: rewrite the text inside each element, but never flatten a list, heading, or quote into a paragraph, and never merge separate points into one sentence. If the original is plain text with no Markdown, keep it plain and add none of your own.\n- Keep these exactly, character for character; never reword, reorder, or strip them: blockquotes (lines starting with >), fenced code and inline code, raw URLs, link targets, @mentions, #channels, and any emoji, expressive spellings, or slang the writer used ("heyyyy", "gonna", "tbh"). Do not change the wording inside a blockquote or code block at all, and do not add emoji or slang they did not use.\n- Keep the original point of view. Do not invent a narrator: if the text has no "I" or "we" (an imperative or impersonal note), keep it that way. Never turn a directive into "We need to", "We should", or "Let\'s"; an imperative stays an imperative.\n- Use normal capitalization and punctuation, and no em dashes: use a comma, colon, semicolon, or period instead. If the original already uses them, keeping them is fine.\n- If the text includes an "[Additional instruction]" line, follow it; it can override these defaults. Output only the rewritten text: no preamble, explanation, or quotes.\n\nExample 1\nInput: I very much want that we can finish this today if it possible for us.\nOutput: Honestly, I\'d love to wrap this up today if we can.\n\nExample 2\nInput: heyyyy so the build was broken but i fixed it and the tests pass now 🎉\nOutput: Heyyyy, so the build was broken but I fixed it and the tests pass now 🎉\n\nExample 3\nInput: @alex @priya hey can you two take a look at the deploy when you get a sec\nOutput: @alex @priya hey, can you two take a look at the deploy when you get a chance?\n\nExample 4\nInput: **Resources:**\n- here is the docs for schedule service [Schedule Service](https://docs.hedera.com/x)\n- this one good for begineer [Getting Started](https://docs.hedera.com/start)\nOutput: **Resources:**\n- The Schedule Service docs: [Schedule Service](https://docs.hedera.com/x)\n- Good for beginners: [Getting Started](https://docs.hedera.com/start)\n\nExample 5\nInput: Updates from the infra team:\n> The importer fix is live but grpc still has an issue. Track it at https://example.com/issues/13668. Both land in 0.156.0 with a GA soon.\nOutput: Here\'s the latest from the infra team:\n> The importer fix is live but grpc still has an issue. Track it at https://example.com/issues/13668. Both land in 0.156.0 with a GA soon.\n\nNow rewrite only the following text. Do not copy anything from the examples.\n\nText: $INPUT',
-    skipSearch: true,
   },
   {
     trigger: '/tldr',
@@ -241,7 +232,6 @@ export const COMMANDS: readonly Command[] = [
     },
     promptTemplate:
       "Summarize the following text into a TL;DR. Capture the core message in 1-3 short, direct sentences. Focus on what matters most: the main point, the key decision, or the critical takeaway. Skip background details, qualifications, and anything that isn't essential to understanding the gist. Output only the summary.\n\nText: $INPUT",
-    skipSearch: true,
   },
   {
     trigger: '/refine',
@@ -266,7 +256,6 @@ export const COMMANDS: readonly Command[] = [
     },
     promptTemplate:
       'Refine the following text by correcting grammar, spelling, punctuation, and awkward phrasing. Keep the original tone, voice, and meaning intact. Do not restructure paragraphs, add new ideas, or remove content. If a sentence is grammatically correct but stylistically rough, smooth it lightly without changing the intent. Output only the refined text.\n\nText: $INPUT',
-    skipSearch: true,
   },
   {
     trigger: '/bullets',
@@ -290,7 +279,6 @@ export const COMMANDS: readonly Command[] = [
     },
     promptTemplate:
       'Extract the key points from the following text as a bulleted list. Each item must begin with "- " (a hyphen followed by a space). Do not use numbered lists, plain paragraphs, headers, or any other formatting. Output only the bulleted list, nothing else.\n\nExample output format:\n- First key point\n- Second key point\n- Third key point\n\nEach bullet should be a concise, self-contained statement. Order by importance or logical sequence. Leave out filler and repetition.\n\nText: $INPUT',
-    skipSearch: true,
   },
   {
     trigger: '/explain',
@@ -343,7 +331,6 @@ export const COMMANDS: readonly Command[] = [
     },
     promptTemplate:
       'Read the following text and respond in two parts:\n\n**Part 1: Summary.** Write a short paragraph (3-5 sentences) explaining what this text is about. Cover: what the situation or topic is, who is involved, what the current state is, and why it matters or what is at stake. This should give someone who has not read the original text a clear picture of the context.\n\n**Part 2: To-dos.** List every task, action item, commitment, and follow-up from the text as a markdown checkbox list. Every single item MUST begin with "- [ ] " (hyphen, space, open bracket, space, close bracket, space). Do not use numbered lists, plain bullets, headers, or any other format for the list items.\n\nSeparate the two parts with a blank line. Do not add any headings or labels like "Summary:" or "To-dos:"; just write the paragraph, then the list.\n\nExample output format:\nThis is a paragraph explaining what the text is about, who is involved, and what the situation is. It gives enough context to understand why the tasks matter. It is clear and direct.\n\n- [ ] First task to complete\n- [ ] Second task to complete\n- [ ] Third task to complete\n\nFor each to-do item, include who is responsible (if mentioned), what needs to be done, and any deadline or timeframe (if mentioned). Order by urgency or sequence when possible.\n\nText: $INPUT',
-    skipSearch: true,
   },
 ] as const;
 
@@ -363,18 +350,6 @@ export const REPLACEABLE_COMMANDS: ReadonlySet<string> = new Set([
   '/rewrite',
   '/refine',
 ]);
-
-/**
- * Whether `trigger` is a transform slash command that must never run
- * auto-search or the search classifier/prefilter. Reads the command registry
- * (`skipSearch`) so the list stays single-sourced with autocomplete and docs.
- *
- * `/search`, `/explain`, `/think`, and `/screen` return false.
- */
-export function skipsAutoSearch(trigger: string): boolean {
-  const cmd = COMMANDS.find((c) => c.trigger === trigger);
-  return cmd?.skipSearch === true;
-}
 
 /**
  * Builds a fully composed prompt from a utility command's template.
