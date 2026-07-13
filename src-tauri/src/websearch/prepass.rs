@@ -162,6 +162,8 @@ pub struct BuiltinPrePass {
 
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl BuiltinPrePass {
+    /// Builds a pre-pass bound to a llama-server `/v1` endpoint (`base_url`), the
+    /// installed `model`, and a per-call wall-clock `timeout_secs`.
     pub fn new(
         client: reqwest::Client,
         base_url: impl Into<String>,

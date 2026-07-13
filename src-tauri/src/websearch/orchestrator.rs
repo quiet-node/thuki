@@ -955,15 +955,24 @@ async fn run_engine_tier(
         return EngineTierOutcome::Cancelled;
     }
     status(SearchPhase::Reading);
-    let pages = fetch_pages(
-        deps.transport,
-        &hits,
-        num_ctx,
-        freshness,
-        deps.web_cache,
-        bypass_cache,
-    )
-    .await;
+    // Honor cancellation DURING the fetch, not only at the pre-fetch check above:
+    // the fetch stage can wait up to `FETCH_SOFT_DEADLINE_MS`, so a cancel that
+    // lands mid-fetch would otherwise be ignored for that whole window. Racing the
+    // await against the token (biased, matching `openai::request_openai_json`)
+    // drops the in-flight `FuturesUnordered` the instant the token trips, which
+    // cancels every still-pending page fetch cleanly.
+    let pages = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return EngineTierOutcome::Cancelled,
+        pages = fetch_pages(
+            deps.transport,
+            &hits,
+            num_ctx,
+            freshness,
+            deps.web_cache,
+            bypass_cache,
+        ) => pages,
+    };
     let chunks = select_chunks(&pages, standalone_question, deps.scorer);
     // Freshness-gated recency-prior fusion (see `recency::recency_reorder`):
     // only reorders sources on a turn the freshness signal already flagged, so
@@ -2240,6 +2249,43 @@ mod tests {
                 SearchPhase::Reading
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn cancel_during_page_fetch_yields_cancelled() {
+        // A cancel raised WHILE the page-fetch stage is awaiting (after the
+        // pre-fetch check, not before it) must still abort the turn: the fetch
+        // await is raced against the token. `SearchPhase::Reading` is emitted
+        // immediately before that await, so a status callback that cancels on
+        // Reading reproduces a mid-fetch cancellation deterministically.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: "when was the treaty of versailles signed in paris".into(),
+            queries: vec!["treaty versailles paris".into()],
+            explicit_search: false,
+        }));
+        let transport = transport_with_serp_and_page();
+        let cancel = CancellationToken::new();
+        let cancel_on_read = cancel.clone();
+        let status = move |phase: SearchPhase| {
+            if matches!(phase, SearchPhase::Reading) {
+                cancel_on_read.cancel();
+            }
+        };
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &cancel,
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Cancelled));
     }
 
     // ── news vertical routing ─────────────────────────────────────────────────

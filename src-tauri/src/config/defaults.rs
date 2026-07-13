@@ -913,6 +913,23 @@ pub const SERP_MAX_RESULTS_PER_QUERY: usize = 10;
 /// Not user-tunable: a result-diversity bound.
 pub const SERP_MAX_RESULTS_PER_DOMAIN: usize = 2;
 
+/// Hard ceiling on the raw row count kept from a SINGLE engine's parsed SERP
+/// before it is cached and fed into cross-engine fusion. A keyless engine's
+/// `html` endpoint returns on the order of 30 organic rows, so this generous cap
+/// never truncates a normal result page: every real row still reaches Reciprocal
+/// Rank Fusion, preserving recall. It exists only to bound the pathological case
+/// where an oversized or format-changed response parses into an unbounded row
+/// list (one `SearchHit` per DOM node), which
+/// would otherwise let a single response cache an arbitrarily large `Vec` under
+/// up to [`SERP_CACHE_MAX_ENTRIES`] keys for [`SERP_CACHE_TTL_S`]. Sits above the
+/// post-fusion [`SERP_MAX_RESULTS_PER_QUERY`] output cap on purpose: fusion still
+/// sees the full page, and only the final fused list is trimmed to the output
+/// ceiling.
+///
+/// Not user-tunable: a defense-in-depth bound on external, attacker-influenceable
+/// SERP HTML, not a recall/latency knob.
+pub const SERP_MAX_RAW_HITS_PER_QUERY: usize = 64;
+
 /// Hit count at which the orchestrator stops issuing further search queries for
 /// the turn. The classifier may emit up to 3 queries, but firing them all
 /// back-to-back is a self-inflicted burst that trips the keyless engines' rate

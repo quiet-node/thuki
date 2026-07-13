@@ -392,8 +392,22 @@ pub async fn web_search(
             hit_count,
         });
         match outcome {
-            EngineOutcome::Hits(hits) => {
+            EngineOutcome::Hits(mut hits) => {
                 eprintln!("[search] engine={name} ok hits={}", hits.len());
+                // Bound the raw per-engine row count BEFORE caching and before it
+                // joins fusion. A parser pushes one row per DOM node with no row
+                // cap, so an oversized or format-changed SERP could otherwise
+                // cache an unbounded Vec under up to `SERP_CACHE_MAX_ENTRIES` keys
+                // for the whole `SERP_CACHE_TTL_S` window. The cap is generous
+                // (well above a normal ~30-row page), so a real result page is
+                // never truncated and every row still reaches fusion, preserving
+                // recall; only a pathologically long list is trimmed. Trimming
+                // the same list that goes into `lists` keeps the cache-hit and
+                // cache-miss paths symmetric: both feed the identical per-engine
+                // list into fusion, so a repeat query served from the cache fuses
+                // exactly what a fresh race would. The fused list is still capped
+                // to the output ceiling by `dedupe_and_cap` below.
+                hits.truncate(crate::config::defaults::SERP_MAX_RAW_HITS_PER_QUERY);
                 // Only Ok lists are cached; a repeat of this exact query within
                 // the TTL is then served from memory above.
                 cache.serp_put(name, query, freshness, hits.clone());
@@ -1924,5 +1938,62 @@ mod tests {
         let calls = transport.calls();
         assert_eq!(calls.len(), 1);
         assert!(!calls.iter().any(|c| c.url == DDG_HTML_ENDPOINT));
+    }
+
+    /// Builds a DuckDuckGo SERP body with `n` distinct-domain organic rows.
+    fn ddg_body_with_rows(n: usize) -> String {
+        let rows: String = (0..n)
+            .map(|i| {
+                format!(
+                    r#"<div class="result"><h2><a class="result__a" href="https://ex{i}.example/p">T{i}</a></h2></div>"#
+                )
+            })
+            .collect();
+        format!("<div>{rows}</div>")
+    }
+
+    #[tokio::test]
+    async fn web_search_caches_bounded_list_even_when_parser_yields_many_rows() {
+        // A pathological or format-changed SERP that parses into far more rows
+        // than any real page must NOT cache an unbounded Vec: the cached (and
+        // fused-input) list is bounded to `SERP_MAX_RAW_HITS_PER_QUERY`. Mojeek is
+        // forced cooling so the oversized DuckDuckGo list is the only thing under
+        // test. Feed well above the raw cap to prove the trim fires.
+        let raw_cap = crate::config::defaults::SERP_MAX_RAW_HITS_PER_QUERY;
+        let transport = FakeHttpTransport::new().with_response(
+            DDG_HTML_ENDPOINT,
+            ok(DDG_HTML_ENDPOINT, &ddg_body_with_rows(raw_cap + 20)),
+        );
+        let health = EngineHealth::new();
+        health.mark_blocked("mojeek", 3600);
+        let cache = empty_web_cache();
+        let _ = web_search(&transport, "q", &health, false, &cache, false).await;
+        let cached = cache
+            .serp_get("duckduckgo", "q", false)
+            .expect("ddg list cached");
+        assert_eq!(cached.len(), raw_cap);
+    }
+
+    #[tokio::test]
+    async fn web_search_does_not_truncate_a_normal_sized_serp() {
+        // Recall guard: a normal ~30-row result page (larger than the final
+        // `SERP_MAX_RESULTS_PER_QUERY` output ceiling, but under the raw cap) must
+        // reach fusion untruncated. The cached fusion-input list keeps every row,
+        // proving the bound does not shrink real pages down to the output ceiling.
+        let normal_rows = 30;
+        assert!(normal_rows > crate::config::defaults::SERP_MAX_RESULTS_PER_QUERY);
+        assert!(normal_rows < crate::config::defaults::SERP_MAX_RAW_HITS_PER_QUERY);
+        let transport = FakeHttpTransport::new().with_response(
+            DDG_HTML_ENDPOINT,
+            ok(DDG_HTML_ENDPOINT, &ddg_body_with_rows(normal_rows)),
+        );
+        let health = EngineHealth::new();
+        health.mark_blocked("mojeek", 3600);
+        let cache = empty_web_cache();
+        let _ = web_search(&transport, "q", &health, false, &cache, false).await;
+        let cached = cache
+            .serp_get("duckduckgo", "q", false)
+            .expect("ddg list cached");
+        assert_eq!(cached.len(), normal_rows);
     }
 }
