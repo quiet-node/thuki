@@ -1288,7 +1288,7 @@ pub const CITE_AUDIT_MAX_ANSWER_BYTES: usize = 262_144;
 /// looping forever.
 ///
 /// Not user-tunable: fixed product budget for the grounded-answer repair loop.
-pub const CITE_REPAIR_MAX_ATTEMPTS: u32 = 1;
+pub const CITE_REPAIR_MAX_ATTEMPTS: u32 = 2;
 
 /// Minimum byte length a cited source's fetched text must reach before the
 /// post-generation citation audit will score a claim against it. Below this
