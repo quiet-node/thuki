@@ -132,7 +132,7 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 - **It works everywhere.** Double-tap Control <kbd>⌃</kbd> and Thuki appears on your desktop, inside a browser, inside a terminal, and even in fullscreen apps. Your favorite AI chat apps can't do that.
 - **100% free local AI.** You run the model on your own machine, so there is no per-query cost, ever.
 - **Private by design.** No remote server, no cloud backend, no analytics, no telemetry. Conversations live in a local SQLite database on your machine and nowhere else.
-- **Works offline.** Once your model is downloaded, Thuki runs without an internet connection.
+- **Works offline.** Once your model is downloaded, inference runs without an internet connection. Downloads and web search still need the network; turn off Auto search in Settings → Behavior to keep chat fully offline.
 
 ## Features
 
@@ -232,7 +232,7 @@ Thuki is just getting started. Here's where it's headed:
 - **Automate the routine:** teach Thuki multi-step tasks and run them on a word.
 - **More providers:** bring your own OpenAI-compatible server (a local or self-hosted endpoint) alongside the built-in engine and Ollama.
 
-Whatever comes next, the aim stays the same: a local-first secretary that runs open models on your own machine. Anything that reaches beyond your Mac will always be opt-in.
+Whatever comes next, the aim stays the same: a local-first secretary that runs open models on your own machine. Network use stays minimal and user-controlled, from Auto search (on by default, one toggle away from off) to any future integration.
 
 ---
 
