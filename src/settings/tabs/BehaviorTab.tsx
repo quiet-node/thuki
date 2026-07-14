@@ -16,9 +16,6 @@ import { SaveField } from '../components/SaveField';
 import { configHelp } from '../configHelpers';
 import type { RawAppConfig } from '../types';
 
-/** @deprecated Prefer POINTING_WIGGLE_MS; kept for existing imports/tests. */
-export const AUTO_SEARCH_HIGHLIGHT_MS = POINTING_WIGGLE_MS;
-
 interface BehaviorTabProps {
   config: RawAppConfig;
   resyncToken: number;
