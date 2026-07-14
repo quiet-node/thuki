@@ -60,8 +60,9 @@ export function ThreeDotMotion() {
     function placeLeaders(pose: DotPose): void {
       for (let i = 0; i < 3; i++) {
         const el = leadersRef.current[i];
-        /* v8 ignore next 1 -- ref null only during unmount race */
+        /* v8 ignore start -- ref null only during unmount race */
         if (!el) continue;
+        /* v8 ignore stop */
         el.style.left = `${pose[i].x}px`;
         el.style.top = `${pose[i].y}px`;
       }
@@ -75,8 +76,9 @@ export function ThreeDotMotion() {
       for (let i = 0; i < 3; i++) {
         for (let t = 0; t < TRAIL_LAG_MS.length; t++) {
           const el = trailsRef.current[idx++];
-          /* v8 ignore next 1 -- ref null only during unmount race */
+          /* v8 ignore start -- ref null only during unmount race */
           if (!el) continue;
+          /* v8 ignore stop */
           const sample = sampleTrail(histories[i], now, TRAIL_LAG_MS[t]);
           if (!sample) {
             el.style.opacity = '0';
@@ -107,8 +109,9 @@ export function ThreeDotMotion() {
      * recurse infinitely (repo setup invokes rAF callbacks immediately).
      */
     function tick(): void {
-      /* v8 ignore next 1 -- cancelled only after unmount clears the timer */
+      /* v8 ignore start -- cancelled only after unmount clears the timer */
       if (cancelled) return;
+      /* v8 ignore stop */
       const now = performance.now();
       const { pose } = poseAtElapsed(now - t0, timeline);
       placeLeaders(pose);

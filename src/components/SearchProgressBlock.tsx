@@ -148,8 +148,10 @@ export function SearchProgressBlock({
    */
   const pinProgressInView = useCallback((): void => {
     // Exit / collapse can still fire onAnimationComplete; skip pin then.
-    /* v8 ignore next -- defensive guard; expand path always has both true */
+    // Defensive guard; expand path always has both true.
+    /* v8 ignore start */
     if (!expandedRef.current || isExitingRef.current) return;
+    /* v8 ignore stop */
     // Honor ConversationView's manual-scroll gate: never yank a user who
     // scrolled up to read history back to the bottom. Absent gate (isolation
     // tests) pins unconditionally, preserving follow-live-output behavior.
