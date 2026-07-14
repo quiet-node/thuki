@@ -759,8 +759,16 @@ pub(crate) fn system_prompt_with_datetime(
 async fn resolve_clock_place_time(message: &str) -> Option<String> {
     let place = crate::websearch::prefilter::clock_question_place(message)?;
     let transport = crate::net::transport::ReqwestTransport::new().ok()?;
-    crate::websearch::clock::resolve_place_time(&transport, &place, time::OffsetDateTime::now_utc())
-        .await
+    // No classifier runs on this path (it is independent of the search decision),
+    // so the language comes from the user's raw message and locale alone.
+    let lang = crate::websearch::lang::resolve_lang(message, "", &user_locale());
+    crate::websearch::clock::resolve_place_time(
+        &transport,
+        &place,
+        time::OffsetDateTime::now_utc(),
+        lang,
+    )
+    .await
 }
 
 /// Maps a resolved [`crate::websearch::orchestrator::SearchOutcome`] to a short

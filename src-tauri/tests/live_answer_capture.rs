@@ -73,6 +73,7 @@ impl PrePass for ScriptedPrePass {
             standalone_question: self.standalone.to_string(),
             queries: self.queries.iter().map(|q| q.to_string()).collect(),
             explicit_search: false,
+            lang: "en".to_string(),
         })
     }
 }

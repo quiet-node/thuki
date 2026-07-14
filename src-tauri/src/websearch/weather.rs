@@ -18,7 +18,7 @@
 
 use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
 use crate::websearch::assemble::SourceBlock;
-use crate::websearch::lang::{detect_request_lang, geocode_language};
+use crate::websearch::lang::geocode_language;
 use crate::websearch::{OPEN_METEO_ATTRIBUTION, THUKI_USER_AGENT};
 
 /// Words that signal a weather question. Matched on whole tokens of the
@@ -147,22 +147,27 @@ pub(crate) fn weather_location(question: &str) -> Option<String> {
     Some(location.join(" "))
 }
 
-/// Builds the geocoding GET request resolving `location` to coordinates.
+/// Builds the geocoding GET request resolving `location` to coordinates, with
+/// place names localised to `lang`.
 ///
-/// Open-Meteo's `language` parameter localises the place names it returns, and
-/// it follows the language of `location` itself ([`detect_request_lang`], which
-/// also consults the user's locale). Resolved from the location text rather than
-/// the whole question because this request is shared with the clock vertical
-/// (`crate::websearch::clock`), which has a place name and no question. An
-/// English or unresolved language sends `language=en`, exactly as this request
+/// `lang` is the turn's resolved REQUEST language (see
+/// [`crate::websearch::lang::resolve_lang`]), passed in by the caller. It is
+/// emphatically NOT detected from `location`: "what language is the string
+/// `Hanoi`" is not a meaningful question, and it always answered English, which
+/// silently pinned this request to English place names on every non-English turn.
+/// The language of a proper noun is not the language of the person asking about
+/// it. Both callers already know the real request language: the weather vertical
+/// gets it from the orchestrator, and the clock path
+/// (`crate::websearch::clock::resolve_place_time`) resolves it from the user's own
+/// message. An unallowlisted language sends `language=en`, exactly as this request
 /// always did.
-pub(crate) fn geocode_request(location: &str) -> HttpRequest {
+pub(crate) fn geocode_request(location: &str, lang: &str) -> HttpRequest {
     // GEOCODE_ENDPOINT is a compile-time-valid absolute URL.
     let mut url = url::Url::parse(GEOCODE_ENDPOINT).expect("static endpoint");
     url.query_pairs_mut()
         .append_pair("name", location)
         .append_pair("count", "1")
-        .append_pair("language", geocode_language(detect_request_lang(location)))
+        .append_pair("language", geocode_language(lang))
         .append_pair("format", "json");
     HttpRequest {
         method: HttpMethod::Get,
@@ -302,7 +307,9 @@ pub(crate) fn weather_source_block(report: String, place: &GeoPlace) -> SourceBl
 
 /// Runs the full weather vertical for `standalone_question`: intent + location
 /// check, geocode, forecast, format. Returns `None` on any miss so the caller
-/// falls through to the scraped-engine tier.
+/// falls through to the scraped-engine tier. `lang` is the turn's resolved
+/// request language and localises the geocoder's place names (see
+/// [`geocode_request`]).
 ///
 /// Coverage-excluded: thin async glue over the injectable transport delegating
 /// every decision to the pure helpers above, which are all tested directly;
@@ -312,9 +319,13 @@ pub(crate) fn weather_source_block(report: String, place: &GeoPlace) -> SourceBl
 pub(crate) async fn fetch_weather(
     transport: &dyn HttpTransport,
     standalone_question: &str,
+    lang: &str,
 ) -> Option<SourceBlock> {
     let location = weather_location(standalone_question)?;
-    let geo_response = transport.send(&geocode_request(&location)).await.ok()?;
+    let geo_response = transport
+        .send(&geocode_request(&location, lang))
+        .await
+        .ok()?;
     let place = parse_geocode(&String::from_utf8_lossy(&geo_response.body))?;
     let forecast_response = transport.send(&forecast_request(&place)).await.ok()?;
     let report = format_forecast(&String::from_utf8_lossy(&forecast_response.body), &place)?;
@@ -382,12 +393,12 @@ mod tests {
 
     #[test]
     fn geocode_request_carries_location_and_single_result() {
-        let req = geocode_request("New York");
+        let req = geocode_request("New York", "en");
         assert_eq!(req.method, HttpMethod::Get);
         assert!(req.url.starts_with(GEOCODE_ENDPOINT));
         assert!(req.url.contains("name=New+York"));
         assert!(req.url.contains("count=1"));
-        assert!(req.url.contains("language="));
+        assert!(req.url.contains("language=en"));
         assert!(req
             .headers
             .iter()
@@ -395,13 +406,20 @@ mod tests {
     }
 
     #[test]
-    fn geocode_request_localises_place_names_to_the_query_language() {
-        // A script-detectable location, so the assertion is independent of the
-        // machine's locale. Open-Meteo returns its place names in this language.
-        let req = geocode_request("Hà Nội");
+    fn geocode_request_localises_place_names_to_the_request_language() {
+        // THE regression this parameter exists for: the language follows the
+        // person asking, NOT the location name. "Hanoi" is not an English word
+        // because it is spelled in Latin script, and "北京" does not make an
+        // English speaker's question Chinese. Both used to be inferred from the
+        // location text, which asked a meaningless question and answered English
+        // every time.
+        let req = geocode_request("Hanoi", "vi");
         assert!(req.url.contains("language=vi"), "{}", req.url);
-        let req = geocode_request("北京");
-        assert!(req.url.contains("language=zh"), "{}", req.url);
+        let req = geocode_request("北京", "en");
+        assert!(req.url.contains("language=en"), "{}", req.url);
+        // And an unallowlisted language cannot reach the parameter at all.
+        let req = geocode_request("Hanoi", "../../xx");
+        assert!(req.url.contains("language=en"), "{}", req.url);
     }
 
     #[test]
@@ -496,7 +514,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_weather_resolves_full_chain() {
-        let geo_url = geocode_request("Tokyo").url;
+        let geo_url = geocode_request("Tokyo", "en").url;
         let fc_url = forecast_request(&tokyo()).url;
         let transport = FakeHttpTransport::new()
             .with_response(
@@ -515,7 +533,9 @@ mod tests {
                     body: FORECAST_FIXTURE.as_bytes().to_vec(),
                 },
             );
-        let block = fetch_weather(&transport, "weather in Tokyo").await.unwrap();
+        let block = fetch_weather(&transport, "weather in Tokyo", "en")
+            .await
+            .unwrap();
         assert_eq!(block.index, 1);
         assert_eq!(block.title, "Weather for Tokyo, Japan");
         assert!(block.text.contains("Current weather in Tokyo"));
@@ -525,12 +545,12 @@ mod tests {
     async fn fetch_weather_none_when_not_weather_or_geocode_fails() {
         let transport = FakeHttpTransport::new();
         // Not a weather question: no request is even sent.
-        assert!(fetch_weather(&transport, "latest rust version")
+        assert!(fetch_weather(&transport, "latest rust version", "en")
             .await
             .is_none());
         assert!(transport.calls().is_empty());
         // Weather question but geocode transport error: falls through.
-        assert!(fetch_weather(&transport, "weather in Tokyo")
+        assert!(fetch_weather(&transport, "weather in Tokyo", "en")
             .await
             .is_none());
     }

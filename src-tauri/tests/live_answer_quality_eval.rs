@@ -809,6 +809,7 @@ impl PrePass for ScriptedWebPrePass {
             standalone_question: latest_user_message.to_string(),
             queries: vec![latest_user_message.to_string()],
             explicit_search: false,
+            lang: "en".to_string(),
         })
     }
 }

@@ -7,14 +7,28 @@
 //! could not read. This module resolves the language of the turn's query and
 //! hands every channel the request shape that matches it.
 //!
-//! Resolution order, cheapest and most certain first:
+//! Resolution order, most certain first:
 //! 1. **Script** ([`detect_script_lang`]): free, deterministic, and independent
 //!    of how the machine is configured. Text written in Kana is Japanese no
 //!    matter what `$LANG` says.
-//! 2. **Locale** ([`locale_lang`]): the user's own `$LANG`, for the languages a
-//!    script check cannot name (a Latin-script query, or Cyrillic, which is
-//!    shared across too many languages to guess).
-//! 3. **[`crate::config::defaults::SEARCH_LANG_DEFAULT`]**: English.
+//! 2. **The classifier's `lang` field** (see [`crate::websearch::prepass`]): the
+//!    model naming the language the USER wrote in. This is the layer that
+//!    rescues shared-diacritic Vietnamese: `giá vàng hôm nay bao nhiêu` carries
+//!    no Vietnamese-distinctive character at all, so the deterministic rule
+//!    scores it zero and calls it English, yet it is plainly Vietnamese and is
+//!    exactly the high-value local-price question class. No range table can see
+//!    that; a model that understands the text can, and measured 12/12 on the
+//!    non-English probe set including 8/8 English. It is UNTRUSTED INPUT all the
+//!    same, and passes [`supported_lang`] before it can influence anything.
+//! 3. **Locale** ([`locale_lang`]): the user's own `$LANG`, for the turns where
+//!    neither the script nor the classifier named a language.
+//! 4. **[`crate::config::defaults::SEARCH_LANG_DEFAULT`]**: English.
+//!
+//! The language is resolved ONCE per turn, from the user's ORIGINAL message, and
+//! threaded down into every channel. It is never re-derived from a rewritten
+//! query: the classifier rewrites into whatever wording retrieves best (measured:
+//! it will happily emit an English companion query beside the native one), so a
+//! rewritten query is a retrieval artifact, not a language signal.
 //!
 //! ## The allowlist is a security boundary, not a convenience
 //!
@@ -152,25 +166,47 @@ fn row(code: &str) -> Option<&'static LangRow> {
 }
 
 /// The canonical `&'static str` for a supported ISO 639-1 code, or `None` for
-/// anything else. `code` is matched exactly, so callers lowercase first (both
-/// [`resolve_lang`] paths do).
+/// anything else. `code` is matched exactly, so callers lowercase first (every
+/// [`resolve_lang`] path does).
 pub(crate) fn supported_lang(code: &str) -> Option<&'static str> {
     row(code).map(|row| row.code)
 }
 
-/// Resolves the language of `text`, falling back to `user_locale` and then to
-/// [`SEARCH_LANG_DEFAULT`]. The returned code is always allowlisted (see
-/// [`supported_lang`]).
+/// Every allowlisted ISO 639-1 code, in table order. The one place the classifier
+/// grammar's `lang` enum comes from (see
+/// [`crate::websearch::prepass::prepass_schema`]), so the set the model may emit
+/// and the set that can reach a URL are the same set by construction rather than
+/// by two lists agreeing.
+pub(crate) fn supported_langs() -> Vec<&'static str> {
+    LANGS.iter().map(|row| row.code).collect()
+}
+
+/// Resolves the language of the turn from the user's own `text`, the classifier's
+/// `classifier_lang` (the language the model says the user wrote in, `""` when
+/// there is none), and `user_locale`, falling back to [`SEARCH_LANG_DEFAULT`].
+/// The returned code is always allowlisted (see [`supported_lang`]).
 ///
-/// Script wins over locale on purpose: a user whose machine is English can still
-/// ask a question in Japanese, and the script is proof, where the locale is only
-/// a hint. A script that resolves to a language OUTSIDE the allowlist (Hebrew,
-/// Greek) does not stop resolution: it falls through to the locale exactly as an
-/// undetectable script would, so the user's own configuration still gets its say
-/// before English does.
-pub(crate) fn resolve_lang(text: &str, user_locale: &str) -> &'static str {
+/// The pure core of this module: every input is a plain string and there is no
+/// environment read, so the whole precedence chain is tested directly.
+///
+/// Precedence, and why:
+/// - **Script first**: it is proof, not a hint. A user whose machine is English
+///   can still ask in Japanese, and Kana says so with certainty. A script that
+///   resolves to a language OUTSIDE the allowlist (Hebrew, Greek) does not stop
+///   resolution: it falls through exactly as an undetectable script would, so the
+///   later layers still get their say before English does.
+/// - **Classifier second**: a judgement, not proof, so it never overrides a
+///   certain script signal, but it sees what no range table can (Vietnamese
+///   written with no distinctive diacritic). It is model output, so it is
+///   filtered through [`supported_lang`] like any other untrusted string.
+/// - **Locale third**: the machine's configuration is the weakest signal, and
+///   letting it outrank the classifier is precisely the live regression this
+///   ordering fixes: a `vi_VN` machine asking an English question must not be
+///   sent to the Vietnamese web.
+pub(crate) fn resolve_lang(text: &str, classifier_lang: &str, user_locale: &str) -> &'static str {
     detect_script_lang(text)
         .and_then(supported_lang)
+        .or_else(|| supported_lang(&classifier_lang.trim().to_lowercase()))
         .or_else(|| locale_lang(user_locale))
         .unwrap_or(SEARCH_LANG_DEFAULT)
 }
@@ -272,27 +308,6 @@ fn is_vietnamese(text: &str) -> bool {
         .filter(|token| token.chars().any(is_vietnamese_marker))
         .count();
     marked as f64 / tokens as f64 >= SEARCH_LANG_VI_TOKEN_RATIO_MIN
-}
-
-/// The resolved language of `query` for an outbound request, combining the
-/// query's own script with the process locale.
-///
-/// The single place `$LANG` is read. The retrieval stages below
-/// (`engine`, `news`, `weather`) build their requests from fixed
-/// `fn(&str, bool)`-shaped builders that the orchestrator wires up, so the
-/// locale cannot be threaded down to them as an argument without reshaping the
-/// pipeline; reading it here keeps the request builders' signatures intact and
-/// the resolution logic in one place. The value is read once per process:
-/// `$LANG` does not change under a running app.
-///
-/// Coverage-excluded: a thin environment wrapper, mirroring
-/// `commands.rs::user_locale`. All of its logic lives in [`resolve_lang`], which
-/// is tested directly against both locale separators.
-#[cfg_attr(coverage_nightly, coverage(off))]
-pub(crate) fn detect_request_lang(query: &str) -> &'static str {
-    static LOCALE: std::sync::LazyLock<String> =
-        std::sync::LazyLock::new(|| std::env::var("LANG").unwrap_or_default());
-    resolve_lang(query, &LOCALE)
 }
 
 /// The resolved language when it is NOT the default, so a caller can OMIT a
@@ -476,13 +491,77 @@ mod tests {
         // A presence check would call this Vietnamese and search the Vietnamese
         // web for an English question.
         assert_eq!(detect_script_lang("what does phở mean"), None);
-        assert_eq!(resolve_lang("what does phở mean", "en_US"), "en");
+        // And with the classifier agreeing it is English (measured: it does),
+        // the loanword trap stays shut all the way through resolution.
+        assert_eq!(resolve_lang("what does phở mean", "en", "en_US"), "en");
         // Longer English text quoting several Vietnamese dishes stays English
         // too, because the marked share only falls as the text grows.
         assert_eq!(
             detect_script_lang("i want to cook phở and bún chả at home this weekend"),
             None
         );
+    }
+
+    // ── the classifier's `lang` field ────────────────────────────────────────
+
+    #[test]
+    fn classifier_lang_rescues_shared_diacritic_vietnamese() {
+        // THE case the field exists for: not one character of this question is
+        // Vietnamese-distinctive, so the deterministic rule scores it 0.000 and
+        // names nothing. It is Vietnamese, and it is the highest-value question
+        // class there is (a local price, in the local currency).
+        for question in [
+            "giá vàng hôm nay bao nhiêu",
+            "giá xăng hôm nay bao nhiêu",
+            "hôm nay có tin gì mới không",
+        ] {
+            assert_eq!(detect_script_lang(question), None);
+            assert_eq!(resolve_lang(question, "vi", "en_US"), "vi");
+        }
+    }
+
+    #[test]
+    fn script_beats_the_classifier_and_the_classifier_beats_the_locale() {
+        // Script is certain, so it outranks the model's judgement even when the
+        // model disagrees.
+        assert_eq!(resolve_lang("東京の天気は", "en", "en_US"), "ja");
+        // No script signal: the classifier decides, over the locale.
+        assert_eq!(resolve_lang("giá vàng hôm nay", "vi", "en_US"), "vi");
+        // And the same precedence protects the reverse case, which is the live
+        // regression: an English question on a Vietnamese machine.
+        assert_eq!(resolve_lang("what is the gold price", "en", "vi_VN"), "en");
+        // No classifier signal: the locale decides, over the default.
+        assert_eq!(resolve_lang("what is the gold price", "", "vi_VN"), "vi");
+        // Nothing at all: English.
+        assert_eq!(resolve_lang("what is the gold price", "", ""), "en");
+    }
+
+    #[test]
+    fn an_unvalidated_classifier_lang_never_reaches_a_url() {
+        // The grammar enum-constrains `lang`, but it is still model output, so
+        // it is treated as hostile: anything outside the allowlist is discarded
+        // and resolution simply continues to the next layer.
+        for hostile in ["evil", "../../en", "xx", "", "  ", "vi.evil.com", "he"] {
+            // No locale either: nothing survives, so English.
+            let resolved = resolve_lang("plain english question", hostile, "");
+            assert_eq!(
+                resolved, "en",
+                "classifier lang {hostile:?} escaped validation"
+            );
+            // A locale still gets its say after the hostile value is dropped, so
+            // a bad `lang` degrades to the layer below rather than to English.
+            assert_eq!(
+                resolve_lang("plain english question", hostile, "ja_JP"),
+                "ja"
+            );
+        }
+    }
+
+    #[test]
+    fn the_grammar_enum_is_exactly_the_allowlist() {
+        // One table, so the set the model may emit and the set that can reach a
+        // hostname cannot drift apart.
+        assert_eq!(supported_langs(), ALL.to_vec());
     }
 
     // ── locale fallback ──────────────────────────────────────────────────────
@@ -502,23 +581,23 @@ mod tests {
         assert_eq!(locale_lang("xx_YY"), None);
         assert_eq!(locale_lang(""), None);
         assert_eq!(locale_lang("../../etc/passwd"), None);
-        assert_eq!(resolve_lang("plain english", "xx_YY"), "en");
-        assert_eq!(resolve_lang("plain english", "evil.example.com"), "en");
+        assert_eq!(resolve_lang("plain english", "", "xx_YY"), "en");
+        assert_eq!(resolve_lang("plain english", "", "evil.example.com"), "en");
     }
 
     #[test]
     fn script_beats_locale_and_locale_beats_the_default() {
         // Script wins: a Japanese question from an English machine is Japanese.
-        assert_eq!(resolve_lang("東京の天気は", "en_US"), "ja");
+        assert_eq!(resolve_lang("東京の天気は", "", "en_US"), "ja");
         // No script signal: the locale decides.
-        assert_eq!(resolve_lang("weather in Hanoi", "vi_VN"), "vi");
-        assert_eq!(resolve_lang("погода сегодня", "ru_RU"), "ru");
+        assert_eq!(resolve_lang("weather in Hanoi", "", "vi_VN"), "vi");
+        assert_eq!(resolve_lang("погода сегодня", "", "ru_RU"), "ru");
         // Neither: English.
-        assert_eq!(resolve_lang("weather in Hanoi", ""), "en");
+        assert_eq!(resolve_lang("weather in Hanoi", "", ""), "en");
         // A detected script outside the allowlist de-escalates to the locale,
         // never to a request shape we never verified.
-        assert_eq!(resolve_lang("מה מזג האוויר", "fr_FR"), "fr");
-        assert_eq!(resolve_lang("τι καιρό κάνει", "en_US"), "en");
+        assert_eq!(resolve_lang("מה מזג האוויר", "", "fr_FR"), "fr");
+        assert_eq!(resolve_lang("τι καιρό κάνει", "", "en_US"), "en");
     }
 
     // ── allowlist ────────────────────────────────────────────────────────────
@@ -532,11 +611,13 @@ mod tests {
             "what is the weather",
         ] {
             for locale in ["en_US", "he_IL", "xx_YY", "'; DROP TABLE--", ""] {
-                let lang = resolve_lang(text, locale);
-                assert!(
-                    ALL.contains(&lang),
-                    "resolve_lang({text:?}, {locale:?}) escaped the allowlist: {lang}"
-                );
+                for classifier in ["", "vi", "he", "../../en", "'; DROP TABLE--"] {
+                    let lang = resolve_lang(text, classifier, locale);
+                    assert!(
+                        ALL.contains(&lang),
+                        "resolve_lang({text:?}, {classifier:?}, {locale:?}) escaped the allowlist: {lang}"
+                    );
+                }
             }
         }
     }

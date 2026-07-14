@@ -33,6 +33,13 @@ use crate::websearch::weather::{geocode_request, parse_geocode, GeoPlace};
 /// Resolves `place`'s current wall-clock time via geocode + system tzdata, or
 /// `None` on any miss. `now_utc` is the instant to resolve.
 ///
+/// `lang` is the language of the user's own message (see
+/// [`crate::websearch::lang::resolve_lang`]), which localises the place name the
+/// geocoder returns and therefore the name in the injected time line. This path
+/// runs before and independently of the search decision, so there is no
+/// classifier judgement to draw on: the caller resolves it from the raw message
+/// and the locale alone.
+///
 /// Coverage-excluded: thin async glue over the injectable transport,
 /// delegating every decision to [`parse_geocode`] and
 /// [`format_place_time_line`] (both fully tested elsewhere); the glue itself
@@ -43,8 +50,9 @@ pub(crate) async fn resolve_place_time(
     transport: &dyn HttpTransport,
     place: &str,
     now_utc: OffsetDateTime,
+    lang: &str,
 ) -> Option<String> {
-    let response = transport.send(&geocode_request(place)).await.ok()?;
+    let response = transport.send(&geocode_request(place, lang)).await.ok()?;
     let geo = parse_geocode(&String::from_utf8_lossy(&response.body))?;
     format_place_time_line(&geo, now_utc)
 }
@@ -207,7 +215,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_place_time_resolves_full_chain() {
-        let geo_url = geocode_request("San Francisco").url;
+        let geo_url = geocode_request("San Francisco", "en").url;
         let body = br#"{"results":[{"name":"San Francisco","country":"United States","latitude":37.77493,"longitude":-122.41942,"timezone":"America/Los_Angeles"}]}"#;
         let transport = FakeHttpTransport::new().with_response(
             &geo_url,
@@ -217,7 +225,7 @@ mod tests {
                 body: body.to_vec(),
             },
         );
-        let line = resolve_place_time(&transport, "San Francisco", fixed_utc())
+        let line = resolve_place_time(&transport, "San Francisco", fixed_utc(), "en")
             .await
             .unwrap();
         assert!(
@@ -233,14 +241,14 @@ mod tests {
         // live); the fake transport has no canned response either, so the
         // transport error surfaces the same fallback path.
         let transport = FakeHttpTransport::new();
-        assert!(resolve_place_time(&transport, "SF", fixed_utc())
+        assert!(resolve_place_time(&transport, "SF", fixed_utc(), "en")
             .await
             .is_none());
     }
 
     #[tokio::test]
     async fn resolve_place_time_none_on_empty_geocode_results() {
-        let geo_url = geocode_request("Nowhereville").url;
+        let geo_url = geocode_request("Nowhereville", "en").url;
         let transport = FakeHttpTransport::new().with_response(
             &geo_url,
             HttpResponse {
@@ -249,8 +257,10 @@ mod tests {
                 body: br#"{"generationtime_ms":0.1}"#.to_vec(),
             },
         );
-        assert!(resolve_place_time(&transport, "Nowhereville", fixed_utc())
-            .await
-            .is_none());
+        assert!(
+            resolve_place_time(&transport, "Nowhereville", fixed_utc(), "en")
+                .await
+                .is_none()
+        );
     }
 }

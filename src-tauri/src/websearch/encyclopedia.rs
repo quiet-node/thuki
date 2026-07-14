@@ -37,7 +37,7 @@ use crate::config::defaults::{
 };
 use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
 use crate::websearch::assemble::SourceBlock;
-use crate::websearch::lang::{detect_request_lang, wiki_subdomain};
+use crate::websearch::lang::wiki_subdomain;
 use crate::websearch::WIKIPEDIA_ATTRIBUTION;
 
 /// Wikipedia's keyless full-text search and REST summary endpoints, built per
@@ -159,9 +159,10 @@ fn summary_endpoint(lang: &str) -> String {
 }
 
 /// Builds the full-text search GET request resolving `question` to a
-/// candidate article title, against the `lang` edition. `lang` must come from
-/// [`detect_request_lang`], so the whole vertical (search, summary, and the
-/// article URL the writer cites) stays on one edition.
+/// candidate article title, against the `lang` edition. `lang` is the turn's
+/// resolved language (see [`crate::websearch::lang::resolve_lang`]), so the whole
+/// vertical (search, summary, and the article URL the writer cites) stays on one
+/// edition.
 pub(crate) fn search_request(question: &str, lang: &str) -> HttpRequest {
     // The edition URL is built from an allowlisted static subdomain.
     let mut url = url::Url::parse(&search_endpoint(lang)).expect("static endpoint");
@@ -254,9 +255,17 @@ pub(crate) fn wiki_source_block(summary: &WikiSummary) -> SourceBlock {
 /// the [`is_volatile_question`] guard before calling this. Returns `None` on any
 /// miss so the caller falls through to the scraped-engine tier.
 ///
-/// The question's language is resolved ONCE here and carried through both
-/// requests and the parse, so search, summary and the cited article URL all
-/// come from the same Wikipedia edition.
+/// `lang` is the turn's language, resolved once by the orchestrator from the
+/// user's ORIGINAL message (see [`crate::websearch::lang::resolve_lang`]) and
+/// carried through both requests and the parse, so search, summary and the cited
+/// article URL all come from the same Wikipedia edition.
+///
+/// It must be the user's language, not the rewritten question's: the edition swap
+/// and an in-language query are CO-GATED. Verified live, the Vietnamese edition
+/// does not cross-resolve English terms (`photosynthesis` returns the article for
+/// "Plants"), so sending an English query to `vi.wikipedia` turns a correct answer
+/// into a wrong one. Both halves come from the same resolution, so they cannot
+/// come apart.
 ///
 /// Coverage-excluded: thin async glue over the injectable transport
 /// delegating every decision to the pure helpers above, which are all tested
@@ -266,8 +275,8 @@ pub(crate) fn wiki_source_block(summary: &WikiSummary) -> SourceBlock {
 pub(crate) async fn fetch_encyclopedia(
     transport: &dyn HttpTransport,
     standalone_question: &str,
+    lang: &str,
 ) -> Option<SourceBlock> {
-    let lang = detect_request_lang(standalone_question);
     let search_response = match transport
         .send(&search_request(standalone_question, lang))
         .await
@@ -604,10 +613,10 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_encyclopedia_resolves_full_chain() {
-        // The fetch path resolves the edition itself, so the fixtures are keyed
-        // by the same resolution rather than a hardcoded language: the test
-        // holds whatever the machine's locale would produce, and stays valid.
-        let lang = detect_request_lang("what is photosynthesis");
+        // The caller passes the edition in, so the fixtures are keyed by the same
+        // value the fetch uses and the test no longer depends on the machine's
+        // locale at all.
+        let lang = "en";
         let search_url = search_request("what is photosynthesis", lang).url;
         let summary_url = summary_request("Photosynthesis", lang).url;
         let transport = FakeHttpTransport::new()
@@ -627,11 +636,53 @@ mod tests {
                     body: SUMMARY_FIXTURE.as_bytes().to_vec(),
                 },
             );
-        let block = fetch_encyclopedia(&transport, "what is photosynthesis")
+        let block = fetch_encyclopedia(&transport, "what is photosynthesis", lang)
             .await
             .unwrap();
         assert_eq!(block.title, "Photosynthesis");
         assert!(block.text.contains("Photosynthesis is"));
+    }
+
+    #[tokio::test]
+    async fn fetch_encyclopedia_stays_on_the_edition_the_caller_named() {
+        // The whole vertical (search, summary, cited URL) must ride the caller's
+        // language. Sending a Vietnamese question to `en.wikipedia` (or, worse, a
+        // rewritten English question to `vi.wikipedia`, which does not
+        // cross-resolve English terms) is the failure this parameter prevents.
+        let search_url = search_request("quang hợp là gì", "vi").url;
+        let summary_url = summary_request("Quang hợp", "vi").url;
+        assert!(search_url.starts_with("https://vi.wikipedia.org/"));
+        let transport = FakeHttpTransport::new()
+            .with_response(
+                &search_url,
+                HttpResponse {
+                    status: 200,
+                    final_url: search_url.clone(),
+                    body: r#"{"query":{"search":[{"title":"Quang hợp"}]}}"#
+                        .as_bytes()
+                        .to_vec(),
+                },
+            )
+            .with_response(
+                &summary_url,
+                HttpResponse {
+                    status: 200,
+                    final_url: summary_url.clone(),
+                    body: r#"{"type":"standard","title":"Quang hợp","extract":"Quang hợp là quá trình thu nhận năng lượng ánh sáng."}"#
+                        .as_bytes()
+                        .to_vec(),
+                },
+            );
+        let block = fetch_encyclopedia(&transport, "quang hợp là gì", "vi")
+            .await
+            .unwrap();
+        assert_eq!(block.title, "Quang hợp");
+        // The cited URL falls back to the same edition, never to English.
+        assert!(
+            block.url.starts_with("https://vi.wikipedia.org/"),
+            "{}",
+            block.url
+        );
     }
 
     #[tokio::test]
@@ -640,9 +691,11 @@ mod tests {
         // through. Routing/volatility gating is the orchestrator's job now, so
         // fetch_encyclopedia always issues the search request when called.
         let transport = FakeHttpTransport::new();
-        assert!(fetch_encyclopedia(&transport, "what is photosynthesis")
-            .await
-            .is_none());
+        assert!(
+            fetch_encyclopedia(&transport, "what is photosynthesis", "en")
+                .await
+                .is_none()
+        );
         assert!(transport.calls().iter().any(|c| c.url.contains("srsearch")));
     }
 
@@ -651,7 +704,7 @@ mod tests {
         // The question names 2026 but the resolved article is a 2023 edition:
         // the year-mismatch guard rejects it so the turn reaches the engines.
         let question = "what is the status of the World Cup 2026";
-        let lang = detect_request_lang(question);
+        let lang = "en";
         let search_url = search_request(question, lang).url;
         let summary_url = summary_request("2023 FIFA Women's World Cup", lang).url;
         let transport = FakeHttpTransport::new()
@@ -675,12 +728,14 @@ mod tests {
                         .to_vec(),
                 },
             );
-        assert!(fetch_encyclopedia(&transport, question).await.is_none());
+        assert!(fetch_encyclopedia(&transport, question, lang)
+            .await
+            .is_none());
     }
 
     #[tokio::test]
     async fn fetch_encyclopedia_none_when_summary_is_disambiguation() {
-        let lang = detect_request_lang("what is mercury");
+        let lang = "en";
         let search_url = search_request("what is mercury", lang).url;
         let summary_url = summary_request("Mercury", lang).url;
         let transport = FakeHttpTransport::new()
@@ -700,7 +755,7 @@ mod tests {
                     body: DISAMBIGUATION_FIXTURE.as_bytes().to_vec(),
                 },
             );
-        assert!(fetch_encyclopedia(&transport, "what is mercury")
+        assert!(fetch_encyclopedia(&transport, "what is mercury", lang)
             .await
             .is_none());
     }
