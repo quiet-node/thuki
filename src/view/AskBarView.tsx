@@ -257,8 +257,9 @@ interface AskBarViewProps {
  * Renders the persistent bottom input bar of the application.
  *
  * Also hosts the first-use Auto search trust notice (elevated panel above the
- * logo/input row) when `behavior.auto_search` is on and the notice has not
- * been acknowledged. Notice is non-blocking: compose and send stay enabled.
+ * logo/input row). It shows until acknowledged, independent of
+ * `behavior.auto_search`; only the CTA label adapts to the toggle (Turn on vs
+ * Turn off in Settings). Notice is non-blocking: compose and send stay enabled.
  *
  * Window dragging is handled by the application root container via event
  * bubbling - mousedown events from this component propagate up naturally.

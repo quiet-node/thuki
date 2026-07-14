@@ -341,10 +341,10 @@ pub const DEFAULT_AUTO_CLOSE: bool = false;
 /// Settings › Behavior.
 pub const DEFAULT_AUTO_SEARCH: bool = true;
 
-/// When `false` (default), the first auto-search turn shows a non-blocking
-/// notice explaining that queries leave the device for search services. Set
-/// `true` after the user taps "Got it" (or equivalent) so the card never
-/// returns. Independent of `auto_search`.
+/// When `false` (default), the ask bar shows a non-blocking notice explaining
+/// that queries leave the device for search services. Not tied to a search
+/// turn: it shows until acknowledged. Set `true` after the user taps "Got it"
+/// (or equivalent) so the card never returns. Independent of `auto_search`.
 pub const DEFAULT_SEARCH_NOTICE_ACKNOWLEDGED: bool = false;
 
 // Ollama API baked-in limits: not exposed in config.toml because they bound
