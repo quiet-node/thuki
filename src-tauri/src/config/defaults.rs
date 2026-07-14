@@ -1173,6 +1173,45 @@ pub const FETCH_MAX_ELEMENTS_TO_PARSE: usize = 9000;
 /// Not user-tunable: a retrieval-pipeline shape constant.
 pub const CHUNK_TARGET_WORDS: usize = 350;
 
+/// Target size, in characters, of one page chunk when the page is written in an
+/// unspaced script (Chinese, Japanese, Thai, Lao, Khmer, Burmese), where
+/// whitespace does not delimit words and the word target above is meaningless.
+/// ~500 Han characters carry roughly the information of the ~350 English words
+/// [`CHUNK_TARGET_WORDS`] targets, so both paths land in the same retrieval
+/// band.
+///
+/// Not user-tunable: a retrieval-pipeline shape constant.
+pub const CHUNK_CJK_TARGET_CHARS: usize = 500;
+
+/// Hard character ceiling for a single chunk on the unspaced-script path. A
+/// sentence longer than this (a paragraph with no sentence terminator, the
+/// normal shape of Thai prose) is split at this width, which guarantees forward
+/// progress and makes a degenerate whole-page chunk impossible by construction.
+/// Set above [`CHUNK_CJK_TARGET_CHARS`] so ordinary sentence packing, not the
+/// hard split, decides chunk boundaries whenever the text has any.
+///
+/// Not user-tunable: a retrieval-pipeline shape constant.
+pub const CHUNK_CJK_MAX_CHARS: usize = 700;
+
+/// Sentence terminators the unspaced-script chunker splits on, kept with the
+/// sentence they end. Covers the full-width CJK forms and the ASCII marks that
+/// appear in mixed text; the full-width comma and the ideographic comma are
+/// deliberately absent, as they separate clauses, not sentences.
+///
+/// Not user-tunable: a retrieval-pipeline shape constant.
+pub const CHUNK_CJK_SENTENCE_TERMINATORS: [char; 7] = ['。', '！', '？', '；', '．', '!', '?'];
+
+/// Minimum fraction of a page's non-whitespace characters that must belong to
+/// an unspaced script before the page chunks on characters instead of words.
+/// Above 0.3 the text is dominated by a script whose words carry no whitespace
+/// delimiter, so `split_whitespace` returns a handful of enormous units; below
+/// it, the page is mostly whitespace-delimited text (including Korean, which is
+/// spaced) and the word path is correct. Deliberately low so a CJK page carrying
+/// Latin markup, URLs, and numbers still takes the character path.
+///
+/// Not user-tunable: a retrieval-pipeline shape constant.
+pub const CHUNK_UNSPACED_RATIO_MIN: f64 = 0.3;
+
 /// BM25 term-frequency saturation parameter `k1`. The Okapi default; higher
 /// values let repeated query terms keep raising a chunk's score, lower values
 /// saturate sooner. 1.5 is the standard baseline.

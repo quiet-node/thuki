@@ -51,6 +51,7 @@ pub mod prefilter;
 pub mod prepass;
 pub mod rank;
 pub mod recency;
+pub mod script;
 pub mod serp_cache;
 pub mod sports;
 pub mod stage_timing;

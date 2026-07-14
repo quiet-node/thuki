@@ -50,6 +50,7 @@ use crate::config::defaults::{
     CITE_UNVERIFIABLE_MIN_SOURCE_BYTES, CITE_WEAK_MIN, TRACE_AUDIT_CLAIM_MAX_CHARS,
 };
 use crate::websearch::assemble::SourceBlock;
+use crate::websearch::script::is_bigram_script;
 use std::collections::{BTreeMap, HashSet};
 
 /// The outcome of auditing one answer's citations against its sources.
@@ -692,7 +693,8 @@ fn claim_text(text: &str, sentences: &[(usize, usize)], cref: &CitationRef) -> S
 /// case-insensitive. Content tokens are ASCII-lowercased alphanumeric runs that
 /// are either longer than three characters or number-like (contain at least one
 /// digit: scores, prices, ages, and dates are the load-bearing facts, so they
-/// count regardless of length). A claim with no content tokens scores 1.0
+/// count regardless of length), plus the character bigrams of any bigram-script
+/// run (see [`content_tokens`]). A claim with no content tokens scores 1.0
 /// (nothing to contradict). The source's own content tokens form the lookup
 /// set, so matching is whole-token, not substring.
 fn support_score(claim: &str, source: &str) -> f64 {
@@ -716,20 +718,40 @@ fn support_score(claim: &str, source: &str) -> f64 {
 /// between `$12` and `million`). Non-ASCII non-whitespace (accented letters)
 /// stays inside tokens so they are not shredded. Number-like is still only
 /// via ASCII digits (`3.5`, `2026`, `$42`).
+///
+/// A run of bigram-script characters (Han, Kana, Hangul, Thai, Lao, Khmer,
+/// Myanmar) is the exception: it emits overlapping character bigrams instead,
+/// and each bigram is a content token on its own merits. Those scripts write
+/// words with no delimiter, so the run would otherwise be one mega-token spanning
+/// a whole clause, matching nothing, and every claim in them would read as
+/// unsupported. The length rule is bypassed for them deliberately: two Han
+/// characters carry more information than a four-letter English word, and
+/// applying the `> 3` rule to a 2-character bigram would strip a CJK claim of
+/// every content token, which [`support_score`] scores `1.0` ("nothing to
+/// contradict"). That would report a claim as supported with zero evidence, a
+/// strictly worse failure than the false-unsupported one this fixes.
 fn content_tokens(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
+    let mut bigram_run: Vec<char> = Vec::new();
     for ch in text.chars() {
-        if ch.is_whitespace() {
+        if is_bigram_script(ch) {
+            push_token(&mut tokens, &mut current);
+            bigram_run.push(ch);
+        } else if ch.is_whitespace() {
             // Unicode + ASCII spaces: never glue `$12` to `million`.
             push_token(&mut tokens, &mut current);
+            push_bigram_tokens(&mut tokens, &mut bigram_run);
         } else if ch.is_ascii_alphanumeric() || !ch.is_ascii() {
+            push_bigram_tokens(&mut tokens, &mut bigram_run);
             current.extend(ch.to_lowercase());
         } else {
             push_token(&mut tokens, &mut current);
+            push_bigram_tokens(&mut tokens, &mut bigram_run);
         }
     }
     push_token(&mut tokens, &mut current);
+    push_bigram_tokens(&mut tokens, &mut bigram_run);
     tokens
 }
 
@@ -747,6 +769,25 @@ fn skip_unicode_whitespace(text: &str, mut byte_i: usize) -> usize {
         byte_i += ch.len_utf8();
     }
     byte_i
+}
+
+/// Moves a bigram-script run into `tokens` as its overlapping character bigrams
+/// (`ABCD` yields `AB`, `BC`, `CD`; a single character yields itself), then
+/// clears it. Every emitted token counts as a content token, bypassing
+/// [`push_token`]'s length rule for the reason given in [`content_tokens`]'s
+/// rustdoc. A no-op for an empty run.
+fn push_bigram_tokens(tokens: &mut Vec<String>, run: &mut Vec<char>) {
+    if run.is_empty() {
+        return;
+    }
+    if run.len() == 1 {
+        tokens.push(run[0].to_lowercase().collect());
+    } else {
+        for pair in run.windows(2) {
+            tokens.push(pair.iter().collect::<String>().to_lowercase());
+        }
+    }
+    run.clear();
 }
 
 /// Moves `current` into `tokens` when it qualifies as a content token (longer
@@ -1295,6 +1336,78 @@ mod tests {
         // Two content tokens in the claim, one present in the source.
         let score = support_score("alpha bravo", "the alpha appears here");
         assert!((score - 0.5).abs() < f64::EPSILON, "score was {score}");
+    }
+
+    // ── support_score: bigram-script claims (both directions) ─────────────────
+
+    /// A Chinese source paragraph used by the citation-audit script tests.
+    const ZH_SOURCE: &str = "北京是中华人民共和国的首都，位于华北平原北部。北京的常住人口约为2184万人。北京市总面积为16410平方公里，下辖16个区。";
+
+    /// A Japanese source paragraph used by the citation-audit script tests.
+    const JA_SOURCE: &str = "東京は日本の首都であり、人口はおよそ1400万人です。東京の面積は約2194平方キロメートルで、23の特別区から構成されています。";
+
+    #[test]
+    fn cjk_bigrams_are_content_tokens_despite_the_length_rule() {
+        // A 2-character bigram is shorter than the `> 3` content rule allows,
+        // yet it must survive: dropping it would leave a CJK claim with zero
+        // content tokens, which scores 1.0 ("supported") on zero evidence.
+        let toks = content_tokens("北京人口");
+        assert_eq!(toks, vec!["北京", "京人", "人口"]);
+        assert!(!content_tokens(ZH_SOURCE).is_empty());
+    }
+
+    #[test]
+    fn content_tokens_single_bigram_char_run_is_a_unigram() {
+        // A lone Han character between separators has no neighbour to pair
+        // with, so it must survive as a unigram rather than be dropped.
+        assert_eq!(
+            content_tokens("下辖16个，区"),
+            vec!["下辖", "16", "个", "区"]
+        );
+    }
+
+    #[test]
+    fn support_score_supported_chinese_claim_is_supported() {
+        let claim = "北京市总面积为16410平方公里。";
+        let score = support_score(claim, ZH_SOURCE);
+        assert!(score >= CITE_SUPPORTED_MIN, "score was {score}");
+        assert_eq!(classify(score), CiteClass::Supported);
+    }
+
+    #[test]
+    fn support_score_unsupported_chinese_claim_stays_unsupported() {
+        // Off-topic claim: must NOT be lifted to "supported" by the new content
+        // rule, and must not slip into the "weak" band either.
+        let claim = "香蕉是一种黄色的水果，富含钾元素。";
+        let score = support_score(claim, ZH_SOURCE);
+        assert!(score < CITE_WEAK_MIN, "score was {score}");
+        assert_eq!(classify(score), CiteClass::Unsupported);
+    }
+
+    #[test]
+    fn support_score_supported_japanese_claim_is_supported() {
+        let claim = "東京の面積は約2194平方キロメートルです。";
+        let score = support_score(claim, JA_SOURCE);
+        assert!(score >= CITE_SUPPORTED_MIN, "score was {score}");
+    }
+
+    #[test]
+    fn support_score_unsupported_japanese_claim_stays_unsupported() {
+        let claim = "ブラジル代表がワールドカップで優勝しました。";
+        let score = support_score(claim, JA_SOURCE);
+        assert!(score < CITE_WEAK_MIN, "score was {score}");
+    }
+
+    #[test]
+    fn content_tokens_are_unchanged_for_non_bigram_text() {
+        // The bigram branch must not perturb the shipped English/accented
+        // behaviour: runs are still ASCII-alphanumeric-plus-non-ASCII, filtered
+        // by the length-or-number rule, so short words ("hà", "nội", "có") are
+        // still dropped and accented long words still survive whole.
+        assert_eq!(
+            content_tokens("Hà Nội có dân số khoảng 8,4 triệu người."),
+            vec!["khoảng", "8", "4", "triệu", "người"]
+        );
     }
 
     // ── find_citation_refs / parse_marker ─────────────────────────────────────

@@ -10,12 +10,14 @@
 //! inputs, so it is unit-tested directly with no model or network.
 
 use crate::config::defaults::{
-    BM25_B, BM25_K1, CHUNK_TARGET_WORDS, QUOTE_STAT_SCORE_NUDGE, RANK_MAX_CHUNKS_PER_PAGE,
+    BM25_B, BM25_K1, CHUNK_CJK_MAX_CHARS, CHUNK_CJK_SENTENCE_TERMINATORS, CHUNK_CJK_TARGET_CHARS,
+    CHUNK_TARGET_WORDS, CHUNK_UNSPACED_RATIO_MIN, QUOTE_STAT_SCORE_NUDGE, RANK_MAX_CHUNKS_PER_PAGE,
     STATISTIC_MIN_DIGIT_RUN,
 };
 use crate::websearch::credibility::{classify_domain, DomainClass};
 use crate::websearch::domain_of;
 use crate::websearch::fetch::FetchedPage;
+use crate::websearch::script::{is_bigram_script, unspaced_ratio};
 
 /// A page chunk that survived ranking, carrying the provenance the citation
 /// stage needs (source URL and title) plus its relevance score.
@@ -46,11 +48,77 @@ impl Scorer for Bm25Scorer {
 
 /// Splits `text` into chunks of about `target_words` whitespace-separated
 /// words, preserving order. Empty or whitespace-only text yields no chunks.
+///
+/// Text dominated by an unspaced script (more than [`CHUNK_UNSPACED_RATIO_MIN`]
+/// of its non-whitespace characters) has no word delimiters, so the word path
+/// would return a handful of enormous units, often the whole page as one. Such
+/// text takes the character-based path instead (see [`chunk_chars`]).
 pub(crate) fn chunk_text(text: &str, target_words: usize) -> Vec<String> {
+    if unspaced_ratio(text) > CHUNK_UNSPACED_RATIO_MIN {
+        return chunk_chars(text, CHUNK_CJK_TARGET_CHARS, CHUNK_CJK_MAX_CHARS);
+    }
     let words: Vec<&str> = text.split_whitespace().collect();
     words
         .chunks(target_words.max(1))
         .map(|c| c.join(" "))
+        .collect()
+}
+
+/// Chunks unspaced-script text on characters: split into sentences, hard-split
+/// any sentence wider than `max_chars`, then greedily pack the pieces up to
+/// `target_chars`. The hard split guarantees forward progress, so no chunk can
+/// exceed `max_chars` however the page is punctuated (Thai prose, which carries
+/// no sentence terminator at all, relies on it). Blank pieces are dropped, so
+/// whitespace-only text yields no chunks.
+fn chunk_chars(text: &str, target_chars: usize, max_chars: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut acc = String::new();
+    let mut acc_chars = 0usize;
+    for piece in split_sentences(text)
+        .iter()
+        .flat_map(|s| hard_split(s, max_chars))
+    {
+        let piece_chars = piece.chars().count();
+        if acc_chars > 0 && acc_chars + piece_chars > target_chars {
+            out.push(std::mem::take(&mut acc));
+            acc_chars = 0;
+        }
+        acc.push_str(&piece);
+        acc_chars += piece_chars;
+    }
+    if !acc.is_empty() {
+        out.push(acc);
+    }
+    out
+}
+
+/// Splits `text` after every [`CHUNK_CJK_SENTENCE_TERMINATORS`] character,
+/// keeping the terminator with the sentence it ends. A trailing run with no
+/// terminator is its own sentence; a blank one is dropped.
+fn split_sentences(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        current.push(ch);
+        if CHUNK_CJK_SENTENCE_TERMINATORS.contains(&ch) {
+            out.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.trim().is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+/// Splits `sentence` into pieces of at most `max_chars` characters, trimming
+/// each and dropping any that is blank. Splits on character boundaries, never
+/// byte indices, so multi-byte text can never be cut mid-codepoint.
+fn hard_split(sentence: &str, max_chars: usize) -> Vec<String> {
+    let chars: Vec<char> = sentence.chars().collect();
+    chars
+        .chunks(max_chars.max(1))
+        .map(|w| w.iter().collect::<String>().trim().to_string())
+        .filter(|p| !p.is_empty())
         .collect()
 }
 
@@ -98,13 +166,65 @@ fn has_digit_run(text: &str, min_run: usize) -> bool {
     false
 }
 
-/// Lowercased alphanumeric terms of `text`, splitting on any non-alphanumeric
-/// character. The shared tokenisation for both query and chunks.
+/// Lowercased terms of `text`, the shared tokenisation for both query and
+/// chunks. Two kinds of run, split at every script boundary and at every
+/// non-alphanumeric character:
+///
+/// - A run of alphanumeric characters outside the bigram scripts emits one
+///   token, exactly as splitting on non-alphanumeric characters always did.
+/// - A run of bigram-script characters (Han, Kana, Hangul, Thai, Lao, Khmer,
+///   Myanmar) emits overlapping character bigrams, Lucene's shipped `cjk_bigram`
+///   semantics. Rust's `char::is_alphanumeric` is true for those scripts, so
+///   without this a whole punctuation-delimited clause became one mega-token
+///   that no query term could ever match, and every chunk scored zero.
 fn tokenize(text: &str) -> Vec<String> {
-    text.split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
-        .map(str::to_lowercase)
-        .collect()
+    let mut out: Vec<String> = Vec::new();
+    let mut word = String::new();
+    let mut bigram_run: Vec<char> = Vec::new();
+    for ch in text.chars() {
+        if is_bigram_script(ch) {
+            push_word(&mut out, &mut word);
+            bigram_run.push(ch);
+        } else if ch.is_alphanumeric() {
+            push_bigrams(&mut out, &mut bigram_run);
+            word.push(ch);
+        } else {
+            push_word(&mut out, &mut word);
+            push_bigrams(&mut out, &mut bigram_run);
+        }
+    }
+    push_word(&mut out, &mut word);
+    push_bigrams(&mut out, &mut bigram_run);
+    out
+}
+
+/// Moves a non-bigram-script alphanumeric run into `out` as one lowercased
+/// token, then clears it. A no-op for an empty run. Lowercasing the whole run
+/// at once (not character by character) keeps multi-character lowerings, e.g.
+/// `İ`, byte-identical to the previous `str::to_lowercase` tokenisation.
+fn push_word(out: &mut Vec<String>, word: &mut String) {
+    if !word.is_empty() {
+        out.push(word.to_lowercase());
+        word.clear();
+    }
+}
+
+/// Moves a bigram-script run into `out` as its overlapping character bigrams
+/// (`ABCD` yields `AB`, `BC`, `CD`), then clears it. A single-character run
+/// emits that character as a unigram, so a one-character word is not lost. A
+/// no-op for an empty run.
+fn push_bigrams(out: &mut Vec<String>, run: &mut Vec<char>) {
+    if run.is_empty() {
+        return;
+    }
+    if run.len() == 1 {
+        out.push(run[0].to_lowercase().collect());
+    } else {
+        for pair in run.windows(2) {
+            out.push(pair.iter().collect::<String>().to_lowercase());
+        }
+    }
+    run.clear();
 }
 
 /// Okapi BM25 score of every chunk against `query`, treating the `chunks` slice
@@ -288,7 +408,115 @@ mod tests {
         assert!(chunk_text("   \n\t ", 350).is_empty());
     }
 
+    // ── chunk_text: unspaced-script (character) path ──────────────────────────
+
+    /// A Chinese paragraph: no whitespace, so the word path returned the whole
+    /// page as one oversized unit. The character path splits it on sentences.
+    const ZH_PAGE: &str = "北京是中华人民共和国的首都，位于华北平原北部。北京的常住人口约为2184万人。故宫是明清两代的皇家宫殿，位于北京中轴线的中心。北京市总面积为16410平方公里，下辖16个区。北京也是中国的政治、文化和国际交往中心。";
+
+    /// A Japanese paragraph, same shape as [`ZH_PAGE`].
+    const JA_PAGE: &str = "東京は日本の首都であり、人口はおよそ1400万人です。東京都は関東地方に位置し、政治と経済の中心地として知られています。皇居は千代田区にあり、多くの観光客が訪れます。東京の面積は約2194平方キロメートルで、23の特別区から構成されています。";
+
+    /// A Thai paragraph. Thai carries no sentence terminator at all, so it
+    /// exercises the hard-split path exclusively.
+    const TH_PAGE: &str = "กรุงเทพมหานครเป็นเมืองหลวงของประเทศไทย มีประชากรประมาณ 10 ล้านคน กรุงเทพมหานครตั้งอยู่บริเวณปากแม่น้ำเจ้าพระยา และเป็นศูนย์กลางทางเศรษฐกิจของประเทศ";
+
+    #[test]
+    fn chunk_text_takes_char_path_for_unspaced_script() {
+        // Two sentences well inside the target pack into one chunk; a page of
+        // sentences past the target splits into several. Either way every chunk
+        // stays within the hard window, which the word path could not promise.
+        let long_zh = ZH_PAGE.repeat(8);
+        let chunks = chunk_text(&long_zh, CHUNK_TARGET_WORDS);
+        assert!(chunks.len() > 1, "expected several chunks, got {chunks:?}");
+        for c in &chunks {
+            assert!(c.chars().count() <= CHUNK_CJK_MAX_CHARS);
+        }
+        // Nothing is dropped: the concatenation is the source text back again.
+        assert_eq!(chunks.concat(), long_zh);
+    }
+
+    #[test]
+    fn chunk_text_char_path_packs_short_page_into_one_chunk() {
+        let chunks = chunk_text(JA_PAGE, CHUNK_TARGET_WORDS);
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].chars().count() <= CHUNK_CJK_TARGET_CHARS);
+    }
+
+    #[test]
+    fn chunk_text_char_path_hard_splits_a_terminatorless_page() {
+        // Thai has no sentence terminator, so the whole page is one "sentence"
+        // and only the hard window bounds it.
+        let long_th = TH_PAGE.repeat(20);
+        let chunks = chunk_text(&long_th, CHUNK_TARGET_WORDS);
+        assert!(chunks.len() > 1);
+        for c in &chunks {
+            assert!(c.chars().count() <= CHUNK_CJK_MAX_CHARS);
+        }
+    }
+
+    #[test]
+    fn chunk_text_keeps_word_path_for_korean() {
+        // Korean is bigram-tokenized but whitespace-delimited, so it must stay
+        // on the word path: 4 words at a target of 2 gives 2 chunks.
+        let chunks = chunk_text("한국 서울 인구 수", 2);
+        assert_eq!(chunks, vec!["한국 서울", "인구 수"]);
+    }
+
+    #[test]
+    fn chunk_text_keeps_word_path_below_the_ratio() {
+        // Mostly Latin text carrying a couple of Han characters stays on the
+        // word path (ratio under the threshold).
+        let chunks = chunk_text("the chinese word for capital is 首都 here", 4);
+        assert_eq!(chunks, vec!["the chinese word for", "capital is 首都 here"]);
+    }
+
+    #[test]
+    fn hard_split_drops_blank_pieces_and_cuts_on_char_boundaries() {
+        assert!(hard_split("   ", 4).is_empty());
+        assert_eq!(hard_split("中文中文中", 2), vec!["中文", "中文", "中"]);
+    }
+
+    #[test]
+    fn split_sentences_keeps_terminators_and_drops_a_blank_tail() {
+        assert_eq!(
+            split_sentences("一。二！三"),
+            vec!["一。", "二！", "三"],
+            "terminator stays with its sentence"
+        );
+        assert_eq!(split_sentences("一。  "), vec!["一。"]);
+    }
+
     // ── tokenize ──────────────────────────────────────────────────────────────
+
+    /// The tokenisation that shipped before bigram support: split on any
+    /// non-alphanumeric character, lowercase each run. Kept here, and only
+    /// here, as the reference the new tokenizer must reproduce exactly on text
+    /// with no bigram-script character.
+    fn old_tokenize(text: &str) -> Vec<String> {
+        text.split(|c: char| !c.is_alphanumeric())
+            .filter(|t| !t.is_empty())
+            .map(str::to_lowercase)
+            .collect()
+    }
+
+    #[test]
+    fn tokenize_matches_the_old_tokenizer_on_non_bigram_text() {
+        let cases = [
+            "Rust's BM25, v2!",
+            "The treaty was signed in Paris in 1919.",
+            // Vietnamese diacritics are alphanumeric letters and must survive
+            // whole, not be split apart or stripped.
+            "Hà Nội có dân số khoảng 8,4 triệu người, đường phố rất đông.",
+            "2026-07-14T00:00:00Z",
+            "...,,,;!?",
+            "",
+            "   ",
+        ];
+        for text in cases {
+            assert_eq!(tokenize(text), old_tokenize(text), "diverged on {text:?}");
+        }
+    }
 
     #[test]
     fn tokenize_lowercases_and_splits_nonalnum() {
@@ -296,6 +524,39 @@ mod tests {
             tokenize("Rust's BM25, v2!"),
             vec!["rust", "s", "bm25", "v2"]
         );
+    }
+
+    #[test]
+    fn tokenize_keeps_vietnamese_diacritics_whole() {
+        assert_eq!(
+            tokenize("Đường phố Hà Nội"),
+            vec!["đường", "phố", "hà", "nội"]
+        );
+    }
+
+    #[test]
+    fn tokenize_emits_overlapping_bigrams_for_cjk() {
+        assert_eq!(tokenize("北京人口"), vec!["北京", "京人", "人口"]);
+        // Punctuation ends the run, so no bigram straddles a sentence break.
+        assert_eq!(tokenize("北京。人口"), vec!["北京", "人口"]);
+    }
+
+    #[test]
+    fn tokenize_single_bigram_char_run_is_a_unigram() {
+        assert_eq!(tokenize("单"), vec!["单"]);
+        assert_eq!(tokenize("2184万人"), vec!["2184", "万人"]);
+    }
+
+    #[test]
+    fn tokenize_splits_at_a_script_boundary() {
+        assert_eq!(tokenize("iPhone15手机"), vec!["iphone15", "手机"]);
+        assert_eq!(tokenize("手机iPhone15"), vec!["手机", "iphone15"]);
+    }
+
+    #[test]
+    fn tokenize_bigrams_korean_and_thai() {
+        assert_eq!(tokenize("한국어"), vec!["한국", "국어"]);
+        assert_eq!(tokenize("ประชากร").len(), "ประชากร".chars().count() - 1);
     }
 
     // ── has_quote_or_statistic ────────────────────────────────────────────────
@@ -364,6 +625,31 @@ mod tests {
         let chunks = vec!["paris is the capital".into(), "the the the the the".into()];
         let scores = bm25_scores("paris the", &chunks, 1.5, 0.75);
         assert!(scores[0] > scores[1]);
+    }
+
+    #[test]
+    fn bm25_ranks_the_chunk_that_answers_a_cjk_question() {
+        // Before bigram tokenisation both chunks scored exactly 0.0 (each was
+        // one mega-token that no query term could equal), so the ranking was
+        // arbitrary. The answering chunk must now win outright.
+        let chunks = vec![
+            "北京的常住人口约为2184万人。".to_string(),
+            "香蕉是一种黄色的水果，富含钾元素。".to_string(),
+        ];
+        let scores = bm25_scores("北京 人口", &chunks, BM25_K1, BM25_B);
+        assert!(scores[0] > 0.0);
+        assert_eq!(scores[1], 0.0);
+    }
+
+    #[test]
+    fn bm25_ranks_the_chunk_that_answers_a_japanese_question() {
+        let chunks = vec![
+            "東京の人口はおよそ1400万人です。".to_string(),
+            "バナナは黄色い果物です。".to_string(),
+        ];
+        let scores = bm25_scores("東京 人口", &chunks, BM25_K1, BM25_B);
+        assert!(scores[0] > scores[1]);
+        assert_eq!(scores[1], 0.0);
     }
 
     // ── select_chunks ─────────────────────────────────────────────────────────
