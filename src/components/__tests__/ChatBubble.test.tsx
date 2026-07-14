@@ -1390,6 +1390,25 @@ describe('ChatBubble', () => {
       expect(screen.getByTestId('search-trust-notice')).toBeInTheDocument();
     });
 
+    it('keeps search trust notice after search finishes until Got it', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="It is sunny in Tokyo [1]"
+          index={0}
+          isSearching={false}
+          searchSources={[
+            {
+              title: 'Weather for Tokyo',
+              url: 'https://open-meteo.com/',
+            },
+          ]}
+        />,
+      );
+      expect(screen.getByTestId('search-trust-notice')).toBeInTheDocument();
+      expect(screen.queryByTestId('search-progress-block')).toBeNull();
+    });
+
     it('hides search trust notice when searchNoticeAcknowledged is true', () => {
       render(
         <ConfigProviderForTest

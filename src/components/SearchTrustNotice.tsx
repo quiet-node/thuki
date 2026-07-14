@@ -1,7 +1,7 @@
 /**
  * First-use, non-blocking card explaining that auto-search sends queries
- * from the device to search services. Shown above the first search progress
- * block while Auto search is on and the user has not acknowledged yet.
+ * from the device to search services. Stays until Got it (or auto_search is
+ * off); does not dismiss when the answer stream finishes.
  */
 
 import { invoke } from '@tauri-apps/api/core';

@@ -307,11 +307,14 @@ export function ChatBubble({
     isSearching && !isVerifyingSources && !handedOffFromSearch;
 
   /**
-   * First-use search trust notice: above live search progress while Auto
-   * search is on and the user has not acknowledged yet. Never gates compose.
+   * First-use search trust notice: once a search-related assistant turn is
+   * on screen (live progress and/or sources), stay until Got it. Never hide
+   * when the stream finishes. Never gates compose.
    */
+  const hasSearchActivity =
+    isSearching || Boolean(searchStage) || hasSearchSources;
   const showSearchTrustNotice =
-    showLiveSearch &&
+    hasSearchActivity &&
     behavior.autoSearch &&
     !behavior.searchNoticeAcknowledged &&
     !noticeDismissedLocally;
@@ -608,6 +611,12 @@ export function ChatBubble({
           onClick={onAnswerClick}
         >
           <div className="text-sm leading-relaxed select-text py-1">
+            {showSearchTrustNotice ? (
+              <SearchTrustNotice
+                onAcknowledge={acknowledgeSearchNotice}
+                onOpenSettings={openSearchSettings}
+              />
+            ) : null}
             <AnimatePresence
               initial={false}
               onExitComplete={onSearchExitComplete}
@@ -623,12 +632,6 @@ export function ChatBubble({
                     transition: { duration: handoffFadeS, ease: 'easeOut' },
                   }}
                 >
-                  {showSearchTrustNotice ? (
-                    <SearchTrustNotice
-                      onAcknowledge={acknowledgeSearchNotice}
-                      onOpenSettings={openSearchSettings}
-                    />
-                  ) : null}
                   <SearchProgressBlock
                     stage={searchStage}
                     sources={searchSources}
