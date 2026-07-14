@@ -10,6 +10,7 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
+import { POINTING_WIGGLE_MS } from '../../components/PointingWiggle';
 import { ModelsSegmented, type ModelsSubview } from './models/ModelsSegmented';
 import { ProvidersPane } from './models/ProvidersPane';
 import { LibraryPane } from './models/LibraryPane';
@@ -32,6 +33,15 @@ interface ModelTabProps {
   onPendingViewConsumed?: () => void;
 }
 
+/**
+ * Models tab: segmented Library / Discover / Providers surface.
+ *
+ * @param config App config for panes.
+ * @param resyncToken Save-field resync token.
+ * @param onSaved After config writes.
+ * @param pendingView One-shot deep-link sub-view (routing unchanged).
+ * @param onPendingViewConsumed Clears the host's pending view after apply.
+ */
 export function ModelTab({
   config,
   resyncToken,
@@ -42,6 +52,12 @@ export function ModelTab({
   // Providers is the default sub-view: the active provider and the shared
   // generation controls are the most-used surface.
   const [view, setView] = useState<ModelsSubview>('providers');
+  /** UI-only: PointingWiggle under a Models segment after a deep-link. */
+  const [highlightSubview, setHighlightSubview] = useState<ModelsSubview | null>(
+    null,
+  );
+  /** UI-only: PointingWiggle on Built-in provider label after providers deep-link. */
+  const [highlightBuiltin, setHighlightBuiltin] = useState(false);
   const goToDiscover = () => setView('discover');
 
   useEffect(() => {
@@ -51,7 +67,15 @@ export function ModelTab({
     // once per deep-link, so the re-render the rule guards against is a non-issue.
     // eslint-disable-next-line @eslint-react/set-state-in-effect
     setView(pendingView);
+    // UI-only pointer: same routing as before; wiggle the landed segment.
+    setHighlightSubview(pendingView);
+    setHighlightBuiltin(pendingView === 'providers');
     onPendingViewConsumed?.();
+    const t = window.setTimeout(() => {
+      setHighlightSubview(null);
+      setHighlightBuiltin(false);
+    }, POINTING_WIGGLE_MS);
+    return () => window.clearTimeout(t);
   }, [pendingView, onPendingViewConsumed]);
 
   // Library and Discover manage the built-in engine's models, so they are
@@ -73,7 +97,11 @@ export function ModelTab({
   return (
     <>
       <div className={styles.barrow}>
-        <ModelsSegmented value={view} onChange={setView} />
+        <ModelsSegmented
+          value={view}
+          onChange={setView}
+          highlightId={highlightSubview}
+        />
       </div>
 
       {view === 'library' ? (
@@ -106,6 +134,7 @@ export function ModelTab({
           resyncToken={resyncToken}
           onSaved={onSaved}
           onAddModel={goToDiscover}
+          highlightBuiltin={highlightBuiltin}
         />
       ) : null}
     </>

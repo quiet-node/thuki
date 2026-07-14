@@ -7,17 +7,17 @@
  */
 
 import { useEffect } from 'react';
+import {
+  PointingWiggle,
+  POINTING_WIGGLE_MS,
+} from '../../components/PointingWiggle';
 import { Section, Toggle } from '../components';
 import { SaveField } from '../components/SaveField';
 import { configHelp } from '../configHelpers';
 import type { RawAppConfig } from '../types';
-import styles from '../../styles/settings.module.css';
 
-/**
- * Full deep-link highlight timeline for Auto search (design D): draw, settle,
- * three soft breaths, fade. Must match `autoSearchWiggleLife` in CSS.
- */
-export const AUTO_SEARCH_HIGHLIGHT_MS = 7200;
+/** @deprecated Prefer POINTING_WIGGLE_MS; kept for existing imports/tests. */
+export const AUTO_SEARCH_HIGHLIGHT_MS = POINTING_WIGGLE_MS;
 
 interface BehaviorTabProps {
   config: RawAppConfig;
@@ -38,19 +38,12 @@ const TEXT_REPLACEMENT_HELP =
   'Applies only to /rewrite and /refine: writing their result back into the app you were using, replacing your highlighted text.';
 
 /**
- * Hand-drawn squiggle path under the Auto search label (viewBox 0 0 100 10).
- * pathLength is set in SVG so stroke-dash animation is length-independent.
- */
-const WIGGLE_PATH_D =
-  'M1.5 6.2 C 8 3.8, 12 7.5, 18 5.5 S 28 2.8, 34 5.8 S 44 8.2, 50 5.2 S 60 2.5, 68 5.9 S 80 8.5, 88 4.8 S 95 6.5, 98.5 5.2';
-
-/**
  * Renders Behavior settings: Auto search, then Text Replacement toggles.
  *
  * @param config Current raw app config from the Settings host.
  * @param resyncToken Bumps when the host reloads config from disk so fields re-seed.
  * @param onSaved Called with the resolved config after a successful field write.
- * @param highlightAutoSearch When true, draws the design-D wiggle under Auto search.
+ * @param highlightAutoSearch When true, draws PointingWiggle under Auto search.
  * @param onHighlightAutoSearchDone Fired when the highlight timeline ends.
  */
 export function BehaviorTab({
@@ -64,28 +57,9 @@ export function BehaviorTab({
     if (!highlightAutoSearch) return;
     const t = window.setTimeout(() => {
       onHighlightAutoSearchDone?.();
-    }, AUTO_SEARCH_HIGHLIGHT_MS);
+    }, POINTING_WIGGLE_MS);
     return () => window.clearTimeout(t);
   }, [highlightAutoSearch, onHighlightAutoSearchDone]);
-
-  /**
-   * Label accessory: animated squiggle only while deep-link highlight is on.
-   */
-  const autoSearchLabelAccessory = highlightAutoSearch ? (
-    <svg
-      className={styles.autoSearchWiggle}
-      viewBox="0 0 100 10"
-      preserveAspectRatio="none"
-      aria-hidden="true"
-      data-testid="auto-search-wiggle"
-    >
-      <path
-        className={styles.autoSearchWigglePath}
-        pathLength={1}
-        d={WIGGLE_PATH_D}
-      />
-    </svg>
-  ) : null;
 
   return (
     <>
@@ -98,7 +72,12 @@ export function BehaviorTab({
             section="behavior"
             fieldKey="auto_search"
             label="Auto search"
-            labelAccessory={autoSearchLabelAccessory}
+            labelAccessory={
+              <PointingWiggle
+                active={highlightAutoSearch}
+                testId="auto-search-wiggle"
+              />
+            }
             helper={configHelp('behavior', 'auto_search')}
             initialValue={config.behavior.auto_search}
             resyncToken={resyncToken}

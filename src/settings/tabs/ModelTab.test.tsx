@@ -255,6 +255,26 @@ describe('ModelTab pending deep-link', () => {
     ).toBeInTheDocument();
     expect(screen.queryByText('Active provider')).toBeNull();
     expect(onConsumed).toHaveBeenCalledTimes(1);
+    // UI-only pointer under Discover segment (routing unchanged).
+    expect(screen.getByTestId('models-wiggle-discover')).toBeInTheDocument();
+  });
+
+  it('wiggles Providers segment and Built-in label after providers deep-link', async () => {
+    render(
+      <ModelTab
+        config={buildConfig('ollama', [BUILTIN, OLLAMA])}
+        resyncToken={0}
+        onSaved={() => {}}
+        pendingView="providers"
+      />,
+      { wrapper: DownloadsProvider },
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText('Active provider')).toBeInTheDocument();
+    expect(screen.getByTestId('models-wiggle-providers')).toBeInTheDocument();
+    expect(screen.getByTestId('providers-wiggle-builtin')).toBeInTheDocument();
   });
 
   it('applies a pending view without a consume callback', async () => {

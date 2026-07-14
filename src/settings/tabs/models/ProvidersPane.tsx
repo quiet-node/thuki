@@ -31,6 +31,7 @@ import { OLLAMA_DOWNLOAD_URL } from '../../../utils/capabilityConflicts';
 import { configHelp } from '../../configHelpers';
 import { Tooltip } from '../../../components/Tooltip';
 import { InlineLink } from '../../../components/InlineLink';
+import { PointingLabel } from '../../../components/PointingWiggle';
 import { ModelSelect, type ModelSelectItem } from './ModelSelect';
 import styles from '../../../styles/settings.module.css';
 import type { RawAppConfig, RawProvider } from '../../types';
@@ -42,6 +43,11 @@ interface ProvidersPaneProps {
   onSaved: (next: RawAppConfig) => void;
   /** Navigate to the Discover view (used by the no-model-installed hint). */
   onAddModel: () => void;
+  /**
+   * UI-only: PointingWiggle under the Built-in provider label after a
+   * providers deep-link. Does not change switch/activate logic.
+   */
+  highlightBuiltin?: boolean;
 }
 
 const PROMPT_MAX_CHARS = 32000;
@@ -100,11 +106,21 @@ function providerSubtitle(p: RawProvider): string {
   return p.base_url || 'OpenAI-compatible server';
 }
 
+/**
+ * Providers pane: active hero, other providers, shared generation settings.
+ *
+ * @param config App config.
+ * @param resyncToken Save-field resync.
+ * @param onSaved After config writes.
+ * @param onAddModel Jump to Discover (existing hint path).
+ * @param highlightBuiltin UI-only PointingWiggle on Built-in label.
+ */
 export function ProvidersPane({
   config,
   resyncToken,
   onSaved,
   onAddModel,
+  highlightBuiltin = false,
 }: ProvidersPaneProps) {
   const providers = config.inference.providers;
   const activeId = config.inference.active_provider;
@@ -419,7 +435,16 @@ export function ProvidersPane({
         <div className={styles.heroHead}>
           <div>
             <div className={styles.heroName}>
-              {activeProvider?.label ?? 'Ollama'}
+              {activeKind === 'builtin' ? (
+                <PointingLabel
+                  active={highlightBuiltin}
+                  testId="providers-wiggle-builtin"
+                >
+                  {activeProvider?.label ?? 'Built-in'}
+                </PointingLabel>
+              ) : (
+                (activeProvider?.label ?? 'Ollama')
+              )}
             </div>
             <div className={styles.heroSub}>
               {activeProvider
@@ -527,7 +552,18 @@ export function ProvidersPane({
         {otherProviders.map((p) =>
           p.kind === 'openai' && !openaiProviderEnabled ? null : (
             <div className={styles.providerRow} key={p.id}>
-              <span className={styles.providerRowName}>{p.label}</span>
+              <span className={styles.providerRowName}>
+                {p.kind === 'builtin' ? (
+                  <PointingLabel
+                    active={highlightBuiltin}
+                    testId="providers-wiggle-builtin"
+                  >
+                    {p.label}
+                  </PointingLabel>
+                ) : (
+                  p.label
+                )}
+              </span>
               <span className={styles.providerRowSub}>
                 {providerSubtitle(p)}
               </span>
