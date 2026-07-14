@@ -182,6 +182,37 @@ describe('serializeForFile', () => {
     expect(result).toContain('2. [Second](<https://example.com/two>)');
   });
 
+  it('includes source attribution under that source line when present', async () => {
+    const messages: Message[] = [
+      makeMessage({
+        id: 'a1',
+        role: 'assistant',
+        content: 'Weather looks fine.',
+        searchSources: [
+          {
+            title: 'Weather for Tokyo',
+            url: 'https://open-meteo.com/',
+            attribution:
+              '[Weather data by Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0)',
+          },
+          { title: 'No credit', url: 'https://example.com/plain' },
+        ],
+      }),
+    ];
+    const result = await serializeForFile(messages, CTX, NOW, stubImageLoader);
+    expect(result).toContain('1. [Weather for Tokyo](<https://open-meteo.com/>)');
+    expect(result).toContain(
+      '   [Weather data by Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0)',
+    );
+    expect(result).toContain('2. [No credit](<https://example.com/plain>)');
+    // No attribution line after the plain source.
+    const plainIdx = result.indexOf(
+      '2. [No credit](<https://example.com/plain>)',
+    );
+    const afterPlain = result.slice(plainIdx);
+    expect(afterPlain.split('\n')[1] ?? '').not.toMatch(/^\s{3}/);
+  });
+
   it('uses the source URL as the link label when the title is empty', async () => {
     const messages: Message[] = [
       makeMessage({

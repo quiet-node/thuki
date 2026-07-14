@@ -12,6 +12,10 @@ import {
   SEARCH_NO_RESULTS_NOTE_BODY,
   SEARCH_UNREACHABLE_NOTE_BODY,
 } from '../../utils/honestFailureNote';
+import {
+  ConfigProviderForTest,
+  DEFAULT_CONFIG,
+} from '../../contexts/ConfigContext';
 beforeEach(() => {
   invoke.mockClear();
   mockReducedMotion.current = false;
@@ -1384,6 +1388,56 @@ describe('ChatBubble', () => {
         />,
       );
       expect(screen.getByTestId('search-trust-notice')).toBeInTheDocument();
+    });
+
+    it('hides search trust notice when searchNoticeAcknowledged is true', () => {
+      render(
+        <ConfigProviderForTest
+          value={{
+            ...DEFAULT_CONFIG,
+            behavior: {
+              ...DEFAULT_CONFIG.behavior,
+              autoSearch: true,
+              searchNoticeAcknowledged: true,
+            },
+          }}
+        >
+          <ChatBubble
+            role="assistant"
+            content=""
+            index={0}
+            isSearching
+            searchStage={{ kind: 'searching' }}
+          />
+        </ConfigProviderForTest>,
+      );
+      expect(screen.queryByTestId('search-trust-notice')).toBeNull();
+      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+    });
+
+    it('hides search trust notice when autoSearch is false', () => {
+      render(
+        <ConfigProviderForTest
+          value={{
+            ...DEFAULT_CONFIG,
+            behavior: {
+              ...DEFAULT_CONFIG.behavior,
+              autoSearch: false,
+              searchNoticeAcknowledged: false,
+            },
+          }}
+        >
+          <ChatBubble
+            role="assistant"
+            content=""
+            index={0}
+            isSearching
+            searchStage={{ kind: 'searching' }}
+          />
+        </ConfigProviderForTest>,
+      );
+      expect(screen.queryByTestId('search-trust-notice')).toBeNull();
+      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
     });
 
     it('Got it persists search_notice_acknowledged and hides the notice', () => {
