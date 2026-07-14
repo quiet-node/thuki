@@ -1383,7 +1383,7 @@ describe('ChatBubble', () => {
           searchStage={{ kind: 'searching' }}
         />,
       );
-      expect(screen.queryByTestId('search-trust-notice')).toBeNull();
+      expect(screen.queryByTestId('version-announcement')).toBeNull();
       expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
     });
 
@@ -1402,7 +1402,7 @@ describe('ChatBubble', () => {
           ]}
         />,
       );
-      expect(screen.queryByTestId('search-trust-notice')).toBeNull();
+      expect(screen.queryByTestId('version-announcement')).toBeNull();
       expect(screen.queryByTestId('search-progress-block')).toBeNull();
     });
 

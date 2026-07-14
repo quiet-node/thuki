@@ -54,8 +54,8 @@ Wikipedia keeps a Wikimedia-compliant descriptive User-Agent (product name, home
 - Turn **Auto search** off to stay fully local unless you force a search.
 - **`/search`** always forces a web look-up for that message, even when Auto search is off.
 
-When Auto search is on and the notice has not been acknowledged, Thuki shows a short panel on the ask bar (below the input row) as soon as the window opens. Tapping **Acknowledge** dismisses it forever (`search_notice_acknowledged` in config). **Turn off in Settings** opens Behavior with Auto search highlighted; it does not flip the toggle by itself.
+Until acknowledged, Thuki shows a short v0.16 version announcement on the ask bar (below the input row) as soon as the window opens, whether Auto search is on or off. Tapping **Acknowledge** dismisses it forever (`search_notice_acknowledged` in config). **Turn off/on in Settings** opens Behavior with Auto search highlighted; it does not flip the toggle by itself.
 
 ## Hosting note
 
-This file is the copy draft for a future **blog post** on thuki.app. Title and slug are TBD. In-app **How Auto search works** currently opens `https://thuki.app/blog` (blog index placeholder). When the dedicated post is live, point `SEARCH_DISCLOSURE_URL` in `src/components/SearchTrustNotice.tsx` at that post (see issue #320).
+This file is the copy draft for a future **blog post** on thuki.app. Title and slug are TBD. In-app **How Auto search works** currently opens `https://thuki.app/blog` (blog index placeholder). When the dedicated post is live, point `V016_AUTO_SEARCH_LEARN_URL` in `src/config/versionAnnouncements.ts` at that post (see issue #320).

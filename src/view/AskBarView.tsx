@@ -16,7 +16,11 @@ import type { DownloadStripStatus } from '../components/DownloadStatusStrip';
 import { AutoPrimeSkippedStrip } from '../components/AutoPrimeSkippedStrip';
 import type { AutoPrimeSkippedStripProps } from '../components/AutoPrimeSkippedStrip';
 import type { CapabilityMismatchMessage } from '../components/CapabilityMismatchStrip';
-import { SearchTrustNotice } from '../components/SearchTrustNotice';
+import { VersionAnnouncement } from '../components/VersionAnnouncement';
+import {
+  V016_AUTO_SEARCH_ANNOUNCEMENT,
+  v016AutoSearchSettingsCta,
+} from '../config/versionAnnouncements';
 import type { AttachedImage } from '../types/image';
 import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
 import { COMMANDS } from '../config/commands';
@@ -296,16 +300,16 @@ export function AskBarView({
   const [noticeDismissedLocally, setNoticeDismissedLocally] = useState(false);
 
   /**
-   * First-use Auto search notice: until acknowledged (or locally dismissed).
-   * Shown whether Auto search is on or off; CTA label adapts (Turn off/on).
+   * v0.16 version announcement: until acknowledged (or locally dismissed).
+   * CTA label adapts to current Auto search on/off; never silent-toggles.
    */
-  const showSearchTrustNotice =
+  const showVersionAnnouncement =
     !behavior.searchNoticeAcknowledged && !noticeDismissedLocally;
 
   /**
-   * Persist acknowledgement and hide the notice immediately.
+   * Persist announcement dismiss (`search_notice_acknowledged`) and hide now.
    */
-  const acknowledgeSearchNotice = useCallback(() => {
+  const acknowledgeVersionAnnouncement = useCallback(() => {
     setNoticeDismissedLocally(true);
     void invoke('set_config_field', {
       section: 'behavior',
@@ -318,7 +322,7 @@ export function AskBarView({
    * Open Settings → Behavior (Auto search highlighted). Does not flip
    * auto_search; user must toggle there deliberately.
    */
-  const openSearchSettings = useCallback(() => {
+  const openAnnouncementSettings = useCallback(() => {
     void invoke('open_settings_to_behavior');
   }, []);
 
@@ -757,17 +761,33 @@ export function AskBarView({
           </motion.button>
         </div>
       </motion.div>
-      {/* Design D: Auto search trust notice as footer under the input row so
-          the logo/input stay the visual primary; non-blocking compose. */}
-      {showSearchTrustNotice ? (
+      {/* Version announcement footer under the input row (design D slot). */}
+      {showVersionAnnouncement ? (
         <div
-          data-testid="search-trust-notice-slot"
+          data-testid="version-announcement-slot"
           className="border-t border-white/[0.05] bg-black/[0.15] px-3.5 py-2.5"
         >
-          <SearchTrustNotice
-            onAcknowledge={acknowledgeSearchNotice}
-            onOpenSettings={openSearchSettings}
-            autoSearchOn={behavior.autoSearch}
+          <VersionAnnouncement
+            title={V016_AUTO_SEARCH_ANNOUNCEMENT.title}
+            body={V016_AUTO_SEARCH_ANNOUNCEMENT.body}
+            learn={{
+              ...V016_AUTO_SEARCH_ANNOUNCEMENT.learn,
+              testId: 'version-announcement-learn',
+            }}
+            actions={[
+              {
+                label: 'Acknowledge',
+                onClick: acknowledgeVersionAnnouncement,
+                variant: 'primary',
+                testId: 'version-announcement-primary',
+              },
+              {
+                label: v016AutoSearchSettingsCta(behavior.autoSearch),
+                onClick: openAnnouncementSettings,
+                variant: 'secondary',
+                testId: 'version-announcement-secondary',
+              },
+            ]}
           />
         </div>
       ) : null}

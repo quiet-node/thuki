@@ -2028,9 +2028,9 @@ describe('AskBarView', () => {
         autoSearch: true,
         searchNoticeAcknowledged: false,
       });
-      const notice = screen.getByTestId('search-trust-notice');
+      const notice = screen.getByTestId('version-announcement');
       expect(notice).toBeInTheDocument();
-      expect(screen.getByTestId('search-trust-notice-slot')).toBeInTheDocument();
+      expect(screen.getByTestId('version-announcement-slot')).toBeInTheDocument();
       // Design D: below the logo/input row in DOM order.
       const row = screen.getByTestId('ask-bar-row');
       expect(
@@ -2043,7 +2043,7 @@ describe('AskBarView', () => {
         { autoSearch: true, searchNoticeAcknowledged: false },
         { isChatMode: true },
       );
-      expect(screen.getByTestId('search-trust-notice')).toBeInTheDocument();
+      expect(screen.getByTestId('version-announcement')).toBeInTheDocument();
     });
 
     it('hides notice when searchNoticeAcknowledged is true', () => {
@@ -2051,7 +2051,7 @@ describe('AskBarView', () => {
         autoSearch: true,
         searchNoticeAcknowledged: true,
       });
-      expect(screen.queryByTestId('search-trust-notice')).toBeNull();
+      expect(screen.queryByTestId('version-announcement')).toBeNull();
     });
 
     it('shows notice when autoSearch is false with Turn on in Settings CTA', () => {
@@ -2059,7 +2059,7 @@ describe('AskBarView', () => {
         autoSearch: false,
         searchNoticeAcknowledged: false,
       });
-      expect(screen.getByTestId('search-trust-notice')).toBeInTheDocument();
+      expect(screen.getByTestId('version-announcement')).toBeInTheDocument();
       expect(screen.getByText('Turn on in Settings')).toBeInTheDocument();
       expect(screen.queryByText('Turn off in Settings')).toBeNull();
     });
@@ -2069,13 +2069,13 @@ describe('AskBarView', () => {
         autoSearch: true,
         searchNoticeAcknowledged: false,
       });
-      fireEvent.click(screen.getByTestId('search-trust-notice-got-it'));
+      fireEvent.click(screen.getByTestId('version-announcement-primary'));
       expect(invoke).toHaveBeenCalledWith('set_config_field', {
         section: 'behavior',
         key: 'search_notice_acknowledged',
         value: true,
       });
-      expect(screen.queryByTestId('search-trust-notice')).toBeNull();
+      expect(screen.queryByTestId('version-announcement')).toBeNull();
     });
 
     it('Turn off in Settings opens Behavior deep-link without flipping auto_search', () => {
@@ -2083,7 +2083,7 @@ describe('AskBarView', () => {
         autoSearch: true,
         searchNoticeAcknowledged: false,
       });
-      fireEvent.click(screen.getByTestId('search-trust-notice-settings'));
+      fireEvent.click(screen.getByTestId('version-announcement-secondary'));
       expect(invoke).toHaveBeenCalledWith('open_settings_to_behavior');
       expect(invoke).not.toHaveBeenCalledWith(
         'set_config_field',
@@ -2096,7 +2096,7 @@ describe('AskBarView', () => {
         { autoSearch: true, searchNoticeAcknowledged: false },
         { query: 'hello' },
       );
-      expect(screen.getByTestId('search-trust-notice')).toBeInTheDocument();
+      expect(screen.getByTestId('version-announcement')).toBeInTheDocument();
       const input = getInput();
       expect(input.getAttribute('contenteditable')).toBe('true');
       expect(
