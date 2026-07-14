@@ -390,6 +390,13 @@ describe('LexicalAskBarInput (integration)', () => {
     expect(screen.getByText('Ask Thuki anything...')).toBeInTheDocument();
   });
 
+  it('exposes an accessible name independent of the placeholder', () => {
+    renderInput();
+    expect(screen.getByRole('textbox', { name: 'Ask Thuki' })).toBe(
+      screen.getByTestId('askbar-input'),
+    );
+  });
+
   it('captures the contentEditable element into the inputRef', () => {
     const ref = renderInput();
     expect(ref.current).not.toBeNull();

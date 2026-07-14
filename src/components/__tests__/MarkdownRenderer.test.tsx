@@ -503,6 +503,10 @@ describe('MarkdownRenderer', () => {
       );
       expect(anchor!.getAttribute('href')).toBeNull();
       expect(anchor!.textContent).toBe('[1]');
+      expect(anchor!.getAttribute('tabindex')).toBe('0');
+      expect(anchor!.getAttribute('aria-label')).toBe(
+        'Source 1: doc.rust-lang.org',
+      );
     });
 
     it('renders a fullwidth 【N】 marker as an ASCII [N] citation chip', () => {

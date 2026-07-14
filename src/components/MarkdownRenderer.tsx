@@ -4,6 +4,7 @@ import { Streamdown, type MathPlugin } from 'streamdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import { escapeCurrencyDollars } from '../utils/escapeCurrencyDollars';
+import { domainOf } from '../utils/domainAvatar';
 import type { SearchResultPreview } from '../types/search';
 
 interface MarkdownRendererProps {
@@ -111,9 +112,13 @@ type AnchorRenderProps = React.AnchorHTMLAttributes<HTMLAnchorElement> & {
 /**
  * Renders one anchor from Streamdown's markdown output. A `[N]` link produced
  * by `linkifyCitations` becomes a citation chip carrying the class and data
- * attributes ChatBubble's hover/click delegation expects, with no `href` so
- * the generic anchor-click handler leaves it to ChatBubble (a live `href`
- * would double-fire `open_url`). Any other anchor passes through unchanged.
+ * attributes ChatBubble's hover/click/keydown delegation expects, with no
+ * `href` so the generic anchor-click handler leaves it to ChatBubble (a live
+ * `href` would double-fire `open_url`). `tabIndex={0}` and `aria-label` make
+ * the chip reachable and named for keyboard/screen-reader users, since a
+ * hrefless anchor is otherwise unfocusable; activation itself (Enter/Space)
+ * is wired in ChatBubble alongside the click handler, not here. Any other
+ * anchor passes through unchanged.
  */
 function renderCitationAnchor(
   sources: SearchResultPreview[],
@@ -132,6 +137,8 @@ function renderCitationAnchor(
         data-url={source.url}
         title={source.title || source.url}
         role="button"
+        tabIndex={0}
+        aria-label={`Source ${marker[1]}: ${domainOf(source.url)}`}
       >
         {children}
       </a>

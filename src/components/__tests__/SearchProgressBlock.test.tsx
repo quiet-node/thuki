@@ -72,6 +72,18 @@ describe('SearchProgressBlock', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('announces the live phase label in a polite status region', () => {
+    const { rerender } = render(
+      <SearchProgressBlock stage={{ kind: 'analyzing_query' }} isSearching />,
+    );
+    const liveRegion = screen.getByTestId('search-progress-live-region');
+    expect(liveRegion).toHaveAttribute('aria-live', 'polite');
+    expect(liveRegion).toHaveTextContent('Analyzing query');
+
+    rerender(<SearchProgressBlock stage={{ kind: 'searching' }} isSearching />);
+    expect(liveRegion).toHaveTextContent('Searching the web');
+  });
+
   it('maps analyzing and reading stages to the correct labels', () => {
     const { rerender } = render(
       <SearchProgressBlock stage={{ kind: 'analyzing_query' }} isSearching />,
@@ -97,8 +109,13 @@ describe('SearchProgressBlock', () => {
   it('uses the neutral inventory label during verify without postReasoning', () => {
     // Non-reasoned verify: the footer C3 pill owns "Verifying sources...", so
     // the strip shows the neutral inventory copy to avoid duplicating it.
+    // The sr-only live region must match that inventory string too, not the
+    // live stage label, or SR users hear "Verifying sources..." twice.
     render(
       <SearchProgressBlock stage={{ kind: 'verifying_sources' }} isSearching />,
+    );
+    expect(screen.getByTestId('search-progress-live-region')).toHaveTextContent(
+      'Sources',
     );
     expect(screen.getByTestId('loading-label')).toHaveAttribute(
       'data-label',

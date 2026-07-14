@@ -536,6 +536,18 @@ export function ChatBubble({
     const target = (e.target as HTMLElement).closest('[data-citation]');
     if (target) activateCitation(null);
   };
+  /**
+   * Opens a citation anchor's URL via the shared `open_url` command. The
+   * single call site for both the click and keydown delegation below, so
+   * keyboard activation is a genuine trigger of the same path rather than a
+   * parallel reimplementation of it. `data-url` is always set when
+   * MarkdownRenderer builds citation anchors, so the non-null assertion is
+   * safe.
+   */
+  const openCitationAnchor = (target: HTMLElement): void => {
+    void invoke('open_url', { url: target.getAttribute('data-url')! });
+  };
+
   const onAnswerClick = (e: React.MouseEvent<HTMLDivElement>) => {
     // Scope to inline citation anchors only. Source-row buttons in the
     // footer also carry `data-citation` (for hover-link highlighting) and
@@ -546,9 +558,24 @@ export function ChatBubble({
     ) as HTMLElement | null;
     if (!target) return;
     e.preventDefault();
-    // `data-url` is always set when MarkdownRenderer builds citation
-    // anchors, so the non-null assertion is safe.
-    void invoke('open_url', { url: target.getAttribute('data-url')! });
+    openCitationAnchor(target);
+  };
+
+  /**
+   * Keyboard equivalent of `onAnswerClick`: Enter or Space on a focused
+   * citation anchor opens the same URL through the same helper. `Space` is
+   * prevented unconditionally on a match so the browser does not also
+   * scroll the page, which is its default behavior for a focused,
+   * non-form element.
+   */
+  const onAnswerKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const target = (e.target as HTMLElement).closest(
+      'a[data-citation]',
+    ) as HTMLElement | null;
+    if (!target) return;
+    e.preventDefault();
+    openCitationAnchor(target);
   };
 
   /**
@@ -683,6 +710,7 @@ export function ChatBubble({
           onMouseOver={onAnswerMouseOver}
           onMouseOut={onAnswerMouseOut}
           onClick={onAnswerClick}
+          onKeyDown={onAnswerKeyDown}
         >
           <div className="text-sm leading-relaxed select-text py-1">
             {/* Timeline: pure search on top; reasoned turns put search under Reasoning. */}

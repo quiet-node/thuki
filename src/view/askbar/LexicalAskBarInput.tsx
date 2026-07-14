@@ -280,6 +280,7 @@ export function LexicalAskBarInput({
             ref={inputRef}
             data-testid="askbar-input"
             className={contentEditableClassName}
+            aria-label="Ask Thuki"
             aria-placeholder={placeholder}
             placeholder={
               <div className="askbar-placeholder thuki-text-base">
