@@ -86,12 +86,17 @@ export function liveSearchStageLabel(stage: SearchStage): string {
 /**
  * Builds the progress header: live stage copy, with `(N)` when sources exist.
  * Expand/collapse never rewrites this string; only stage advances do.
- * When `postReasoning` and not verifying, uses inventory `Sources (N)` so the
- * restored strip does not re-claim "Reading sources" during answer stream.
+ *
+ * During the verify stage the footer C3 pill owns the "Verifying sources..."
+ * copy, so the strip shows the neutral inventory `Sources (N)` instead to avoid
+ * repeating it, EXCEPT on a reasoned turn where the restored strip under
+ * Reasoning keeps the live verify label (deliberate; a handoff test locks it).
+ * Off verify, inventory is used only after reasoning so the restored strip does
+ * not re-claim "Reading sources" during the answer stream.
  *
  * @param stage - Live pipeline stage.
  * @param sourceCount - Number of sources for the `(N)` suffix.
- * @param postReasoning - Prefer inventory label after a reasoned turn.
+ * @param postReasoning - Marks a reasoned turn's restored strip.
  * @returns Header string for the strip toggle.
  */
 export function searchProgressHeaderLabel(
@@ -99,8 +104,8 @@ export function searchProgressHeaderLabel(
   sourceCount: number,
   postReasoning = false,
 ): string {
-  const useInventory =
-    postReasoning && (!stage || stage.kind !== 'verifying_sources');
+  const isVerifying = Boolean(stage && stage.kind === 'verifying_sources');
+  const useInventory = isVerifying ? !postReasoning : postReasoning;
   const stageLabel = useInventory ? 'Sources' : liveSearchStageLabel(stage);
   return sourceCount > 0 ? `${stageLabel} (${sourceCount})` : stageLabel;
 }

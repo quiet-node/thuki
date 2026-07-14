@@ -94,13 +94,15 @@ describe('SearchProgressBlock', () => {
     );
   });
 
-  it('maps verifying_sources to the C3 label', () => {
+  it('uses the neutral inventory label during verify without postReasoning', () => {
+    // Non-reasoned verify: the footer C3 pill owns "Verifying sources...", so
+    // the strip shows the neutral inventory copy to avoid duplicating it.
     render(
       <SearchProgressBlock stage={{ kind: 'verifying_sources' }} isSearching />,
     );
     expect(screen.getByTestId('loading-label')).toHaveAttribute(
       'data-label',
-      'Verifying sources...',
+      'Sources',
     );
   });
 

@@ -1961,6 +1961,36 @@ describe('ChatBubble', () => {
         screen.getByRole('button', { name: /1 source/i }),
       ).toBeInTheDocument();
     });
+
+    it('does not duplicate the verifying label on a non-reasoning verify turn', () => {
+      // No thinkingContent: the footer C3 pill owns "Verifying sources...". The
+      // top strip stays mounted (sources list access) but must not repeat that
+      // copy, or the same text renders twice at once. Reasoned turns keep the
+      // strip verify label deliberately (see the handoff test above).
+      render(
+        <ChatBubble
+          role="assistant"
+          content="Adobe acquired Figma."
+          index={0}
+          isStreaming
+          isSearching
+          searchStage={{ kind: 'verifying_sources' }}
+          searchSources={[
+            { title: 'Adobe', url: 'https://adobe.com' },
+            { title: 'Reuters', url: 'https://reuters.com' },
+            { title: 'Figma', url: 'https://figma.com' },
+          ]}
+        />,
+      );
+      // Strip present, but relabeled to the neutral inventory copy.
+      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+      expect(screen.getByTestId('loading-label')).toHaveAttribute(
+        'data-label',
+        'Sources (3)',
+      );
+      // "Verifying sources..." appears exactly once (the footer pill).
+      expect(screen.getAllByText(/Verifying sources/)).toHaveLength(1);
+    });
   });
 
   describe('model attribution', () => {
