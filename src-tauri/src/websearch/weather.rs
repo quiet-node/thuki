@@ -18,7 +18,7 @@
 
 use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
 use crate::websearch::assemble::SourceBlock;
-use crate::websearch::THUKI_USER_AGENT;
+use crate::websearch::{OPEN_METEO_ATTRIBUTION, THUKI_USER_AGENT};
 
 /// Words that signal a weather question. Matched on whole tokens of the
 /// lowercased standalone question.
@@ -103,11 +103,6 @@ const NON_LOCATION_WORDS: &[&str] = &[
 /// Endpoints for Open-Meteo's keyless APIs.
 const GEOCODE_ENDPOINT: &str = "https://geocoding-api.open-meteo.com/v1/search";
 const FORECAST_ENDPOINT: &str = "https://api.open-meteo.com/v1/forecast";
-
-/// Attribution required by Open-Meteo's CC BY 4.0 licence. Markdown link so the
-/// required "Weather data by Open-Meteo.com" hyperlink is present in the writer
-/// context; the UI projects the same attribution for open-meteo source URLs.
-const ATTRIBUTION: &str = "[Weather data by Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0)";
 
 /// A geocoded place: the display name, the coordinates the forecast needs,
 /// and the IANA timezone name the clock vertical (`websearch::clock`) uses
@@ -281,7 +276,7 @@ pub(crate) fn format_forecast(body: &str, place: &GeoPlace) -> Option<String> {
             }
         }
     }
-    out.push_str(&format!("\n{ATTRIBUTION}."));
+    out.push_str(&format!("\n{OPEN_METEO_ATTRIBUTION}."));
     Some(out)
 }
 

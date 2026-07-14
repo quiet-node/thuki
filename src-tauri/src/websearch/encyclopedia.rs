@@ -37,16 +37,11 @@ use crate::config::defaults::{
 };
 use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
 use crate::websearch::assemble::SourceBlock;
+use crate::websearch::WIKIPEDIA_ATTRIBUTION;
 
 /// Wikipedia's keyless full-text search and REST summary endpoints.
 const SEARCH_ENDPOINT: &str = "https://en.wikipedia.org/w/api.php";
 const SUMMARY_ENDPOINT: &str = "https://en.wikipedia.org/api/rest_v1/page/summary";
-
-/// Attribution required by Wikipedia's CC BY-SA 4.0 licence. Includes a
-/// hyperlink to the licence text (markdown so the writer context and the UI
-/// attribution projection both carry a real link, not plain prose).
-const ATTRIBUTION: &str =
-    "Source: Wikipedia ([CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/))";
 
 /// Descriptive User-Agent Wikimedia's API etiquette policy requires; a
 /// missing or generic one is rejected with `403` (verified live 2026-07-08).
@@ -214,7 +209,7 @@ pub(crate) fn wiki_source_block(summary: &WikiSummary) -> SourceBlock {
         index: 1,
         url: summary.page_url.clone(),
         title: summary.title.clone(),
-        text: format!("{}\n{ATTRIBUTION}.", summary.extract),
+        text: format!("{}\n{WIKIPEDIA_ATTRIBUTION}.", summary.extract),
     }
 }
 

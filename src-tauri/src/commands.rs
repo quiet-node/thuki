@@ -1658,15 +1658,10 @@ pub struct SourceMeta {
 pub(crate) fn source_attribution_for_url(url: &str) -> Option<String> {
     let domain = crate::websearch::domain_of(url);
     if domain == "open-meteo.com" || domain.ends_with(".open-meteo.com") {
-        return Some(
-            "[Weather data by Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0)".to_string(),
-        );
+        return Some(crate::websearch::OPEN_METEO_ATTRIBUTION.to_string());
     }
     if domain == "wikipedia.org" || domain.ends_with(".wikipedia.org") {
-        return Some(
-            "Source: Wikipedia ([CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/))"
-                .to_string(),
-        );
+        return Some(crate::websearch::WIKIPEDIA_ATTRIBUTION.to_string());
     }
     None
 }
