@@ -122,7 +122,7 @@ export function AutoPrimeSkippedStrip({
       role="status"
       aria-live="polite"
       data-testid="auto-prime-skipped-strip"
-      className="mx-4 mt-2 mb-0 px-0.5"
+      className="px-3.5 py-2.5"
     >
       <div className="flex items-start gap-2.5">
         <span
