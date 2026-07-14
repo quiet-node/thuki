@@ -69,6 +69,7 @@ interface RawAppConfig {
     auto_replace: boolean;
     auto_close: boolean;
     auto_search: boolean;
+    search_notice_acknowledged: boolean;
   };
 }
 
@@ -110,6 +111,8 @@ export interface AppConfig {
      * When false, only `/search` forces a live look-up.
      */
     autoSearch: boolean;
+    /** When true, first-use web-search notice has been dismissed forever. */
+    searchNoticeAcknowledged: boolean;
   };
 }
 
@@ -160,6 +163,7 @@ function transform(raw: RawAppConfig): AppConfig {
       autoReplace: raw.behavior.auto_replace,
       autoClose: raw.behavior.auto_close,
       autoSearch: raw.behavior.auto_search,
+      searchNoticeAcknowledged: raw.behavior.search_notice_acknowledged,
     },
   };
 }
@@ -306,5 +310,6 @@ export const DEFAULT_CONFIG: AppConfig = {
     autoReplace: false,
     autoClose: false,
     autoSearch: true,
+    searchNoticeAcknowledged: false,
   },
 };

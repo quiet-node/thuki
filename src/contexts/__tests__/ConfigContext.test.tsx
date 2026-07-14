@@ -115,6 +115,7 @@ describe('ConfigContext', () => {
           auto_replace: true,
           auto_close: true,
           auto_search: true,
+          search_notice_acknowledged: false,
         },
       });
 
@@ -171,7 +172,12 @@ describe('ConfigContext', () => {
           max_display_chars: 300,
           max_context_length: 4096,
         },
-        behavior: { auto_replace: false, auto_close: false, auto_search: true },
+        behavior: {
+          auto_replace: false,
+          auto_close: false,
+          auto_search: true,
+          search_notice_acknowledged: false,
+        },
       });
 
       render(
@@ -214,7 +220,12 @@ describe('ConfigContext', () => {
           max_display_chars: 300,
           max_context_length: 4096,
         },
-        behavior: { auto_replace: false, auto_close: false, auto_search: true },
+        behavior: {
+          auto_replace: false,
+          auto_close: false,
+          auto_search: true,
+          search_notice_acknowledged: false,
+        },
       });
 
       render(
@@ -303,6 +314,7 @@ describe('ConfigContext', () => {
         behavior: {
           auto_replace: false,
           auto_search: true,
+          search_notice_acknowledged: false,
         },
       };
       const updated = {
@@ -350,7 +362,12 @@ describe('ConfigContext', () => {
           max_display_chars: 300,
           max_context_length: 4096,
         },
-        behavior: { auto_replace: false, auto_close: false, auto_search: true },
+        behavior: {
+          auto_replace: false,
+          auto_close: false,
+          auto_search: true,
+          search_notice_acknowledged: false,
+        },
       };
       const updated = {
         ...initial,
@@ -392,7 +409,12 @@ describe('ConfigContext', () => {
           max_display_chars: 300,
           max_context_length: 4096,
         },
-        behavior: { auto_replace: false, auto_close: false, auto_search: true },
+        behavior: {
+          auto_replace: false,
+          auto_close: false,
+          auto_search: true,
+          search_notice_acknowledged: false,
+        },
       };
       invoke.mockResolvedValue(initial);
 
@@ -440,6 +462,7 @@ describe('ConfigContext', () => {
         behavior: {
           auto_replace: false,
           auto_search: true,
+          search_notice_acknowledged: false,
         },
       };
       invoke
@@ -494,6 +517,7 @@ describe('ConfigContext', () => {
         behavior: {
           auto_replace: false,
           auto_search: true,
+          search_notice_acknowledged: false,
         },
       });
 
@@ -538,6 +562,7 @@ describe('ConfigContext', () => {
         behavior: {
           auto_replace: false,
           auto_search: true,
+          search_notice_acknowledged: false,
         },
       });
 
@@ -646,6 +671,7 @@ describe('ConfigContext', () => {
         behavior: {
           auto_replace: false,
           auto_search: true,
+          search_notice_acknowledged: false,
         },
       });
 

@@ -6,15 +6,23 @@
  * always available regardless of those toggles.
  */
 
+import { useEffect } from 'react';
 import { Section, Toggle } from '../components';
 import { SaveField } from '../components/SaveField';
 import { configHelp } from '../configHelpers';
 import type { RawAppConfig } from '../types';
 
+/** How long the Auto search row ring flash stays after a Behavior deep-link. */
+const AUTO_SEARCH_HIGHLIGHT_MS = 1800;
+
 interface BehaviorTabProps {
   config: RawAppConfig;
   resyncToken: number;
   onSaved: (next: RawAppConfig) => void;
+  /** When true, briefly ring-highlight the Auto search row. */
+  highlightAutoSearch?: boolean;
+  /** Called after the highlight animation completes so the parent can clear. */
+  onHighlightAutoSearchDone?: () => void;
 }
 
 /**
@@ -36,30 +44,50 @@ export function BehaviorTab({
   config,
   resyncToken,
   onSaved,
+  highlightAutoSearch = false,
+  onHighlightAutoSearchDone,
 }: BehaviorTabProps) {
+  useEffect(() => {
+    if (!highlightAutoSearch) return;
+    const t = window.setTimeout(() => {
+      onHighlightAutoSearchDone?.();
+    }, AUTO_SEARCH_HIGHLIGHT_MS);
+    return () => window.clearTimeout(t);
+  }, [highlightAutoSearch, onHighlightAutoSearchDone]);
+
   return (
     <>
       <Section heading="Web search">
-        <SaveField
-          section="behavior"
-          fieldKey="auto_search"
-          label="Auto search"
-          helper={configHelp('behavior', 'auto_search')}
-          initialValue={config.behavior.auto_search}
-          resyncToken={resyncToken}
-          onSaved={onSaved}
-          rightAlign
-          // Top of the panel: open the help below the "?" so it is not clipped
-          // by the traffic-lights / window edge (Text Replacement uses "top").
-          tooltipPlacement="bottom"
-          render={(value, setValue) => (
-            <Toggle
-              checked={value}
-              onChange={setValue}
-              ariaLabel="Auto search the web when needed without /search"
-            />
-          )}
-        />
+        <div
+          data-testid="auto-search-row"
+          data-highlight={highlightAutoSearch ? 'true' : undefined}
+          className={
+            highlightAutoSearch
+              ? 'rounded-lg ring-2 ring-primary/60 ring-offset-2 ring-offset-transparent transition-shadow duration-300'
+              : undefined
+          }
+        >
+          <SaveField
+            section="behavior"
+            fieldKey="auto_search"
+            label="Auto search"
+            helper={configHelp('behavior', 'auto_search')}
+            initialValue={config.behavior.auto_search}
+            resyncToken={resyncToken}
+            onSaved={onSaved}
+            rightAlign
+            // Top of the panel: open the help below the "?" so it is not clipped
+            // by the traffic-lights / window edge (Text Replacement uses "top").
+            tooltipPlacement="bottom"
+            render={(value, setValue) => (
+              <Toggle
+                checked={value}
+                onChange={setValue}
+                ariaLabel="Auto search the web when needed without /search"
+              />
+            )}
+          />
+        </div>
       </Section>
 
       <Section heading="Text Replacement" helper={TEXT_REPLACEMENT_HELP}>

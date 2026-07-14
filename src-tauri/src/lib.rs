@@ -290,6 +290,11 @@ const SETTINGS_SHOW_DISCOVER_EVENT: &str = "thuki://settings-show-discover";
 /// active provider back to the built-in engine.
 const SETTINGS_SHOW_PROVIDERS_EVENT: &str = "thuki://settings-show-providers";
 
+/// Frontend event that asks the Settings window to jump to the Behavior tab
+/// and briefly highlight the Auto search row. Emitted by
+/// `open_settings_to_behavior` from the first-use web-search notice.
+const SETTINGS_SHOW_BEHAVIOR_EVENT: &str = "thuki://settings-show-behavior";
+
 /// Logical dimensions of the onboarding window (centered). The permission
 /// and intro steps use the compact base size; the model-picker step widens
 /// to fit the three-column comparison matrix. Steps smaller than the frame
@@ -962,6 +967,15 @@ fn open_settings_window(app_handle: tauri::AppHandle) {
 fn open_settings_to_providers(app_handle: tauri::AppHandle) {
     show_settings_window(&app_handle);
     let _ = app_handle.emit(SETTINGS_SHOW_PROVIDERS_EVENT, ());
+}
+
+/// Opens Settings on the Behavior tab and asks the UI to flash the Auto search
+/// row. Called from the first-use search trust notice ("Turn off in Settings").
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn open_settings_to_behavior(app_handle: tauri::AppHandle) {
+    show_settings_window(&app_handle);
+    let _ = app_handle.emit(SETTINGS_SHOW_BEHAVIOR_EVENT, ());
 }
 
 /// Closes (hides) the Settings window from the frontend and drops the Dock icon.
@@ -3093,6 +3107,7 @@ pub fn run() {
             is_builtin_announced,
             open_settings_window,
             open_settings_to_providers,
+            open_settings_to_behavior,
             hide_settings_window,
             #[cfg(not(coverage))]
             warmup::warm_up_model,

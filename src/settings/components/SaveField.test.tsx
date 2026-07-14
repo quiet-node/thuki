@@ -51,6 +51,7 @@ const SAMPLE: RawAppConfig = {
     auto_replace: false,
     auto_close: false,
     auto_search: true,
+    search_notice_acknowledged: false,
   },
   debug: {
     trace_enabled: false,

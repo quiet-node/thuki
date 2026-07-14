@@ -341,6 +341,12 @@ pub const DEFAULT_AUTO_CLOSE: bool = false;
 /// Settings › Behavior.
 pub const DEFAULT_AUTO_SEARCH: bool = true;
 
+/// When `false` (default), the first auto-search turn shows a non-blocking
+/// notice explaining that queries leave the device for search services. Set
+/// `true` after the user taps "Got it" (or equivalent) so the card never
+/// returns. Independent of `auto_search`.
+pub const DEFAULT_SEARCH_NOTICE_ACKNOWLEDGED: bool = false;
+
 // Ollama API baked-in limits: not exposed in config.toml because they bound
 // attacker-controlled data (response bodies from the local Ollama daemon) and
 // keep the UI responsive when the daemon is hung. Changing either timeout
@@ -504,6 +510,7 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     ("behavior", "auto_replace"),
     ("behavior", "auto_close"),
     ("behavior", "auto_search"),
+    ("behavior", "search_notice_acknowledged"),
     // [debug]
     ("debug", "trace_enabled"),
     // [updater]

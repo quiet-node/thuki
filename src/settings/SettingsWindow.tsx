@@ -168,6 +168,8 @@ export function SettingsWindow() {
     () => setPendingModelsView(null),
     [],
   );
+  /** One-shot: flash Auto search row after Behavior deep-link. */
+  const [highlightAutoSearch, setHighlightAutoSearch] = useState(false);
   const [savedVisible, setSavedVisible] = useState(false);
   const [marker, setMarker] = useState<CorruptMarker | null>(null);
   const [markerDismissed, setMarkerDismissed] = useState(false);
@@ -238,6 +240,18 @@ export function SettingsWindow() {
     const unlistenPromise = listen('thuki://settings-show-providers', () => {
       setActiveTab('general');
       setPendingModelsView('providers');
+    });
+    return () => {
+      void unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
+
+  // First-use search notice "Turn off in Settings" opens Behavior and flashes
+  // the Auto search row so the user lands on the exact control to change.
+  useEffect(() => {
+    const unlistenPromise = listen('thuki://settings-show-behavior', () => {
+      setActiveTab('behavior');
+      setHighlightAutoSearch(true);
     });
     return () => {
       void unlistenPromise.then((unlisten) => unlisten());
@@ -448,6 +462,10 @@ export function SettingsWindow() {
                     config={config}
                     resyncToken={resyncToken}
                     onSaved={handleSaved}
+                    highlightAutoSearch={highlightAutoSearch}
+                    onHighlightAutoSearchDone={() =>
+                      setHighlightAutoSearch(false)
+                    }
                   />
                 ) : null}
                 {activeTab === 'display' ? (

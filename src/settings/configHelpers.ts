@@ -64,6 +64,8 @@ const HELPERS = {
       'When on, Thuki closes itself after a /rewrite or /refine result is replaced into your app (via Auto-replace or the Replace button). Only if the replace succeeds. Off by default.',
     auto_search:
       'On (default): search the web when a plain message needs live facts. Off: stay local unless you type /search.',
+    search_notice_acknowledged:
+      'Internal flag set after you dismiss the first-use web-search notice. You do not need to edit this; use Auto search to control searching.',
   },
   debug: {
     trace_enabled:
