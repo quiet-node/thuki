@@ -7,5 +7,6 @@
 //! not the concrete reqwest backend, which keeps their logic testable without
 //! a network.
 
+pub mod reachability;
 pub mod ssrf;
 pub mod transport;

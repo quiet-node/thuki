@@ -944,6 +944,9 @@ async fn run_builtin_search(
         crate::config::defaults::SUFFICIENCY_JUDGE_TIMEOUT_S,
     );
     let scorer = crate::websearch::rank::Bm25Scorer;
+    // Offline fast-fail signal, raced against the engine tier's live requests
+    // (never a pre-flight gate; see `net::reachability`).
+    let reachability = crate::net::reachability::DnsReachability;
     // The device IANA timezone, so the sports vertical can localize scheduled
     // kickoff times; `None` (unreadable /etc/localtime) degrades to date-only
     // event lines.
@@ -955,6 +958,7 @@ async fn run_builtin_search(
         prepass: &prepass,
         judge: &judge,
         transport: &transport,
+        reachability: &reachability,
         scorer: &scorer,
         health: crate::websearch::engine::global_engine_health(),
         recorder: recorder.as_ref(),

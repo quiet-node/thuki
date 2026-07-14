@@ -741,6 +741,32 @@ pub const VERTICAL_RETRY_BACKOFF_MIN_MS: u64 = 300;
 /// Not user-tunable: an internal resilience policy.
 pub const VERTICAL_RETRY_BACKOFF_MAX_MS: u64 = 800;
 
+// ─── Offline fast-fail (reachability probe race) ─────────────────────────────
+
+/// Deadline for one reachability probe (milliseconds); see
+/// `net::reachability::offline_cutoff`. A probe that does not answer inside this
+/// window proves nothing and resolves to `ReachabilityVerdict::Unknown`, which
+/// never short-circuits a turn. Comfortably above a DNS round trip on a working
+/// link and strictly below `OFFLINE_SHORTCIRCUIT_WINDOW_MS`, so an offline
+/// verdict still lands inside the grace window below.
+///
+/// Not user-tunable: an internal robustness bound on a mechanism whose only
+/// user-visible effect is how fast an already-doomed offline turn gives up.
+pub const REACHABILITY_PROBE_TIMEOUT_MS: u64 = 800;
+
+/// Grace window (milliseconds) a proven-unreachable turn still gives the real
+/// engine requests before the pipeline gives up and takes the honest "can't
+/// reach the web" path; see `net::reachability::offline_cutoff`. Replaces the
+/// old ~46 s of stacked per-engine connect + request timeouts
+/// (`HTTP_CONNECT_TIMEOUT_S` + `HTTP_REQUEST_TIMEOUT_S`, per engine) on an
+/// offline device. Long enough that a real request which merely started slowly
+/// can still win the race and cancel the short-circuit; short enough that an
+/// offline user is told the truth in about a second.
+///
+/// Not user-tunable: a judgment value trading offline give-up latency against
+/// the risk of cutting a live-but-slow request short, not a preference.
+pub const OFFLINE_SHORTCIRCUIT_WINDOW_MS: u64 = 1500;
+
 // ─── Web-search decision (pre-filter + classifier) ───────────────────────────
 
 /// Maximum number of leading characters of the user's message the deterministic

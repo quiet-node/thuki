@@ -26,6 +26,7 @@
 //! ```
 
 use thuki_agent_lib::commands::ChatMessage;
+use thuki_agent_lib::net::reachability::DnsReachability;
 use thuki_agent_lib::net::transport::ReqwestTransport;
 use thuki_agent_lib::trace::{BoundRecorder, ConversationId};
 use thuki_agent_lib::websearch::assemble::SourceBlock;
@@ -128,6 +129,7 @@ async fn live_turn(
         prepass: &prepass,
         judge: &judge,
         transport: &transport,
+        reachability: &DnsReachability,
         scorer: &Bm25Scorer,
         health: &health,
         recorder: &recorder,
