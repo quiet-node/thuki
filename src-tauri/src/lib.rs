@@ -807,11 +807,14 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
 }
 
 /// Centers the settings window dead-center on its monitor (horizontally and
-/// vertically). Called only when Settings is not already visible so a fresh
-/// open spawns centered; re-open / deep-link while already shown preserves
-/// wherever the user dragged the panel.
+/// vertically). No-op when Settings is already visible so a fresh open spawns
+/// centered; re-open / deep-link while already shown preserves wherever the
+/// user dragged the panel.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn position_settings_window(window: &tauri::WebviewWindow) {
+    if window.is_visible().unwrap_or(false) {
+        return;
+    }
     const SETTINGS_WIDTH: f64 = 760.0;
 
     let monitor = window
@@ -926,12 +929,9 @@ fn show_settings_window(app_handle: &tauri::AppHandle) {
             Ok(panel) => {
                 let _ = app_handle.run_on_main_thread(move || {
                     if let Some(win) = window {
-                        // Only center on first show; preserve drag position when
-                        // already open (deep-link from notice should not snap).
-                        let already_visible = win.is_visible().unwrap_or(false);
-                        if !already_visible {
-                            position_settings_window(&win);
-                        }
+                        // No-op when already open (deep-link from notice
+                        // should not snap the dragged panel back to center).
+                        position_settings_window(&win);
                     }
                     panel.show_and_make_key();
                 });
@@ -946,10 +946,7 @@ fn show_settings_window(app_handle: &tauri::AppHandle) {
         eprintln!("thuki: [settings] window 'settings' not found in app config");
         return;
     };
-    let already_visible = window.is_visible().unwrap_or(false);
-    if !already_visible {
-        position_settings_window(&window);
-    }
+    position_settings_window(&window);
     let _ = window.show();
     let _ = window.set_focus();
 }
