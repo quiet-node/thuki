@@ -181,9 +181,10 @@ describe('SettingsWindow', () => {
     expect(row).toHaveAttribute('data-highlight', 'true');
     expect(screen.getByText('Auto search')).toBeInTheDocument();
 
-    // Highlight auto-clears after AUTO_SEARCH_HIGHLIGHT_MS.
+    // Highlight auto-clears after AUTO_SEARCH_HIGHLIGHT_MS (~7.2s design D).
+    expect(screen.getByTestId('auto-search-wiggle')).toBeInTheDocument();
     await act(async () => {
-      vi.advanceTimersByTime(2000);
+      vi.advanceTimersByTime(7500);
     });
     expect(screen.getByTestId('auto-search-row')).not.toHaveAttribute(
       'data-highlight',

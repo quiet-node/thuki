@@ -554,7 +554,7 @@ describe('BehaviorTab', () => {
     ).toHaveAttribute('aria-checked', 'false');
   });
 
-  it('highlights Auto search row then clears via timeout callback', () => {
+  it('highlights Auto search with wiggle then clears via timeout callback', () => {
     vi.useFakeTimers();
     const onDone = vi.fn();
     const { unmount } = render(
@@ -570,8 +570,9 @@ describe('BehaviorTab', () => {
       'data-highlight',
       'true',
     );
+    expect(screen.getByTestId('auto-search-wiggle')).toBeInTheDocument();
     act(() => {
-      vi.advanceTimersByTime(1800);
+      vi.advanceTimersByTime(7200);
     });
     expect(onDone).toHaveBeenCalledTimes(1);
     // Optional callback absent: timeout still safe.
@@ -585,7 +586,7 @@ describe('BehaviorTab', () => {
       />,
     );
     act(() => {
-      vi.advanceTimersByTime(1800);
+      vi.advanceTimersByTime(7200);
     });
     vi.useRealTimers();
   });
