@@ -140,6 +140,8 @@ export function AutoPrimeSkippedStrip({
           className="mt-1 shrink-0 w-2 h-2 rounded-full"
           style={{ background: AMBER, boxShadow: `0 0 6px ${AMBER}` }}
         />
+        {/* Copy + actions share this column so CTAs line up with the text,
+            not under the status dot. */}
         <div className="min-w-0 flex-1">
           <p className="text-xs text-text-primary leading-relaxed">
             {fitMessage}
@@ -173,25 +175,25 @@ export function AutoPrimeSkippedStrip({
               </motion.div>
             ) : null}
           </AnimatePresence>
+          <div className="mt-2.5 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              aria-label={primaryLabel}
+              onClick={onPrimaryClick}
+              className={PRIMARY_BTN_CLASS}
+            >
+              {primaryLabel}
+            </button>
+            <button
+              type="button"
+              aria-label={secondaryLabel}
+              onClick={onSecondaryClick}
+              className={GHOST_BTN_CLASS}
+            >
+              {secondaryLabel}
+            </button>
+          </div>
         </div>
-      </div>
-      <div className="mt-2.5 flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          aria-label={primaryLabel}
-          onClick={onPrimaryClick}
-          className={PRIMARY_BTN_CLASS}
-        >
-          {primaryLabel}
-        </button>
-        <button
-          type="button"
-          aria-label={secondaryLabel}
-          onClick={onSecondaryClick}
-          className={GHOST_BTN_CLASS}
-        >
-          {secondaryLabel}
-        </button>
       </div>
     </div>
   );
