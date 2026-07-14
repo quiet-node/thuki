@@ -1,10 +1,12 @@
 /**
  * First-use, non-blocking card for Auto search (v0.16.0). Mounted on the ask
- * bar above the logo/input row when Auto search is on and the notice is not
- * acknowledged. Stays until Got it (or auto_search is off). Never gates compose.
+ * bar **below** the logo/input row (design D footer) when Auto search is on
+ * and the notice is not acknowledged. Stays until Got it (or auto_search is
+ * off). Never gates compose.
  *
- * Visual: elevated warm panel (surface-elevated + warm border, soft shadow).
- * No version kicker; body still mentions v0.16.0 in copy.
+ * Visual: flat content inside the ask-bar footer slot (parent supplies the
+ * hairline border + dim fill). No nested elevated card so the bar does not
+ * look double-boxed.
  */
 
 import { invoke } from '@tauri-apps/api/core';
@@ -43,8 +45,8 @@ function openDisclosure(): void {
 }
 
 /**
- * Compact elevated panel matching design variant C without a version kicker.
- * Never blocks compose; search proceeds underneath.
+ * Flat footer notice body (design D). Parent AskBarView owns the border-top
+ * slot chrome. Never blocks compose.
  */
 export function SearchTrustNotice({
   onAcknowledge,
@@ -55,12 +57,11 @@ export function SearchTrustNotice({
       data-testid="search-trust-notice"
       role="region"
       aria-label={SEARCH_TRUST_NOTICE_TITLE}
-      className="mb-2 rounded-xl border border-surface-border bg-surface-elevated px-3.5 py-3 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.4)]"
     >
-      <p className="text-sm font-medium text-white/90 leading-snug">
+      <p className="text-[13px] font-medium text-white/90 leading-snug">
         {SEARCH_TRUST_NOTICE_TITLE}
       </p>
-      <p className="mt-1.5 text-xs text-white/45 leading-relaxed">
+      <p className="mt-1 text-xs text-white/45 leading-relaxed">
         {SEARCH_TRUST_NOTICE_BODY}{' '}
         <button
           type="button"

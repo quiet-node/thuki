@@ -2023,18 +2023,18 @@ describe('AskBarView', () => {
       );
     }
 
-    it('shows elevated notice when autoSearch on and not acknowledged', () => {
+    it('shows footer notice below the input row when autoSearch on and not acknowledged', () => {
       renderWithBehavior({
         autoSearch: true,
         searchNoticeAcknowledged: false,
       });
       const notice = screen.getByTestId('search-trust-notice');
       expect(notice).toBeInTheDocument();
-      // Above the logo/input row in DOM order.
+      expect(screen.getByTestId('search-trust-notice-slot')).toBeInTheDocument();
+      // Design D: below the logo/input row in DOM order.
       const row = screen.getByTestId('ask-bar-row');
       expect(
-        notice.compareDocumentPosition(row) &
-          Node.DOCUMENT_POSITION_FOLLOWING,
+        row.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
     });
 

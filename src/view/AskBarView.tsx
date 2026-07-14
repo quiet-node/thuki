@@ -617,14 +617,6 @@ export function AskBarView({
       {!isChatMode && autoPrimeSkipped ? (
         <AutoPrimeSkippedStrip {...autoPrimeSkipped} />
       ) : null}
-      {showSearchTrustNotice ? (
-        <div className="px-3 pt-2 pb-0">
-          <SearchTrustNotice
-            onAcknowledge={acknowledgeSearchNotice}
-            onOpenSettings={openSearchSettings}
-          />
-        </div>
-      ) : null}
       {/* Command suggestion renders above the input row in the normal DOM
           flow. Being inside the morphing container means the ResizeObserver
           detects the added height and grows the native window upward to reveal
@@ -768,6 +760,19 @@ export function AskBarView({
           </motion.button>
         </div>
       </motion.div>
+      {/* Design D: Auto search trust notice as footer under the input row so
+          the logo/input stay the visual primary; non-blocking compose. */}
+      {showSearchTrustNotice ? (
+        <div
+          data-testid="search-trust-notice-slot"
+          className="border-t border-white/[0.05] bg-black/[0.15] px-3.5 py-2.5"
+        >
+          <SearchTrustNotice
+            onAcknowledge={acknowledgeSearchNotice}
+            onOpenSettings={openSearchSettings}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }
