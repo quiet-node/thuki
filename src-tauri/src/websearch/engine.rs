@@ -249,6 +249,45 @@ fn outcome_status(outcome: &EngineOutcome) -> &'static str {
     }
 }
 
+/// Decides, from the scraped-engine tier's per-engine outcome summary (see
+/// [`EngineStat`]), whether an empty result means the web was unreachable
+/// rather than merely fruitless. Returns `true` only when the transport layer
+/// failed for EVERY engine actually contacted this tier: at least one engine
+/// was contacted, and every contacted engine came back `"transport_error"`.
+///
+/// The distinction drives which failure the user is shown, so it is drawn
+/// conservatively toward "found nothing":
+/// - `"transport_error"` is the only status that proves a network/transport
+///   failure, so it is the only one that can add up to "unreachable".
+/// - `"cooling"` is an engine deliberately skipped for its own prior block, not
+///   a network failure happening now, so it is ignored: neither evidence of a
+///   reachable web nor of an unreachable one.
+/// - Any other status (`"ok"`, `"empty"`, `"blocked"`, `"cache_hit"`, or an
+///   unrecognised future value) means that engine's HTTP response, or a prior
+///   successful fetch, DID come back, so the web was reached; one such engine
+///   is enough to make the miss "found nothing", never "could not connect".
+///
+/// With no engine contacted at all (every engine cooling, or no queries ran)
+/// there is no transport-failure evidence, so this returns `false` and the
+/// caller reports "found nothing" rather than blaming the connection.
+pub(crate) fn transport_unreachable(stats: &[EngineStat]) -> bool {
+    let mut contacted = false;
+    for stat in stats {
+        match stat.status.as_str() {
+            // Skipped before any request went out: not a contact this turn.
+            "cooling" => {}
+            // A real network/transport failure: the only status that keeps the
+            // "unreachable" verdict alive.
+            "transport_error" => contacted = true,
+            // Any HTTP response or cache hit proves the web was reached, so the
+            // miss cannot be a connectivity failure: short-circuit to "found
+            // nothing".
+            _ => return false,
+        }
+    }
+    contacted
+}
+
 /// Runs a keyless web search for `query` by racing every live engine in
 /// [`ENGINES`] concurrently and fusing their ranked lists with Reciprocal Rank
 /// Fusion. Engines inside their block cooldown (see [`EngineHealth`]) are not
@@ -1458,6 +1497,57 @@ mod tests {
             outcome_status(&EngineOutcome::TransportError),
             "transport_error"
         );
+    }
+
+    // ── transport_unreachable ───────────────────────────────────────────────
+
+    /// Builds an `EngineStat` with just the status set; `name`/`hit_count` do
+    /// not affect [`transport_unreachable`].
+    fn stat(status: &str) -> EngineStat {
+        EngineStat {
+            name: "engine".to_string(),
+            status: status.to_string(),
+            hit_count: 0,
+        }
+    }
+
+    #[test]
+    fn transport_unreachable_true_when_every_contacted_engine_transport_errored() {
+        assert!(transport_unreachable(&[
+            stat("transport_error"),
+            stat("transport_error"),
+        ]));
+    }
+
+    #[test]
+    fn transport_unreachable_ignores_cooling_engines() {
+        // Cooling engines are skipped, not contacted: a lone transport error
+        // among them still reads as unreachable.
+        assert!(transport_unreachable(&[
+            stat("cooling"),
+            stat("transport_error"),
+        ]));
+    }
+
+    #[test]
+    fn transport_unreachable_false_when_any_engine_reached_the_web() {
+        // One HTTP response (even an empty or blocked one) proves the web was
+        // reached, so the miss is "found nothing", not "unreachable".
+        assert!(!transport_unreachable(&[
+            stat("transport_error"),
+            stat("empty"),
+        ]));
+        assert!(!transport_unreachable(&[stat("blocked")]));
+        assert!(!transport_unreachable(&[stat("cache_hit")]));
+        assert!(!transport_unreachable(&[stat("ok")]));
+    }
+
+    #[test]
+    fn transport_unreachable_false_when_no_engine_was_contacted() {
+        // No engines at all, and all-cooling, both lack transport-failure
+        // evidence: never blame the connection.
+        assert!(!transport_unreachable(&[]));
+        assert!(!transport_unreachable(&[stat("cooling"), stat("cooling")]));
     }
 
     // ── web_search racing + fusion over the fake transport ──────────────────

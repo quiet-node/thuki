@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   HONEST_FAILURE_NOTE_BODY,
+  SEARCH_NO_RESULTS_NOTE_BODY,
+  SEARCH_UNREACHABLE_NOTE_BODY,
+  searchFailNoteBody,
   splitHonestFailureNote,
 } from '../honestFailureNote';
 
@@ -62,5 +65,21 @@ describe('splitHonestFailureNote', () => {
       body: 'Line one.',
       note: HONEST_FAILURE_NOTE_BODY,
     });
+  });
+});
+
+describe('searchFailNoteBody', () => {
+  it('maps unreachable to the connection-check copy', () => {
+    expect(searchFailNoteBody('unreachable')).toBe(
+      SEARCH_UNREACHABLE_NOTE_BODY,
+    );
+    expect(searchFailNoteBody('unreachable')).toContain(
+      'Check your internet connection',
+    );
+  });
+
+  it('maps no_results to the rephrase copy', () => {
+    expect(searchFailNoteBody('no_results')).toBe(SEARCH_NO_RESULTS_NOTE_BODY);
+    expect(searchFailNoteBody('no_results')).toContain('Try rephrasing');
   });
 });

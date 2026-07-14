@@ -10,12 +10,15 @@ import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { formatQuotedText } from '../utils/formatQuote';
 import { useConfig } from '../contexts/ConfigContext';
 import { COMMANDS, SCREEN_CAPTURE_PLACEHOLDER } from '../config/commands';
-import type { EngineErrorKind } from '../hooks/useModel';
+import type { EngineErrorKind, SearchFailReason } from '../hooks/useModel';
 import type { SearchResultPreview, SearchStage } from '../types/search';
 import { SearchProgressBlock } from './SearchProgressBlock';
 import { avatarColor, domainOf } from '../utils/domainAvatar';
 import { cleanForRender } from '../utils/sanitizeAssistantContent';
-import { splitHonestFailureNote } from '../utils/honestFailureNote';
+import {
+  searchFailNoteBody,
+  splitHonestFailureNote,
+} from '../utils/honestFailureNote';
 import {
   completeSearchHandoffExit,
   nextSearchHandoffPhase,
@@ -171,6 +174,12 @@ interface ChatBubbleProps {
   /** Source URLs for a web-search answer. Click opens the URL in the browser. */
   searchSources?: SearchResultPreview[];
   /**
+   * Set when a wanted web search produced no citable answer. Renders the
+   * reliable L3 hairline-rail failure note under the (parametric) answer; the
+   * copy differs by reason (unreachable vs. no results). Absent otherwise.
+   */
+  searchFailReason?: SearchFailReason;
+  /**
    * Coarse web-search phase (`SearchStatus`). Drives
    * {@link SearchProgressBlock} while the turn is searching.
    */
@@ -250,6 +259,7 @@ export function ChatBubble({
   pendingLabel,
   isThinking,
   searchSources,
+  searchFailReason,
   searchStage = null,
   isSearching = false,
   shouldAutoScroll,
@@ -639,6 +649,14 @@ export function ChatBubble({
                     data-testid="honest-failure-note"
                   >
                     {honestFailureNote}
+                  </p>
+                ) : null}
+                {searchFailReason ? (
+                  <p
+                    className="honest-failure-note"
+                    data-testid="search-fail-note"
+                  >
+                    {searchFailNoteBody(searchFailReason)}
                   </p>
                 ) : null}
               </>

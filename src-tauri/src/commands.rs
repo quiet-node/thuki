@@ -1002,9 +1002,12 @@ async fn run_builtin_search(
             on_chunk(StreamChunk::SearchSources(source_metas(&sources)));
             BuiltinSearchResult::Grounded { messages, sources }
         }
-        // Search wanted but unreachable: stream the disclosure-bearing messages
-        // (no sources to attach), so the answer names its unverified freshness.
-        crate::websearch::orchestrator::SearchOutcome::Unreachable { messages } => {
+        // Search wanted but produced nothing: emit a reliable, typed failure
+        // signal (independent of the model's prose) so the frontend always shows
+        // the right note, then stream the disclosure-bearing messages (no sources
+        // to attach) so the answer also names its unverified freshness.
+        crate::websearch::orchestrator::SearchOutcome::Unreachable { messages, reason } => {
+            on_chunk(StreamChunk::SearchFailed { reason });
             BuiltinSearchResult::Grounded {
                 messages,
                 sources: Vec::new(),
@@ -1146,6 +1149,9 @@ async fn refine_grounded_answer(
                 | StreamChunk::TurnAccepted
                 | StreamChunk::SearchStatus { .. }
                 | StreamChunk::SearchSources(_)
+                // Never emitted on a repair round (a chat stream, not the search
+                // pipeline), but the match must stay exhaustive.
+                | StreamChunk::SearchFailed { .. }
                 | StreamChunk::SetContent(_) => {}
             },
         )
@@ -1618,6 +1624,15 @@ pub enum StreamChunk {
     /// The resolved citation sources for a source-grounded answer, emitted once
     /// just before the answer tokens. Never emitted on a plain (non-search) turn.
     SearchSources(Vec<SourceMeta>),
+    /// A wanted web search produced no citable answer. Emitted once, before the
+    /// (parametric-knowledge) answer tokens, so the frontend can show a reliable
+    /// failure note that does not depend on the model's own prose. `reason`
+    /// serializes as `"unreachable"` or `"no_results"` (see
+    /// [`crate::websearch::orchestrator::SearchFailReason`]). Carries no engine
+    /// names, URLs, or error text: user-facing signal only.
+    SearchFailed {
+        reason: crate::websearch::orchestrator::SearchFailReason,
+    },
     /// Replace the assistant bubble's full answer text. Used after live
     /// streaming when citation repair or strip produces a different final body.
     SetContent(String),
@@ -1950,7 +1965,11 @@ pub(crate) fn record_chunk_to_trace(
         | StreamChunk::Error(_)
         | StreamChunk::TurnAccepted
         | StreamChunk::SearchStatus { .. }
-        | StreamChunk::SearchSources(_) => {}
+        | StreamChunk::SearchSources(_)
+        // A UI-only failure signal: the search outcome is already recorded to
+        // the trace by the pipeline (SearchRetrieved/SearchSkipped), so this
+        // chunk contributes no token or trace event of its own.
+        | StreamChunk::SearchFailed { .. } => {}
     }
 }
 
@@ -2629,7 +2648,10 @@ mod tests {
             "Answer"
         );
         assert_eq!(
-            builtin_search_outcome_label(&SearchOutcome::Unreachable { messages: vec![] }),
+            builtin_search_outcome_label(&SearchOutcome::Unreachable {
+                messages: vec![],
+                reason: crate::websearch::orchestrator::SearchFailReason::NoResults,
+            }),
             "Unreachable"
         );
     }
@@ -4082,6 +4104,23 @@ mod tests {
         let json = serde_json::to_value(&chunk).unwrap();
         assert_eq!(json["type"], "ThinkingToken");
         assert_eq!(json["data"], "reasoning step");
+    }
+
+    #[test]
+    fn search_failed_serializes_reason_to_the_wire_strings() {
+        use crate::websearch::orchestrator::SearchFailReason;
+        let unreachable = serde_json::to_value(StreamChunk::SearchFailed {
+            reason: SearchFailReason::Unreachable,
+        })
+        .unwrap();
+        assert_eq!(unreachable["type"], "SearchFailed");
+        assert_eq!(unreachable["data"]["reason"], "unreachable");
+
+        let no_results = serde_json::to_value(StreamChunk::SearchFailed {
+            reason: SearchFailReason::NoResults,
+        })
+        .unwrap();
+        assert_eq!(no_results["data"]["reason"], "no_results");
     }
 
     #[test]

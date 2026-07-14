@@ -498,6 +498,125 @@ describe('useModel', () => {
       );
     });
 
+    it('buffers the SearchFailed reason without stamping it while streaming, then applies it on Done', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useModel('m', onTurnComplete));
+      await act(async () => {
+        await result.current.ask('what is the latest rust version');
+      });
+      const channel = getChannel();
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'SearchFailed',
+          data: { reason: 'unreachable' },
+        });
+      });
+
+      // Mid-stream: fromSearch flips on immediately (drives progress chrome),
+      // but the failure note itself must stay hidden until the answer is done.
+      const midStreamAssistant = result.current.messages.find(
+        (m) => m.role === 'assistant',
+      );
+      expect(midStreamAssistant?.fromSearch).toBe(true);
+      expect(midStreamAssistant?.searchFailReason).toBeUndefined();
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'Token',
+          data: 'From what I recall, ...',
+        });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+
+      const doneAssistant = result.current.messages.find(
+        (m) => m.role === 'assistant',
+      );
+      expect(doneAssistant?.searchFailReason).toBe('unreachable');
+      expect(onTurnComplete).toHaveBeenCalledWith(
+        expect.objectContaining({ role: 'user' }),
+        expect.objectContaining({
+          content: 'From what I recall, ...',
+          fromSearch: true,
+          searchFailReason: 'unreachable',
+        }),
+      );
+    });
+
+    it('carries a no_results SearchFailed reason through to Done', async () => {
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useModel('m', onTurnComplete));
+      await act(async () => {
+        await result.current.ask('who won the local match last night');
+      });
+      const channel = getChannel();
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'SearchFailed',
+          data: { reason: 'no_results' },
+        });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+
+      const assistant = result.current.messages.find(
+        (m) => m.role === 'assistant',
+      );
+      expect(assistant?.searchFailReason).toBe('no_results');
+      expect(onTurnComplete).toHaveBeenCalledWith(
+        expect.objectContaining({ role: 'user' }),
+        expect.objectContaining({ searchFailReason: 'no_results' }),
+      );
+    });
+
+    it('does not apply the SearchFailed reason when the turn is cancelled before Done', async () => {
+      const { result } = renderHook(() => useModel('m'));
+      await act(async () => {
+        await result.current.ask('what is the latest rust version');
+      });
+      const channel = getChannel();
+
+      act(() => {
+        // Visible output first so the assistant message survives cancel
+        // (an empty in-flight message is dropped on Cancelled).
+        channel!.simulateMessage({ type: 'Token', data: 'partial answer' });
+        channel!.simulateMessage({
+          type: 'SearchFailed',
+          data: { reason: 'unreachable' },
+        });
+        channel!.simulateMessage({ type: 'Cancelled' });
+      });
+
+      const assistant = result.current.messages.find(
+        (m) => m.role === 'assistant',
+      );
+      expect(assistant?.searchFailReason).toBeUndefined();
+    });
+
+    it('does not apply the SearchFailed reason when the turn errors before Done', async () => {
+      const { result } = renderHook(() => useModel('m'));
+      await act(async () => {
+        await result.current.ask('what is the latest rust version');
+      });
+      const channel = getChannel();
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'SearchFailed',
+          data: { reason: 'no_results' },
+        });
+        channel!.simulateMessage({
+          type: 'Error',
+          data: { kind: 'Other', message: 'boom' },
+        });
+      });
+
+      const assistant = result.current.messages.find(
+        (m) => m.role === 'assistant',
+      );
+      expect(assistant?.searchFailReason).toBeUndefined();
+    });
+
     it('replaces the full assistant content on SetContent after a live draft', async () => {
       const { result } = renderHook(() => useModel('m'));
       await act(async () => {

@@ -63,7 +63,9 @@ use crate::trace::{BoundRecorder, EngineStat, RecorderEvent, RetrievedSource};
 use crate::websearch::assemble::{assemble_context, SourceBlock};
 use crate::websearch::cache::{CachedSearch, SourceCache};
 use crate::websearch::encyclopedia::{fetch_encyclopedia, is_volatile_question};
-use crate::websearch::engine::{any_engine_available, web_search, EngineHealth, SearchHit};
+use crate::websearch::engine::{
+    any_engine_available, transport_unreachable, web_search, EngineHealth, SearchHit,
+};
 use crate::websearch::fetch::{fetch_pages, FetchedPage};
 use crate::websearch::judge::{deterministic_sufficiency, SufficiencyJudge, SufficiencyVerdict};
 use crate::websearch::news::{fetch_news, is_news_intent};
@@ -105,14 +107,36 @@ pub enum SearchOutcome {
         messages: Vec<ChatMessage>,
         sources: Vec<SourceBlock>,
     },
-    /// A search was wanted but retrieval produced nothing (engines blocked or
-    /// nothing citable). `messages` is the plain chat prompt plus an appendix
-    /// telling the model to disclose the failed verification, so a stale answer
-    /// is never presented as current.
-    Unreachable { messages: Vec<ChatMessage> },
+    /// A search was wanted but retrieval produced nothing. `messages` is the
+    /// plain chat prompt plus a reason-specific appendix telling the model to
+    /// disclose the failed verification, so a stale answer is never presented as
+    /// current. `reason` distinguishes a true transport failure from a search
+    /// that ran but found nothing, so the frontend can show the right note and
+    /// the writer prompt can caveat with the right words (see
+    /// [`SearchFailReason`]).
+    Unreachable {
+        messages: Vec<ChatMessage>,
+        reason: SearchFailReason,
+    },
     /// The user cancelled during the pipeline; the caller emits `Cancelled` and
     /// streams nothing.
     Cancelled,
+}
+
+/// Why a wanted web search produced no citable answer. Distinguishes the two
+/// failures that used to collapse into one so both the user-facing note and the
+/// model's self-disclosure appendix can name the accurate cause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchFailReason {
+    /// Every engine actually contacted this turn failed at the network/transport
+    /// layer: the web could not be reached, so "check your connection" is
+    /// accurate.
+    Unreachable,
+    /// At least one engine returned an HTTP response (or a cached list) but
+    /// nothing usable survived fusion and ranking: the web was searched and
+    /// simply had nothing current. Includes the blocked-but-online case.
+    NoResults,
 }
 
 /// The injected effectful dependencies of the pipeline.
@@ -795,13 +819,15 @@ async fn run_web(
     .await
     {
         EngineTierOutcome::Cancelled => SearchOutcome::Cancelled,
-        EngineTierOutcome::Empty => SearchOutcome::Unreachable {
+        EngineTierOutcome::Empty { reason } => SearchOutcome::Unreachable {
             messages: unreachable_messages(
                 chat_system_prompt,
                 history,
                 latest_user,
                 deps.latest_images,
+                reason,
             ),
+            reason,
         },
         EngineTierOutcome::Ranked {
             sources,
@@ -864,8 +890,11 @@ enum EngineTierOutcome {
     /// The user cancelled mid-retrieval.
     Cancelled,
     /// Every engine was blocked or empty, or nothing survived ranking: there is
-    /// nothing citable.
-    Empty,
+    /// nothing citable. `reason` records whether the tier never reached the web
+    /// (every contacted engine transport-failed) or reached it and found nothing
+    /// usable, derived from the per-engine outcome summary (see
+    /// [`transport_unreachable`]).
+    Empty { reason: SearchFailReason },
     /// The budgeted, ranked source blocks ready for the writer, plus the
     /// byproducts a downstream requery merge needs.
     Ranked {
@@ -906,6 +935,21 @@ enum EngineTierOutcome {
 /// judge-driven escalation from [`commit_or_escalate`] is not a user distrust
 /// signal, so that call site always passes `false` and a cached-but-fresh
 /// result is fine there.
+/// Maps the scraped-engine tier's per-engine outcome summary to the
+/// [`SearchFailReason`] for an empty result: [`SearchFailReason::Unreachable`]
+/// when every contacted engine transport-failed, else
+/// [`SearchFailReason::NoResults`]. The transport-failure test lives in
+/// [`transport_unreachable`] (it owns the engine-status vocabulary); this thin
+/// wrapper only turns that verdict into the outcome enum, kept separate so both
+/// the derivation and the mapping stay directly unit-tested.
+fn empty_reason(engine_stats: &[EngineStat]) -> SearchFailReason {
+    if transport_unreachable(engine_stats) {
+        SearchFailReason::Unreachable
+    } else {
+        SearchFailReason::NoResults
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_engine_tier(
     deps: &SearchDeps<'_>,
@@ -949,7 +993,13 @@ async fn run_engine_tier(
     }
     let hits = dedupe_hits(hits);
     if hits.is_empty() {
-        return EngineTierOutcome::Empty;
+        // No engine yielded a hit. The reason turns on WHY every engine drew a
+        // blank: an all-transport-error round is "unreachable", any HTTP
+        // response (empty/blocked) is "found nothing" (see
+        // `transport_unreachable`).
+        return EngineTierOutcome::Empty {
+            reason: empty_reason(&engine_stats),
+        };
     }
     if cancel.is_cancelled() {
         return EngineTierOutcome::Cancelled;
@@ -984,7 +1034,12 @@ async fn run_engine_tier(
     };
     let sources = assemble_context(&chunks, num_ctx);
     if sources.is_empty() {
-        return EngineTierOutcome::Empty;
+        // Engines returned hits (this path is past the `hits.is_empty()` guard)
+        // but nothing survived fetch, ranking, and budgeting: the web was
+        // reached, so `empty_reason` resolves this to `NoResults`.
+        return EngineTierOutcome::Empty {
+            reason: empty_reason(&engine_stats),
+        };
     }
     // `chunks` and `pages` ride along so the engine-tier requery merge can fuse
     // round one and round two by score (see `judge_and_requery`); the
@@ -1188,8 +1243,9 @@ async fn commit_or_escalate(
             }
         }
         // The engines came up empty too: fall back to the vertical block as a
-        // partial answer rather than a wall.
-        EngineTierOutcome::Empty => {
+        // partial answer rather than a wall. The empty reason is irrelevant
+        // here (a grounded vertical block still answers), so it is dropped.
+        EngineTierOutcome::Empty { .. } => {
             deps.recorder.record(RecorderEvent::SearchEscalated {
                 from_tier: tier.to_string(),
                 sufficient: false,
@@ -3808,11 +3864,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn web_with_no_results_yields_unreachable_disclosure() {
+    async fn web_with_all_engines_transport_error_yields_unreachable_disclosure() {
         let prepass = FakePrePass::returning(Ok(web_decision(vec!["q"])));
-        // Every engine fails (DDG challenge; Mojeek has no canned response ->
-        // transport error) -> zero hits -> the answer must disclose the failed
-        // verification instead of silently going stale.
+        // Every engine transport-fails: an empty FakeHttpTransport has no canned
+        // response for either engine, so each `send` errors. Zero engines reached
+        // the web -> the reason is `Unreachable` and the disclosure says the web
+        // could not be reached.
+        let transport = FakeHttpTransport::new();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "what is the latest rust version",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome,
+            SearchOutcome::Unreachable { messages, reason: SearchFailReason::Unreachable }
+            if messages.first().is_some_and(|m| m.role == "system"
+                && m.content.contains("no web sources could be retrieved"))
+                && messages.last().is_some_and(|m|
+                    m.content == "what is the latest rust version")));
+    }
+
+    #[tokio::test]
+    async fn web_with_blocked_engine_yields_no_results_disclosure() {
+        let prepass = FakePrePass::returning(Ok(web_decision(vec!["q"])));
+        // DDG returns a bot challenge (blocked, but online) and Mojeek transport-
+        // fails. At least one engine reached the web, so the miss is `NoResults`,
+        // not `Unreachable`: the disclosure says no usable current sources were
+        // found rather than blaming the connection.
         let transport = FakeHttpTransport::new().with_response(
             DDG_ENDPOINT,
             HttpResponse {
@@ -3834,9 +3920,10 @@ mod tests {
             &status,
         )
         .await;
-        assert!(matches!(&outcome, SearchOutcome::Unreachable { messages }
+        assert!(matches!(&outcome,
+            SearchOutcome::Unreachable { messages, reason: SearchFailReason::NoResults }
             if messages.first().is_some_and(|m| m.role == "system"
-                && m.content.contains("no web sources could be retrieved"))
+                && m.content.contains("no usable current sources"))
                 && messages.last().is_some_and(|m|
                     m.content == "what is the latest rust version")));
     }
@@ -3866,7 +3953,15 @@ mod tests {
             &status,
         )
         .await;
-        assert!(matches!(outcome, SearchOutcome::Unreachable { .. }));
+        // Engines returned hits but nothing survived ranking: reached the web,
+        // so this resolves to `NoResults`, not a connectivity failure.
+        assert!(matches!(
+            outcome,
+            SearchOutcome::Unreachable {
+                reason: SearchFailReason::NoResults,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

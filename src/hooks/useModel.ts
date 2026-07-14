@@ -2,6 +2,14 @@ import { useCallback, useRef, useState } from 'react';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import type { SearchResultPreview, SearchStage } from '../types/search';
 
+/**
+ * Why a wanted web search produced no citable answer. Mirrors the Rust
+ * `SearchFailReason` wire strings (`commands.rs` `StreamChunk::SearchFailed`):
+ * `'unreachable'` when the web could not be reached at all, `'no_results'` when
+ * it was searched but nothing current was found.
+ */
+export type SearchFailReason = 'unreachable' | 'no_results';
+
 /** Mirrors the Rust EngineErrorKind enum sent over IPC. */
 export type EngineErrorKind =
   | 'EngineUnreachable'
@@ -41,6 +49,13 @@ export interface Message {
   /** Source links for a web-search answer. */
   searchSources?: SearchResultPreview[];
   /**
+   * Set when a wanted web search produced no citable answer (auto-search or
+   * `/search`). Drives the styled failure note under the answer bubble; the
+   * answer itself is still the model's parametric reply. Absent on every
+   * successful or non-search turn.
+   */
+  searchFailReason?: SearchFailReason;
+  /**
    * Immutable snapshot of the request that produced this message, captured
    * once at dispatch time (issue #296). Lets `retryMessageWithOversized`
    * replay the EXACT turn that produced this message with the pre-load
@@ -77,6 +92,7 @@ type RawStreamChunk =
       type: 'SearchSources';
       data: Array<{ index: number; url: string; title: string }>;
     }
+  | { type: 'SearchFailed'; data: { reason: SearchFailReason } }
   | { type: 'SetContent'; data: string };
 
 /** Progress phase of the web-search pipeline (mirrors the Rust `SearchPhase`). */
@@ -98,6 +114,7 @@ type StreamChunk =
   | { type: 'TurnAccepted' }
   | { type: 'SearchStatus'; phase: SearchPhase }
   | { type: 'SearchSources'; sources: SearchResultPreview[] }
+  | { type: 'SearchFailed'; reason: SearchFailReason }
   | { type: 'SetContent'; content: string };
 
 /**
@@ -137,6 +154,8 @@ function normalizeStreamChunk(chunk: RawStreamChunk): StreamChunk {
           url: source.url,
         })),
       };
+    case 'SearchFailed':
+      return { type: 'SearchFailed', reason: chunk.data.reason };
     case 'SetContent':
       return { type: 'SetContent', content: chunk.data };
   }
@@ -508,6 +527,7 @@ export function useModel(
       let currentContent = '';
       let currentThinkingContent = '';
       let pendingSources: SearchResultPreview[] | undefined;
+      let pendingFailReason: SearchFailReason | undefined;
 
       channel.onmessage = (rawChunk) => {
         const chunk = normalizeStreamChunk(rawChunk);
@@ -600,16 +620,50 @@ export function useModel(
           return;
         }
 
+        // A wanted search produced nothing citable. The reason arrives before
+        // the answer tokens, so it is only buffered here (scoped to this
+        // generation via the closure, same as `currentContent`) and applied
+        // to the message at `Done` below. Stamping it immediately would show
+        // the failure note while the answer is still streaming, before the
+        // reader has anything to be skeptical of yet.
+        if (chunk.type === 'SearchFailed') {
+          pendingFailReason = chunk.reason;
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === assistantId
+                ? { ...message, fromSearch: true }
+                : message,
+            ),
+          );
+          return;
+        }
+
         if (chunk.type === 'Done') {
           completeGeneration();
           setIsGenerating(false);
           setSearchStage(null);
+          // The buffered SearchFailed reason lands on the live message only
+          // now, once the answer is fully rendered, so the failure note
+          // appears exactly when streaming completes rather than mid-stream.
+          if (pendingFailReason) {
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantId
+                  ? { ...message, searchFailReason: pendingFailReason }
+                  : message,
+              ),
+            );
+          }
           onTurnComplete?.(userMsg, {
             ...assistantMsg,
             content: currentContent,
             thinkingContent: currentThinkingContent || undefined,
-            fromSearch: pendingSources ? true : assistantMsg.fromSearch,
+            fromSearch:
+              pendingSources || pendingFailReason
+                ? true
+                : assistantMsg.fromSearch,
             searchSources: pendingSources,
+            searchFailReason: pendingFailReason,
           });
           return;
         }
