@@ -71,8 +71,8 @@ use crate::websearch::engine::{
 use crate::websearch::fetch::{fetch_pages, FetchedPage};
 use crate::websearch::judge::{deterministic_sufficiency, SufficiencyJudge, SufficiencyVerdict};
 use crate::websearch::stage_timing::{
-    TimingBag, STAGE_CLASSIFIER, STAGE_FETCH, STAGE_JUDGE, STAGE_RANK_ASSEMBLY, STAGE_SERP,
-    STAGE_WRITER_PREPARE,
+    queries_near_duplicate, TimingBag, STAGE_CLASSIFIER, STAGE_FETCH, STAGE_JUDGE,
+    STAGE_RANK_ASSEMBLY, STAGE_RAW_RACE_SERP, STAGE_SERP, STAGE_WRITER_PREPARE,
 };
 use crate::websearch::news::{fetch_news, is_news_intent};
 use crate::websearch::prefilter::{prefilter, PreFilterVerdict};
@@ -337,57 +337,26 @@ async fn run_search_inner(
     }
     // Stage two: the persona-free classifier decides the ambiguous middle and
     // rewrites the query. A `ForceWeb` verdict still runs it, for the rewrite.
+    // On ForceWeb only, race a raw-query SERP against the classifier so the
+    // common near-duplicate rewrite path pays zero SERP wait after the model
+    // returns (≤1 DDG when the race is kept; divergent rewrites re-SERP).
     status(SearchPhase::Deciding);
-    let classifier_start = Instant::now();
-    let classified = match deps
-        .prepass
-        .decide(history, latest_user, deps.latest_images, today, cancel)
-        .await
-    {
-        Ok(classified) => {
-            deps.timings.record(STAGE_CLASSIFIER, classifier_start);
-            classified
-        }
-        Err(InferenceError::Cancelled) => {
-            deps.timings.record(STAGE_CLASSIFIER, classifier_start);
-            return SearchOutcome::Cancelled;
-        }
-        // Classifier infra failure (engine wedged, call timed out). On a
-        // ForceWeb turn the deterministic signal already decided: search with
-        // the raw message rather than dropping to a stale answer (observed
-        // live: reasoning-heavy models can blow the classifier timeout, and
-        // losing the search on a "latest ..." turn is the worst outcome). On an
-        // ambiguous turn, fall back to a plain model answer.
-        Err(InferenceError::Request(reason)) => {
-            deps.timings.record(STAGE_CLASSIFIER, classifier_start);
-            eprintln!("[search] classifier error: {reason}");
-            // A deterministic ForceWeb signal, or an explicit `/search`
-            // (`force_search`), already committed to searching: fall through to
-            // the raw-message search below rather than dropping to a stale
-            // answer. Only an ambiguous, non-forced turn abandons the search.
-            if verdict != PreFilterVerdict::ForceWeb && !deps.force_search {
-                deps.recorder.record(RecorderEvent::SearchDecided {
-                    prefilter: prefilter_label(verdict).to_string(),
-                    decision: "no".to_string(),
-                    force: false,
-                    route: String::new(),
-                    standalone_question: latest_user.trim().to_string(),
-                    queries: Vec::new(),
-                });
-                return SearchOutcome::NoSearch;
-            }
-            // No classifier output: search the raw message and route to the
-            // general engine tier (no route hint to steer a vertical).
-            PrePassDecision {
-                decision: SearchDecision::Web,
-                route: SearchRoute::Web,
-                standalone_question: latest_user.trim().to_string(),
-                queries: vec![latest_user.trim().to_string()],
-                // A classifier infra failure yields no rewrite, so no explicit
-                // look-it-up signal either: run the standard vertical pipeline.
-                explicit_search: false,
-            }
-        }
+    let classified_and_race = classify_maybe_race_raw(
+        deps,
+        history,
+        latest_user,
+        today,
+        cancel,
+        verdict,
+    )
+    .await;
+    let (classified, raced_serp) = match classified_and_race {
+        ClassifyRaceResult::Cancelled => return SearchOutcome::Cancelled,
+        ClassifyRaceResult::NoSearch => return SearchOutcome::NoSearch,
+        ClassifyRaceResult::Ready {
+            classified,
+            raced_serp,
+        } => (classified, raced_serp),
     };
     let decision = resolve_decision(verdict, classified);
     eprintln!(
@@ -404,6 +373,8 @@ async fn run_search_inner(
         standalone_question: decision.standalone_question.clone(),
         queries: decision.queries.clone(),
     });
+    // Keep raced ForceWeb SERP only when rewrite ≈ raw and decision is web.
+    let preloaded_serp = preloaded_serp_for_decision(&decision, latest_user, raced_serp);
     // Explicit "look it up / verify / double-check" request, or the `/search`
     // command (`deps.force_search`): re-serving ANY fast path is forbidden. Skip
     // the cache AND every vertical and go straight to the scraped engines with
@@ -425,6 +396,7 @@ async fn run_search_inner(
             cancel,
             status,
             true,
+            preloaded_serp,
         )
         .await;
     }
@@ -463,6 +435,7 @@ async fn run_search_inner(
                     cancel,
                     status,
                     false,
+                    preloaded_serp,
                 )
                 .await
             }
@@ -482,6 +455,7 @@ async fn run_search_inner(
                 cancel,
                 status,
                 false,
+                preloaded_serp,
             )
             .await
         }
@@ -500,6 +474,167 @@ impl Drop for TimingFlushGuard<'_> {
     /// Records pipeline total + stage list to the forensic recorder.
     fn drop(&mut self) {
         self.bag.flush(self.recorder);
+    }
+}
+
+/// Result of the classifier stage, optionally concurrent with a ForceWeb raw SERP race.
+enum ClassifyRaceResult {
+    /// User cancelled during the classifier (or race is abandoned on cancel).
+    Cancelled,
+    /// Ambiguous-turn classifier infra failure: answer without search.
+    NoSearch,
+    /// Classifier finished (or ForceWeb fallback synthesized); optional raced SERP.
+    Ready {
+        classified: PrePassDecision,
+        raced_serp: Option<(Vec<SearchHit>, Vec<EngineStat>)>,
+    },
+}
+
+/// Whether a ForceWeb turn should race a raw-query SERP with the classifier.
+///
+/// Skips vertical-shaped questions (weather / sports / news keywords) so the
+/// race never spends DDG quota on turns a keyless vertical is about to answer.
+/// Engine-shaped ForceWeb turns race; that is the latency win the package
+/// targets. Cached decisions on engine-shaped ForceWeb may still race once and
+/// discard hits (rare follow-up path); see [`preloaded_serp_for_decision`].
+fn force_web_should_race_raw(latest_user: &str) -> bool {
+    if is_sports_intent(latest_user) || is_news_intent(latest_user) {
+        return false;
+    }
+    let lower = latest_user.to_ascii_lowercase();
+    let weather_shaped = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|t| matches!(t, "weather" | "temperature" | "forecast" | "humidity"));
+    !weather_shaped
+}
+
+/// Runs the classifier; on [`PreFilterVerdict::ForceWeb`] only (and when the
+/// turn looks engine-shaped, see [`force_web_should_race_raw`]), races a
+/// raw-query SERP in parallel so a near-duplicate rewrite can reuse those hits
+/// (common path stays at one DDG request). Non-ForceWeb paths never race.
+async fn classify_maybe_race_raw(
+    deps: &SearchDeps<'_>,
+    history: &[ChatMessage],
+    latest_user: &str,
+    today: &str,
+    cancel: &CancellationToken,
+    verdict: PreFilterVerdict,
+) -> ClassifyRaceResult {
+    let classifier_start = Instant::now();
+    let raw = latest_user.trim().to_string();
+    if verdict == PreFilterVerdict::ForceWeb && force_web_should_race_raw(latest_user) {
+        let race_start = Instant::now();
+        // Freshness bias matches run_web: volatile raw phrasing gets the date
+        // filter; stable ForceWeb still races without it.
+        let freshness = is_volatile_question(&raw);
+        let decide = deps
+            .prepass
+            .decide(history, latest_user, deps.latest_images, today, cancel);
+        let race = web_search(
+            deps.transport,
+            &raw,
+            deps.health,
+            freshness,
+            deps.web_cache,
+            false,
+        );
+        let (classified_res, race_res) = tokio::join!(decide, race);
+        deps.timings.record(STAGE_CLASSIFIER, classifier_start);
+        deps.timings.record(STAGE_RAW_RACE_SERP, race_start);
+        let classified = match classified_res {
+            Ok(c) => c,
+            Err(InferenceError::Cancelled) => return ClassifyRaceResult::Cancelled,
+            Err(InferenceError::Request(reason)) => {
+                eprintln!("[search] classifier error: {reason}");
+                // ForceWeb: fall through to raw-message search.
+                PrePassDecision {
+                    decision: SearchDecision::Web,
+                    route: SearchRoute::Web,
+                    standalone_question: raw.clone(),
+                    queries: vec![raw.clone()],
+                    explicit_search: false,
+                }
+            }
+        };
+        return ClassifyRaceResult::Ready {
+            classified,
+            raced_serp: Some(race_res),
+        };
+    }
+
+    // Ambiguous (and ForceNo never reaches here): sequential classifier only.
+    match deps
+        .prepass
+        .decide(history, latest_user, deps.latest_images, today, cancel)
+        .await
+    {
+        Ok(classified) => {
+            deps.timings.record(STAGE_CLASSIFIER, classifier_start);
+            ClassifyRaceResult::Ready {
+                classified,
+                raced_serp: None,
+            }
+        }
+        Err(InferenceError::Cancelled) => {
+            deps.timings.record(STAGE_CLASSIFIER, classifier_start);
+            ClassifyRaceResult::Cancelled
+        }
+        Err(InferenceError::Request(reason)) => {
+            deps.timings.record(STAGE_CLASSIFIER, classifier_start);
+            eprintln!("[search] classifier error: {reason}");
+            if !deps.force_search {
+                deps.recorder.record(RecorderEvent::SearchDecided {
+                    prefilter: prefilter_label(verdict).to_string(),
+                    decision: "no".to_string(),
+                    force: false,
+                    route: String::new(),
+                    standalone_question: raw,
+                    queries: Vec::new(),
+                });
+                return ClassifyRaceResult::NoSearch;
+            }
+            ClassifyRaceResult::Ready {
+                classified: PrePassDecision {
+                    decision: SearchDecision::Web,
+                    route: SearchRoute::Web,
+                    standalone_question: latest_user.trim().to_string(),
+                    queries: vec![latest_user.trim().to_string()],
+                    explicit_search: false,
+                },
+                raced_serp: None,
+            }
+        }
+    }
+}
+
+/// Keeps a ForceWeb raced SERP only when the classifier's first query is a
+/// near-duplicate of the raw user message and the decision is still `web`.
+/// Empty race results are kept too (same miss, no second DDG round that would
+/// re-touch engines already cooling from the race). Divergent rewrites return
+/// `None` so the engine tier re-SERPs the rewrite.
+fn preloaded_serp_for_decision(
+    decision: &PrePassDecision,
+    latest_user: &str,
+    raced_serp: Option<(Vec<SearchHit>, Vec<EngineStat>)>,
+) -> Option<(Vec<SearchHit>, Vec<EngineStat>)> {
+    if decision.decision != SearchDecision::Web {
+        return None;
+    }
+    let (hits, stats) = raced_serp?;
+    let first = decision
+        .queries
+        .first()
+        .map(String::as_str)
+        .unwrap_or(decision.standalone_question.as_str());
+    if queries_near_duplicate(first, latest_user.trim()) {
+        eprintln!(
+            "[search] force_web race: keeping raw SERP (near-duplicate rewrite, hits={})",
+            hits.len()
+        );
+        Some((hits, stats))
+    } else {
+        eprintln!("[search] force_web race: discard raw SERP (rewrite diverged)");
+        None
     }
 }
 
@@ -653,6 +788,9 @@ async fn force_explicit_web(
         cancel,
         status,
         true, /* explicit_search: skip cache + verticals */
+        // `/search` force path does not race the raw query (no ForceWeb
+        // prefilter gate); always SERP the classifier rewrite.
+        None,
     )
     .await
 }
@@ -685,6 +823,9 @@ async fn run_web(
     cancel: &CancellationToken,
     status: &(dyn Fn(SearchPhase) + Send + Sync),
     engines_only: bool,
+    // ForceWeb raw-query race hits to reuse when the rewrite matched; `None`
+    // runs the normal SERP loop inside `run_engine_tier`.
+    preloaded_serp: Option<(Vec<SearchHit>, Vec<EngineStat>)>,
 ) -> SearchOutcome {
     if cancel.is_cancelled() {
         return SearchOutcome::Cancelled;
@@ -864,6 +1005,7 @@ async fn run_web(
         engines_only,
         cancel,
         status,
+        preloaded_serp,
     )
     .await
     {
@@ -1009,40 +1151,50 @@ async fn run_engine_tier(
     bypass_cache: bool,
     cancel: &CancellationToken,
     status: &(dyn Fn(SearchPhase) + Send + Sync),
+    preloaded_serp: Option<(Vec<SearchHit>, Vec<EngineStat>)>,
 ) -> EngineTierOutcome {
-    let mut hits: Vec<SearchHit> = Vec::new();
     // Per-(query, engine) outcome summary accumulated across every web_search
     // call this tier makes, for the caller to surface in the trace (see
     // `EngineTierOutcome::Ranked`'s docs). Collected even on a path that ends
     // up `Empty`-content-wise being discarded with the outcome: only the
     // `Ranked` arm below actually forwards it, since that is the only path a
     // `SearchRetrieved` event gets recorded for this tier.
-    let mut engine_stats: Vec<EngineStat> = Vec::new();
-    let serp_start = Instant::now();
-    for query in queries {
-        if cancel.is_cancelled() {
-            deps.timings.record(STAGE_SERP, serp_start);
-            return EngineTierOutcome::Cancelled;
+    //
+    // ForceWeb race: when `preloaded_serp` is `Some`, the SERP already ran
+    // concurrent with the classifier; reuse those hits and do not issue another
+    // DDG request on this common path.
+    let (hits, engine_stats) = if let Some((pre_hits, pre_stats)) = preloaded_serp {
+        (pre_hits, pre_stats)
+    } else {
+        let mut hits: Vec<SearchHit> = Vec::new();
+        let mut engine_stats: Vec<EngineStat> = Vec::new();
+        let serp_start = Instant::now();
+        for query in queries {
+            if cancel.is_cancelled() {
+                deps.timings.record(STAGE_SERP, serp_start);
+                return EngineTierOutcome::Cancelled;
+            }
+            let (query_hits, query_stats) = web_search(
+                deps.transport,
+                query,
+                deps.health,
+                freshness,
+                deps.web_cache,
+                bypass_cache,
+            )
+            .await;
+            hits.extend(query_hits);
+            engine_stats.extend(query_stats);
+            // Early stop: once one query has produced enough hits, further queries
+            // add third-party burst (the engines' rate limits are volume-triggered)
+            // and latency for marginal recall.
+            if hits.len() >= SERP_EARLY_STOP_HITS {
+                break;
+            }
         }
-        let (query_hits, query_stats) = web_search(
-            deps.transport,
-            query,
-            deps.health,
-            freshness,
-            deps.web_cache,
-            bypass_cache,
-        )
-        .await;
-        hits.extend(query_hits);
-        engine_stats.extend(query_stats);
-        // Early stop: once one query has produced enough hits, further queries
-        // add third-party burst (the engines' rate limits are volume-triggered)
-        // and latency for marginal recall.
-        if hits.len() >= SERP_EARLY_STOP_HITS {
-            break;
-        }
-    }
-    deps.timings.record(STAGE_SERP, serp_start);
+        deps.timings.record(STAGE_SERP, serp_start);
+        (hits, engine_stats)
+    };
     let hits = dedupe_hits(hits);
     if hits.is_empty() {
         // No engine yielded a hit. The reason turns on WHY every engine drew a
@@ -1246,6 +1398,9 @@ async fn commit_or_escalate(
         false,
         cancel,
         status,
+        // Escalation never reuses a ForceWeb raw-query race: vertical miss
+        // paths always SERP the rewrite queries fresh.
+        None,
     )
     .await
     {
@@ -3541,6 +3696,146 @@ mod tests {
         );
     }
 
+    // ── ForceWeb raw-query race helpers (pure) ───────────────────────────────
+
+    #[test]
+    fn force_web_should_race_raw_skips_vertical_shaped() {
+        assert!(!force_web_should_race_raw("weather in Tokyo"));
+        assert!(!force_web_should_race_raw("NBA Lakers score tonight"));
+        assert!(!force_web_should_race_raw("latest news about tariffs"));
+        assert!(force_web_should_race_raw("what is the latest rust version"));
+    }
+
+    #[test]
+    fn preloaded_serp_keeps_near_duplicate_web_including_empty() {
+        let decision = PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: "latest rust version".into(),
+            queries: vec!["latest rust version".into()],
+            explicit_search: false,
+        };
+        let empty = preloaded_serp_for_decision(
+            &decision,
+            "latest rust version",
+            Some((vec![], vec![])),
+        );
+        assert!(empty.is_some());
+        let hit = SearchHit {
+            title: "t".into(),
+            url: "https://example.com/".into(),
+            snippet: "s".into(),
+        };
+        let kept = preloaded_serp_for_decision(
+            &decision,
+            "  Latest  Rust  Version ",
+            Some((vec![hit], vec![])),
+        );
+        assert_eq!(kept.unwrap().0.len(), 1);
+    }
+
+    #[test]
+    fn preloaded_serp_drops_divergent_and_non_web() {
+        let web = PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: "adobe figma deal".into(),
+            queries: vec!["adobe figma deal".into()],
+            explicit_search: false,
+        };
+        assert!(preloaded_serp_for_decision(
+            &web,
+            "latest figma ownership",
+            Some((
+                vec![SearchHit {
+                    title: "t".into(),
+                    url: "https://example.com/".into(),
+                    snippet: "s".into(),
+                }],
+                vec![]
+            )),
+        )
+        .is_none());
+        let cached = PrePassDecision {
+            decision: SearchDecision::Cached,
+            route: SearchRoute::Web,
+            standalone_question: "latest rust version".into(),
+            queries: vec!["latest rust version".into()],
+            explicit_search: false,
+        };
+        assert!(preloaded_serp_for_decision(
+            &cached,
+            "latest rust version",
+            Some((vec![], vec![])),
+        )
+        .is_none());
+    }
+
+    #[tokio::test]
+    async fn force_web_near_duplicate_race_uses_one_ddg_round() {
+        // Engine-shaped ForceWeb with rewrite ≈ raw: race SERP is kept; engines
+        // must not be hit a second time for the same query.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: "what is the latest rust version".into(),
+            queries: vec!["what is the latest rust version".into()],
+            explicit_search: false,
+        }));
+        let transport = transport_with_serp_and_page();
+        let (_p, status) = recorder();
+        let _ = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "what is the latest rust version",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        let ddg_calls = transport
+            .calls()
+            .into_iter()
+            .filter(|c| c.url == DDG_ENDPOINT)
+            .count();
+        assert_eq!(
+            ddg_calls, 1,
+            "near-duplicate ForceWeb race must keep common path at 1 DDG"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_force_web_does_not_race_raw_serp() {
+        // Ambiguous turn: sequential classifier only; one SERP after decision.
+        let prepass = FakePrePass::returning(Ok(web_decision(vec![
+            "when was the treaty of versailles signed in paris",
+        ])));
+        let transport = transport_with_serp_and_page();
+        let (_p, status) = recorder();
+        let _ = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "when was the treaty of versailles signed in paris",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        // No raw_race stage: only the post-decision SERP (and no double race).
+        let ddg_calls = transport
+            .calls()
+            .into_iter()
+            .filter(|c| c.url == DDG_ENDPOINT)
+            .count();
+        assert_eq!(ddg_calls, 1);
+    }
+
     // ── resolve_decision (pure) ───────────────────────────────────────────────
 
     #[test]
@@ -3970,7 +4265,16 @@ mod tests {
 
     #[tokio::test]
     async fn web_with_blocked_engine_yields_no_results_disclosure() {
-        let prepass = FakePrePass::returning(Ok(web_decision(vec!["q"])));
+        // Query matches the raw user message so a ForceWeb race (if fired)
+        // is near-duplicate-kept and its blocked-engine stats drive NoResults
+        // without a second SERP that would only see DDG cooling.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: "what is the latest rust version".into(),
+            queries: vec!["what is the latest rust version".into()],
+            explicit_search: false,
+        }));
         // DDG returns a bot challenge (blocked, but online) and Mojeek transport-
         // fails. At least one engine reached the web, so the miss is `NoResults`,
         // not `Unreachable`: the disclosure says no usable current sources were
@@ -4222,11 +4526,16 @@ mod tests {
         // same conversation (same scope) with a `cached` decision must answer
         // straight from those sources: no transport call at all, and the
         // writer prompt embeds the cached source text.
+        //
+        // Message is Ambiguous (no ForceWeb freshness word) so the ForceWeb
+        // raw-query race does not fire; a ForceWeb+Cached turn may still race
+        // once and discard (see force_web_should_race_raw), which is outside
+        // this unit's contract.
         let cache = TtlSourceCache::new(std::time::Duration::from_secs(600));
         cache.store(
             7,
             CachedSearch {
-                standalone_question: "what's the latest stable rust version".into(),
+                standalone_question: "what is the stable rust version we discussed".into(),
                 sources: vec![SourceBlock {
                     index: 1,
                     url: "https://blog.rust-lang.org/".into(),
@@ -4238,8 +4547,8 @@ mod tests {
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Cached,
             route: SearchRoute::Web,
-            standalone_question: "what's the latest stable rust version".into(),
-            queries: vec!["rust latest stable version".into()],
+            standalone_question: "what is the stable rust version we discussed".into(),
+            queries: vec!["rust stable version".into()],
             explicit_search: false,
         }));
         // No canned responses at all: a network call would fail the test by
@@ -4251,7 +4560,7 @@ mod tests {
             &deps_with_cache(&prepass, &transport, &Bm25Scorer, &bound, &cache, 7),
             "sys",
             &[],
-            "what's the latest stable rust version",
+            "what is the stable rust version we discussed",
             16384,
             "2026-07-05",
             "en-US",
@@ -4266,7 +4575,7 @@ mod tests {
                 && messages.first().is_some_and(|m| m.role == "system"
                     && m.content.contains("Rust 1.90.0 is the latest stable release"))
                 && messages.last().is_some_and(|m|
-                    m.content == "what's the latest stable rust version"))
+                    m.content == "what is the stable rust version we discussed"))
         );
         assert!(
             transport.calls().is_empty(),
