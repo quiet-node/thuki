@@ -3772,6 +3772,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn force_web_race_classifier_cancel_yields_cancelled() {
+        // ForceWeb + engine-shaped race: classifier cancel must surface Cancelled
+        // even though the concurrent SERP may still complete.
+        let prepass = FakePrePass::returning(Err(InferenceError::Cancelled));
+        let transport = transport_with_serp_and_page();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "what is the latest rust version",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Cancelled));
+    }
+
+    #[tokio::test]
     async fn force_web_near_duplicate_race_uses_one_ddg_round() {
         // Engine-shaped ForceWeb with rewrite ≈ raw: race SERP is kept; engines
         // must not be hit a second time for the same query.

@@ -1078,6 +1078,15 @@ mod tests {
         );
         r.record(
             &cid("conv-chat"),
+            RecorderEvent::SearchTimings {
+                stages: vec![StageTiming {
+                    stage: "classifier".into(),
+                    ms: 42,
+                }],
+            },
+        );
+        r.record(
+            &cid("conv-chat"),
             RecorderEvent::ConversationEnd {
                 reason: "quit".into(),
             },
@@ -1098,6 +1107,7 @@ mod tests {
                 "search_retrieved",
                 "search_escalated",
                 "citation_audit",
+                "search_timings",
                 "conversation_end"
             ]
         );
@@ -1129,7 +1139,12 @@ mod tests {
         assert_eq!(lines[10]["numeric_matched"], 1);
         assert_eq!(lines[10]["numeric_missing"], 1);
         assert_eq!(lines[10]["unverifiable"], 1);
-        assert_eq!(lines[11]["reason"], "quit");
+        assert_eq!(lines[11]["kind"], "search_timings");
+        assert_eq!(
+            lines[11]["stages"],
+            json!([{"stage": "classifier", "ms": 42}])
+        );
+        assert_eq!(lines[12]["reason"], "quit");
     }
 
     #[test]

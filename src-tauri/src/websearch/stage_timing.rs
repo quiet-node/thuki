@@ -117,25 +117,22 @@ impl TimingBag {
     pub fn record_ms(&self, stage: &str, ms: u64) {
         emit_timing_stderr(stage, ms);
         // Short critical section: clone stage name, push, drop. Never await while held.
-        if let Ok(mut guard) = self.stages.lock() {
-            // Cap stage list so a buggy caller cannot grow unboundedly (DoS).
-            const MAX_STAGES: usize = 32;
-            if guard.len() >= MAX_STAGES {
-                return;
-            }
-            guard.push(StageTiming {
-                stage: stage.to_string(),
-                ms,
-            });
+        // Mutex poison is a programmer bug (panic while holding); never expected.
+        let mut guard = self.stages.lock().expect("timing bag mutex");
+        // Cap stage list so a buggy caller cannot grow unboundedly (DoS).
+        const MAX_STAGES: usize = 32;
+        if guard.len() >= MAX_STAGES {
+            return;
         }
+        guard.push(StageTiming {
+            stage: stage.to_string(),
+            ms,
+        });
     }
 
     /// Snapshot of recorded stages (for unit tests).
     pub fn snapshot(&self) -> Vec<StageTiming> {
-        self.stages
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_default()
+        self.stages.lock().expect("timing bag mutex").clone()
     }
 
     /// Adds pipeline total from submit, then emits [`RecorderEvent::SearchTimings`].
@@ -222,14 +219,20 @@ mod tests {
         bag.flush(&bound);
         let events = mock.snapshot();
         assert_eq!(events.len(), 1);
-        match &events[0].1 {
-            RecorderEvent::SearchTimings { stages } => {
-                assert!(stages.iter().any(|s| s.stage == STAGE_CLASSIFIER && s.ms == 100));
-                assert!(stages.iter().any(|s| s.stage == STAGE_JUDGE && s.ms == 50));
-                assert!(stages.iter().any(|s| s.stage == STAGE_PIPELINE));
-            }
-            other => panic!("expected SearchTimings, got {other:?}"),
-        }
+        let ok = matches!(
+            &events[0].1,
+            RecorderEvent::SearchTimings { stages }
+                if stages.iter().any(|s| s.stage == STAGE_CLASSIFIER && s.ms == 100)
+                    && stages.iter().any(|s| s.stage == STAGE_JUDGE && s.ms == 50)
+                    && stages.iter().any(|s| s.stage == STAGE_PIPELINE)
+        );
+        assert!(ok);
+    }
+
+    #[test]
+    fn default_constructs_empty_bag() {
+        let bag = TimingBag::default();
+        assert!(bag.snapshot().is_empty());
     }
 
     #[test]
