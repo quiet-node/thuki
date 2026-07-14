@@ -15,13 +15,13 @@ export const SEARCH_DISCLOSURE_URL = 'https://thuki.app/blog';
 export const SEARCH_TRUST_NOTICE_TITLE =
   'Thuki can now search the web, automatically!';
 
-/** Lead body: what Auto search does and the device-direct privacy line. */
+/** Lead body: what Auto search does (details live on the blog CTA). */
 export const SEARCH_TRUST_NOTICE_BODY_LEAD =
-  'Since v0.16.0, when a question needs fresh facts, Thuki smartly searches the web for them. Zero separate setup, no API keys: lookups leave your Mac straight to search services, not ours.';
+  'Since v0.16.0, when a question needs fresh facts, Thuki smartly searches the web for them.';
 
 /** Second body line: how to stay fully local. */
 export const SEARCH_TRUST_NOTICE_BODY_LOCAL =
-  'Turn Auto search off in Settings to stay fully local and use /search only when you want a look-up.';
+  'Turn Auto search off to stay fully local and use /search only when you want a look-up.';
 
 export interface SearchTrustNoticeProps {
   /** Persist acknowledgement and hide the card. */
