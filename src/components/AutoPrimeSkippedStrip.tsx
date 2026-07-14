@@ -46,6 +46,13 @@ export interface AutoPrimeSkippedStripProps {
   requiredBytes: number;
   /** Memory estimated available at skip time, in bytes. */
   availableBytes: number;
+  /**
+   * The memory gate's ceiling fraction (`MODEL_FIT_CEILING_FRACTION` on the
+   * backend), e.g. `0.8` for 80%. Rendered in the stage-1 message so the "may
+   * not fit" verdict states the actual headroom rule instead of leaving the
+   * 80%-of-available gate invisible in the copy.
+   */
+  ceilingFraction: number;
   /** Opens the model picker so the user can pick a different model. */
   onSwitchModel: () => void;
   /**
@@ -79,6 +86,7 @@ export function AutoPrimeSkippedStrip({
   modelName,
   requiredBytes,
   availableBytes,
+  ceilingFraction,
   onSwitchModel,
   onLoadAnyway,
 }: AutoPrimeSkippedStripProps) {
@@ -91,7 +99,7 @@ export function AutoPrimeSkippedStrip({
 
   const message = confirming
     ? INSUFFICIENT_MEMORY_CONSEQUENCE
-    : `${modelName} may not fit in memory (~${formatGb(requiredBytes)} GB needed, ~${formatGb(availableBytes)} GB available)`;
+    : `${modelName} may not fit in memory (~${formatGb(requiredBytes)} GB needed, ~${formatGb(availableBytes)} GB available, over the ${Math.round(ceilingFraction * 100)}% safe limit)`;
 
   // The confirm/force button: stage 1 reads "Load anyway" (muted, rendered
   // second) and only advances to the consequence stage; stage 2 reads

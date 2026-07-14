@@ -10,13 +10,32 @@ describe('AutoPrimeSkippedStrip', () => {
         modelName="Qwen3.5 9B"
         requiredBytes={8 * 1024 ** 3}
         availableBytes={4 * 1024 ** 3}
+        ceilingFraction={0.8}
         onSwitchModel={vi.fn()}
         onLoadAnyway={vi.fn()}
       />,
     );
     expect(
       screen.getByText(
-        'Qwen3.5 9B may not fit in memory (~8.0 GB needed, ~4.0 GB available)',
+        'Qwen3.5 9B may not fit in memory (~8.0 GB needed, ~4.0 GB available, over the 80% safe limit)',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('derives the percent from ceilingFraction, not a hardcoded 80', () => {
+    render(
+      <AutoPrimeSkippedStrip
+        modelName="Qwen3.5 9B"
+        requiredBytes={8 * 1024 ** 3}
+        availableBytes={4 * 1024 ** 3}
+        ceilingFraction={0.6}
+        onSwitchModel={vi.fn()}
+        onLoadAnyway={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByText(
+        'Qwen3.5 9B may not fit in memory (~8.0 GB needed, ~4.0 GB available, over the 60% safe limit)',
       ),
     ).toBeInTheDocument();
   });
@@ -27,6 +46,7 @@ describe('AutoPrimeSkippedStrip', () => {
         modelName="Qwen3.5 9B"
         requiredBytes={1}
         availableBytes={1}
+        ceilingFraction={0.8}
         onSwitchModel={vi.fn()}
         onLoadAnyway={vi.fn()}
       />,
@@ -43,6 +63,7 @@ describe('AutoPrimeSkippedStrip', () => {
         modelName="Qwen3.5 9B"
         requiredBytes={1}
         availableBytes={1}
+        ceilingFraction={0.8}
         onSwitchModel={vi.fn()}
         onLoadAnyway={vi.fn()}
       />,
@@ -59,6 +80,7 @@ describe('AutoPrimeSkippedStrip', () => {
         modelName="Qwen3.5 9B"
         requiredBytes={1}
         availableBytes={1}
+        ceilingFraction={0.8}
         onSwitchModel={vi.fn()}
         onLoadAnyway={vi.fn()}
       />,
@@ -78,6 +100,7 @@ describe('AutoPrimeSkippedStrip', () => {
         modelName="Qwen3.5 9B"
         requiredBytes={1}
         availableBytes={1}
+        ceilingFraction={0.8}
         onSwitchModel={onSwitchModel}
         onLoadAnyway={vi.fn()}
       />,
@@ -93,6 +116,7 @@ describe('AutoPrimeSkippedStrip', () => {
         modelName="Qwen3.5 9B"
         requiredBytes={1}
         availableBytes={1}
+        ceilingFraction={0.8}
         onSwitchModel={vi.fn()}
         onLoadAnyway={onLoadAnyway}
       />,
@@ -123,6 +147,7 @@ describe('AutoPrimeSkippedStrip', () => {
         modelName="Qwen3.5 9B"
         requiredBytes={1}
         availableBytes={1}
+        ceilingFraction={0.8}
         onSwitchModel={vi.fn()}
         onLoadAnyway={onLoadAnyway}
       />,
@@ -139,6 +164,7 @@ describe('AutoPrimeSkippedStrip', () => {
         modelName="Qwen3.5 9B"
         requiredBytes={1}
         availableBytes={1}
+        ceilingFraction={0.8}
         onSwitchModel={onSwitchModel}
         onLoadAnyway={vi.fn()}
       />,
