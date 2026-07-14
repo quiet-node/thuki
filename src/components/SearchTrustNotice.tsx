@@ -1,7 +1,7 @@
 /**
  * First-use, non-blocking card for Auto search (v0.16.0). Mounted on the ask
  * bar **below** the logo/input row (design D footer) when Auto search is on
- * and the notice is not acknowledged. Stays until Got it (or auto_search is
+ * and the notice is not acknowledged. Stays until Acknowledge (or auto_search is
  * off). Never gates compose.
  *
  * Visual: flat content inside the ask-bar footer slot (parent supplies the
@@ -79,7 +79,7 @@ export function SearchTrustNotice({
           onClick={onAcknowledge}
           className="cursor-pointer rounded-lg border border-primary/45 bg-transparent px-3 py-1.5 text-[11.5px] font-semibold text-primary transition-colors hover:bg-primary/10"
         >
-          Got it
+          Acknowledge
         </button>
         <button
           type="button"

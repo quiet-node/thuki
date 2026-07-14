@@ -2062,7 +2062,7 @@ describe('AskBarView', () => {
       expect(screen.queryByTestId('search-trust-notice')).toBeNull();
     });
 
-    it('Got it persists search_notice_acknowledged and hides the notice', () => {
+    it('Acknowledge persists search_notice_acknowledged and hides the notice', () => {
       renderWithBehavior({
         autoSearch: true,
         searchNoticeAcknowledged: false,

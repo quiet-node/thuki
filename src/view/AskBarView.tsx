@@ -290,7 +290,7 @@ export function AskBarView({
   const { quote, behavior } = useConfig();
 
   /**
-   * Local hide after Got it so the card drops before config reload lands.
+   * Local hide after Acknowledge so the card drops before config reload lands.
    * Session-only; next mount re-reads `searchNoticeAcknowledged` from config.
    */
   const [noticeDismissedLocally, setNoticeDismissedLocally] = useState(false);
