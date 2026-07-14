@@ -7,7 +7,11 @@ import {
   SEARCH_HANDOFF_EXIT_FALLBACK_MS,
 } from '../searchHandoffPhase';
 import { mockReducedMotion } from '../../testUtils/mocks/framer-motion';
-import { HONEST_FAILURE_NOTE_BODY } from '../../utils/honestFailureNote';
+import {
+  HONEST_FAILURE_NOTE_BODY,
+  SEARCH_NO_RESULTS_NOTE_BODY,
+  SEARCH_UNREACHABLE_NOTE_BODY,
+} from '../../utils/honestFailureNote';
 beforeEach(() => {
   invoke.mockClear();
   mockReducedMotion.current = false;
@@ -149,6 +153,40 @@ describe('ChatBubble', () => {
     it('does not render honesty rail when note absent', () => {
       render(<ChatBubble role="assistant" content="plain answer" index={0} />);
       expect(screen.queryByTestId('honest-failure-note')).toBeNull();
+    });
+
+    it('renders the unreachable search-failure note as an L3 rail', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="Rust's latest stable is likely 1.x."
+          index={0}
+          searchFailReason="unreachable"
+        />,
+      );
+      const note = screen.getByTestId('search-fail-note');
+      expect(note.tagName).toBe('P');
+      expect(note).toHaveClass('honest-failure-note');
+      expect(note.textContent).toBe(SEARCH_UNREACHABLE_NOTE_BODY);
+    });
+
+    it('renders the no-results search-failure note with rephrase copy', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="From what I know, ..."
+          index={0}
+          searchFailReason="no_results"
+        />,
+      );
+      expect(screen.getByTestId('search-fail-note').textContent).toBe(
+        SEARCH_NO_RESULTS_NOTE_BODY,
+      );
+    });
+
+    it('does not render the search-failure note when reason absent', () => {
+      render(<ChatBubble role="assistant" content="plain answer" index={0} />);
+      expect(screen.queryByTestId('search-fail-note')).toBeNull();
     });
 
     it('renders the Replace button when onReplace is provided', () => {
