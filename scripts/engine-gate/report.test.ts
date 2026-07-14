@@ -16,6 +16,15 @@ describe('overallPass', () => {
   test('is false for an empty section list', () => {
     expect(overallPass([])).toBe(false);
   });
+
+  test('ignores an informational section that would otherwise fail', () => {
+    expect(
+      overallPass([
+        ...sections,
+        { name: 'Throughput', pass: false, informational: true },
+      ]),
+    ).toBe(true);
+  });
 });
 
 describe('renderGateSummary', () => {
@@ -34,6 +43,16 @@ describe('renderGateSummary', () => {
 
     expect(md).toContain('### Engine gate: FAIL');
     expect(md).toContain('- ❌ Perf — ratio 0.60 < 0.75');
+  });
+
+  test('marks an informational section with ℹ️ and keeps the verdict PASS', () => {
+    const md = renderGateSummary('Engine gate', [
+      ...sections,
+      { name: 'Throughput', pass: false, informational: true, detail: '4.5 tok/s' },
+    ]);
+
+    expect(md).toContain('### Engine gate: PASS');
+    expect(md).toContain('- ℹ️ Throughput — 4.5 tok/s');
   });
 
   test('omits the trailing detail when a section has none', () => {
