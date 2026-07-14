@@ -688,6 +688,11 @@ export function ChatBubble({
                     <div className="flex flex-col gap-1">
                       {searchSources!.map((src, i) => {
                         const n = i + 1;
+                        const domain = domainOf(src.url);
+                        /* v8 ignore start */
+                        const letter = (domain[0] ?? '?').toUpperCase();
+                        /* v8 ignore stop */
+                        const bg = avatarColor(domain);
                         return (
                           <div key={src.url} className="flex flex-col gap-0.5">
                             <button
@@ -700,16 +705,20 @@ export function ChatBubble({
                               onClick={() =>
                                 void invoke('open_url', { url: src.url })
                               }
-                              className="source-row flex items-baseline gap-3 w-full text-left cursor-pointer py-0.5 group"
+                              className="source-row flex items-center gap-2 w-full text-left cursor-pointer py-0.5 group"
                             >
-                              <span className="source-row-num shrink-0 w-5 text-xs text-white/25 tabular-nums">
-                                {n}.
+                              <span
+                                aria-hidden
+                                className="source-row-avatar shrink-0 h-4.5 w-4.5 rounded-full inline-flex items-center justify-center text-[9px] font-semibold text-white/90"
+                                style={{ background: bg }}
+                              >
+                                {letter}
                               </span>
-                              <span className="source-row-title flex-1 min-w-0 truncate text-sm text-white/60">
+                              <span className="source-row-title flex-1 min-w-0 truncate text-sm text-white/60 group-hover:text-white/85">
                                 {src.title || src.url}
                               </span>
                               <span className="source-row-domain shrink-0 text-xs text-white/30 truncate max-w-[45%]">
-                                {domainOf(src.url)}
+                                {domain}
                               </span>
                             </button>
                             {src.attribution ? (
