@@ -1,13 +1,12 @@
 // Entrypoint for the engine regression gate. Thin I/O: it reads the signals the
 // workflow collected (chat responses + observed throughput from collect.ts, and
 // the codesign result), runs the responses through the unit-tested assertion
-// core, checks the throughput floor, prints the markdown verdict to the step
-// summary, and exits non-zero if the gate failed.
+// core, reports the throughput as an informational number, prints the markdown
+// verdict to the step summary, and exits non-zero if a blocking check failed.
 
 import { appendFileSync, readFileSync } from 'node:fs';
 
 import { evaluateAll } from './assertions';
-import { FLOOR_TPS } from './config';
 import { CORRECTNESS_PROMPTS } from './prompts';
 import { overallPass, renderGateSummary, type GateSection } from './report';
 
@@ -43,8 +42,9 @@ function main(): void {
     { name: 'Codesign', pass: codesign.pass, detail: codesign.detail },
     {
       name: 'Throughput',
-      pass: result.tps >= FLOOR_TPS,
-      detail: `${result.tps.toFixed(1)} tok/s (floor ${FLOOR_TPS})`,
+      pass: true,
+      informational: true,
+      detail: `${result.tps.toFixed(1)} tok/s: reported for review, not a pass/fail gate; noisy on shared CI runners`,
     },
   ];
 

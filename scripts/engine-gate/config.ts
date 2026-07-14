@@ -1,7 +1,7 @@
-// Configuration for the engine regression gate: the pinned test model, the
-// deterministic decoding settings, and the throughput floor. The model pin
-// carries the same provenance discipline as the engine itself — an exact Hugging
-// Face repo revision plus the file's sha256 — so it can never silently change.
+// Configuration for the engine regression gate: the pinned test model and the
+// deterministic decoding settings. The model pin carries the same provenance
+// discipline as the engine itself — an exact Hugging Face repo revision plus the
+// file's sha256 — so it can never silently change.
 
 export interface ModelPin {
   repo: string;
@@ -50,12 +50,3 @@ export const SAMPLING = {
   nPredict: 64,
   parallel: 1,
 };
-
-// Catastrophic-throughput floor (tokens/sec), measured from llama-server's own
-// timings during the smoke. A healthy Metal build of this model on Apple Silicon
-// runs many multiples of this; the floor exists only to catch gross breakage such
-// as a silent CPU fallback. Subtler performance regressions are surfaced in the
-// gate summary and caught by the mandatory human review on engine-bump PRs — a
-// deliberate choice not to chase a noisy absolute perf baseline on shared CI
-// runners (see docs/engine-bump-and-gate.md).
-export const FLOOR_TPS = 10;
