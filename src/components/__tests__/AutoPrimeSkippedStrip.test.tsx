@@ -1,9 +1,14 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { AutoPrimeSkippedStrip } from '../AutoPrimeSkippedStrip';
 import { INSUFFICIENT_MEMORY_CONSEQUENCE } from '../ErrorCard';
+import { mockReducedMotion } from '../../testUtils/mocks/framer-motion';
 
 describe('AutoPrimeSkippedStrip', () => {
+  afterEach(() => {
+    mockReducedMotion.current = false;
+  });
+
   it('shows the model name and need-vs-available GB figures', () => {
     render(
       <AutoPrimeSkippedStrip
@@ -178,5 +183,23 @@ describe('AutoPrimeSkippedStrip', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
     fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
     expect(onSwitchModel).toHaveBeenCalledTimes(1);
+  });
+
+  it('still shows the consequence copy on confirm under prefers-reduced-motion', () => {
+    mockReducedMotion.current = true;
+    render(
+      <AutoPrimeSkippedStrip
+        modelName="Qwen3.5 9B"
+        requiredBytes={1}
+        availableBytes={1}
+        ceilingFraction={0.8}
+        onSwitchModel={vi.fn()}
+        onLoadAnyway={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
+    expect(
+      screen.getByTestId('auto-prime-skipped-consequence'),
+    ).toHaveTextContent(INSUFFICIENT_MEMORY_CONSEQUENCE);
   });
 });
