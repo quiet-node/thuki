@@ -15,25 +15,18 @@
  * strip resolves by switching model or loading anyway, and clears on its own
  * when a load or download supersedes it.
  *
- * Mirrors `DownloadStatusStrip`'s borderless Shell pattern (thin accent
- * edge, dot, inline row, no box of its own) and reuses the warning amber
- * already established for `InsufficientMemory` (`ErrorCard.tsx`'s
- * `barColors.InsufficientMemory`) rather than inventing a new color.
+ * Visual: matches SearchTrustNotice footer actions (outlined primary + ghost
+ * secondary, stacked under body copy). No top accent bar.
  */
 import { useState } from 'react';
 import { INSUFFICIENT_MEMORY_CONSEQUENCE } from './ErrorCard';
 
-/** Warning amber, matching `ErrorCard.tsx`'s `barColors.InsufficientMemory`. */
-const AMBER = '#f59e0b';
-/** Muted secondary-action color, matching `DownloadStatusStrip`'s `MUTED`. */
-const MUTED = 'rgba(255,255,255,0.4)';
-/** Primary-action color, matching `DownloadStatusStrip`'s `ACTION`. */
-const ACTION = '#ff8d5c';
-
 /** Bytes per gigabyte, matching `ErrorCard.tsx`'s divisor. */
 const BYTES_PER_GB = 1024 ** 3;
 
-/** Formats a byte count as a one-decimal GB string, matching `ErrorCard.tsx`. */
+/**
+ * Formats a byte count as a one-decimal GB string, matching `ErrorCard.tsx`.
+ */
 function formatGb(bytes: number): string {
   return (bytes / BYTES_PER_GB).toFixed(1);
 }
@@ -63,18 +56,13 @@ export interface AutoPrimeSkippedStripProps {
   onLoadAnyway: () => void;
 }
 
-/**
- * Shared style for both action buttons in both stages: a plain text button
- * with no background, border, or box. Prominence comes purely from the color
- * ({@link ACTION} vs {@link MUTED}) and position, never from a filled or
- * bordered treatment, so the primary and secondary read as the same control
- * with only color and order distinguishing them across the two stages.
- */
-const BUTTON_CLASS = 'shrink-0 font-bold cursor-pointer';
-const BUTTON_STYLE_BASE = {
-  background: 'transparent',
-  border: 'none',
-} as const;
+/** Outlined primary CTA, matching SearchTrustNotice "Got it". */
+const PRIMARY_BTN_CLASS =
+  'cursor-pointer rounded-lg border border-primary/45 bg-transparent px-3 py-1.5 text-[11.5px] font-semibold text-primary transition-colors hover:bg-primary/10 w-fit';
+
+/** Ghost secondary CTA, matching SearchTrustNotice "Turn off in Settings". */
+const GHOST_BTN_CLASS =
+  'cursor-pointer border-0 bg-transparent px-1 py-1.5 text-[11.5px] font-medium text-white/50 transition-colors hover:text-white/75 w-fit';
 
 /**
  * Renders the two-stage ambient memory warning. Stage 1 shows the model name
@@ -91,7 +79,7 @@ export function AutoPrimeSkippedStrip({
   onLoadAnyway,
 }: AutoPrimeSkippedStripProps) {
   // why: the stage lives inside the strip, not the host, so the confirm is a
-  // pure interaction detail. The first "Load anyway" click only flips this;
+  // pure presentation detail. The first "Load anyway" click only flips this;
   // the actual force-load fires on the stage-2 click. Keeping it internal also
   // means the strip resets to stage 1 whenever the host remounts it (a fresh
   // skip event), so a stale confirm never carries over to a new warning.
@@ -101,79 +89,59 @@ export function AutoPrimeSkippedStrip({
     ? INSUFFICIENT_MEMORY_CONSEQUENCE
     : `${modelName} may not fit in memory (~${formatGb(requiredBytes)} GB needed, ~${formatGb(availableBytes)} GB available, over the ${Math.round(ceilingFraction * 100)}% safe limit)`;
 
-  // The confirm/force button: stage 1 reads "Load anyway" (muted, rendered
-  // second) and only advances to the consequence stage; stage 2 reads
-  // "Acknowledge" (primary ACTION color, rendered first), the deliberate second
-  // click that force-loads the model past the memory gate. Only the label,
-  // color, and order change between stages; the plain borderless styling is
-  // identical. The aria-label tracks the visible text.
-  const confirmLabel = confirming ? 'Acknowledge' : 'Load anyway';
-  const loadAnyway = (
-    <button
-      type="button"
-      aria-label={confirmLabel}
-      onClick={confirming ? onLoadAnyway : () => setConfirming(true)}
-      className={BUTTON_CLASS}
-      style={{ ...BUTTON_STYLE_BASE, color: confirming ? ACTION : MUTED }}
-    >
-      {confirmLabel}
-    </button>
-  );
+  // Stage 1: Switch model = primary (safe path). Load anyway = ghost.
+  // Stage 2: Acknowledge = primary (deliberate force). Switch model = ghost.
+  const primaryLabel = confirming ? 'Acknowledge' : 'Switch model';
+  const secondaryLabel = confirming ? 'Switch model' : 'Load anyway';
 
-  // The "Switch model" button: primary (ACTION color, rendered first) in
-  // stage 1 where picking a smaller model is the safe recommendation; muted in
-  // stage 2 where "Load anyway" takes over as the confirmed action.
-  const switchModel = (
-    <button
-      type="button"
-      aria-label="Switch model"
-      onClick={onSwitchModel}
-      className={BUTTON_CLASS}
-      style={{ ...BUTTON_STYLE_BASE, color: confirming ? MUTED : ACTION }}
-    >
-      Switch model
-    </button>
-  );
+  /**
+   * Handles the primary button: Switch model in stage 1, force-load in stage 2.
+   */
+  function onPrimaryClick(): void {
+    if (confirming) {
+      onLoadAnyway();
+    } else {
+      onSwitchModel();
+    }
+  }
+
+  /**
+   * Handles the secondary button: advance to confirm in stage 1, or Switch
+   * model in stage 2.
+   */
+  function onSecondaryClick(): void {
+    if (confirming) {
+      onSwitchModel();
+    } else {
+      setConfirming(true);
+    }
+  }
 
   return (
     <div
       role="status"
       aria-live="polite"
       data-testid="auto-prime-skipped-strip"
-      className="mx-4 mt-2 mb-0"
-      style={{ color: 'var(--color-text-primary, #f0f0f2)' }}
+      className="mx-4 mt-2 mb-0 px-0.5"
     >
-      <span
-        aria-hidden="true"
-        className="block h-[2px] rounded-full overflow-hidden"
-        style={{ background: 'rgba(255,255,255,0.08)' }}
-      >
-        <span
-          className="block h-full rounded-full"
-          style={{ width: '100%', background: AMBER }}
-        />
-      </span>
-      <div className="flex items-center gap-2.5 pt-1.5 text-xs">
-        <span
-          aria-hidden="true"
-          className="shrink-0 w-2 h-2 rounded-full"
-          style={{ background: AMBER, boxShadow: `0 0 6px ${AMBER}` }}
-        />
-        <span className="flex-1 leading-snug">{message}</span>
-        {/* Role swap by stage: stage 1 leads with "Switch model" (the safe
-            recommendation); stage 2 leads with "Acknowledge" (the confirmed
-            force). Order and color are the only things that change. */}
-        {confirming ? (
-          <>
-            {loadAnyway}
-            {switchModel}
-          </>
-        ) : (
-          <>
-            {switchModel}
-            {loadAnyway}
-          </>
-        )}
+      <p className="text-xs text-white/45 leading-relaxed">{message}</p>
+      <div className="mt-2.5 flex flex-col items-start gap-1">
+        <button
+          type="button"
+          aria-label={primaryLabel}
+          onClick={onPrimaryClick}
+          className={PRIMARY_BTN_CLASS}
+        >
+          {primaryLabel}
+        </button>
+        <button
+          type="button"
+          aria-label={secondaryLabel}
+          onClick={onSecondaryClick}
+          className={GHOST_BTN_CLASS}
+        >
+          {secondaryLabel}
+        </button>
       </div>
     </div>
   );

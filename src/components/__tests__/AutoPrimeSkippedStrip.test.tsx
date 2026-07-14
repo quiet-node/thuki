@@ -57,7 +57,7 @@ describe('AutoPrimeSkippedStrip', () => {
     );
   });
 
-  it("renders the amber accent edge, matching ErrorCard's InsufficientMemory color", () => {
+  it('stacks action buttons under the body (no top accent bar)', () => {
     const { container } = render(
       <AutoPrimeSkippedStrip
         modelName="Qwen3.5 9B"
@@ -68,10 +68,15 @@ describe('AutoPrimeSkippedStrip', () => {
         onLoadAnyway={vi.fn()}
       />,
     );
-    const edgeFill = container.querySelector(
-      '[data-testid="auto-prime-skipped-strip"] > span > span',
-    );
-    expect(edgeFill).toHaveStyle({ background: '#f59e0b' });
+    const root = screen.getByTestId('auto-prime-skipped-strip');
+    // No top amber track (removed for footer-style strip).
+    expect(
+      container.querySelector(
+        '[data-testid="auto-prime-skipped-strip"] > span > span',
+      ),
+    ).toBeNull();
+    const actions = root.querySelector('.flex-col');
+    expect(actions).toBeTruthy();
   });
 
   it('shows both actions in stage 1', () => {
