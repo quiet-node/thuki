@@ -1,8 +1,7 @@
 /**
  * First-use, non-blocking card for Auto search (v0.16.0). Mounted on the ask
- * bar **below** the logo/input row (design D footer) when Auto search is on
- * and the notice is not acknowledged. Stays until Acknowledge (or auto_search is
- * off). Never gates compose.
+ * bar **below** the logo/input row (design D footer) until acknowledged,
+ * whether Auto search is on or off. Never gates compose.
  *
  * Visual: flat content inside the ask-bar footer slot (parent supplies the
  * hairline border + dim fill). No nested elevated card so the bar does not
@@ -35,6 +34,11 @@ export interface SearchTrustNoticeProps {
   onAcknowledge: () => void;
   /** Open Settings → Behavior with Auto search highlighted. */
   onOpenSettings: () => void;
+  /**
+   * Current Auto search setting. Drives Settings CTA: "Turn off" when on,
+   * "Turn on" when off. Deep-link never flips the toggle itself.
+   */
+  autoSearchOn?: boolean;
 }
 
 /**
@@ -47,11 +51,20 @@ function openDisclosure(): void {
 /**
  * Flat footer notice body (design D). Parent AskBarView owns the border-top
  * slot chrome. Never blocks compose.
+ *
+ * @param onAcknowledge Got-it / Acknowledge persistence path.
+ * @param onOpenSettings Settings deep-link (no silent auto_search flip).
+ * @param autoSearchOn Current toggle; defaults true (product default).
  */
 export function SearchTrustNotice({
   onAcknowledge,
   onOpenSettings,
+  autoSearchOn = true,
 }: SearchTrustNoticeProps) {
+  const settingsCta = autoSearchOn
+    ? 'Turn off in Settings'
+    : 'Turn on in Settings';
+
   return (
     <div
       data-testid="search-trust-notice"
@@ -87,7 +100,7 @@ export function SearchTrustNotice({
           onClick={onOpenSettings}
           className="cursor-pointer border-0 bg-transparent px-1 py-1.5 text-[11.5px] font-medium text-white/50 transition-colors hover:text-white/75"
         >
-          Turn off in Settings
+          {settingsCta}
         </button>
       </div>
     </div>

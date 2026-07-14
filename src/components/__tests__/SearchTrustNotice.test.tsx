@@ -52,20 +52,34 @@ describe('SearchTrustNotice', () => {
     expect(onAcknowledge).toHaveBeenCalledTimes(1);
   });
 
-  it('Turn off in Settings calls onOpenSettings without toggling search', () => {
+  it('Turn off in Settings when autoSearchOn; opens settings without toggling', () => {
     const onOpenSettings = vi.fn();
     render(
       <SearchTrustNotice
         onAcknowledge={() => {}}
         onOpenSettings={onOpenSettings}
+        autoSearchOn
       />,
     );
+    expect(screen.getByText('Turn off in Settings')).toBeTruthy();
     fireEvent.click(screen.getByTestId('search-trust-notice-settings'));
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
     expect(invoke).not.toHaveBeenCalledWith(
       'set_config_field',
       expect.anything(),
     );
+  });
+
+  it('shows Turn on in Settings when autoSearchOn is false', () => {
+    render(
+      <SearchTrustNotice
+        onAcknowledge={() => {}}
+        onOpenSettings={() => {}}
+        autoSearchOn={false}
+      />,
+    );
+    expect(screen.getByText('Turn on in Settings')).toBeTruthy();
+    expect(screen.queryByText('Turn off in Settings')).toBeNull();
   });
 
   it('See how Auto search works opens blog URL via open_url', () => {

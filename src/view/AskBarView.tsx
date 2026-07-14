@@ -296,14 +296,11 @@ export function AskBarView({
   const [noticeDismissedLocally, setNoticeDismissedLocally] = useState(false);
 
   /**
-   * First-use Auto search notice: when Auto search is on and the user has not
-   * acknowledged yet (and not locally dismissed this session). Shown as soon
-   * as the ask bar mounts, not gated on a search turn.
+   * First-use Auto search notice: until acknowledged (or locally dismissed).
+   * Shown whether Auto search is on or off; CTA label adapts (Turn off/on).
    */
   const showSearchTrustNotice =
-    behavior.autoSearch &&
-    !behavior.searchNoticeAcknowledged &&
-    !noticeDismissedLocally;
+    !behavior.searchNoticeAcknowledged && !noticeDismissedLocally;
 
   /**
    * Persist acknowledgement and hide the notice immediately.
@@ -770,6 +767,7 @@ export function AskBarView({
           <SearchTrustNotice
             onAcknowledge={acknowledgeSearchNotice}
             onOpenSettings={openSearchSettings}
+            autoSearchOn={behavior.autoSearch}
           />
         </div>
       ) : null}

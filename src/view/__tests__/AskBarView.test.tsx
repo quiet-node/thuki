@@ -2054,12 +2054,14 @@ describe('AskBarView', () => {
       expect(screen.queryByTestId('search-trust-notice')).toBeNull();
     });
 
-    it('hides notice when autoSearch is false', () => {
+    it('shows notice when autoSearch is false with Turn on in Settings CTA', () => {
       renderWithBehavior({
         autoSearch: false,
         searchNoticeAcknowledged: false,
       });
-      expect(screen.queryByTestId('search-trust-notice')).toBeNull();
+      expect(screen.getByTestId('search-trust-notice')).toBeInTheDocument();
+      expect(screen.getByText('Turn on in Settings')).toBeInTheDocument();
+      expect(screen.queryByText('Turn off in Settings')).toBeNull();
     });
 
     it('Acknowledge persists search_notice_acknowledged and hides the notice', () => {
