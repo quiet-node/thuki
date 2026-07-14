@@ -181,13 +181,24 @@ describe('SettingsWindow', () => {
     expect(row).toHaveAttribute('data-highlight', 'true');
     expect(screen.getByText('Auto search')).toBeInTheDocument();
 
-    // Highlight auto-clears after AUTO_SEARCH_HIGHLIGHT_MS (~7.2s design D).
+    // Highlight auto-clears after POINTING_WIGGLE_MS (~7.2s).
     expect(screen.getByTestId('auto-search-wiggle')).toBeInTheDocument();
     await act(async () => {
       vi.advanceTimersByTime(7500);
     });
     expect(screen.getByTestId('auto-search-row')).not.toHaveAttribute(
       'data-highlight',
+    );
+
+    // Second deep-link while still on Behavior restarts the wiggle (nonce bump).
+    await act(async () => {
+      emitTauriEvent('thuki://settings-show-behavior', undefined);
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('auto-search-wiggle')).toBeInTheDocument();
+    expect(screen.getByTestId('auto-search-row')).toHaveAttribute(
+      'data-highlight',
+      'true',
     );
 
     unmount();

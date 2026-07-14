@@ -23,8 +23,12 @@ interface BehaviorTabProps {
   config: RawAppConfig;
   resyncToken: number;
   onSaved: (next: RawAppConfig) => void;
-  /** When true, play the Auto search label wiggle highlight. */
-  highlightAutoSearch?: boolean;
+  /**
+   * Deep-link highlight generation. 0 = no wiggle; any positive value shows
+   * PointingWiggle keyed by this nonce so each deep-link restarts the CSS
+   * animation even if a previous highlight had not finished.
+   */
+  highlightAutoSearchNonce?: number;
   /** Called after the highlight animation completes so the parent can clear. */
   onHighlightAutoSearchDone?: () => void;
 }
@@ -43,30 +47,32 @@ const TEXT_REPLACEMENT_HELP =
  * @param config Current raw app config from the Settings host.
  * @param resyncToken Bumps when the host reloads config from disk so fields re-seed.
  * @param onSaved Called with the resolved config after a successful field write.
- * @param highlightAutoSearch When true, draws PointingWiggle under Auto search.
+ * @param highlightAutoSearchNonce Deep-link generation; 0 off, else wiggle + key.
  * @param onHighlightAutoSearchDone Fired when the highlight timeline ends.
  */
 export function BehaviorTab({
   config,
   resyncToken,
   onSaved,
-  highlightAutoSearch = false,
+  highlightAutoSearchNonce = 0,
   onHighlightAutoSearchDone,
 }: BehaviorTabProps) {
+  const highlightActive = highlightAutoSearchNonce > 0;
+
   useEffect(() => {
-    if (!highlightAutoSearch) return;
+    if (!highlightActive) return;
     const t = window.setTimeout(() => {
       onHighlightAutoSearchDone?.();
     }, POINTING_WIGGLE_MS);
     return () => window.clearTimeout(t);
-  }, [highlightAutoSearch, onHighlightAutoSearchDone]);
+  }, [highlightAutoSearchNonce, highlightActive, onHighlightAutoSearchDone]);
 
   return (
     <>
       <Section heading="Web search">
         <div
           data-testid="auto-search-row"
-          data-highlight={highlightAutoSearch ? 'true' : undefined}
+          data-highlight={highlightActive ? 'true' : undefined}
         >
           <SaveField
             section="behavior"
@@ -74,7 +80,8 @@ export function BehaviorTab({
             label="Auto search"
             labelAccessory={
               <PointingWiggle
-                active={highlightAutoSearch}
+                key={highlightAutoSearchNonce}
+                active={highlightActive}
                 testId="auto-search-wiggle"
               />
             }

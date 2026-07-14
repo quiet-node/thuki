@@ -557,12 +557,12 @@ describe('BehaviorTab', () => {
   it('highlights Auto search with wiggle then clears via timeout callback', () => {
     vi.useFakeTimers();
     const onDone = vi.fn();
-    const { unmount } = render(
+    const { unmount, rerender } = render(
       <BehaviorTab
         config={CONFIG}
         resyncToken={0}
         onSaved={() => {}}
-        highlightAutoSearch
+        highlightAutoSearchNonce={1}
         onHighlightAutoSearchDone={onDone}
       />,
     );
@@ -575,6 +575,17 @@ describe('BehaviorTab', () => {
       vi.advanceTimersByTime(7200);
     });
     expect(onDone).toHaveBeenCalledTimes(1);
+    // Nonce bump restarts highlight without needing false first.
+    rerender(
+      <BehaviorTab
+        config={CONFIG}
+        resyncToken={0}
+        onSaved={() => {}}
+        highlightAutoSearchNonce={2}
+        onHighlightAutoSearchDone={onDone}
+      />,
+    );
+    expect(screen.getByTestId('auto-search-wiggle')).toBeInTheDocument();
     // Optional callback absent: timeout still safe.
     unmount();
     render(
@@ -582,7 +593,7 @@ describe('BehaviorTab', () => {
         config={CONFIG}
         resyncToken={0}
         onSaved={() => {}}
-        highlightAutoSearch
+        highlightAutoSearchNonce={1}
       />,
     );
     act(() => {

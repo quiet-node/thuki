@@ -168,8 +168,12 @@ export function SettingsWindow() {
     () => setPendingModelsView(null),
     [],
   );
-  /** One-shot: flash Auto search row after Behavior deep-link. */
-  const [highlightAutoSearch, setHighlightAutoSearch] = useState(false);
+  /**
+   * Behavior deep-link highlight counter. 0 = idle; each deep-link bumps so
+   * PointingWiggle remounts even when still "highlighting" (true→true no-op
+   * was skipping the animation on repeat Turn on/off in Settings clicks).
+   */
+  const [autoSearchHighlightNonce, setAutoSearchHighlightNonce] = useState(0);
   const [savedVisible, setSavedVisible] = useState(false);
   const [marker, setMarker] = useState<CorruptMarker | null>(null);
   const [markerDismissed, setMarkerDismissed] = useState(false);
@@ -246,12 +250,12 @@ export function SettingsWindow() {
     };
   }, []);
 
-  // First-use search notice "Turn off in Settings" opens Behavior and flashes
-  // the Auto search row so the user lands on the exact control to change.
+  // Version announcement Settings CTA opens Behavior and restarts the Auto
+  // search PointingWiggle (nonce bump forces a fresh animation every click).
   useEffect(() => {
     const unlistenPromise = listen('thuki://settings-show-behavior', () => {
       setActiveTab('behavior');
-      setHighlightAutoSearch(true);
+      setAutoSearchHighlightNonce((n) => n + 1);
     });
     return () => {
       void unlistenPromise.then((unlisten) => unlisten());
@@ -462,9 +466,9 @@ export function SettingsWindow() {
                     config={config}
                     resyncToken={resyncToken}
                     onSaved={handleSaved}
-                    highlightAutoSearch={highlightAutoSearch}
+                    highlightAutoSearchNonce={autoSearchHighlightNonce}
                     onHighlightAutoSearchDone={() =>
-                      setHighlightAutoSearch(false)
+                      setAutoSearchHighlightNonce(0)
                     }
                   />
                 ) : null}
