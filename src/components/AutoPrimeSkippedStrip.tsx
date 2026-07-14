@@ -21,6 +21,9 @@
 import { useState } from 'react';
 import { INSUFFICIENT_MEMORY_CONSEQUENCE } from './ErrorCard';
 
+/** Warning amber, matching `ErrorCard.tsx`'s `barColors.InsufficientMemory`. */
+const AMBER = '#f59e0b';
+
 /** Bytes per gigabyte, matching `ErrorCard.tsx`'s divisor. */
 const BYTES_PER_GB = 1024 ** 3;
 
@@ -124,8 +127,18 @@ export function AutoPrimeSkippedStrip({
       data-testid="auto-prime-skipped-strip"
       className="mx-4 mt-2 mb-0 px-0.5"
     >
-      <p className="text-xs text-white/45 leading-relaxed">{message}</p>
-      <div className="mt-2.5 flex flex-col items-start gap-1">
+      <div className="flex items-start gap-2.5">
+        <span
+          aria-hidden="true"
+          data-testid="auto-prime-skipped-dot"
+          className="mt-1 shrink-0 w-2 h-2 rounded-full"
+          style={{ background: AMBER, boxShadow: `0 0 6px ${AMBER}` }}
+        />
+        <p className="min-w-0 flex-1 text-xs text-text-primary leading-relaxed">
+          {message}
+        </p>
+      </div>
+      <div className="mt-2.5 flex flex-wrap items-center gap-2">
         <button
           type="button"
           aria-label={primaryLabel}

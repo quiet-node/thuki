@@ -57,8 +57,8 @@ describe('AutoPrimeSkippedStrip', () => {
     );
   });
 
-  it('stacks action buttons under the body (no top accent bar)', () => {
-    const { container } = render(
+  it('shows amber status dot and row actions under primary text (no top bar)', () => {
+    render(
       <AutoPrimeSkippedStrip
         modelName="Qwen3.5 9B"
         requiredBytes={1}
@@ -69,14 +69,12 @@ describe('AutoPrimeSkippedStrip', () => {
       />,
     );
     const root = screen.getByTestId('auto-prime-skipped-strip');
-    // No top amber track (removed for footer-style strip).
-    expect(
-      container.querySelector(
-        '[data-testid="auto-prime-skipped-strip"] > span > span',
-      ),
-    ).toBeNull();
-    const actions = root.querySelector('.flex-col');
-    expect(actions).toBeTruthy();
+    expect(screen.getByTestId('auto-prime-skipped-dot')).toHaveStyle({
+      background: '#f59e0b',
+    });
+    // No full-width top amber track.
+    expect(root.querySelector(':scope > span > span')).toBeNull();
+    expect(root.querySelector('.flex-wrap')).toBeTruthy();
   });
 
   it('shows both actions in stage 1', () => {
