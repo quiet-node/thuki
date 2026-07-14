@@ -420,6 +420,10 @@ pub(crate) struct BuiltinSkippedPayload {
     pub model_id: String,
     pub required_bytes: u64,
     pub available_bytes: u64,
+    /// The ceiling fraction ([`MODEL_FIT_CEILING_FRACTION`]) the memory gate
+    /// blocked against, echoed to the frontend so the ambient warning strip can
+    /// state the actual headroom rule instead of a hardcoded percentage.
+    pub ceiling_fraction: f64,
 }
 
 /// Maps a resolved `(Target, MemoryGate)` - or a resolve error - to the
@@ -590,6 +594,7 @@ pub(crate) fn spawn_gated_builtin_warmup(
                     model_id,
                     required_bytes,
                     available_bytes,
+                    ceiling_fraction: MODEL_FIT_CEILING_FRACTION,
                 },
             );
         }

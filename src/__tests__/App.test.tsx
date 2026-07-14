@@ -10700,6 +10700,7 @@ describe('App', () => {
       model_id: 'gemma4:e2b',
       required_bytes: 8 * 1024 ** 3,
       available_bytes: 4 * 1024 ** 3,
+      ceiling_fraction: 0.8,
     };
 
     it('shows the ambient strip with the friendly model name and GB figures after warmup:builtin-skipped fires', async () => {
@@ -10720,7 +10721,7 @@ describe('App', () => {
 
       expect(
         screen.getByText(
-          'Gemma 4 E2B may not fit in memory (~8.0 GB needed, ~4.0 GB available)',
+          'Gemma 4 E2B may not fit in memory (~8.0 GB needed, ~4.0 GB available, over the 80% safe limit)',
         ),
       ).toBeInTheDocument();
     });

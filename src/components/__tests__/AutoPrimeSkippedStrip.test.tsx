@@ -1,22 +1,46 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { AutoPrimeSkippedStrip } from '../AutoPrimeSkippedStrip';
 import { INSUFFICIENT_MEMORY_CONSEQUENCE } from '../ErrorCard';
+import { mockReducedMotion } from '../../testUtils/mocks/framer-motion';
 
 describe('AutoPrimeSkippedStrip', () => {
+  afterEach(() => {
+    mockReducedMotion.current = false;
+  });
+
   it('shows the model name and need-vs-available GB figures', () => {
     render(
       <AutoPrimeSkippedStrip
         modelName="Qwen3.5 9B"
         requiredBytes={8 * 1024 ** 3}
         availableBytes={4 * 1024 ** 3}
+        ceilingFraction={0.8}
         onSwitchModel={vi.fn()}
         onLoadAnyway={vi.fn()}
       />,
     );
     expect(
       screen.getByText(
-        'Qwen3.5 9B may not fit in memory (~8.0 GB needed, ~4.0 GB available)',
+        'Qwen3.5 9B may not fit in memory (~8.0 GB needed, ~4.0 GB available, over the 80% safe limit)',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('derives the percent from ceilingFraction, not a hardcoded 80', () => {
+    render(
+      <AutoPrimeSkippedStrip
+        modelName="Qwen3.5 9B"
+        requiredBytes={8 * 1024 ** 3}
+        availableBytes={4 * 1024 ** 3}
+        ceilingFraction={0.6}
+        onSwitchModel={vi.fn()}
+        onLoadAnyway={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByText(
+        'Qwen3.5 9B may not fit in memory (~8.0 GB needed, ~4.0 GB available, over the 60% safe limit)',
       ),
     ).toBeInTheDocument();
   });
@@ -27,6 +51,7 @@ describe('AutoPrimeSkippedStrip', () => {
         modelName="Qwen3.5 9B"
         requiredBytes={1}
         availableBytes={1}
+        ceilingFraction={0.8}
         onSwitchModel={vi.fn()}
         onLoadAnyway={vi.fn()}
       />,
@@ -37,20 +62,24 @@ describe('AutoPrimeSkippedStrip', () => {
     );
   });
 
-  it("renders the amber accent edge, matching ErrorCard's InsufficientMemory color", () => {
-    const { container } = render(
+  it('shows amber status dot and row actions under primary text (no top bar)', () => {
+    render(
       <AutoPrimeSkippedStrip
         modelName="Qwen3.5 9B"
         requiredBytes={1}
         availableBytes={1}
+        ceilingFraction={0.8}
         onSwitchModel={vi.fn()}
         onLoadAnyway={vi.fn()}
       />,
     );
-    const edgeFill = container.querySelector(
-      '[data-testid="auto-prime-skipped-strip"] > span > span',
-    );
-    expect(edgeFill).toHaveStyle({ background: '#f59e0b' });
+    const root = screen.getByTestId('auto-prime-skipped-strip');
+    expect(screen.getByTestId('auto-prime-skipped-dot')).toHaveStyle({
+      background: '#f59e0b',
+    });
+    // No full-width top amber track.
+    expect(root.querySelector(':scope > span > span')).toBeNull();
+    expect(root.querySelector('.flex-wrap')).toBeTruthy();
   });
 
   it('shows both actions in stage 1', () => {
@@ -59,6 +88,7 @@ describe('AutoPrimeSkippedStrip', () => {
         modelName="Qwen3.5 9B"
         requiredBytes={1}
         availableBytes={1}
+        ceilingFraction={0.8}
         onSwitchModel={vi.fn()}
         onLoadAnyway={vi.fn()}
       />,
@@ -78,6 +108,7 @@ describe('AutoPrimeSkippedStrip', () => {
         modelName="Qwen3.5 9B"
         requiredBytes={1}
         availableBytes={1}
+        ceilingFraction={0.8}
         onSwitchModel={onSwitchModel}
         onLoadAnyway={vi.fn()}
       />,
@@ -86,25 +117,29 @@ describe('AutoPrimeSkippedStrip', () => {
     expect(onSwitchModel).toHaveBeenCalledTimes(1);
   });
 
-  it('advances to the consequence stage on the first "Load anyway" click without loading', () => {
+  it('keeps the fit warning and adds muted consequence on "Load anyway" without loading', () => {
     const onLoadAnyway = vi.fn();
     render(
       <AutoPrimeSkippedStrip
         modelName="Qwen3.5 9B"
         requiredBytes={1}
         availableBytes={1}
+        ceilingFraction={0.8}
         onSwitchModel={vi.fn()}
         onLoadAnyway={onLoadAnyway}
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
-    // Stage 2: the consequence copy is shown and the load has NOT fired yet.
+    // Fit line stays; consequence appears muted under it; load has NOT fired.
     expect(
-      screen.getByText(INSUFFICIENT_MEMORY_CONSEQUENCE),
+      screen.getByText(
+        'Qwen3.5 9B may not fit in memory (~0.0 GB needed, ~0.0 GB available, over the 80% safe limit)',
+      ),
     ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('auto-prime-skipped-consequence'),
+    ).toHaveTextContent(INSUFFICIENT_MEMORY_CONSEQUENCE);
     expect(onLoadAnyway).not.toHaveBeenCalled();
-    // Both actions are still present, with roles swapped: the confirm button
-    // is now labelled "Acknowledge", and stage 1's "Load anyway" is gone.
     expect(
       screen.queryByRole('button', { name: 'Load anyway' }),
     ).not.toBeInTheDocument();
@@ -123,6 +158,7 @@ describe('AutoPrimeSkippedStrip', () => {
         modelName="Qwen3.5 9B"
         requiredBytes={1}
         availableBytes={1}
+        ceilingFraction={0.8}
         onSwitchModel={vi.fn()}
         onLoadAnyway={onLoadAnyway}
       />,
@@ -139,6 +175,7 @@ describe('AutoPrimeSkippedStrip', () => {
         modelName="Qwen3.5 9B"
         requiredBytes={1}
         availableBytes={1}
+        ceilingFraction={0.8}
         onSwitchModel={onSwitchModel}
         onLoadAnyway={vi.fn()}
       />,
@@ -146,5 +183,23 @@ describe('AutoPrimeSkippedStrip', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
     fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
     expect(onSwitchModel).toHaveBeenCalledTimes(1);
+  });
+
+  it('still shows the consequence copy on confirm under prefers-reduced-motion', () => {
+    mockReducedMotion.current = true;
+    render(
+      <AutoPrimeSkippedStrip
+        modelName="Qwen3.5 9B"
+        requiredBytes={1}
+        availableBytes={1}
+        ceilingFraction={0.8}
+        onSwitchModel={vi.fn()}
+        onLoadAnyway={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
+    expect(
+      screen.getByTestId('auto-prime-skipped-consequence'),
+    ).toHaveTextContent(INSUFFICIENT_MEMORY_CONSEQUENCE);
   });
 });

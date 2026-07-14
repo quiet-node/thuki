@@ -409,6 +409,7 @@ function App() {
     modelId: string;
     requiredBytes: number;
     availableBytes: number;
+    ceilingFraction: number;
   } | null>(null);
 
   /**
@@ -3543,6 +3544,7 @@ function App() {
             autoPrimeSkipped.modelId,
           requiredBytes: autoPrimeSkipped.requiredBytes,
           availableBytes: autoPrimeSkipped.availableBytes,
+          ceilingFraction: autoPrimeSkipped.ceilingFraction,
           onSwitchModel: () => handleSwitchModelFromError(),
           // "Load anyway" (issue #296): force-prime the model past the memory
           // gate. `force: true` routes through the SAME `preflight_memory_gate`
@@ -3646,11 +3648,13 @@ function App() {
         model_id: string;
         required_bytes: number;
         available_bytes: number;
+        ceiling_fraction: number;
       }>('warmup:builtin-skipped', ({ payload }) => {
         setAutoPrimeSkipped({
           modelId: payload.model_id,
           requiredBytes: payload.required_bytes,
           availableBytes: payload.available_bytes,
+          ceilingFraction: payload.ceiling_fraction,
         });
       });
       // All listeners registered - safe to let Rust decide what to show on launch.
