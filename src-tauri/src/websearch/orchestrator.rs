@@ -513,27 +513,39 @@ async fn classify_maybe_race_raw(
     cancel: &CancellationToken,
     verdict: PreFilterVerdict,
 ) -> ClassifyRaceResult {
-    let classifier_start = Instant::now();
     let raw = latest_user.trim().to_string();
     if verdict == PreFilterVerdict::ForceWeb && force_web_should_race_raw(latest_user) {
-        let race_start = Instant::now();
         // Freshness bias matches run_web: volatile raw phrasing gets the date
         // filter; stable ForceWeb still races without it.
         let freshness = is_volatile_question(&raw);
-        let decide = deps
-            .prepass
-            .decide(history, latest_user, deps.latest_images, today, cancel);
-        let race = web_search(
-            deps.transport,
-            &raw,
-            deps.health,
-            freshness,
-            deps.web_cache,
-            false,
-        );
+        // Time each future from its own Instant, recorded when that future
+        // completes, not after tokio::join returns. Recording both stages from
+        // pre-join start until post-join end would make both report
+        // max(classifier, serp) and hide which side dominated.
+        let decide = async {
+            let start = Instant::now();
+            let res = deps
+                .prepass
+                .decide(history, latest_user, deps.latest_images, today, cancel)
+                .await;
+            deps.timings.record(STAGE_CLASSIFIER, start);
+            res
+        };
+        let race = async {
+            let start = Instant::now();
+            let res = web_search(
+                deps.transport,
+                &raw,
+                deps.health,
+                freshness,
+                deps.web_cache,
+                false,
+            )
+            .await;
+            deps.timings.record(STAGE_RAW_RACE_SERP, start);
+            res
+        };
         let (classified_res, race_res) = tokio::join!(decide, race);
-        deps.timings.record(STAGE_CLASSIFIER, classifier_start);
-        deps.timings.record(STAGE_RAW_RACE_SERP, race_start);
         let classified = match classified_res {
             Ok(c) => c,
             Err(InferenceError::Cancelled) => return ClassifyRaceResult::Cancelled,
@@ -556,6 +568,7 @@ async fn classify_maybe_race_raw(
     }
 
     // Ambiguous (and ForceNo never reaches here): sequential classifier only.
+    let classifier_start = Instant::now();
     match deps
         .prepass
         .decide(history, latest_user, deps.latest_images, today, cancel)
@@ -3817,6 +3830,115 @@ mod tests {
             ddg_calls, 1,
             "near-duplicate ForceWeb race must keep common path at 1 DDG"
         );
+    }
+
+    /// Classifier that sleeps before returning, so concurrent race timing tests
+    /// can prove classifier wall time is measured independently of SERP.
+    struct DelayedPrePass {
+        delay: std::time::Duration,
+        result: Result<PrePassDecision, InferenceError>,
+    }
+
+    #[async_trait]
+    impl PrePass for DelayedPrePass {
+        /// Sleeps `delay`, then returns the scripted result.
+        async fn decide(
+            &self,
+            _history: &[ChatMessage],
+            _latest_user_message: &str,
+            _latest_images: Option<&[String]>,
+            _today: &str,
+            _cancel: &CancellationToken,
+        ) -> Result<PrePassDecision, InferenceError> {
+            tokio::time::sleep(self.delay).await;
+            self.result.clone()
+        }
+    }
+
+    /// Transport that sleeps before each send, so SERP wall time can be made
+    /// much larger than a fast classifier without relying on real network.
+    struct DelayedTransport {
+        inner: FakeHttpTransport,
+        delay: std::time::Duration,
+    }
+
+    #[async_trait]
+    impl HttpTransport for DelayedTransport {
+        /// Sleeps `delay`, then delegates to the inner fake transport.
+        async fn send(&self, req: &HttpRequest) -> Result<HttpResponse, TransportError> {
+            tokio::time::sleep(self.delay).await;
+            self.inner.send(req).await
+        }
+    }
+
+    #[tokio::test]
+    async fn force_web_race_records_independent_classifier_and_serp_times() {
+        // Regression: stage Instant must live inside each concurrent future.
+        // If both stages snap Instant before join and record after join, both
+        // report max(classifier, serp). With a ~20ms classifier and ~120ms SERP,
+        // classifier ms must stay well below serp ms (not both ≈ serp).
+        let prepass = DelayedPrePass {
+            delay: std::time::Duration::from_millis(20),
+            result: Ok(PrePassDecision {
+                decision: SearchDecision::Web,
+                route: SearchRoute::Web,
+                standalone_question: "what is the latest rust version".into(),
+                queries: vec!["what is the latest rust version".into()],
+                explicit_search: false,
+            }),
+        };
+        let transport = DelayedTransport {
+            inner: transport_with_serp_and_page(),
+            delay: std::time::Duration::from_millis(120),
+        };
+        let timings = TimingBag::new();
+        let (mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let mut d = deps_with_recorder(&prepass, &transport, &Bm25Scorer, &bound);
+        d.timings = &timings;
+        let _ = run_search(
+            &d,
+            "sys",
+            &[],
+            "what is the latest rust version",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        let stages = timings.snapshot();
+        let classifier_ms = stages
+            .iter()
+            .find(|s| s.stage == STAGE_CLASSIFIER)
+            .map(|s| s.ms)
+            .expect("classifier stage");
+        let race_ms = stages
+            .iter()
+            .find(|s| s.stage == STAGE_RAW_RACE_SERP)
+            .map(|s| s.ms)
+            .expect("raw_race_serp stage");
+        // Allow scheduling jitter: classifier should be far below SERP delay.
+        assert!(
+            classifier_ms < race_ms.saturating_sub(40),
+            "classifier={classifier_ms}ms must be independent of serp={race_ms}ms (not both max)"
+        );
+        assert!(
+            race_ms >= 80,
+            "serp stage should reflect its own ~120ms delay, got {race_ms}ms"
+        );
+        // Trace flush also carries both stage names.
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        let flushed = events
+            .iter()
+            .find_map(|e| match e {
+                RecorderEvent::SearchTimings { stages } => Some(stages),
+                _ => None,
+            })
+            .expect("SearchTimings");
+        assert!(flushed.iter().any(|s| s.stage == STAGE_CLASSIFIER));
+        assert!(flushed.iter().any(|s| s.stage == STAGE_RAW_RACE_SERP));
     }
 
     #[tokio::test]
