@@ -289,19 +289,16 @@ export function ChatBubble({
   const isVerifyingSources = searchStage?.kind === 'verifying_sources';
   const hasSearchSources = Boolean(searchSources && searchSources.length > 0);
   /**
-   * Reasoning or answer body has started. Triggers sequential handoff:
-   * search chrome exits, then Reasoning (if any) enters. After exit
-   * completes, search stays gone (Option D). Sources remain via footer.
+   * Generation finished with sources: footer chips can own the list, so top
+   * progress may exit. Reasoning/answer streaming no longer force-exits the
+   * progress strip (sources stay visible until the turn completes).
    */
-  const handedOffFromSearch = Boolean(
-    thinkingContent || isThinkingPending || displayContent,
-  );
+  const handedOffFromSearch = !isSearching && hasSearchSources;
   /**
-   * Pure search only: retrieve/read/compose while no reasoning/answer yet.
-   * False during verifying (C3 pill) and after handoff signal.
+   * Keep SearchProgressBlock for the whole search turn (read/compose/stream/
+   * verify) while isSearching. Exit only when generation ends.
    */
-  const showLiveSearch =
-    isSearching && !isVerifyingSources && !handedOffFromSearch;
+  const showLiveSearch = isSearching;
 
   /**
    * Exit-retention phase. `exiting` holds until outer fade finishes

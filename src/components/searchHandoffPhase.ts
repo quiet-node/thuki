@@ -1,26 +1,23 @@
 /**
- * Sequential search → reasoning/answer handoff phases (Option D).
+ * Sequential search progress → footer sources handoff phases.
  *
- * Pure search keeps {@link SearchProgressBlock} mounted (`live`). When
- * reasoning or answer content arrives, the block must stay mounted long
- * enough for its exit animation (`exiting`) before it is permanently
- * unmounted (`done`). Phase exists so exit retention is explicit and
- * testable without relying on Framer Motion's retain-while-exiting
- * behavior in the test mock.
+ * Search progress stays `live` for the whole search generation (including
+ * reasoning and answer streaming). When the turn ends with sources, the
+ * block keeps mounted long enough for exit animation (`exiting`) before
+ * permanent unmount (`done`) so footer chips can take over.
  */
 
-/** Lifecycle of search progress chrome relative to reasoning/answer. */
+/** Lifecycle of search progress chrome relative to the finished turn. */
 export type SearchHandoffPhase = 'idle' | 'live' | 'exiting' | 'done';
 
 /** Inputs that drive handoff transitions from ChatBubble render props. */
 export interface SearchHandoffSignals {
   /**
-   * True while pure search chrome should show: searching, not verifying,
-   * and reasoning/answer has not started yet.
+   * True while the search turn is still generating (`isSearching`).
    */
   showLiveSearch: boolean;
   /**
-   * True once thinking content, thinking-pending, or answer body exists.
+   * True once generation ended with sources (footer list ready).
    * Triggers exit retention when the block was live.
    */
   handedOff: boolean;

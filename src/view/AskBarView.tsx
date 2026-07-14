@@ -762,35 +762,48 @@ export function AskBarView({
         </div>
       </motion.div>
       {/* Version announcement footer under the input row (design D slot). */}
-      {showVersionAnnouncement ? (
-        <div
-          data-testid="version-announcement-slot"
-          className="border-t border-white/[0.05] bg-black/[0.15] px-3.5 py-2.5"
-        >
-          <VersionAnnouncement
-            title={V016_AUTO_SEARCH_ANNOUNCEMENT.title}
-            body={V016_AUTO_SEARCH_ANNOUNCEMENT.body}
-            learn={{
-              ...V016_AUTO_SEARCH_ANNOUNCEMENT.learn,
-              testId: 'version-announcement-learn',
+      <AnimatePresence initial={false}>
+        {showVersionAnnouncement ? (
+          <motion.div
+            key="version-announcement"
+            data-testid="version-announcement-slot"
+            className="border-t border-white/[0.05] bg-black/[0.15] px-3.5 py-2.5 overflow-hidden"
+            initial={false}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{
+              height: 0,
+              opacity: 0,
+              transition: {
+                height: { duration: 0.28, ease: [0.16, 1, 0.3, 1] },
+                opacity: { duration: 0.2, ease: 'easeOut' },
+              },
             }}
-            actions={[
-              {
-                label: 'Acknowledge',
-                onClick: acknowledgeVersionAnnouncement,
-                variant: 'primary',
-                testId: 'version-announcement-primary',
-              },
-              {
-                label: v016AutoSearchSettingsCta(behavior.autoSearch),
-                onClick: openAnnouncementSettings,
-                variant: 'secondary',
-                testId: 'version-announcement-secondary',
-              },
-            ]}
-          />
-        </div>
-      ) : null}
+          >
+            <VersionAnnouncement
+              title={V016_AUTO_SEARCH_ANNOUNCEMENT.title}
+              body={V016_AUTO_SEARCH_ANNOUNCEMENT.body}
+              learn={{
+                ...V016_AUTO_SEARCH_ANNOUNCEMENT.learn,
+                testId: 'version-announcement-learn',
+              }}
+              actions={[
+                {
+                  label: 'Acknowledge',
+                  onClick: acknowledgeVersionAnnouncement,
+                  variant: 'primary',
+                  testId: 'version-announcement-primary',
+                },
+                {
+                  label: v016AutoSearchSettingsCta(behavior.autoSearch),
+                  onClick: openAnnouncementSettings,
+                  variant: 'secondary',
+                  testId: 'version-announcement-secondary',
+                },
+              ]}
+            />
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
 }

@@ -1350,9 +1350,10 @@ describe('ChatBubble', () => {
       expect(
         screen.queryByTestId('search-progress-block'),
       ).not.toBeInTheDocument();
+      // No search turn: idle (done is only after a completed search handoff).
       expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
         'data-search-handoff-phase',
-        'done',
+        'idle',
       );
     });
 
@@ -1434,9 +1435,7 @@ describe('ChatBubble', () => {
       });
     });
 
-    it('skips exit when thinking mounts without a prior live search (Option D)', () => {
-      // First paint already handed off: never entered `live`, so no exit
-      // retention and Reasoning shows immediately.
+    it('keeps SearchProgress while thinking streams during a search turn', () => {
       render(
         <ChatBubble
           role="assistant"
@@ -1446,40 +1445,20 @@ describe('ChatBubble', () => {
           searchStage={{ kind: 'searching' }}
           thinkingContent="thoughts"
           isThinking={false}
+          searchSources={[
+            { title: 'A', url: 'https://example.com/a' },
+          ]}
         />,
       );
-      expect(
-        screen.queryByTestId('search-progress-block'),
-      ).not.toBeInTheDocument();
+      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
       expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
       expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
         'data-search-handoff-phase',
-        'done',
+        'live',
       );
     });
 
-    it('skips exit when isThinkingPending mounts without prior live search', () => {
-      render(
-        <ChatBubble
-          role="assistant"
-          content=""
-          index={0}
-          isSearching
-          searchStage={{ kind: 'composing' }}
-          isThinkingPending
-        />,
-      );
-      expect(
-        screen.queryByTestId('search-progress-block'),
-      ).not.toBeInTheDocument();
-      expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
-      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
-        'data-search-handoff-phase',
-        'done',
-      );
-    });
-
-    it('skips exit when answer mounts without prior live search', () => {
+    it('keeps SearchProgress while answer streams during a search turn', () => {
       render(
         <ChatBubble
           role="assistant"
@@ -1487,18 +1466,19 @@ describe('ChatBubble', () => {
           index={0}
           isSearching
           searchStage={{ kind: 'composing' }}
+          searchSources={[
+            { title: 'A', url: 'https://example.com/a' },
+          ]}
         />,
       );
-      expect(
-        screen.queryByTestId('search-progress-block'),
-      ).not.toBeInTheDocument();
+      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
       expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
         'data-search-handoff-phase',
-        'done',
+        'live',
       );
     });
 
-    it('keeps SearchProgress with isExiting and defers Reasoning mid-handoff', () => {
+    it('exits SearchProgress when search generation ends with sources', () => {
       const { rerender } = render(
         <ChatBubble
           role="assistant"
@@ -1506,6 +1486,9 @@ describe('ChatBubble', () => {
           index={0}
           isSearching
           searchStage={{ kind: 'searching' }}
+          searchSources={[
+            { title: 'A', url: 'https://example.com/a' },
+          ]}
         />,
       );
       expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
@@ -1516,16 +1499,16 @@ describe('ChatBubble', () => {
       rerender(
         <ChatBubble
           role="assistant"
-          content=""
+          content="Done"
           index={0}
-          isSearching
-          searchStage={{ kind: 'searching' }}
-          thinkingContent="thoughts"
-          isThinking
+          isSearching={false}
+          searchSources={[
+            { title: 'A', url: 'https://example.com/a' },
+          ]}
         />,
       );
 
-      // Collapse window: search retained with isExiting, Reasoning deferred.
+      // Generation ended: top progress exits so footer sources can own the list.
       expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
         'data-search-handoff-phase',
         'exiting',
@@ -1533,58 +1516,41 @@ describe('ChatBubble', () => {
       const progress = screen.getByTestId('search-progress-block');
       expect(progress).toHaveAttribute('data-exiting', 'true');
       expect(progress).toHaveAttribute('aria-busy', 'true');
-      expect(screen.queryByTestId('reasoning-block')).not.toBeInTheDocument();
-
-      // isSearching may flip off mid-handoff; still force-mount for exit.
-      rerender(
-        <ChatBubble
-          role="assistant"
-          content=""
-          index={0}
-          isSearching={false}
-          searchStage={null}
-          thinkingContent="thoughts"
-          isThinking
-        />,
-      );
-      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
-        'data-search-handoff-phase',
-        'exiting',
-      );
-      expect(screen.getByTestId('search-progress-block')).toHaveAttribute(
-        'data-exiting',
-        'true',
-      );
     });
 
-    it('unmounts search after collapse lead then completes via onExitComplete', async () => {
+    it('unmounts search after collapse lead when generation ends with sources', async () => {
       vi.useFakeTimers();
       try {
+        const sources = [{ title: 'A', url: 'https://example.com/a' }];
         const { rerender } = render(
           <ChatBubble
             role="assistant"
-            content=""
+            content="streaming"
             index={0}
             isSearching
-            searchStage={{ kind: 'searching' }}
+            searchStage={{ kind: 'composing' }}
+            searchSources={sources}
           />,
+        );
+        expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+        expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+          'data-search-handoff-phase',
+          'live',
         );
 
         rerender(
           <ChatBubble
             role="assistant"
-            content=""
+            content="final"
             index={0}
-            isSearching
-            searchStage={{ kind: 'searching' }}
-            isThinkingPending
+            isSearching={false}
+            searchSources={sources}
           />,
         );
         expect(screen.getByTestId('search-progress-block')).toHaveAttribute(
           'data-exiting',
           'true',
         );
-        expect(screen.queryByTestId('reasoning-block')).not.toBeInTheDocument();
 
         // Collapse lead elapses → outer unmount → mock onExitComplete → done.
         await act(async () => {
@@ -1598,10 +1564,6 @@ describe('ChatBubble', () => {
         expect(
           screen.queryByTestId('search-progress-block'),
         ).not.toBeInTheDocument();
-        expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
-        expect(
-          screen.getByTestId('reasoning-handoff-enter'),
-        ).toBeInTheDocument();
       } finally {
         vi.useRealTimers();
       }
@@ -1610,14 +1572,20 @@ describe('ChatBubble', () => {
     it('completes handoff via exit-fallback when exit unmount stalls', async () => {
       vi.useFakeTimers();
       try {
+        const sources = [{ title: 'A', url: 'https://example.com/a' }];
         const { rerender } = render(
           <ChatBubble
             role="assistant"
-            content=""
+            content="Partial answer"
             index={0}
             isSearching
             searchStage={{ kind: 'composing' }}
+            searchSources={sources}
           />,
+        );
+        expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+          'data-search-handoff-phase',
+          'live',
         );
 
         rerender(
@@ -1625,8 +1593,8 @@ describe('ChatBubble', () => {
             role="assistant"
             content="Partial answer"
             index={0}
-            isSearching
-            searchStage={{ kind: 'composing' }}
+            isSearching={false}
+            searchSources={sources}
           />,
         );
 
@@ -1635,7 +1603,6 @@ describe('ChatBubble', () => {
           'exiting',
         );
         expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
-        expect(screen.queryByTestId('reasoning-block')).not.toBeInTheDocument();
         expect(screen.getByText('Partial answer')).toBeInTheDocument();
 
         // Skip past lead without flushing the unmount effect's follow-up by
@@ -1695,24 +1662,24 @@ describe('ChatBubble', () => {
       mockReducedMotion.current = true;
       vi.useFakeTimers();
       try {
+        const sources = [{ title: 'A', url: 'https://example.com/a' }];
         const { rerender } = render(
           <ChatBubble
             role="assistant"
-            content=""
+            content="streaming"
             index={0}
             isSearching
-            searchStage={{ kind: 'searching' }}
+            searchStage={{ kind: 'composing' }}
+            searchSources={sources}
           />,
         );
         rerender(
           <ChatBubble
             role="assistant"
-            content=""
+            content="final"
             index={0}
-            isSearching
-            searchStage={{ kind: 'searching' }}
-            thinkingContent="thoughts"
-            isThinking
+            isSearching={false}
+            searchSources={sources}
           />,
         );
         expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
@@ -1727,14 +1694,13 @@ describe('ChatBubble', () => {
           'data-search-handoff-phase',
           'done',
         );
-        expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
       } finally {
         vi.useRealTimers();
         mockReducedMotion.current = false;
       }
     });
 
-    it('shows C3 verifying pill while streaming during citation audit', () => {
+    it('keeps progress and shows C3 verifying pill during citation audit', () => {
       const sources = [
         { title: 'Adobe', url: 'https://adobe.com' },
         { title: 'Reuters', url: 'https://reuters.com' },
@@ -1751,10 +1717,8 @@ describe('ChatBubble', () => {
           searchSources={sources}
         />,
       );
-      // Progress chrome yields to the sources-row pill during audit.
-      expect(
-        screen.queryByTestId('search-progress-block'),
-      ).not.toBeInTheDocument();
+      // Top sources stay through audit; footer shows verifying pill.
+      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
       const pill = screen.getByTestId('sources-verifying-pill');
       expect(pill).toHaveTextContent('Verifying sources...');
       expect(pill).toHaveAttribute('role', 'status');
