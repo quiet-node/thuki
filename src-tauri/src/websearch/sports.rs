@@ -22,7 +22,7 @@
 //! call to decide it.
 
 use crate::config::defaults::{SPORTS_LEAGUE_MAP, SPORTS_SCHEDULE_WINDOW_DAYS};
-use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
+use crate::net::transport::{send_with_retry, HttpMethod, HttpRequest, HttpTransport};
 use crate::websearch::assemble::SourceBlock;
 use crate::websearch::THUKI_USER_AGENT;
 
@@ -520,9 +520,7 @@ pub(crate) async fn fetch_sports(
         eprintln!("[search] vertical=sports no_league_match -> next tier");
         return None;
     };
-    let response = match transport
-        .send(&scoreboard_request(sport, league, today))
-        .await
+    let response = match send_with_retry(transport, &scoreboard_request(sport, league, today)).await
     {
         Ok(response) => response,
         Err(e) => {
@@ -1246,9 +1244,12 @@ mod tests {
         assert!(transport.calls().is_empty(), "no request sent on a miss");
     }
 
-    #[tokio::test]
+    // start_paused: the transport error below drives the vertical retry (see
+    // `net::transport::send_with_retry`), whose jittered backoff sleeps real
+    // time unless the tokio clock is paused.
+    #[tokio::test(start_paused = true)]
     async fn fetch_sports_none_on_transport_error() {
-        // No canned response -> transport error -> None.
+        // No canned response -> transport error, retried once, still None.
         let transport = FakeHttpTransport::new();
         assert!(
             fetch_sports(&transport, "nba scores tonight", "2026-07-09", None)
@@ -1257,7 +1258,10 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    // start_paused: the 503 status below drives the vertical retry (see
+    // `net::transport::send_with_retry`), whose jittered backoff sleeps real
+    // time unless the tokio clock is paused.
+    #[tokio::test(start_paused = true)]
     async fn fetch_sports_none_on_bad_status() {
         let url = scoreboard_request("basketball", "nba", "2026-07-09").url;
         let transport = FakeHttpTransport::new().with_response(

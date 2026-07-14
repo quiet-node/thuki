@@ -710,6 +710,37 @@ pub const HTTP_REQUEST_TIMEOUT_S: u64 = 15;
 /// Not user-tunable: an internal robustness bound.
 pub const HTTP_CONNECT_TIMEOUT_S: u64 = 8;
 
+/// Number of automatic retries granted to the idempotent vertical GETs issued by
+/// `websearch::weather::fetch_weather` (Open-Meteo geocoding and forecast),
+/// `websearch::encyclopedia::fetch_encyclopedia` (Wikipedia search and summary),
+/// `websearch::news::fetch_news` (Google News RSS), and
+/// `websearch::sports::fetch_sports` (ESPN) after an attempt fails at the
+/// transport level or returns HTTP 429/5xx; see `net::transport::send_with_retry`.
+/// DuckDuckGo and Mojeek (SERP engines) never go through this helper and never
+/// retry: a same-identity retry pattern-matches a bot burst and has triggered
+/// multi-hour IP blocks against this app's SERP traffic in the past.
+/// `websearch::clock::resolve_place_time` issues the identical Open-Meteo
+/// geocoding request but is intentionally left on a bare, unretried send: it sits
+/// outside the search decision entirely (only ever adds context on top of the
+/// model's own local-time fallback) and is not part of the search vertical stack
+/// this policy covers.
+///
+/// Not user-tunable: a locked resilience/anti-bot-detection trade-off, not a
+/// preference.
+pub const VERTICAL_RETRY_ATTEMPTS: u32 = 1;
+
+/// Lower bound of the jittered backoff delay (milliseconds) before a vertical's
+/// single automatic retry (see [`VERTICAL_RETRY_ATTEMPTS`]).
+///
+/// Not user-tunable: an internal resilience policy.
+pub const VERTICAL_RETRY_BACKOFF_MIN_MS: u64 = 300;
+
+/// Upper bound of the jittered backoff delay (milliseconds) before a vertical's
+/// single automatic retry (see [`VERTICAL_RETRY_ATTEMPTS`]).
+///
+/// Not user-tunable: an internal resilience policy.
+pub const VERTICAL_RETRY_BACKOFF_MAX_MS: u64 = 800;
+
 // ─── Web-search decision (pre-filter + classifier) ───────────────────────────
 
 /// Maximum number of leading characters of the user's message the deterministic

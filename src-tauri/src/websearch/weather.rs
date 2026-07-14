@@ -16,7 +16,7 @@
 //! sends the turn down the normal engine path instead: the vertical can only
 //! ever improve a turn, never lose one.
 
-use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
+use crate::net::transport::{send_with_retry, HttpMethod, HttpRequest, HttpTransport};
 use crate::websearch::assemble::SourceBlock;
 use crate::websearch::lang::geocode_language;
 use crate::websearch::{OPEN_METEO_ATTRIBUTION, THUKI_USER_AGENT};
@@ -448,12 +448,13 @@ pub(crate) async fn fetch_weather(
     lang: &str,
 ) -> Option<SourceBlock> {
     let location = weather_location(standalone_question)?;
-    let geo_response = transport
-        .send(&geocode_request(&location, lang))
+    let geo_response = send_with_retry(transport, &geocode_request(&location, lang))
         .await
         .ok()?;
     let place = parse_geocode(&String::from_utf8_lossy(&geo_response.body))?;
-    let forecast_response = transport.send(&forecast_request(&place)).await.ok()?;
+    let forecast_response = send_with_retry(transport, &forecast_request(&place))
+        .await
+        .ok()?;
     let report = format_forecast(&String::from_utf8_lossy(&forecast_response.body), &place)?;
     eprintln!("[search] vertical=weather place={}", place.name);
     Some(weather_source_block(report, &place))
@@ -694,7 +695,10 @@ mod tests {
         assert!(block.text.contains("Current weather in Tokyo"));
     }
 
-    #[tokio::test]
+    // start_paused: a geocode transport error below drives the vertical retry
+    // (see `net::transport::send_with_retry`), whose jittered backoff sleeps
+    // real time unless the tokio clock is paused.
+    #[tokio::test(start_paused = true)]
     async fn fetch_weather_none_when_not_weather_or_geocode_fails() {
         let transport = FakeHttpTransport::new();
         // Not a weather question: no request is even sent.
@@ -702,7 +706,8 @@ mod tests {
             .await
             .is_none());
         assert!(transport.calls().is_empty());
-        // Weather question but geocode transport error: falls through.
+        // Weather question but geocode transport error: falls through after
+        // the single automatic retry also fails.
         assert!(fetch_weather(&transport, "weather in Tokyo", "en")
             .await
             .is_none());
