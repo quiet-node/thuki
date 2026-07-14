@@ -155,9 +155,7 @@ export function AutoPrimeSkippedStrip({
                 }
                 animate={{ height: 'auto', opacity: 1, y: 0 }}
                 exit={
-                  reduceMotion
-                    ? undefined
-                    : { height: 0, opacity: 0, y: -2 }
+                  reduceMotion ? undefined : { height: 0, opacity: 0, y: -2 }
                 }
                 transition={{
                   height: { duration: 0.24, ease: EXPAND_EASE },
