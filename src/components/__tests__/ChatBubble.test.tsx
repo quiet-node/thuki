@@ -892,7 +892,9 @@ describe('ChatBubble', () => {
       const el = screen.getByTestId('search-sources');
       const buttons = el.querySelectorAll('button');
       expect(buttons).toHaveLength(2);
-      // Domain letter avatars (match SearchProgressBlock), not row numbers.
+      // Citation index + domain letter avatar (maps to [n] in the answer).
+      expect(buttons[0].textContent).toContain('1.');
+      expect(buttons[1].textContent).toContain('2.');
       expect(buttons[0].querySelector('.source-row-avatar')?.textContent).toBe(
         'D',
       );

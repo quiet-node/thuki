@@ -707,6 +707,9 @@ export function ChatBubble({
                               }
                               className="source-row flex items-center gap-2 w-full text-left cursor-pointer py-0.5 group"
                             >
+                              <span className="source-row-num shrink-0 w-5 text-xs text-white/25 tabular-nums">
+                                {n}.
+                              </span>
                               <span
                                 aria-hidden
                                 className="source-row-avatar shrink-0 h-4.5 w-4.5 rounded-full inline-flex items-center justify-center text-[9px] font-semibold text-white/90"
