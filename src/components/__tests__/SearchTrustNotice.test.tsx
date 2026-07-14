@@ -2,7 +2,9 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import {
   SearchTrustNotice,
-  SEARCH_TRUST_NOTICE_BODY,
+  SEARCH_DISCLOSURE_URL,
+  SEARCH_TRUST_NOTICE_BODY_LEAD,
+  SEARCH_TRUST_NOTICE_BODY_LOCAL,
   SEARCH_TRUST_NOTICE_TITLE,
 } from '../SearchTrustNotice';
 
@@ -21,7 +23,8 @@ describe('SearchTrustNotice', () => {
       <SearchTrustNotice onAcknowledge={() => {}} onOpenSettings={() => {}} />,
     );
     expect(screen.getByText(SEARCH_TRUST_NOTICE_TITLE)).toBeTruthy();
-    expect(screen.getByText(SEARCH_TRUST_NOTICE_BODY)).toBeTruthy();
+    expect(screen.getByText(SEARCH_TRUST_NOTICE_BODY_LEAD)).toBeTruthy();
+    expect(screen.getByText(SEARCH_TRUST_NOTICE_BODY_LOCAL)).toBeTruthy();
   });
 
   it('Got it calls onAcknowledge', () => {
@@ -52,11 +55,14 @@ describe('SearchTrustNotice', () => {
     );
   });
 
-  it('hides How search works until a blog disclosure URL is configured', () => {
+  it('How Auto search works opens blog URL via open_url', () => {
     render(
       <SearchTrustNotice onAcknowledge={() => {}} onOpenSettings={() => {}} />,
     );
-    expect(screen.queryByTestId('search-trust-notice-how')).toBeNull();
-    expect(invoke).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('search-trust-notice-how'));
+    expect(invoke).toHaveBeenCalledWith('open_url', {
+      url: SEARCH_DISCLOSURE_URL,
+    });
+    expect(SEARCH_DISCLOSURE_URL).toBe('https://thuki.app/blog');
   });
 });

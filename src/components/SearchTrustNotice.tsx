@@ -1,23 +1,27 @@
 /**
- * First-use, non-blocking card explaining that auto-search sends queries
- * from the device to search services. Stays until Got it (or auto_search is
- * off); does not dismiss when the answer stream finishes.
+ * First-use, non-blocking card for Auto search (v0.16.0). Stays until Got it
+ * (or auto_search is off); does not dismiss when the answer stream finishes.
  */
 
 import { invoke } from '@tauri-apps/api/core';
 
 /**
- * Public blog post URL for how Thuki search works.
- * Null until the post title/slug are chosen and the page is live.
- * When set, the notice shows "How search works" and opens this URL.
+ * Public blog URL for "How Auto search works". Placeholder index until the
+ * dedicated post slug lands (issue #320).
  */
-export const SEARCH_DISCLOSURE_URL: string | null = null;
+export const SEARCH_DISCLOSURE_URL = 'https://thuki.app/blog';
 
+/** Notice title: v0.16.0 Auto search intro. */
 export const SEARCH_TRUST_NOTICE_TITLE =
-  'Thuki searches the web for current info';
+  'Thuki can now search the web, automatically!';
 
-export const SEARCH_TRUST_NOTICE_BODY =
-  'Questions that need fresh data are searched automatically. Queries go directly from your device to search services like DuckDuckGo and Wikipedia. Thuki has no servers and never sees them.';
+/** Lead body: what Auto search does and the device-direct privacy line. */
+export const SEARCH_TRUST_NOTICE_BODY_LEAD =
+  'Since v0.16.0, when a question needs fresh facts, Thuki smartly searches the web for them. Zero separate setup, no API keys: lookups leave your Mac straight to search services, not ours.';
+
+/** Second body line: how to stay fully local. */
+export const SEARCH_TRUST_NOTICE_BODY_LOCAL =
+  'Turn Auto search off in Settings to stay fully local and use /search only when you want a look-up.';
 
 export interface SearchTrustNoticeProps {
   /** Persist acknowledgement and hide the card. */
@@ -45,7 +49,10 @@ export function SearchTrustNotice({
         {SEARCH_TRUST_NOTICE_TITLE}
       </p>
       <p className="mt-1 text-xs text-white/45 leading-relaxed">
-        {SEARCH_TRUST_NOTICE_BODY}
+        {SEARCH_TRUST_NOTICE_BODY_LEAD}
+      </p>
+      <p className="mt-1.5 text-xs text-white/45 leading-relaxed">
+        {SEARCH_TRUST_NOTICE_BODY_LOCAL}
       </p>
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
         <button
@@ -64,18 +71,14 @@ export function SearchTrustNotice({
         >
           Turn off in Settings
         </button>
-        {SEARCH_DISCLOSURE_URL ? (
-          <button
-            type="button"
-            data-testid="search-trust-notice-how"
-            onClick={() =>
-              void invoke('open_url', { url: SEARCH_DISCLOSURE_URL })
-            }
-            className="rounded-md px-2.5 py-1 text-xs font-medium text-white/55 hover:text-white/80 transition-colors"
-          >
-            How search works
-          </button>
-        ) : null}
+        <button
+          type="button"
+          data-testid="search-trust-notice-how"
+          onClick={() => void invoke('open_url', { url: SEARCH_DISCLOSURE_URL })}
+          className="rounded-md px-2.5 py-1 text-xs font-medium text-white/55 hover:text-white/80 transition-colors"
+        >
+          How Auto search works
+        </button>
       </div>
     </div>
   );

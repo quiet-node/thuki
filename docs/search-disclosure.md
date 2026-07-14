@@ -58,4 +58,4 @@ The first time Auto search runs, Thuki shows a short notice in chat. Tapping **G
 
 ## Hosting note
 
-This file is the copy draft for a future **blog post** on thuki.app. Title and slug are TBD. Do not invent a product path such as `/search`. When the post is live, set `SEARCH_DISCLOSURE_URL` in `src/components/SearchTrustNotice.tsx` to the final blog URL; the notice will show **How search works** and open that link. Until then the button stays hidden.
+This file is the copy draft for a future **blog post** on thuki.app. Title and slug are TBD. In-app **How Auto search works** currently opens `https://thuki.app/blog` (blog index placeholder). When the dedicated post is live, point `SEARCH_DISCLOSURE_URL` in `src/components/SearchTrustNotice.tsx` at that post (see issue #320).
