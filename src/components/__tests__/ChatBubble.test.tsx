@@ -892,9 +892,11 @@ describe('ChatBubble', () => {
       const el = screen.getByTestId('search-sources');
       const buttons = el.querySelectorAll('button');
       expect(buttons).toHaveLength(2);
-      // Row numbers [1.] [2.]
-      expect(buttons[0].textContent).toContain('1.');
-      expect(buttons[1].textContent).toContain('2.');
+      // Domain letter avatars (match SearchProgressBlock), not row numbers.
+      expect(buttons[0].querySelector('.source-row-avatar')?.textContent).toBe(
+        'D',
+      );
+      expect(buttons[1].querySelector('.source-row-avatar')).toBeTruthy();
       expect(buttons[0].textContent).toContain('Rust Docs');
       expect(buttons[1].textContent).toContain('Tokio');
       // Hover tooltip via `title` attribute shows title only (not domain)
