@@ -20,6 +20,7 @@ Thuki runs entirely on your local machine: no server, no cloud backend, no telem
 - Model downloads from the Hugging Face Hub: provenance comes from pinned repo revisions, while the sha256 check is an integrity guard (truncation, bit rot, resume corruption), not a provenance control
 - The local SQLite database storing conversation history
 - Image processing via the `image` crate
+- Built-in web search egress (`src-tauri/src/websearch/` via `src-tauri/src/net/`): keyless engine and vertical fetches, page download, SSRF default-deny for private/link-local targets, redirect re-check, and response size caps. Untrusted page text is nonce-fenced before it reaches the writer model. See [docs/privacy.md](docs/privacy.md) and [docs/configurations.md](docs/configurations.md) (Built-in web search).
 
 ## Supported Versions
 
