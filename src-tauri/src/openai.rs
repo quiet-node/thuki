@@ -1534,7 +1534,9 @@ mod tests {
     #[test]
     fn builtin_chat_body_omits_reasoning_effort() {
         let off = chat_request_body("m", &[user_message("hi")], V1Flavor::Builtin, false);
-        assert!(off["chat_template_kwargs"].get("reasoning_effort").is_none());
+        assert!(off["chat_template_kwargs"]
+            .get("reasoning_effort")
+            .is_none());
         let on = chat_request_body("m", &[user_message("hi")], V1Flavor::Builtin, true);
         assert!(on["chat_template_kwargs"].get("reasoning_effort").is_none());
     }

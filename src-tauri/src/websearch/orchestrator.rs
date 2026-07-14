@@ -70,10 +70,6 @@ use crate::websearch::engine::{
 };
 use crate::websearch::fetch::{fetch_pages, FetchedPage};
 use crate::websearch::judge::{deterministic_sufficiency, SufficiencyJudge, SufficiencyVerdict};
-use crate::websearch::stage_timing::{
-    queries_near_duplicate, TimingBag, STAGE_CLASSIFIER, STAGE_FETCH, STAGE_JUDGE,
-    STAGE_RANK_ASSEMBLY, STAGE_RAW_RACE_SERP, STAGE_SERP, STAGE_WRITER_PREPARE,
-};
 use crate::websearch::news::{fetch_news, is_news_intent};
 use crate::websearch::prefilter::{prefilter, PreFilterVerdict};
 use crate::websearch::prepass::{
@@ -83,6 +79,10 @@ use crate::websearch::rank::{rerank_by_score, select_chunks, ScoredChunk, Scorer
 use crate::websearch::recency::recency_reorder;
 use crate::websearch::serp_cache::WebCache;
 use crate::websearch::sports::{fetch_sports, is_sports_intent};
+use crate::websearch::stage_timing::{
+    queries_near_duplicate, TimingBag, STAGE_CLASSIFIER, STAGE_FETCH, STAGE_JUDGE,
+    STAGE_RANK_ASSEMBLY, STAGE_RAW_RACE_SERP, STAGE_SERP, STAGE_WRITER_PREPARE,
+};
 use crate::websearch::weather::fetch_weather;
 use crate::websearch::writer::{unreachable_messages, writer_messages};
 
@@ -341,15 +341,8 @@ async fn run_search_inner(
     // common near-duplicate rewrite path pays zero SERP wait after the model
     // returns (≤1 DDG when the race is kept; divergent rewrites re-SERP).
     status(SearchPhase::Deciding);
-    let classified_and_race = classify_maybe_race_raw(
-        deps,
-        history,
-        latest_user,
-        today,
-        cancel,
-        verdict,
-    )
-    .await;
+    let classified_and_race =
+        classify_maybe_race_raw(deps, history, latest_user, today, cancel, verdict).await;
     let (classified, raced_serp) = match classified_and_race {
         ClassifyRaceResult::Cancelled => return SearchOutcome::Cancelled,
         ClassifyRaceResult::NoSearch => return SearchOutcome::NoSearch,
@@ -3715,11 +3708,8 @@ mod tests {
             queries: vec!["latest rust version".into()],
             explicit_search: false,
         };
-        let empty = preloaded_serp_for_decision(
-            &decision,
-            "latest rust version",
-            Some((vec![], vec![])),
-        );
+        let empty =
+            preloaded_serp_for_decision(&decision, "latest rust version", Some((vec![], vec![])));
         assert!(empty.is_some());
         let hit = SearchHit {
             title: "t".into(),
@@ -4893,18 +4883,16 @@ mod tests {
         .await;
         let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
         assert!(
-            events
-                .iter()
-                .any(|e| matches!(
-                    e,
-                    RecorderEvent::SearchDecided {
-                        prefilter,
-                        decision,
-                        force,
-                        route,
-                        ..
-                    } if prefilter == "force_no" && decision == "no" && !*force && route.is_empty()
-                )),
+            events.iter().any(|e| matches!(
+                e,
+                RecorderEvent::SearchDecided {
+                    prefilter,
+                    decision,
+                    force,
+                    route,
+                    ..
+                } if prefilter == "force_no" && decision == "no" && !*force && route.is_empty()
+            )),
             "missing SearchDecided force_no: {events:?}"
         );
         assert!(

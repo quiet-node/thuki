@@ -139,10 +139,7 @@ impl TimingBag {
     pub fn flush(&self, recorder: &BoundRecorder) {
         let pipeline_ms = elapsed_ms(self.submit);
         // Only append pipeline if not already present (idempotent re-flush safe).
-        let already = self
-            .snapshot()
-            .iter()
-            .any(|s| s.stage == STAGE_PIPELINE);
+        let already = self.snapshot().iter().any(|s| s.stage == STAGE_PIPELINE);
         if !already {
             self.record_ms(STAGE_PIPELINE, pipeline_ms);
         }
@@ -192,7 +189,10 @@ mod tests {
             "  Latest  Figma  ownership ",
             "latest figma ownership"
         ));
-        assert!(!queries_near_duplicate("figma ownership", "adobe figma deal"));
+        assert!(!queries_near_duplicate(
+            "figma ownership",
+            "adobe figma deal"
+        ));
         assert!(!queries_near_duplicate("", ""));
         assert!(!queries_near_duplicate("   ", "\t"));
     }
