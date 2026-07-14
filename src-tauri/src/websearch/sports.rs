@@ -331,9 +331,11 @@ fn format_event(
 }
 
 /// Whether `json` has the critical top-level ESPN scoreboard shape: an object
-/// with an `events` array of objects. Per-event drift is skipped by
-/// [`format_event`] (lossless); a wrong-type top-level `events` value is a
-/// clean miss so we never half-parse a non-scoreboard body.
+/// with an `events` array. Per-event drift is skipped by [`format_event`]
+/// (lossless), so a single non-object element does not fail the whole
+/// scoreboard. An empty array is accepted (a valid off-season shape); a
+/// non-empty array with no object elements at all is treated as a clean miss
+/// so we never half-parse a non-scoreboard body.
 pub(crate) fn scoreboard_shape_ok(json: &serde_json::Value) -> bool {
     let Some(events) = json.get("events") else {
         return false;
@@ -341,7 +343,7 @@ pub(crate) fn scoreboard_shape_ok(json: &serde_json::Value) -> bool {
     let Some(arr) = events.as_array() else {
         return false;
     };
-    arr.iter().all(|event| event.is_object())
+    arr.is_empty() || arr.iter().any(|event| event.is_object())
 }
 
 /// True when any competitor score on this event is a hostile type (object or
@@ -1067,6 +1069,28 @@ mod tests {
         assert!(!scoreboard_shape_ok(&serde_json::json!({
             "events": [1, 2, 3]
         })));
+    }
+
+    #[test]
+    fn scoreboard_shape_ok_accepts_mixed_array_with_some_non_object_events() {
+        // One drifted non-object event alongside valid ones is a shape miss
+        // for that element, not a reason to reject the whole scoreboard:
+        // format_event drops the bad element per-event during parsing.
+        assert!(scoreboard_shape_ok(&serde_json::json!({
+            "events": [{"name": "A at B"}, 1, {"name": "C at D"}]
+        })));
+    }
+
+    #[test]
+    fn parse_scoreboard_drops_single_non_object_event_from_mixed_array() {
+        let body = r#"{"leagues":[{"name":"X"}],"events":[
+            1,
+            {"name":"Good Game","status":{"type":{"state":"post","shortDetail":"Final"}},"competitions":[{"competitors":[{"team":{"displayName":"Home"},"score":"1"},{"team":{"displayName":"Away"},"score":"0"}]}]}
+        ]}"#;
+        let (league, lines) = parse_scoreboard(body, None).unwrap();
+        assert_eq!(league, "X");
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("Good Game"));
     }
 
     #[test]
