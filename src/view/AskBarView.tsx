@@ -315,6 +315,10 @@ export function AskBarView({
       section: 'behavior',
       key: 'search_notice_acknowledged',
       value: true,
+    }).catch(() => {
+      // Write failed: roll back the optimistic hide so the acknowledgement is
+      // not silently lost. The notice returns and the user can retry.
+      setNoticeDismissedLocally(false);
     });
   }, []);
 

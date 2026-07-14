@@ -2080,6 +2080,24 @@ describe('AskBarView', () => {
       expect(screen.queryByTestId('version-announcement')).toBeNull();
     });
 
+    it('restores the notice when the acknowledgement write fails', async () => {
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'set_config_field') {
+          throw new Error('write failed');
+        }
+        return undefined;
+      });
+      renderWithBehavior({
+        autoSearch: true,
+        searchNoticeAcknowledged: false,
+      });
+      fireEvent.click(screen.getByTestId('version-announcement-primary'));
+      // The optimistic hide must roll back so the acknowledgement is not lost.
+      await waitFor(() =>
+        expect(screen.getByTestId('version-announcement')).toBeInTheDocument(),
+      );
+    });
+
     it('Turn off in Settings opens Behavior deep-link without flipping auto_search', () => {
       renderWithBehavior({
         autoSearch: true,
