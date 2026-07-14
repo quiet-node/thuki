@@ -28,8 +28,8 @@ pub mod registry;
 pub use ids::{new_turn_id, ConversationId};
 pub use live::LiveTraceRecorder;
 pub use recorder::{
-    EngineStat, FileRecorder, NoopRecorder, RecorderEvent, RetrievedSource, TraceDomain,
-    TraceRecorder, TRACE_SCHEMA_VERSION,
+    EngineStat, FileRecorder, NoopRecorder, RecorderEvent, RetrievedSource, StageTiming,
+    TraceDomain, TraceRecorder, TRACE_SCHEMA_VERSION,
 };
 pub use registry::RegistryRecorder;
 

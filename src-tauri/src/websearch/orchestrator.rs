@@ -54,6 +54,8 @@
 //! round one's sources unchanged, the same posture [`commit_or_escalate`]
 //! takes on a vertical judge failure.
 
+use std::time::Instant;
+
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::ChatMessage;
@@ -68,6 +70,10 @@ use crate::websearch::engine::{
 };
 use crate::websearch::fetch::{fetch_pages, FetchedPage};
 use crate::websearch::judge::{deterministic_sufficiency, SufficiencyJudge, SufficiencyVerdict};
+use crate::websearch::stage_timing::{
+    TimingBag, STAGE_CLASSIFIER, STAGE_FETCH, STAGE_JUDGE, STAGE_RANK_ASSEMBLY, STAGE_SERP,
+    STAGE_WRITER_PREPARE,
+};
 use crate::websearch::news::{fetch_news, is_news_intent};
 use crate::websearch::prefilter::{prefilter, PreFilterVerdict};
 use crate::websearch::prepass::{
@@ -201,6 +207,10 @@ pub struct SearchDeps<'a> {
     /// so grounded answers keep the photo. `None` or empty keeps the text-only
     /// path (no multimodal prefill). Never sent to search engines.
     pub latest_images: Option<&'a [String]>,
+    /// Per-stage wall-clock bag for this turn. Callers create one bag per
+    /// search; the orchestrator records stage ms without holding locks across
+    /// awaits and flushes a [`RecorderEvent::SearchTimings`] before return.
+    pub timings: &'a TimingBag,
 }
 
 /// Runs the pipeline for one turn. `chat_system_prompt`, `history`, and
@@ -281,6 +291,14 @@ async fn run_search_inner(
     status: &(dyn Fn(SearchPhase) + Send + Sync),
     force_search: bool,
 ) -> SearchOutcome {
+    // Flush stage timings on every exit path (including cancel and early NoSearch).
+    // Drop runs after the function body returns, so awaits complete first; the bag
+    // never holds its mutex across those awaits (see TimingBag::record).
+    let _timing_flush = TimingFlushGuard {
+        bag: deps.timings,
+        recorder: deps.recorder,
+    };
+
     // Slash `/search` (and any other explicit force): skip ForceNo and go
     // engines-only. Still runs the classifier when possible for a better
     // rewrite, then stamps explicit_search so cache/verticals never win.
@@ -320,13 +338,20 @@ async fn run_search_inner(
     // Stage two: the persona-free classifier decides the ambiguous middle and
     // rewrites the query. A `ForceWeb` verdict still runs it, for the rewrite.
     status(SearchPhase::Deciding);
+    let classifier_start = Instant::now();
     let classified = match deps
         .prepass
         .decide(history, latest_user, deps.latest_images, today, cancel)
         .await
     {
-        Ok(classified) => classified,
-        Err(InferenceError::Cancelled) => return SearchOutcome::Cancelled,
+        Ok(classified) => {
+            deps.timings.record(STAGE_CLASSIFIER, classifier_start);
+            classified
+        }
+        Err(InferenceError::Cancelled) => {
+            deps.timings.record(STAGE_CLASSIFIER, classifier_start);
+            return SearchOutcome::Cancelled;
+        }
         // Classifier infra failure (engine wedged, call timed out). On a
         // ForceWeb turn the deterministic signal already decided: search with
         // the raw message rather than dropping to a stale answer (observed
@@ -334,6 +359,7 @@ async fn run_search_inner(
         // losing the search on a "latest ..." turn is the worst outcome). On an
         // ambiguous turn, fall back to a plain model answer.
         Err(InferenceError::Request(reason)) => {
+            deps.timings.record(STAGE_CLASSIFIER, classifier_start);
             eprintln!("[search] classifier error: {reason}");
             // A deterministic ForceWeb signal, or an explicit `/search`
             // (`force_search`), already committed to searching: fall through to
@@ -462,6 +488,21 @@ async fn run_search_inner(
     }
 }
 
+/// Flushes [`TimingBag`] into the trace recorder when dropped. Placed at the
+/// top of [`run_search_inner`] so every exit path (including early returns and
+/// cancellation) emits one [`RecorderEvent::SearchTimings`].
+struct TimingFlushGuard<'a> {
+    bag: &'a TimingBag,
+    recorder: &'a BoundRecorder,
+}
+
+impl Drop for TimingFlushGuard<'_> {
+    /// Records pipeline total + stage list to the forensic recorder.
+    fn drop(&mut self) {
+        self.bag.flush(self.recorder);
+    }
+}
+
 /// Wire label for a resolved [`SearchDecision`] on [`RecorderEvent::SearchDecided`].
 fn decision_label(decision: SearchDecision) -> &'static str {
     match decision {
@@ -549,14 +590,22 @@ async fn force_explicit_web(
     status: &(dyn Fn(SearchPhase) + Send + Sync),
 ) -> SearchOutcome {
     status(SearchPhase::Deciding);
+    let classifier_start = Instant::now();
     let classified = match deps
         .prepass
         .decide(history, latest_user, deps.latest_images, today, cancel)
         .await
     {
-        Ok(classified) => classified,
-        Err(InferenceError::Cancelled) => return SearchOutcome::Cancelled,
+        Ok(classified) => {
+            deps.timings.record(STAGE_CLASSIFIER, classifier_start);
+            classified
+        }
+        Err(InferenceError::Cancelled) => {
+            deps.timings.record(STAGE_CLASSIFIER, classifier_start);
+            return SearchOutcome::Cancelled;
+        }
         Err(InferenceError::Request(reason)) => {
+            deps.timings.record(STAGE_CLASSIFIER, classifier_start);
             eprintln!("[search] force_search classifier error: {reason} -> raw query");
             PrePassDecision {
                 decision: SearchDecision::Web,
@@ -969,8 +1018,10 @@ async fn run_engine_tier(
     // `Ranked` arm below actually forwards it, since that is the only path a
     // `SearchRetrieved` event gets recorded for this tier.
     let mut engine_stats: Vec<EngineStat> = Vec::new();
+    let serp_start = Instant::now();
     for query in queries {
         if cancel.is_cancelled() {
+            deps.timings.record(STAGE_SERP, serp_start);
             return EngineTierOutcome::Cancelled;
         }
         let (query_hits, query_stats) = web_search(
@@ -991,6 +1042,7 @@ async fn run_engine_tier(
             break;
         }
     }
+    deps.timings.record(STAGE_SERP, serp_start);
     let hits = dedupe_hits(hits);
     if hits.is_empty() {
         // No engine yielded a hit. The reason turns on WHY every engine drew a
@@ -1011,9 +1063,13 @@ async fn run_engine_tier(
     // await against the token (biased, matching `openai::request_openai_json`)
     // drops the in-flight `FuturesUnordered` the instant the token trips, which
     // cancels every still-pending page fetch cleanly.
+    let fetch_start = Instant::now();
     let pages = tokio::select! {
         biased;
-        _ = cancel.cancelled() => return EngineTierOutcome::Cancelled,
+        _ = cancel.cancelled() => {
+            deps.timings.record(STAGE_FETCH, fetch_start);
+            return EngineTierOutcome::Cancelled;
+        }
         pages = fetch_pages(
             deps.transport,
             &hits,
@@ -1023,6 +1079,8 @@ async fn run_engine_tier(
             bypass_cache,
         ) => pages,
     };
+    deps.timings.record(STAGE_FETCH, fetch_start);
+    let rank_start = Instant::now();
     let chunks = select_chunks(&pages, standalone_question, deps.scorer);
     // Freshness-gated recency-prior fusion (see `recency::recency_reorder`):
     // only reorders sources on a turn the freshness signal already flagged, so
@@ -1033,6 +1091,7 @@ async fn run_engine_tier(
         chunks
     };
     let sources = assemble_context(&chunks, num_ctx);
+    deps.timings.record(STAGE_RANK_ASSEMBLY, rank_start);
     if sources.is_empty() {
         // Engines returned hits (this path is past the `hits.is_empty()` guard)
         // but nothing survived fetch, ranking, and budgeting: the web was
@@ -1101,21 +1160,25 @@ async fn commit_or_escalate(
     // judge call rather than adding one: the per-turn LLM-call budget never rises.
     let verdict = match deterministic_sufficiency(tier, &block) {
         Some(verdict) => verdict,
-        None => match deps
-            .judge
-            .judge(standalone_question, std::slice::from_ref(&block), cancel)
-            .await
-        {
-            Ok(verdict) => verdict,
-            Err(InferenceError::Cancelled) => return SearchOutcome::Cancelled,
-            // A judge infra failure fails toward committing (see the judge module
-            // docs): serve the vertical block rather than stall the user or spend
-            // an engine request on a decision the judge could not actually make.
-            Err(InferenceError::Request(reason)) => {
-                eprintln!("[search] judge error: {reason} -> committing {tier} block");
-                SufficiencyVerdict::commit()
+        None => {
+            let judge_start = Instant::now();
+            let result = deps
+                .judge
+                .judge(standalone_question, std::slice::from_ref(&block), cancel)
+                .await;
+            deps.timings.record(STAGE_JUDGE, judge_start);
+            match result {
+                Ok(verdict) => verdict,
+                Err(InferenceError::Cancelled) => return SearchOutcome::Cancelled,
+                // A judge infra failure fails toward committing (see the judge module
+                // docs): serve the vertical block rather than stall the user or spend
+                // an engine request on a decision the judge could not actually make.
+                Err(InferenceError::Request(reason)) => {
+                    eprintln!("[search] judge error: {reason} -> committing {tier} block");
+                    SufficiencyVerdict::commit()
+                }
             }
-        },
+        }
     };
     if verdict.sufficient {
         eprintln!("[search] {tier} sufficient -> committing");
@@ -1330,6 +1393,7 @@ fn grounded_answer(
             },
         );
     }
+    let writer_start = Instant::now();
     let messages = writer_messages(
         chat_system_prompt,
         history,
@@ -1341,6 +1405,7 @@ fn grounded_answer(
         conflict,
         deps.latest_images,
     );
+    deps.timings.record(STAGE_WRITER_PREPARE, writer_start);
     SearchOutcome::Answer { messages, sources }
 }
 
@@ -1552,14 +1617,22 @@ async fn judge_and_requery(
     bypass_cache: bool,
     cancel: &CancellationToken,
 ) -> EngineJudgeOutcome {
+    let judge_start = Instant::now();
     let verdict = match deps
         .judge
         .judge(standalone_question, &sources, cancel)
         .await
     {
-        Ok(verdict) => verdict,
-        Err(InferenceError::Cancelled) => return EngineJudgeOutcome::Cancelled,
+        Ok(verdict) => {
+            deps.timings.record(STAGE_JUDGE, judge_start);
+            verdict
+        }
+        Err(InferenceError::Cancelled) => {
+            deps.timings.record(STAGE_JUDGE, judge_start);
+            return EngineJudgeOutcome::Cancelled;
+        }
         Err(InferenceError::Request(reason)) => {
+            deps.timings.record(STAGE_JUDGE, judge_start);
             eprintln!("[search] engine-tier judge error: {reason} -> committing round-one sources");
             return EngineJudgeOutcome::Sources(sources, Vec::new(), false);
         }
@@ -1872,6 +1945,7 @@ mod tests {
             local_zone: None,
             force_search: false,
             latest_images: None,
+            timings: Box::leak(Box::new(TimingBag::new())),
         }
     }
 
@@ -1907,6 +1981,7 @@ mod tests {
             local_zone: None,
             force_search: false,
             latest_images: None,
+            timings: Box::leak(Box::new(TimingBag::new())),
         }
     }
 
@@ -1938,6 +2013,7 @@ mod tests {
             local_zone: None,
             force_search: false,
             latest_images: None,
+            timings: Box::leak(Box::new(TimingBag::new())),
         }
     }
 
@@ -4465,8 +4541,9 @@ mod tests {
 
     #[tokio::test]
     async fn trace_records_decision_only_on_force_no_turn() {
-        // A greeting is force-skipped: exactly one SearchDecided event with the
-        // "force_no" pre-filter label and an empty route, and no SearchRetrieved.
+        // A greeting is force-skipped: SearchDecided with the "force_no"
+        // pre-filter label and empty route, plus SearchTimings (pipeline only);
+        // no SearchRetrieved.
         let prepass = FakePrePass::returning(Ok(web_decision(vec!["unused"])));
         let transport = FakeHttpTransport::new();
         let (mock, bound) = mock_recorder();
@@ -4484,17 +4561,81 @@ mod tests {
         )
         .await;
         let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
-        assert_eq!(events.len(), 1);
-        assert!(matches!(
-            &events[0],
-            RecorderEvent::SearchDecided {
-                prefilter,
-                decision,
-                force,
-                route,
-                ..
-            } if prefilter == "force_no" && decision == "no" && !*force && route.is_empty()
-        ));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(
+                    e,
+                    RecorderEvent::SearchDecided {
+                        prefilter,
+                        decision,
+                        force,
+                        route,
+                        ..
+                    } if prefilter == "force_no" && decision == "no" && !*force && route.is_empty()
+                )),
+            "missing SearchDecided force_no: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, RecorderEvent::SearchTimings { .. })),
+            "missing SearchTimings: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, RecorderEvent::SearchRetrieved { .. })),
+            "ForceNo must not retrieve: {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn trace_records_stage_timings_on_engine_web_answer() {
+        // A full engine path records classifier, serp, fetch, rank_assembly,
+        // writer_prepare, and pipeline on SearchTimings (stderr format covered
+        // by stage_timing unit tests).
+        use crate::websearch::stage_timing::{
+            STAGE_CLASSIFIER, STAGE_FETCH, STAGE_PIPELINE, STAGE_RANK_ASSEMBLY, STAGE_SERP,
+            STAGE_WRITER_PREPARE,
+        };
+        let prepass = FakePrePass::returning(Ok(web_decision(vec!["treaty versailles paris"])));
+        let transport = transport_with_serp_and_page();
+        let (mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let _ = run_search(
+            &deps_with_recorder(&prepass, &transport, &Bm25Scorer, &bound),
+            "sys",
+            &[],
+            "when was the treaty of versailles signed in paris",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        let stages = events
+            .iter()
+            .find_map(|e| match e {
+                RecorderEvent::SearchTimings { stages } => Some(stages.clone()),
+                _ => None,
+            })
+            .expect("SearchTimings event");
+        for name in [
+            STAGE_CLASSIFIER,
+            STAGE_SERP,
+            STAGE_FETCH,
+            STAGE_RANK_ASSEMBLY,
+            STAGE_WRITER_PREPARE,
+            STAGE_PIPELINE,
+        ] {
+            assert!(
+                stages.iter().any(|s| s.stage == name),
+                "missing stage {name} in {stages:?}"
+            );
+        }
     }
 
     #[tokio::test]

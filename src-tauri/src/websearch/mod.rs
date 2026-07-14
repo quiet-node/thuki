@@ -53,6 +53,7 @@ pub mod rank;
 pub mod recency;
 pub mod serp_cache;
 pub mod sports;
+pub mod stage_timing;
 pub mod weather;
 pub mod writer;
 

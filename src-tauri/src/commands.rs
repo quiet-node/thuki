@@ -586,6 +586,9 @@ enum BuiltinSearchResult {
     Grounded {
         messages: Vec<ChatMessage>,
         sources: Vec<crate::websearch::assemble::SourceBlock>,
+        /// Instant the search pipeline started (submit), used to measure
+        /// writer TTFT (submit → first answer token) once streaming begins.
+        search_submit: std::time::Instant,
     },
     /// No search this turn (a `no` decision, an infra failure, or nothing worth
     /// citing): stream the original plain messages.
@@ -937,6 +940,9 @@ async fn run_builtin_search(
     // kickoff times; `None` (unreadable /etc/localtime) degrades to date-only
     // event lines.
     let local_zone = zone_label();
+    // One timing bag per search turn: orchestrator records stage ms and flushes
+    // SearchTimings; writer_ttft is appended on the first answer token below.
+    let timing_bag = crate::websearch::stage_timing::TimingBag::new();
     let deps = crate::websearch::orchestrator::SearchDeps {
         prepass: &prepass,
         judge: &judge,
@@ -960,6 +966,7 @@ async fn run_builtin_search(
         force_search,
         // Vision turns only: classifier + writer keep the photo; engines stay text.
         latest_images,
+        timings: &timing_bag,
     };
     let status = |phase| on_chunk(StreamChunk::SearchStatus { phase });
     let outcome = if force_search {
@@ -997,10 +1004,15 @@ async fn run_builtin_search(
         "search: run_builtin_search resolved outcome={}",
         builtin_search_outcome_label(&outcome)
     );
+    let search_submit = timing_bag.submit_instant();
     match outcome {
         crate::websearch::orchestrator::SearchOutcome::Answer { messages, sources } => {
             on_chunk(StreamChunk::SearchSources(source_metas(&sources)));
-            BuiltinSearchResult::Grounded { messages, sources }
+            BuiltinSearchResult::Grounded {
+                messages,
+                sources,
+                search_submit,
+            }
         }
         // Search wanted but produced nothing: emit a reliable, typed failure
         // signal (independent of the model's prose) so the frontend always shows
@@ -1011,11 +1023,30 @@ async fn run_builtin_search(
             BuiltinSearchResult::Grounded {
                 messages,
                 sources: Vec::new(),
+                search_submit,
             }
         }
         crate::websearch::orchestrator::SearchOutcome::NoSearch => BuiltinSearchResult::Plain,
         crate::websearch::orchestrator::SearchOutcome::Cancelled => BuiltinSearchResult::Cancelled,
     }
+}
+
+/// Records writer TTFT (submit → first answer token) to stderr and the trace.
+/// Pure except for the recorder/stderr side effects; coverage-off thin glue.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn record_writer_ttft(
+    search_submit: std::time::Instant,
+    recorder: &std::sync::Arc<crate::trace::BoundRecorder>,
+) {
+    use crate::websearch::stage_timing::{elapsed_ms, format_timing_line, STAGE_WRITER_TTFT};
+    let ms = elapsed_ms(search_submit);
+    eprintln!("{}", format_timing_line(STAGE_WRITER_TTFT, ms));
+    recorder.record(crate::trace::RecorderEvent::SearchTimings {
+        stages: vec![crate::trace::StageTiming {
+            stage: STAGE_WRITER_TTFT.to_string(),
+            ms,
+        }],
+    });
 }
 
 /// Records one citation audit to the trace + stderr, then returns the audit.
@@ -2409,12 +2440,15 @@ pub async fn ask_model(
                             // Keep the resolved sources (empty on a plain or
                             // unreachable turn) so the streamed answer can be
                             // citation-audited after the stream completes.
-                            let (stream_messages, audit_sources) = match grounded_or_plain {
-                                BuiltinSearchResult::Grounded { messages, sources } => {
-                                    (messages, sources)
-                                }
-                                _ => (messages, Vec::new()),
-                            };
+                            let (stream_messages, audit_sources, search_submit) =
+                                match grounded_or_plain {
+                                    BuiltinSearchResult::Grounded {
+                                        messages,
+                                        sources,
+                                        search_submit,
+                                    } => (messages, sources, Some(search_submit)),
+                                    _ => (messages, Vec::new(), None),
+                                };
                             // Observe whether reasoning streamed this turn so the
                             // runtime backstop can mark a model that reasons even
                             // with reasoning requested OFF (see
@@ -2430,8 +2464,21 @@ pub async fn ask_model(
                             let done_pending =
                                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                             let done_pending_for_pump = std::sync::Arc::clone(&done_pending);
+                            let writer_ttft_recorded =
+                                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                            let writer_ttft_flag = std::sync::Arc::clone(&writer_ttft_recorded);
+                            let recorder_for_ttft = std::sync::Arc::clone(&bound_recorder);
                             let builtin_pump = move |chunk: StreamChunk| {
                                 observe_reasoning_chunk(&chunk, &seen_for_pump);
+                                // First answer token after a search: record writer TTFT.
+                                if let Some(submit) = search_submit {
+                                    if matches!(chunk, StreamChunk::Token(_))
+                                        && !writer_ttft_flag
+                                            .swap(true, std::sync::atomic::Ordering::Relaxed)
+                                    {
+                                        record_writer_ttft(submit, &recorder_for_ttft);
+                                    }
+                                }
                                 if matches!(chunk, StreamChunk::Done) {
                                     done_pending_for_pump
                                         .store(true, std::sync::atomic::Ordering::Relaxed);

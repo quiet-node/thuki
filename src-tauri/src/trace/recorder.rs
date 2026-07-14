@@ -160,6 +160,16 @@ pub struct EngineStat {
     pub hit_count: usize,
 }
 
+/// One finished pipeline stage's wall time, recorded in
+/// [`RecorderEvent::SearchTimings`]. `stage` is a stable snake_case label
+/// (e.g. `classifier`, `serp`, `fetch`, `rank_assembly`, `judge`,
+/// `writer_ttft`, `pipeline`); `ms` is whole milliseconds.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct StageTiming {
+    pub stage: String,
+    pub ms: u64,
+}
+
 /// Forensic trace events emitted by the chat layer, including built-in
 /// websearch.
 ///
@@ -324,6 +334,14 @@ pub enum RecorderEvent {
     /// verdict, a judge failure, or an empty `missing` phrase never
     /// emits this event.
     SearchRequeried { missing: String, requery: String },
+    /// Per-stage wall times for one built-in search turn (classifier, SERP,
+    /// fetch, rank/assembly, judge, writer TTFT, pipeline total, and any
+    /// other stages the orchestrator or stream layer recorded). Emitted once
+    /// when the search pipeline flushes its [`crate::websearch::stage_timing::TimingBag`]
+    /// (and again with `writer_ttft` only if the stream layer records that
+    /// stage after the first answer token). Forensic only; not a typed SLA
+    /// contract. Empty `stages` is valid but unused.
+    SearchTimings { stages: Vec<StageTiming> },
 }
 
 impl RecorderEvent {
@@ -347,7 +365,8 @@ impl RecorderEvent {
             | RecorderEvent::SearchEscalated { .. }
             | RecorderEvent::CitationAudit { .. }
             | RecorderEvent::ConversationEnd { .. }
-            | RecorderEvent::SearchRequeried { .. } => TraceDomain::Chat,
+            | RecorderEvent::SearchRequeried { .. }
+            | RecorderEvent::SearchTimings { .. } => TraceDomain::Chat,
         }
     }
 
@@ -717,6 +736,10 @@ impl Serialize for RecorderEvent {
                 map.serialize_entry("missing", missing)?;
                 map.serialize_entry("requery", requery)?;
             }
+            RecorderEvent::SearchTimings { stages } => {
+                map.serialize_entry("kind", "search_timings")?;
+                map.serialize_entry("stages", stages)?;
+            }
         }
         map.end()
     }
@@ -860,6 +883,12 @@ mod tests {
             RecorderEvent::SearchRequeried {
                 missing: "the treaty terms".into(),
                 requery: "when signed the treaty terms".into(),
+            },
+            RecorderEvent::SearchTimings {
+                stages: vec![StageTiming {
+                    stage: "classifier".into(),
+                    ms: 12,
+                }],
             },
         ];
         for e in cases {
