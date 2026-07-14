@@ -14,11 +14,19 @@
  * model or loading anyway, and clears on its own when a load or download
  * supersedes it.
  *
- * Visual: amber status dot, primary body copy, muted consequence on confirm,
- * SearchTrustNotice-style action row (outlined primary + ghost secondary).
+ * Visual: amber status dot, primary body copy, muted consequence on confirm
+ * (height+opacity expand matching ask-bar strips), SearchTrustNotice-style
+ * action row (outlined primary + ghost secondary).
  */
 import { useState } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { INSUFFICIENT_MEMORY_CONSEQUENCE } from './ErrorCard';
+
+/**
+ * Shared ease for height expands elsewhere in the ask bar (command suggestion).
+ * Soft overshoot-free curve for premium feel without bounce.
+ */
+const EXPAND_EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
 
 /** Warning amber, matching `ErrorCard.tsx`'s `barColors.InsufficientMemory`. */
 const AMBER = '#f59e0b';
@@ -85,6 +93,7 @@ export function AutoPrimeSkippedStrip({
   // means the strip resets to stage 1 whenever the host remounts it (a fresh
   // skip event), so a stale confirm never carries over to a new warning.
   const [confirming, setConfirming] = useState(false);
+  const reduceMotion = useReducedMotion();
 
   // Keep fit line always; ceilingFraction is this branch's 80% headroom copy.
   const fitMessage = `${modelName} may not fit in memory (~${formatGb(requiredBytes)} GB needed, ~${formatGb(availableBytes)} GB available, over the ${Math.round(ceilingFraction * 100)}% safe limit)`;
@@ -135,14 +144,35 @@ export function AutoPrimeSkippedStrip({
           <p className="text-xs text-text-primary leading-relaxed">
             {fitMessage}
           </p>
-          {confirming ? (
-            <p
-              data-testid="auto-prime-skipped-consequence"
-              className="mt-1 text-xs text-white/45 leading-relaxed"
-            >
-              {INSUFFICIENT_MEMORY_CONSEQUENCE}
-            </p>
-          ) : null}
+          <AnimatePresence initial={false}>
+            {confirming ? (
+              <motion.div
+                key="auto-prime-consequence"
+                initial={
+                  reduceMotion ? false : { height: 0, opacity: 0, y: -4 }
+                }
+                animate={{ height: 'auto', opacity: 1, y: 0 }}
+                exit={
+                  reduceMotion
+                    ? undefined
+                    : { height: 0, opacity: 0, y: -2 }
+                }
+                transition={{
+                  height: { duration: 0.24, ease: EXPAND_EASE },
+                  opacity: { duration: 0.2, ease: 'easeOut' },
+                  y: { duration: 0.22, ease: EXPAND_EASE },
+                }}
+                style={{ overflow: 'hidden' }}
+              >
+                <p
+                  data-testid="auto-prime-skipped-consequence"
+                  className="mt-1 text-xs text-white/45 leading-relaxed"
+                >
+                  {INSUFFICIENT_MEMORY_CONSEQUENCE}
+                </p>
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
         </div>
       </div>
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
