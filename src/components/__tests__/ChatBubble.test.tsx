@@ -12,10 +12,6 @@ import {
   SEARCH_NO_RESULTS_NOTE_BODY,
   SEARCH_UNREACHABLE_NOTE_BODY,
 } from '../../utils/honestFailureNote';
-import {
-  ConfigProviderForTest,
-  DEFAULT_CONFIG,
-} from '../../contexts/ConfigContext';
 beforeEach(() => {
   invoke.mockClear();
   mockReducedMotion.current = false;
@@ -1377,7 +1373,7 @@ describe('ChatBubble', () => {
       );
     });
 
-    it('shows first-use search trust notice above live search progress', () => {
+    it('never mounts search trust notice on the bubble (ask bar owns it)', () => {
       render(
         <ChatBubble
           role="assistant"
@@ -1387,10 +1383,11 @@ describe('ChatBubble', () => {
           searchStage={{ kind: 'searching' }}
         />,
       );
-      expect(screen.getByTestId('search-trust-notice')).toBeInTheDocument();
+      expect(screen.queryByTestId('search-trust-notice')).toBeNull();
+      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
     });
 
-    it('keeps search trust notice after search finishes until Got it', () => {
+    it('still omits search trust notice after search finishes with sources', () => {
       render(
         <ChatBubble
           role="assistant"
@@ -1405,95 +1402,8 @@ describe('ChatBubble', () => {
           ]}
         />,
       );
-      expect(screen.getByTestId('search-trust-notice')).toBeInTheDocument();
+      expect(screen.queryByTestId('search-trust-notice')).toBeNull();
       expect(screen.queryByTestId('search-progress-block')).toBeNull();
-    });
-
-    it('hides search trust notice when searchNoticeAcknowledged is true', () => {
-      render(
-        <ConfigProviderForTest
-          value={{
-            ...DEFAULT_CONFIG,
-            behavior: {
-              ...DEFAULT_CONFIG.behavior,
-              autoSearch: true,
-              searchNoticeAcknowledged: true,
-            },
-          }}
-        >
-          <ChatBubble
-            role="assistant"
-            content=""
-            index={0}
-            isSearching
-            searchStage={{ kind: 'searching' }}
-          />
-        </ConfigProviderForTest>,
-      );
-      expect(screen.queryByTestId('search-trust-notice')).toBeNull();
-      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
-    });
-
-    it('hides search trust notice when autoSearch is false', () => {
-      render(
-        <ConfigProviderForTest
-          value={{
-            ...DEFAULT_CONFIG,
-            behavior: {
-              ...DEFAULT_CONFIG.behavior,
-              autoSearch: false,
-              searchNoticeAcknowledged: false,
-            },
-          }}
-        >
-          <ChatBubble
-            role="assistant"
-            content=""
-            index={0}
-            isSearching
-            searchStage={{ kind: 'searching' }}
-          />
-        </ConfigProviderForTest>,
-      );
-      expect(screen.queryByTestId('search-trust-notice')).toBeNull();
-      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
-    });
-
-    it('Got it persists search_notice_acknowledged and hides the notice', () => {
-      render(
-        <ChatBubble
-          role="assistant"
-          content=""
-          index={0}
-          isSearching
-          searchStage={{ kind: 'searching' }}
-        />,
-      );
-      fireEvent.click(screen.getByTestId('search-trust-notice-got-it'));
-      expect(invoke).toHaveBeenCalledWith('set_config_field', {
-        section: 'behavior',
-        key: 'search_notice_acknowledged',
-        value: true,
-      });
-      expect(screen.queryByTestId('search-trust-notice')).toBeNull();
-    });
-
-    it('Turn off in Settings opens Behavior deep-link without flipping auto_search', () => {
-      render(
-        <ChatBubble
-          role="assistant"
-          content=""
-          index={0}
-          isSearching
-          searchStage={{ kind: 'searching' }}
-        />,
-      );
-      fireEvent.click(screen.getByTestId('search-trust-notice-settings'));
-      expect(invoke).toHaveBeenCalledWith('open_settings_to_behavior');
-      expect(invoke).not.toHaveBeenCalledWith(
-        'set_config_field',
-        expect.objectContaining({ key: 'auto_search' }),
-      );
     });
 
     it('renders source attribution links in the Sources footer', () => {

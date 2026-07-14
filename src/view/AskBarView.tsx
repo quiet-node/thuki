@@ -1,6 +1,7 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { formatQuotedText } from '../utils/formatQuote';
 import { LexicalAskBarInput } from './askbar/LexicalAskBarInput';
 import type { AskBarKeyHandlers } from './askbar/LexicalAskBarInput';
@@ -15,6 +16,7 @@ import type { DownloadStripStatus } from '../components/DownloadStatusStrip';
 import { AutoPrimeSkippedStrip } from '../components/AutoPrimeSkippedStrip';
 import type { AutoPrimeSkippedStripProps } from '../components/AutoPrimeSkippedStrip';
 import type { CapabilityMismatchMessage } from '../components/CapabilityMismatchStrip';
+import { SearchTrustNotice } from '../components/SearchTrustNotice';
 import type { AttachedImage } from '../types/image';
 import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
 import { COMMANDS } from '../config/commands';
@@ -250,6 +252,10 @@ interface AskBarViewProps {
 /**
  * Renders the persistent bottom input bar of the application.
  *
+ * Also hosts the first-use Auto search trust notice (elevated panel above the
+ * logo/input row) when `behavior.auto_search` is on and the notice has not
+ * been acknowledged. Notice is non-blocking: compose and send stay enabled.
+ *
  * Window dragging is handled by the application root container via event
  * bubbling - mousedown events from this component propagate up naturally.
  */
@@ -280,8 +286,44 @@ export function AskBarView({
   maxImages,
   onFirstKeystroke,
 }: AskBarViewProps) {
-  /** Quote display limits resolved from the managed AppConfig. */
-  const quote = useConfig().quote;
+  /** Quote limits + behavior flags from managed AppConfig. */
+  const { quote, behavior } = useConfig();
+
+  /**
+   * Local hide after Got it so the card drops before config reload lands.
+   * Session-only; next mount re-reads `searchNoticeAcknowledged` from config.
+   */
+  const [noticeDismissedLocally, setNoticeDismissedLocally] = useState(false);
+
+  /**
+   * First-use Auto search notice: when Auto search is on and the user has not
+   * acknowledged yet (and not locally dismissed this session). Shown as soon
+   * as the ask bar mounts, not gated on a search turn.
+   */
+  const showSearchTrustNotice =
+    behavior.autoSearch &&
+    !behavior.searchNoticeAcknowledged &&
+    !noticeDismissedLocally;
+
+  /**
+   * Persist acknowledgement and hide the notice immediately.
+   */
+  const acknowledgeSearchNotice = useCallback(() => {
+    setNoticeDismissedLocally(true);
+    void invoke('set_config_field', {
+      section: 'behavior',
+      key: 'search_notice_acknowledged',
+      value: true,
+    });
+  }, []);
+
+  /**
+   * Open Settings → Behavior (Auto search highlighted). Does not flip
+   * auto_search; user must toggle there deliberately.
+   */
+  const openSearchSettings = useCallback(() => {
+    void invoke('open_settings_to_behavior');
+  }, []);
 
   /** True when the UI should be locked - either generating or waiting for images. */
   const isBusy = isGenerating || isSubmitPending;
@@ -574,6 +616,14 @@ export function AskBarView({
       ) : null}
       {!isChatMode && autoPrimeSkipped ? (
         <AutoPrimeSkippedStrip {...autoPrimeSkipped} />
+      ) : null}
+      {showSearchTrustNotice ? (
+        <div className="px-3 pt-2 pb-0">
+          <SearchTrustNotice
+            onAcknowledge={acknowledgeSearchNotice}
+            onOpenSettings={openSearchSettings}
+          />
+        </div>
       ) : null}
       {/* Command suggestion renders above the input row in the normal DOM
           flow. Being inside the morphing container means the ResizeObserver

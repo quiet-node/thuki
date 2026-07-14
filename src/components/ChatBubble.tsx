@@ -13,7 +13,6 @@ import { COMMANDS, SCREEN_CAPTURE_PLACEHOLDER } from '../config/commands';
 import type { EngineErrorKind, SearchFailReason } from '../hooks/useModel';
 import type { SearchResultPreview, SearchStage } from '../types/search';
 import { SearchProgressBlock } from './SearchProgressBlock';
-import { SearchTrustNotice } from './SearchTrustNotice';
 import { SourceAttribution } from './SourceAttribution';
 import { avatarColor, domainOf } from '../utils/domainAvatar';
 import { cleanForRender } from '../utils/sanitizeAssistantContent';
@@ -271,10 +270,8 @@ export function ChatBubble({
 }: ChatBubbleProps) {
   const isUser = role === 'user';
   const [sourcesOpen, setSourcesOpen] = useState(false);
-  /** Local hide after Got it so the card drops before config reload lands. */
-  const [noticeDismissedLocally, setNoticeDismissedLocally] = useState(false);
   const reduceMotion = useReducedMotion();
-  const { quote, behavior } = useConfig();
+  const { quote } = useConfig();
   // Render-time defense for legacy assistant content that may carry
   // special turn-boundary tokens leaked by older Ollama versions or
   // mis-tuned models. Backend now strips these on write, so the scrub is
@@ -305,32 +302,6 @@ export function ChatBubble({
    */
   const showLiveSearch =
     isSearching && !isVerifyingSources && !handedOffFromSearch;
-
-  /**
-   * First-use search trust notice: once a search-related assistant turn is
-   * on screen (live progress and/or sources), stay until Got it. Never hide
-   * when the stream finishes. Never gates compose.
-   */
-  const hasSearchActivity =
-    isSearching || Boolean(searchStage) || hasSearchSources;
-  const showSearchTrustNotice =
-    hasSearchActivity &&
-    behavior.autoSearch &&
-    !behavior.searchNoticeAcknowledged &&
-    !noticeDismissedLocally;
-
-  const acknowledgeSearchNotice = useCallback(() => {
-    setNoticeDismissedLocally(true);
-    void invoke('set_config_field', {
-      section: 'behavior',
-      key: 'search_notice_acknowledged',
-      value: true,
-    });
-  }, []);
-
-  const openSearchSettings = useCallback(() => {
-    void invoke('open_settings_to_behavior');
-  }, []);
 
   /**
    * Exit-retention phase. `exiting` holds until outer fade finishes
@@ -611,12 +582,6 @@ export function ChatBubble({
           onClick={onAnswerClick}
         >
           <div className="text-sm leading-relaxed select-text py-1">
-            {showSearchTrustNotice ? (
-              <SearchTrustNotice
-                onAcknowledge={acknowledgeSearchNotice}
-                onOpenSettings={openSearchSettings}
-              />
-            ) : null}
             <AnimatePresence
               initial={false}
               onExitComplete={onSearchExitComplete}

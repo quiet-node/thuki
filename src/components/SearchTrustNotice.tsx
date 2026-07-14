@@ -1,6 +1,7 @@
 /**
- * First-use, non-blocking card for Auto search (v0.16.0). Stays until Got it
- * (or auto_search is off); does not dismiss when the answer stream finishes.
+ * First-use, non-blocking card for Auto search (v0.16.0). Mounted on the ask
+ * bar above the logo/input row when Auto search is on and the notice is not
+ * acknowledged. Stays until Got it (or auto_search is off). Never gates compose.
  *
  * Visual: elevated warm panel (surface-elevated + warm border, soft shadow).
  * No version kicker; body still mentions v0.16.0 in copy.
