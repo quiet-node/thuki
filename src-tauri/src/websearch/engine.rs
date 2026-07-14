@@ -41,6 +41,9 @@ use scraper::{Html, Selector};
 use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
 use crate::trace::EngineStat;
 use crate::websearch::credibility::{classify_domain, DomainClass};
+use crate::websearch::lang::{
+    accept_language, ddg_region, detect_request_lang, mojeek_language_bias,
+};
 use crate::websearch::serp_cache::WebCache;
 
 /// One search-engine result row.
@@ -607,19 +610,27 @@ fn drop_incredible(list: Vec<SearchHit>) -> Vec<SearchHit> {
 /// via [`crate::config::defaults::DDG_FRESHNESS_DF_VALUE`], set both as a `df`
 /// form field and as a `df` cookie: the HTML endpoint honours either placement,
 /// so both are set for reliability.
+///
+/// The query's language ([`detect_request_lang`]) drives BOTH the `kl` region
+/// and the `Accept-Language` header, and it takes both because `kl` selects a
+/// region, not a language: DuckDuckGo's HTML endpoint has no language selector,
+/// so a fixed English header would fight a non-English region and keep the
+/// results English. An unresolved language sends `wt-wt` (worldwide) rather than
+/// the `us-en` that was previously forced onto every query.
 pub(crate) fn ddg_html_request(query: &str, freshness: bool) -> HttpRequest {
+    let lang = detect_request_lang(query);
     let mut headers = vec![
         ("User-Agent".to_string(), BROWSER_USER_AGENT.to_string()),
         (
             "Accept".to_string(),
             "text/html,application/xhtml+xml".to_string(),
         ),
-        ("Accept-Language".to_string(), "en-US,en;q=0.9".to_string()),
+        ("Accept-Language".to_string(), accept_language(lang)),
         ("Referer".to_string(), "https://duckduckgo.com/".to_string()),
     ];
     let mut form = vec![
         ("q".to_string(), query.to_string()),
-        ("kl".to_string(), "us-en".to_string()),
+        ("kl".to_string(), ddg_region(lang).to_string()),
         ("b".to_string(), String::new()),
     ];
     if freshness {
@@ -651,10 +662,22 @@ pub(crate) fn ddg_html_request(query: &str, freshness: bool) -> HttpRequest {
 /// `df=w` filter (see [`ddg_html_request`]) and Mojeek always searches the
 /// plain query, keeping it in the fusion instead of sending it a query shape
 /// it does not support.
+///
+/// The query's language ([`detect_request_lang`]) is applied through Mojeek's
+/// documented `lb` (language) and `lbb` (bias strength) parameters, plus the
+/// matching `Accept-Language`. An English or unresolved query sends neither
+/// parameter: English is Mojeek's own default, so restating it would only change
+/// a request shape that already works.
 pub(crate) fn mojeek_request(query: &str, _freshness: bool) -> HttpRequest {
+    let lang = detect_request_lang(query);
     // MOJEEK_ENDPOINT is a compile-time-valid absolute URL.
     let mut url = url::Url::parse(MOJEEK_ENDPOINT).expect("static endpoint");
     url.query_pairs_mut().append_pair("q", query);
+    if let Some((lb, lbb)) = mojeek_language_bias(lang) {
+        url.query_pairs_mut()
+            .append_pair("lb", lb)
+            .append_pair("lbb", lbb);
+    }
     HttpRequest {
         method: HttpMethod::Get,
         url: url.to_string(),
@@ -664,7 +687,7 @@ pub(crate) fn mojeek_request(query: &str, _freshness: bool) -> HttpRequest {
                 "Accept".to_string(),
                 "text/html,application/xhtml+xml".to_string(),
             ),
-            ("Accept-Language".to_string(), "en-US,en;q=0.9".to_string()),
+            ("Accept-Language".to_string(), accept_language(lang)),
         ],
         form: Vec::new(),
     }
@@ -1195,6 +1218,40 @@ mod tests {
         assert!(req.headers.iter().any(|(k, v)| {
             k == "User-Agent" && v == BROWSER_USER_AGENT && !v.starts_with("Thuki/")
         }));
+    }
+
+    // ── language parity ─────────────────────────────────────────────────────
+
+    #[test]
+    fn ddg_request_carries_the_region_and_header_of_the_query_language() {
+        // A script-detectable query, so the assertion does not depend on the
+        // machine's locale. Vietnamese needs BOTH: `vn-en` is a region, and
+        // DuckDuckGo's HTML endpoint has no language selector, so only the
+        // header can ask for Vietnamese-language results.
+        let req = ddg_html_request("thời tiết Hà Nội hôm nay", false);
+        assert!(req.form.iter().any(|(k, v)| k == "kl" && v == "vn-en"));
+        assert!(req
+            .headers
+            .iter()
+            .any(|(k, v)| k == "Accept-Language" && v == "vi,en;q=0.5"));
+
+        let req = ddg_html_request("東京の天気は", false);
+        assert!(req.form.iter().any(|(k, v)| k == "kl" && v == "jp-jp"));
+        assert!(req
+            .headers
+            .iter()
+            .any(|(k, v)| k == "Accept-Language" && v == "ja,en;q=0.5"));
+    }
+
+    #[test]
+    fn mojeek_request_carries_the_language_bias_of_the_query_language() {
+        let req = mojeek_request("thời tiết Hà Nội hôm nay", false);
+        assert!(req.url.contains("lb=vi"));
+        assert!(req.url.contains("lbb=100"));
+        assert!(req
+            .headers
+            .iter()
+            .any(|(k, v)| k == "Accept-Language" && v == "vi,en;q=0.5"));
     }
 
     // ── freshness operators ──────────────────────────────────────────────────

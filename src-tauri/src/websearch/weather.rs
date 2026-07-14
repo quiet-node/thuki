@@ -18,6 +18,7 @@
 
 use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
 use crate::websearch::assemble::SourceBlock;
+use crate::websearch::lang::{detect_request_lang, geocode_language};
 use crate::websearch::{OPEN_METEO_ATTRIBUTION, THUKI_USER_AGENT};
 
 /// Words that signal a weather question. Matched on whole tokens of the
@@ -147,13 +148,21 @@ pub(crate) fn weather_location(question: &str) -> Option<String> {
 }
 
 /// Builds the geocoding GET request resolving `location` to coordinates.
+///
+/// Open-Meteo's `language` parameter localises the place names it returns, and
+/// it follows the language of `location` itself ([`detect_request_lang`], which
+/// also consults the user's locale). Resolved from the location text rather than
+/// the whole question because this request is shared with the clock vertical
+/// (`crate::websearch::clock`), which has a place name and no question. An
+/// English or unresolved language sends `language=en`, exactly as this request
+/// always did.
 pub(crate) fn geocode_request(location: &str) -> HttpRequest {
     // GEOCODE_ENDPOINT is a compile-time-valid absolute URL.
     let mut url = url::Url::parse(GEOCODE_ENDPOINT).expect("static endpoint");
     url.query_pairs_mut()
         .append_pair("name", location)
         .append_pair("count", "1")
-        .append_pair("language", "en")
+        .append_pair("language", geocode_language(detect_request_lang(location)))
         .append_pair("format", "json");
     HttpRequest {
         method: HttpMethod::Get,
@@ -378,10 +387,21 @@ mod tests {
         assert!(req.url.starts_with(GEOCODE_ENDPOINT));
         assert!(req.url.contains("name=New+York"));
         assert!(req.url.contains("count=1"));
+        assert!(req.url.contains("language="));
         assert!(req
             .headers
             .iter()
             .any(|(k, v)| k == "User-Agent" && v == THUKI_USER_AGENT));
+    }
+
+    #[test]
+    fn geocode_request_localises_place_names_to_the_query_language() {
+        // A script-detectable location, so the assertion is independent of the
+        // machine's locale. Open-Meteo returns its place names in this language.
+        let req = geocode_request("Hà Nội");
+        assert!(req.url.contains("language=vi"), "{}", req.url);
+        let req = geocode_request("北京");
+        assert!(req.url.contains("language=zh"), "{}", req.url);
     }
 
     #[test]

@@ -1038,6 +1038,79 @@ pub const DDG_FRESHNESS_DF_VALUE: &str = "w";
 /// Not user-tunable: a fixed protocol convention of an external service.
 pub const NEWS_FRESHNESS_OPERATOR: &str = "when:7d";
 
+// ─── Web-search language parity ──────────────────────────────────────────────
+
+/// The language every search channel falls back to when a query's language is
+/// neither detectable from its script nor readable from the user's locale, and
+/// the language whose request shapes are the compiled-in default everywhere.
+///
+/// Not user-tunable: it is the anchor of the allowlist in
+/// `crate::websearch::lang`, and a value outside that allowlist would have no
+/// verified request shape on any channel.
+pub const SEARCH_LANG_DEFAULT: &str = "en";
+
+/// Minimum share of a query's alphabetic characters that must belong to one
+/// script before that script decides the query's language (Han, Kana, Hangul,
+/// Thai, Arabic, Hebrew, Greek).
+///
+/// A presence check would be wrong: "what does 中 mean" is an English question
+/// that happens to quote one Han character, and a single character must never
+/// flip the whole request to Chinese. At `0.30` that query scores `0.08` and
+/// stays English, while a genuinely mixed query ("iPhone 16 レビュー", `0.40`)
+/// still resolves to its own language.
+///
+/// Not user-tunable: a defense-in-depth bound on how loudly one stray character
+/// may speak for a whole query, not a quality knob.
+pub const SEARCH_LANG_SCRIPT_RATIO_MIN: f64 = 0.30;
+
+/// Minimum share of a query's whitespace tokens that must contain a
+/// Vietnamese-distinctive character (see
+/// `crate::websearch::script::is_vietnamese_marker`) before the query resolves
+/// to Vietnamese.
+///
+/// Vietnamese is Latin script, so it has no script signal, only a diacritic
+/// one, and the same diacritics ride into English on loanwords. The threshold
+/// is set above the loanword case: "what does phở mean" scores `0.25` (one
+/// token of four) and must stay English, while real Vietnamese queries carrying
+/// two or more marked tokens ("thời tiết Hà Nội hôm nay", `0.50`) clear it. A
+/// Vietnamese query below the bar is not lost, it falls through to the user's
+/// locale, which is the correct signal for a Vietnamese-locale user.
+///
+/// Not user-tunable: same defense-in-depth rationale as
+/// [`SEARCH_LANG_SCRIPT_RATIO_MIN`].
+pub const SEARCH_LANG_VI_TOKEN_RATIO_MIN: f64 = 0.30;
+
+/// DuckDuckGo `kl` (region) value used when the query's language does not
+/// resolve, or resolves to [`SEARCH_LANG_DEFAULT`]. `wt-wt` is DuckDuckGo's own
+/// "worldwide, no region bias" code: strictly better than the `us-en` this
+/// replaced, which forced United States results onto every unresolved query.
+///
+/// Not user-tunable: a fixed protocol convention of an external service.
+pub const DDG_DEFAULT_REGION: &str = "wt-wt";
+
+/// `Accept-Language` header sent when the query resolves to
+/// [`SEARCH_LANG_DEFAULT`]. DuckDuckGo's `kl` selects a REGION, not a language,
+/// and its HTML endpoint exposes no language selector, so this header is the
+/// only language lever the engine tier has and it must follow the resolved
+/// language (see `crate::websearch::lang::accept_language`).
+///
+/// Not user-tunable: a fixed protocol convention of an external service.
+pub const SEARCH_DEFAULT_ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
+
+/// Suffix appended to a non-English `Accept-Language` header, so a page with no
+/// edition in the resolved language still ranks its English edition ahead of an
+/// arbitrary third language rather than being excluded outright.
+///
+/// Not user-tunable: a fixed protocol convention of an external service.
+pub const SEARCH_ACCEPT_LANGUAGE_FALLBACK: &str = ",en;q=0.5";
+
+/// Mojeek `lbb` (language bias boost) percentage sent alongside `lb` on a
+/// non-English query. `100` is the documented maximum: full weight on the
+/// requested language.
+///
+/// Not user-tunable: a fixed protocol convention of an external service.
+pub const MOJEEK_LANGUAGE_BIAS_BOOST: &str = "100";
+
 /// How long a search engine is skipped after it returns a bot challenge or
 /// rate-limit response (seconds), keyed per engine. Re-hammering a blocked
 /// engine wastes a request per query, adds latency, and feeds the very volume

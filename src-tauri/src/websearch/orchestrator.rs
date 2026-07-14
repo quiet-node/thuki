@@ -3661,10 +3661,14 @@ mod tests {
             queries: vec!["photosynthesis".into()],
             explicit_search: false,
         }));
+        // The wiki vertical resolves its language edition from the question, so
+        // the canned URLs are keyed by that same resolution.
+        let lang = crate::websearch::lang::detect_request_lang("what is photosynthesis");
         let search_url =
-            crate::websearch::encyclopedia::search_request("what is photosynthesis").url;
+            crate::websearch::encyclopedia::search_request("what is photosynthesis", lang).url;
         let search_body = r#"{"query":{"search":[{"title":"Photosynthesis"}]}}"#;
-        let summary_url = crate::websearch::encyclopedia::summary_request("Photosynthesis").url;
+        let summary_url =
+            crate::websearch::encyclopedia::summary_request("Photosynthesis", lang).url;
         let summary_body = r#"{"type":"standard","title":"Photosynthesis","extract":"Photosynthesis is a system of biological processes.","content_urls":{"desktop":{"page":"https://en.wikipedia.org/wiki/Photosynthesis"}}}"#;
         let transport = FakeHttpTransport::new()
             .with_response(

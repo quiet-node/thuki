@@ -19,6 +19,11 @@
 //!   engine SERP lists and extracted page bodies, so a repeat scrape is served
 //!   from memory instead of re-hitting a keyless engine (cuts latency and the
 //!   engines' volume-triggered rate limits).
+//! - [`lang`] — the turn's query language, resolved from its script and the
+//!   user's locale, and the per-channel request shapes (DuckDuckGo region and
+//!   `Accept-Language`, Mojeek language bias, Google News locale triple,
+//!   Wikipedia subdomain, Open-Meteo geocoding language) it selects, behind a
+//!   static allowlist so no runtime string can reach a URL or a hostname.
 //! - [`engine`] — keyless search-engine scraping with rotation.
 //! - [`credibility`] — static, compiled-in domain-credibility list (drop /
 //!   penalize / boost) consulted by the engine tier's rank fusion.
@@ -45,6 +50,7 @@ pub mod encyclopedia;
 pub mod engine;
 pub mod fetch;
 pub mod judge;
+pub mod lang;
 pub mod news;
 pub mod orchestrator;
 pub mod prefilter;

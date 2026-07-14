@@ -21,6 +21,7 @@
 
 use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
 use crate::websearch::assemble::SourceBlock;
+use crate::websearch::lang::{detect_request_lang, news_locale};
 use crate::websearch::THUKI_USER_AGENT;
 
 /// Words that signal a current-events question. Matched on whole tokens of the
@@ -76,6 +77,14 @@ pub(crate) fn is_news_intent(question: &str) -> bool {
 /// [`crate::config::defaults::NEWS_FRESHNESS_OPERATOR`] is appended to the
 /// query: the feed's default ordering skews stale, and the operator narrows it
 /// to recent coverage.
+///
+/// The feed's locale triple (`hl`, `gl`, `ceid`) follows the query's language
+/// ([`detect_request_lang`]) and is derived from a single allowlist row
+/// ([`news_locale`]), so the three values cannot disagree. That matters more
+/// here than anywhere else: an inconsistent triple does not error and does not
+/// return an empty feed, it silently serves the ENGLISH feed, which would
+/// surface English headlines labelled as the user's language. A language with no
+/// row sends no locale parameters at all.
 pub(crate) fn news_request(query: &str, freshness: bool) -> HttpRequest {
     // NEWS_ENDPOINT is a compile-time-valid absolute URL.
     let mut url = url::Url::parse(NEWS_ENDPOINT).expect("static endpoint");
@@ -87,11 +96,13 @@ pub(crate) fn news_request(query: &str, freshness: bool) -> HttpRequest {
     } else {
         query.to_string()
     };
-    url.query_pairs_mut()
-        .append_pair("q", &q)
-        .append_pair("hl", "en-US")
-        .append_pair("gl", "US")
-        .append_pair("ceid", "US:en");
+    url.query_pairs_mut().append_pair("q", &q);
+    if let Some(locale) = news_locale(detect_request_lang(query)) {
+        url.query_pairs_mut()
+            .append_pair("hl", &locale.hl())
+            .append_pair("gl", locale.gl())
+            .append_pair("ceid", &locale.ceid());
+    }
     HttpRequest {
         method: HttpMethod::Get,
         url: url.to_string(),
@@ -251,6 +262,27 @@ mod tests {
             .headers
             .iter()
             .any(|(k, v)| k == "User-Agent" && v == THUKI_USER_AGENT));
+    }
+
+    #[test]
+    fn news_request_carries_the_locale_triple_of_the_query_language() {
+        // A script-detectable Vietnamese query, so the assertion holds whatever
+        // the machine's locale is. All three parameters come from one row, so
+        // they cannot disagree: a disagreeing triple would silently serve the
+        // ENGLISH feed under a Vietnamese label.
+        let req = news_request("thời tiết Hà Nội hôm nay", false);
+        assert!(req.url.contains("hl=vi-VN"), "{}", req.url);
+        assert!(req.url.contains("gl=VN"), "{}", req.url);
+        assert!(req.url.contains("ceid=VN%3Avi"), "{}", req.url);
+    }
+
+    #[test]
+    fn news_request_on_an_english_query_keeps_the_us_feed() {
+        // The English row is exactly what this request always sent.
+        let locale = news_locale("en").expect("english has a news row");
+        assert_eq!(locale.hl(), "en-US");
+        assert_eq!(locale.gl(), "US");
+        assert_eq!(locale.ceid(), "US:en");
     }
 
     // ── freshness operator ──────────────────────────────────────────────────
