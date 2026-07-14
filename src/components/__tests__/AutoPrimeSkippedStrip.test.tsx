@@ -112,7 +112,7 @@ describe('AutoPrimeSkippedStrip', () => {
     expect(onSwitchModel).toHaveBeenCalledTimes(1);
   });
 
-  it('advances to the consequence stage on the first "Load anyway" click without loading', () => {
+  it('keeps the fit warning and adds muted consequence on "Load anyway" without loading', () => {
     const onLoadAnyway = vi.fn();
     render(
       <AutoPrimeSkippedStrip
@@ -125,13 +125,16 @@ describe('AutoPrimeSkippedStrip', () => {
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
-    // Stage 2: the consequence copy is shown and the load has NOT fired yet.
+    // Fit line stays; consequence appears muted under it; load has NOT fired.
     expect(
-      screen.getByText(INSUFFICIENT_MEMORY_CONSEQUENCE),
+      screen.getByText(
+        'Qwen3.5 9B may not fit in memory (~0.0 GB needed, ~0.0 GB available)',
+      ),
     ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('auto-prime-skipped-consequence'),
+    ).toHaveTextContent(INSUFFICIENT_MEMORY_CONSEQUENCE);
     expect(onLoadAnyway).not.toHaveBeenCalled();
-    // Both actions are still present, with roles swapped: the confirm button
-    // is now labelled "Acknowledge", and stage 1's "Load anyway" is gone.
     expect(
       screen.queryByRole('button', { name: 'Load anyway' }),
     ).not.toBeInTheDocument();

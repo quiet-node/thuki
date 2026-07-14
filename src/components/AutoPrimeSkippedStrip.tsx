@@ -8,15 +8,14 @@
  *
  * Two-stage confirm: stage 1 states the fit warning and offers "Switch model"
  * (primary) or "Load anyway"; clicking "Load anyway" does NOT load yet, it
- * advances to stage 2, which spells out the consequence of forcing an
- * oversized model into memory and swaps the button roles so "Acknowledge"
- * becomes the deliberate, second-click confirmation. Only that stage-2 click
- * force-loads the model past the gate. There is no dismiss affordance: the
- * strip resolves by switching model or loading anyway, and clears on its own
- * when a load or download supersedes it.
+ * advances to stage 2, which keeps the fit warning and adds the consequence
+ * as muted text underneath, with "Acknowledge" as the deliberate second-click
+ * force-load. There is no dismiss affordance: the strip resolves by switching
+ * model or loading anyway, and clears on its own when a load or download
+ * supersedes it.
  *
- * Visual: matches SearchTrustNotice footer actions (outlined primary + ghost
- * secondary, stacked under body copy). No top accent bar.
+ * Visual: amber status dot, primary body copy, muted consequence on confirm,
+ * SearchTrustNotice-style action row (outlined primary + ghost secondary).
  */
 import { useState } from 'react';
 import { INSUFFICIENT_MEMORY_CONSEQUENCE } from './ErrorCard';
@@ -69,9 +68,8 @@ const GHOST_BTN_CLASS =
 
 /**
  * Renders the two-stage ambient memory warning. Stage 1 shows the model name
- * and need-vs-available GB figures; stage 2 (after the first "Load anyway"
- * click) replaces that message with the consequence copy and swaps the button
- * roles so a second, deliberate "Acknowledge" click confirms the force-load.
+ * and need-vs-available GB figures; stage 2 keeps that line and adds the
+ * consequence as muted text, with Acknowledge as the deliberate force-load.
  */
 export function AutoPrimeSkippedStrip({
   modelName,
@@ -88,9 +86,8 @@ export function AutoPrimeSkippedStrip({
   // skip event), so a stale confirm never carries over to a new warning.
   const [confirming, setConfirming] = useState(false);
 
-  const message = confirming
-    ? INSUFFICIENT_MEMORY_CONSEQUENCE
-    : `${modelName} may not fit in memory (~${formatGb(requiredBytes)} GB needed, ~${formatGb(availableBytes)} GB available, over the ${Math.round(ceilingFraction * 100)}% safe limit)`;
+  // Keep fit line always; ceilingFraction is this branch's 80% headroom copy.
+  const fitMessage = `${modelName} may not fit in memory (~${formatGb(requiredBytes)} GB needed, ~${formatGb(availableBytes)} GB available, over the ${Math.round(ceilingFraction * 100)}% safe limit)`;
 
   // Stage 1: Switch model = primary (safe path). Load anyway = ghost.
   // Stage 2: Acknowledge = primary (deliberate force). Switch model = ghost.
@@ -134,9 +131,19 @@ export function AutoPrimeSkippedStrip({
           className="mt-1 shrink-0 w-2 h-2 rounded-full"
           style={{ background: AMBER, boxShadow: `0 0 6px ${AMBER}` }}
         />
-        <p className="min-w-0 flex-1 text-xs text-text-primary leading-relaxed">
-          {message}
-        </p>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs text-text-primary leading-relaxed">
+            {fitMessage}
+          </p>
+          {confirming ? (
+            <p
+              data-testid="auto-prime-skipped-consequence"
+              className="mt-1 text-xs text-white/45 leading-relaxed"
+            >
+              {INSUFFICIENT_MEMORY_CONSEQUENCE}
+            </p>
+          ) : null}
+        </div>
       </div>
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
         <button
