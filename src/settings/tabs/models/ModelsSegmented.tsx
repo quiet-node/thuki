@@ -11,7 +11,6 @@
 
 import type { ReactNode } from 'react';
 
-import { PointingLabel } from '../../../components/PointingWiggle';
 import { blurOnProgrammaticFocus } from '../../../utils/blurOnProgrammaticFocus';
 import styles from '../../../styles/settings.module.css';
 
@@ -55,25 +54,9 @@ const VIEWS: ReadonlyArray<{
 interface ModelsSegmentedProps {
   value: ModelsSubview;
   onChange: (next: ModelsSubview) => void;
-  /**
-   * When set, plays {@link PointingLabel} under that segment (Settings
-   * deep-link UI only; does not change routing).
-   */
-  highlightId?: ModelsSubview | null;
 }
 
-/**
- * Models Library / Discover / Providers segmented control.
- *
- * @param value Active sub-view.
- * @param onChange User selects a segment.
- * @param highlightId Optional deep-link wiggle target.
- */
-export function ModelsSegmented({
-  value,
-  onChange,
-  highlightId = null,
-}: ModelsSegmentedProps) {
+export function ModelsSegmented({ value, onChange }: ModelsSegmentedProps) {
   return (
     <div className={styles.seg} role="tablist" aria-label="Model views">
       {VIEWS.map((view) => {
@@ -102,14 +85,7 @@ export function ModelsSegmented({
             }}
           >
             {view.icon}
-            <span className={styles.segItemLabel}>
-              <PointingLabel
-                active={highlightId === view.id}
-                testId={`models-wiggle-${view.id}`}
-              >
-                {view.label}
-              </PointingLabel>
-            </span>
+            <span className={styles.segItemLabel}>{view.label}</span>
           </button>
         );
       })}
