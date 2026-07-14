@@ -58,4 +58,4 @@ The first time Auto search runs, Thuki shows a short notice in chat. Tapping **G
 
 ## Hosting note
 
-This file is the copy draft for a public page (for example `https://thuki.app/search`). Placement (marketing site vs app docs) is decided separately; the in-app “How search works” action should open that final URL once live.
+This file is the copy draft for a future **blog post** on thuki.app. Title and slug are TBD. Do not invent a product path such as `/search`. When the post is live, set `SEARCH_DISCLOSURE_URL` in `src/components/SearchTrustNotice.tsx` to the final blog URL; the notice will show **How search works** and open that link. Until then the button stays hidden.

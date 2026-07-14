@@ -6,8 +6,12 @@
 
 import { invoke } from '@tauri-apps/api/core';
 
-/** Public disclosure page for how Thuki search works. */
-export const SEARCH_DISCLOSURE_URL = 'https://thuki.app/search';
+/**
+ * Public blog post URL for how Thuki search works.
+ * Null until the post title/slug are chosen and the page is live.
+ * When set, the notice shows "How search works" and opens this URL.
+ */
+export const SEARCH_DISCLOSURE_URL: string | null = null;
 
 export const SEARCH_TRUST_NOTICE_TITLE =
   'Thuki searches the web for current info';
@@ -60,16 +64,18 @@ export function SearchTrustNotice({
         >
           Turn off in Settings
         </button>
-        <button
-          type="button"
-          data-testid="search-trust-notice-how"
-          onClick={() =>
-            void invoke('open_url', { url: SEARCH_DISCLOSURE_URL })
-          }
-          className="rounded-md px-2.5 py-1 text-xs font-medium text-white/55 hover:text-white/80 transition-colors"
-        >
-          How search works
-        </button>
+        {SEARCH_DISCLOSURE_URL ? (
+          <button
+            type="button"
+            data-testid="search-trust-notice-how"
+            onClick={() =>
+              void invoke('open_url', { url: SEARCH_DISCLOSURE_URL })
+            }
+            className="rounded-md px-2.5 py-1 text-xs font-medium text-white/55 hover:text-white/80 transition-colors"
+          >
+            How search works
+          </button>
+        ) : null}
       </div>
     </div>
   );

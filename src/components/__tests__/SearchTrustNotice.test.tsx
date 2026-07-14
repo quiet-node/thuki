@@ -2,7 +2,6 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import {
   SearchTrustNotice,
-  SEARCH_DISCLOSURE_URL,
   SEARCH_TRUST_NOTICE_BODY,
   SEARCH_TRUST_NOTICE_TITLE,
 } from '../SearchTrustNotice';
@@ -53,13 +52,11 @@ describe('SearchTrustNotice', () => {
     );
   });
 
-  it('How search works opens disclosure URL via open_url', () => {
+  it('hides How search works until a blog disclosure URL is configured', () => {
     render(
       <SearchTrustNotice onAcknowledge={() => {}} onOpenSettings={() => {}} />,
     );
-    fireEvent.click(screen.getByTestId('search-trust-notice-how'));
-    expect(invoke).toHaveBeenCalledWith('open_url', {
-      url: SEARCH_DISCLOSURE_URL,
-    });
+    expect(screen.queryByTestId('search-trust-notice-how')).toBeNull();
+    expect(invoke).not.toHaveBeenCalled();
   });
 });
