@@ -13,6 +13,8 @@ import { COMMANDS, SCREEN_CAPTURE_PLACEHOLDER } from '../config/commands';
 import type { EngineErrorKind, SearchFailReason } from '../hooks/useModel';
 import type { SearchResultPreview, SearchStage } from '../types/search';
 import { SearchProgressBlock } from './SearchProgressBlock';
+import { SearchTrustNotice } from './SearchTrustNotice';
+import { SourceAttribution } from './SourceAttribution';
 import { avatarColor, domainOf } from '../utils/domainAvatar';
 import { cleanForRender } from '../utils/sanitizeAssistantContent';
 import {
@@ -269,8 +271,10 @@ export function ChatBubble({
 }: ChatBubbleProps) {
   const isUser = role === 'user';
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  /** Local hide after Got it so the card drops before config reload lands. */
+  const [noticeDismissedLocally, setNoticeDismissedLocally] = useState(false);
   const reduceMotion = useReducedMotion();
-  const quote = useConfig().quote;
+  const { quote, behavior } = useConfig();
   // Render-time defense for legacy assistant content that may carry
   // special turn-boundary tokens leaked by older Ollama versions or
   // mis-tuned models. Backend now strips these on write, so the scrub is
@@ -301,6 +305,29 @@ export function ChatBubble({
    */
   const showLiveSearch =
     isSearching && !isVerifyingSources && !handedOffFromSearch;
+
+  /**
+   * First-use search trust notice: above live search progress while Auto
+   * search is on and the user has not acknowledged yet. Never gates compose.
+   */
+  const showSearchTrustNotice =
+    showLiveSearch &&
+    behavior.autoSearch &&
+    !behavior.searchNoticeAcknowledged &&
+    !noticeDismissedLocally;
+
+  const acknowledgeSearchNotice = useCallback(() => {
+    setNoticeDismissedLocally(true);
+    void invoke('set_config_field', {
+      section: 'behavior',
+      key: 'search_notice_acknowledged',
+      value: true,
+    });
+  }, []);
+
+  const openSearchSettings = useCallback(() => {
+    void invoke('open_settings_to_behavior');
+  }, []);
 
   /**
    * Exit-retention phase. `exiting` holds until outer fade finishes
@@ -596,6 +623,12 @@ export function ChatBubble({
                     transition: { duration: handoffFadeS, ease: 'easeOut' },
                   }}
                 >
+                  {showSearchTrustNotice ? (
+                    <SearchTrustNotice
+                      onAcknowledge={acknowledgeSearchNotice}
+                      onOpenSettings={openSearchSettings}
+                    />
+                  ) : null}
                   <SearchProgressBlock
                     stage={searchStage}
                     sources={searchSources}
@@ -684,33 +717,37 @@ export function ChatBubble({
                     <p className="text-[10px] text-white/25 uppercase tracking-wider mb-1.5">
                       Sources
                     </p>
-                    <div className="flex flex-col gap-0.5">
+                    <div className="flex flex-col gap-1">
                       {searchSources!.map((src, i) => {
                         const n = i + 1;
                         return (
-                          <button
-                            key={src.url}
-                            type="button"
-                            title={src.title || src.url}
-                            data-citation={n}
-                            data-url={src.url}
-                            onMouseEnter={() => activateCitation(String(n))}
-                            onMouseLeave={() => activateCitation(null)}
-                            onClick={() =>
-                              void invoke('open_url', { url: src.url })
-                            }
-                            className="source-row flex items-baseline gap-3 w-full text-left cursor-pointer py-0.5 group"
-                          >
-                            <span className="source-row-num shrink-0 w-5 text-xs text-white/25 tabular-nums">
-                              {n}.
-                            </span>
-                            <span className="source-row-title flex-1 min-w-0 truncate text-sm text-white/60">
-                              {src.title || src.url}
-                            </span>
-                            <span className="source-row-domain shrink-0 text-xs text-white/30 truncate max-w-[45%]">
-                              {domainOf(src.url)}
-                            </span>
-                          </button>
+                          <div key={src.url} className="flex flex-col gap-0.5">
+                            <button
+                              type="button"
+                              title={src.title || src.url}
+                              data-citation={n}
+                              data-url={src.url}
+                              onMouseEnter={() => activateCitation(String(n))}
+                              onMouseLeave={() => activateCitation(null)}
+                              onClick={() =>
+                                void invoke('open_url', { url: src.url })
+                              }
+                              className="source-row flex items-baseline gap-3 w-full text-left cursor-pointer py-0.5 group"
+                            >
+                              <span className="source-row-num shrink-0 w-5 text-xs text-white/25 tabular-nums">
+                                {n}.
+                              </span>
+                              <span className="source-row-title flex-1 min-w-0 truncate text-sm text-white/60">
+                                {src.title || src.url}
+                              </span>
+                              <span className="source-row-domain shrink-0 text-xs text-white/30 truncate max-w-[45%]">
+                                {domainOf(src.url)}
+                              </span>
+                            </button>
+                            {src.attribution ? (
+                              <SourceAttribution markdown={src.attribution} />
+                            ) : null}
+                          </div>
                         );
                       })}
                     </div>

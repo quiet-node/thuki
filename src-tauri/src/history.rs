@@ -29,6 +29,9 @@ pub struct Database(pub Mutex<Connection>);
 pub struct SaveSearchSource {
     pub title: String,
     pub url: String,
+    /// Optional licence / provider credit markdown from `SourceMeta`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<String>,
 }
 
 /// Message payload sent from the frontend when saving a conversation.
@@ -451,10 +454,12 @@ mod tests {
                     SaveSearchSource {
                         title: "Rust docs".into(),
                         url: "https://doc.rust-lang.org".into(),
+                        attribution: None,
                     },
                     SaveSearchSource {
                         title: "Tokio".into(),
                         url: "https://tokio.rs".into(),
+                        attribution: None,
                     },
                 ]),
                 model_name: Some("gemma4:e2b".to_string()),

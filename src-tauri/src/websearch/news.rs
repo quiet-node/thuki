@@ -21,6 +21,7 @@
 
 use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
 use crate::websearch::assemble::SourceBlock;
+use crate::websearch::THUKI_USER_AGENT;
 
 /// Words that signal a current-events question. Matched on whole tokens of the
 /// lowercased standalone question.
@@ -94,7 +95,7 @@ pub(crate) fn news_request(query: &str, freshness: bool) -> HttpRequest {
     HttpRequest {
         method: HttpMethod::Get,
         url: url.to_string(),
-        headers: Vec::new(),
+        headers: vec![("User-Agent".to_string(), THUKI_USER_AGENT.to_string())],
         form: Vec::new(),
     }
 }
@@ -246,6 +247,10 @@ mod tests {
         assert!(req.url.starts_with(NEWS_ENDPOINT));
         assert!(req.url.contains("q=f1+race+winner"));
         assert!(req.url.contains("ceid=US%3Aen"));
+        assert!(req
+            .headers
+            .iter()
+            .any(|(k, v)| k == "User-Agent" && v == THUKI_USER_AGENT));
     }
 
     // ── freshness operator ──────────────────────────────────────────────────

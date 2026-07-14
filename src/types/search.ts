@@ -6,6 +6,11 @@
 export interface SearchResultPreview {
   title: string;
   url: string;
+  /**
+   * Optional markdown attribution (licence / provider credit) with
+   * `[label](url)` links. Present for Open-Meteo and Wikipedia verticals.
+   */
+  attribution?: string;
 }
 
 /**

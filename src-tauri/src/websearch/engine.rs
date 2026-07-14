@@ -1178,7 +1178,11 @@ mod tests {
         assert_eq!(req.method, HttpMethod::Post);
         assert_eq!(req.url, DDG_HTML_ENDPOINT);
         assert!(req.form.iter().any(|(k, v)| k == "q" && v == "rust bm25"));
-        assert!(req.headers.iter().any(|(k, _)| k == "User-Agent"));
+        // SERP deliberately keeps a browser UA (honest bot UA is blocked on
+        // DDG /html). Must not be the product THUKI_USER_AGENT used on API verticals.
+        assert!(req.headers.iter().any(|(k, v)| {
+            k == "User-Agent" && v == BROWSER_USER_AGENT && !v.starts_with("Thuki/")
+        }));
     }
 
     #[test]
@@ -1188,7 +1192,9 @@ mod tests {
         assert!(req.url.starts_with(MOJEEK_ENDPOINT));
         assert!(req.url.contains("q=rust+version") || req.url.contains("q=rust%20version"));
         assert!(req.form.is_empty());
-        assert!(req.headers.iter().any(|(k, _)| k == "User-Agent"));
+        assert!(req.headers.iter().any(|(k, v)| {
+            k == "User-Agent" && v == BROWSER_USER_AGENT && !v.starts_with("Thuki/")
+        }));
     }
 
     // ── freshness operators ──────────────────────────────────────────────────

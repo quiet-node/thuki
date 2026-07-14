@@ -42,8 +42,11 @@ use crate::websearch::assemble::SourceBlock;
 const SEARCH_ENDPOINT: &str = "https://en.wikipedia.org/w/api.php";
 const SUMMARY_ENDPOINT: &str = "https://en.wikipedia.org/api/rest_v1/page/summary";
 
-/// Attribution line required by Wikipedia's CC BY-SA 4.0 licence.
-const ATTRIBUTION: &str = "Source: Wikipedia (CC BY-SA 4.0)";
+/// Attribution required by Wikipedia's CC BY-SA 4.0 licence. Includes a
+/// hyperlink to the licence text (markdown so the writer context and the UI
+/// attribution projection both carry a real link, not plain prose).
+const ATTRIBUTION: &str =
+    "Source: Wikipedia ([CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/))";
 
 /// Descriptive User-Agent Wikimedia's API etiquette policy requires; a
 /// missing or generic one is rejected with `403` (verified live 2026-07-08).
@@ -515,7 +518,11 @@ mod tests {
         assert_eq!(block.url, summary.page_url);
         assert_eq!(block.title, "Photosynthesis");
         assert!(block.text.contains("Photosynthesis is a process."));
-        assert!(block.text.contains("Wikipedia (CC BY-SA 4.0)"));
+        assert!(block.text.contains("Wikipedia"));
+        assert!(block.text.contains("CC BY-SA 4.0"));
+        assert!(block
+            .text
+            .contains("https://creativecommons.org/licenses/by-sa/4.0/"));
     }
 
     // ── fetch_encyclopedia over the fake transport ───────────────────────────

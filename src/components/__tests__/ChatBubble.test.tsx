@@ -1373,6 +1373,84 @@ describe('ChatBubble', () => {
       );
     });
 
+    it('shows first-use search trust notice above live search progress', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching
+          searchStage={{ kind: 'searching' }}
+        />,
+      );
+      expect(screen.getByTestId('search-trust-notice')).toBeInTheDocument();
+    });
+
+    it('Got it persists search_notice_acknowledged and hides the notice', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching
+          searchStage={{ kind: 'searching' }}
+        />,
+      );
+      fireEvent.click(screen.getByTestId('search-trust-notice-got-it'));
+      expect(invoke).toHaveBeenCalledWith('set_config_field', {
+        section: 'behavior',
+        key: 'search_notice_acknowledged',
+        value: true,
+      });
+      expect(screen.queryByTestId('search-trust-notice')).toBeNull();
+    });
+
+    it('Turn off in Settings opens Behavior deep-link without flipping auto_search', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching
+          searchStage={{ kind: 'searching' }}
+        />,
+      );
+      fireEvent.click(screen.getByTestId('search-trust-notice-settings'));
+      expect(invoke).toHaveBeenCalledWith('open_settings_to_behavior');
+      expect(invoke).not.toHaveBeenCalledWith(
+        'set_config_field',
+        expect.objectContaining({ key: 'auto_search' }),
+      );
+    });
+
+    it('renders source attribution links in the Sources footer', () => {
+      const { container } = render(
+        <ChatBubble
+          role="assistant"
+          content="Weather is fine [1]"
+          index={0}
+          searchSources={[
+            {
+              title: 'Weather for Tokyo',
+              url: 'https://open-meteo.com/',
+              attribution:
+                '[Weather data by Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0)',
+            },
+          ]}
+        />,
+      );
+      openSources(container);
+      expect(screen.getByTestId('source-attribution').textContent).toContain(
+        'Weather data by Open-Meteo.com',
+      );
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Weather data by Open-Meteo.com' }),
+      );
+      expect(invoke).toHaveBeenCalledWith('open_url', {
+        url: 'https://open-meteo.com/',
+      });
+    });
+
     it('skips exit when thinking mounts without a prior live search (Option D)', () => {
       // First paint already handed off: never entered `live`, so no exit
       // retention and Reasoning shows immediately.

@@ -18,6 +18,7 @@
 
 use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
 use crate::websearch::assemble::SourceBlock;
+use crate::websearch::THUKI_USER_AGENT;
 
 /// Words that signal a weather question. Matched on whole tokens of the
 /// lowercased standalone question.
@@ -103,9 +104,10 @@ const NON_LOCATION_WORDS: &[&str] = &[
 const GEOCODE_ENDPOINT: &str = "https://geocoding-api.open-meteo.com/v1/search";
 const FORECAST_ENDPOINT: &str = "https://api.open-meteo.com/v1/forecast";
 
-/// The attribution line required by Open-Meteo's CC BY 4.0 licence, appended to
-/// every weather source block.
-const ATTRIBUTION: &str = "Weather data by Open-Meteo.com (CC BY 4.0)";
+/// Attribution required by Open-Meteo's CC BY 4.0 licence. Markdown link so the
+/// required "Weather data by Open-Meteo.com" hyperlink is present in the writer
+/// context; the UI projects the same attribution for open-meteo source URLs.
+const ATTRIBUTION: &str = "[Weather data by Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0)";
 
 /// A geocoded place: the display name, the coordinates the forecast needs,
 /// and the IANA timezone name the clock vertical (`websearch::clock`) uses
@@ -161,7 +163,7 @@ pub(crate) fn geocode_request(location: &str) -> HttpRequest {
     HttpRequest {
         method: HttpMethod::Get,
         url: url.to_string(),
-        headers: Vec::new(),
+        headers: vec![("User-Agent".to_string(), THUKI_USER_AGENT.to_string())],
         form: Vec::new(),
     }
 }
@@ -209,7 +211,7 @@ pub(crate) fn forecast_request(place: &GeoPlace) -> HttpRequest {
     HttpRequest {
         method: HttpMethod::Get,
         url: url.to_string(),
-        headers: Vec::new(),
+        headers: vec![("User-Agent".to_string(), THUKI_USER_AGENT.to_string())],
         form: Vec::new(),
     }
 }
@@ -381,6 +383,10 @@ mod tests {
         assert!(req.url.starts_with(GEOCODE_ENDPOINT));
         assert!(req.url.contains("name=New+York"));
         assert!(req.url.contains("count=1"));
+        assert!(req
+            .headers
+            .iter()
+            .any(|(k, v)| k == "User-Agent" && v == THUKI_USER_AGENT));
     }
 
     #[test]
@@ -390,6 +396,10 @@ mod tests {
         assert!(req.url.contains("latitude=35.6895"));
         assert!(req.url.contains("temperature_2m"));
         assert!(req.url.contains("forecast_days=3"));
+        assert!(req
+            .headers
+            .iter()
+            .any(|(k, v)| k == "User-Agent" && v == THUKI_USER_AGENT));
     }
 
     // ── parsers / formatting ─────────────────────────────────────────────────
@@ -421,7 +431,9 @@ mod tests {
         assert!(report.contains("mainly clear, 26°C (feels like 28°C)"));
         assert!(report.contains("humidity 61%"));
         assert!(report.contains("2026-07-10: rain, 22-30°C, 80% chance of precipitation."));
-        assert!(report.contains("Open-Meteo.com (CC BY 4.0)"));
+        assert!(report.contains("open-meteo.com"));
+        assert!(report.contains("Weather data by Open-Meteo.com"));
+        assert!(report.contains("CC BY 4.0"));
     }
 
     #[test]
