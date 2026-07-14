@@ -44,9 +44,7 @@ describe('VersionAnnouncement', () => {
         ]}
       />,
     );
-    expect(
-      screen.getByText(V016_AUTO_SEARCH_ANNOUNCEMENT.title),
-    ).toBeTruthy();
+    expect(screen.getByText(V016_AUTO_SEARCH_ANNOUNCEMENT.title)).toBeTruthy();
     expect(
       screen.getByText(V016_AUTO_SEARCH_ANNOUNCEMENT.body, { exact: false }),
     ).toBeTruthy();
@@ -100,5 +98,18 @@ describe('VersionAnnouncement', () => {
     );
     expect(screen.getByText('Body only')).toBeTruthy();
     expect(screen.queryByTestId('version-announcement-learn')).toBeNull();
+  });
+
+  it('defaults the learn control test id from the root testId', () => {
+    render(
+      <VersionAnnouncement
+        title="T"
+        body="B"
+        testId="va"
+        learn={{ label: 'Learn ↗', url: V016_AUTO_SEARCH_LEARN_URL }}
+        actions={[]}
+      />,
+    );
+    expect(screen.getByTestId('va-learn')).toBeInTheDocument();
   });
 });

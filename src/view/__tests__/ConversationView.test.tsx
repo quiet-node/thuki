@@ -851,9 +851,8 @@ describe('ConversationView', () => {
           searchStage={{ kind: 'verifying_sources' }}
         />,
       );
-      expect(
-        screen.queryByTestId('search-progress-block'),
-      ).not.toBeInTheDocument();
+      // Top search progress stays through audit; footer C3 pill confirms.
+      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
       expect(screen.getByTestId('sources-verifying-pill')).toHaveTextContent(
         'Verifying sources...',
       );

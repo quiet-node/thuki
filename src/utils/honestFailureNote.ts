@@ -7,7 +7,7 @@ import type { SearchFailReason } from '../hooks/useModel';
  * peels it off and styles it as the L3 hairline rail.
  */
 export const HONEST_FAILURE_NOTE_BODY =
-  "Thuki found sources but could not verify the answer's citations against the page text. Treat specific claims carefully, or try rephrasing or a larger model in Settings.";
+  "Thuki found sources but could not verify the answer's citations against the page text. Treat specific claims carefully.";
 
 /**
  * User-facing body for a search that could not reach the web at all. Rendered

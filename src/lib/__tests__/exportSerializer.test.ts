@@ -200,7 +200,9 @@ describe('serializeForFile', () => {
       }),
     ];
     const result = await serializeForFile(messages, CTX, NOW, stubImageLoader);
-    expect(result).toContain('1. [Weather for Tokyo](<https://open-meteo.com/>)');
+    expect(result).toContain(
+      '1. [Weather for Tokyo](<https://open-meteo.com/>)',
+    );
     expect(result).toContain(
       '   [Weather data by Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0)',
     );

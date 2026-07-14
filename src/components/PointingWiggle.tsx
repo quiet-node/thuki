@@ -53,11 +53,7 @@ export function PointingWiggle({
       aria-hidden="true"
       data-testid={testId}
     >
-      <path
-        className={styles.path}
-        pathLength={1}
-        d={WIGGLE_PATH_D}
-      />
+      <path className={styles.path} pathLength={1} d={WIGGLE_PATH_D} />
     </svg>
   );
 }

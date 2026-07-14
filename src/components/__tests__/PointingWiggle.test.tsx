@@ -32,4 +32,11 @@ describe('PointingLabel', () => {
     rerender(<PointingLabel active>Discover</PointingLabel>);
     expect(screen.getByTestId('pointing-wiggle')).toBeInTheDocument();
   });
+
+  it('appends an optional className on the label wrap', () => {
+    const { container } = render(
+      <PointingLabel className="extra-class">Label</PointingLabel>,
+    );
+    expect(container.firstElementChild?.className).toContain('extra-class');
+  });
 });

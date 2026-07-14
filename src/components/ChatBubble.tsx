@@ -289,16 +289,33 @@ export function ChatBubble({
   const isVerifyingSources = searchStage?.kind === 'verifying_sources';
   const hasSearchSources = Boolean(searchSources && searchSources.length > 0);
   /**
-   * Generation finished with sources: footer chips can own the list, so top
-   * progress may exit. Reasoning/answer streaming no longer force-exits the
-   * progress strip (sources stay visible until the turn completes).
+   * Live reasoning only (pending or streaming think tokens). Not residual
+   * `thinkingContent` after thinking ends.
    */
-  const handedOffFromSearch = !isSearching && hasSearchSources;
+  const reasoningLive = Boolean(isThinkingPending || isThinking);
   /**
-   * Keep SearchProgressBlock for the whole search turn (read/compose/stream/
-   * verify) while isSearching. Exit only when generation ends.
+   * This turn produced (or is producing) reasoning chrome. Used to stack
+   * restored search under Reasoning and to prefer inventory "Sources (N)"
+   * during answer stream (verify keeps live verifying label).
    */
-  const showLiveSearch = isSearching;
+  const hadReasoning = Boolean(thinkingContent || isThinkingPending);
+  /**
+   * Exit retention: gen ended with sources, or temporary demotion while
+   * reasoning is live. Sources strip stays mounted through verify so the
+   * list is available until footer chips take over at Done.
+   */
+  const handedOffFromSearch =
+    hasSearchSources && (!isSearching || reasoningLive);
+  /**
+   * Live search while generating, except during live reasoning (chip under
+   * Reasoning). Restores after thinking for answer stream and verify.
+   */
+  const showLiveSearch = isSearching && !reasoningLive;
+  /**
+   * After reasoning ends, answer-stream header is `Sources (N)` with dots.
+   * Verify still uses the normal verifying stage label.
+   */
+  const postReasoningSourcesLabel = hadReasoning && !reasoningLive;
 
   /**
    * Exit-retention phase. `exiting` holds until outer fade finishes
@@ -325,9 +342,14 @@ export function ChatBubble({
   // unmount so outer fade can run (AnimatePresence only exits removed kids).
   const renderSearchProgress =
     phase === 'live' || (phase === 'exiting' && !exitUnmount);
-  /** Delay Reasoning until search exit finishes when we were showing search. */
+  /**
+   * Show reasoning whenever think chrome exists. Only delay enter while search
+   * is exiting *into* live reasoning (demotion). Never hide a finished
+   * Reasoning block during the final search→footer handoff (that flicker).
+   */
   const showReasoning =
-    Boolean(thinkingContent || isThinkingPending) && phase !== 'exiting';
+    Boolean(thinkingContent || isThinkingPending) &&
+    !(phase === 'exiting' && reasoningLive);
 
   const handoffFadeS = reduceMotion ? 0.01 : SEARCH_HANDOFF_FADE_S;
   const reasoningEnterS = reduceMotion ? 0.01 : REASONING_HANDOFF_ENTER_S;
@@ -515,6 +537,76 @@ export function ChatBubble({
     void invoke('open_url', { url: target.getAttribute('data-url')! });
   };
 
+  /**
+   * Motion-wrapped search progress for AnimatePresence. Rendered above the
+   * answer when the turn never reasoned; under Reasoning when it did.
+   */
+  const searchProgressSlot = renderSearchProgress ? (
+    <motion.div
+      key="search-progress"
+      data-testid="search-progress-exit-wrap"
+      initial={false}
+      animate={{ opacity: 1 }}
+      exit={{
+        opacity: 0,
+        transition: { duration: handoffFadeS, ease: 'easeOut' },
+      }}
+    >
+      <SearchProgressBlock
+        stage={searchStage}
+        sources={searchSources}
+        isSearching={isSearching || phase === 'exiting'}
+        isExiting={phase === 'exiting'}
+        shouldAutoScroll={shouldAutoScroll}
+        // Expand while reading; collapse when answer tokens start so the
+        // stream has room. Strip stays until generation ends.
+        preferSourcesExpanded={!displayContent}
+        postReasoningSourcesLabel={postReasoningSourcesLabel}
+      />
+    </motion.div>
+  ) : null;
+
+  /**
+   * AnimatePresence host for the search slot. Shared exit-complete path
+   * regardless of stack position (above vs below Reasoning).
+   *
+   * @returns Presence tree, empty when the slot is null and no exit pending.
+   */
+  const searchProgressPresence = (
+    <AnimatePresence initial={false} onExitComplete={onSearchExitComplete}>
+      {searchProgressSlot}
+    </AnimatePresence>
+  );
+
+  /**
+   * Reasoning handoff enter animation when think chrome is visible.
+   *
+   * @returns Motion-wrapped ReasoningBlock, or null.
+   */
+  const reasoningSlot = showReasoning ? (
+    <motion.div
+      key="reasoning-handoff"
+      data-testid="reasoning-handoff-enter"
+      initial={{ opacity: 0, y: 4 }}
+      animate={{
+        opacity: 1,
+        y: 0,
+        transition: {
+          duration: reasoningEnterS,
+          ease: [0.33, 1, 0.68, 1],
+        },
+      }}
+    >
+      <ReasoningBlock
+        thinkingContent={thinkingContent}
+        isPending={isThinkingPending ?? false}
+        pendingLabel={pendingLabel}
+        isThinking={isThinking ?? false}
+        searchSources={hasSearchSources ? searchSources : undefined}
+      />
+    </motion.div>
+  ) : null;
+
   return (
     <motion.div
       variants={bubbleVariants}
@@ -579,56 +671,10 @@ export function ChatBubble({
           onClick={onAnswerClick}
         >
           <div className="text-sm leading-relaxed select-text py-1">
-            <AnimatePresence
-              initial={false}
-              onExitComplete={onSearchExitComplete}
-            >
-              {renderSearchProgress ? (
-                <motion.div
-                  key="search-progress"
-                  data-testid="search-progress-exit-wrap"
-                  initial={false}
-                  animate={{ opacity: 1 }}
-                  exit={{
-                    opacity: 0,
-                    transition: { duration: handoffFadeS, ease: 'easeOut' },
-                  }}
-                >
-                  <SearchProgressBlock
-                    stage={searchStage}
-                    sources={searchSources}
-                    isSearching={isSearching || phase === 'exiting'}
-                    isExiting={phase === 'exiting'}
-                    shouldAutoScroll={shouldAutoScroll}
-                    // Expand while reading; collapse when answer tokens start
-                    // so the stream has room. Strip stays until generation ends.
-                    preferSourcesExpanded={!displayContent}
-                  />
-                </motion.div>
-              ) : null}
-            </AnimatePresence>
-            {showReasoning ? (
-              <motion.div
-                key="reasoning-handoff"
-                data-testid="reasoning-handoff-enter"
-                initial={{ opacity: 0, y: 4 }}
-                animate={{
-                  opacity: 1,
-                  y: 0,
-                  transition: {
-                    duration: reasoningEnterS,
-                    ease: [0.33, 1, 0.68, 1],
-                  },
-                }}
-              >
-                <ReasoningBlock
-                  thinkingContent={thinkingContent}
-                  isPending={isThinkingPending ?? false}
-                  pendingLabel={pendingLabel}
-                  isThinking={isThinking ?? false}
-                />
-              </motion.div>
-            ) : null}
+            {/* Timeline: pure search on top; reasoned turns put search under Reasoning. */}
+            {!hadReasoning ? searchProgressPresence : null}
+            {reasoningSlot}
+            {hadReasoning ? searchProgressPresence : null}
             {errorKind ? (
               <ErrorCard
                 kind={errorKind}

@@ -1,10 +1,11 @@
 /**
- * Sequential search progress → footer sources handoff phases.
+ * Sequential search progress → footer / reasoning sources handoff phases.
  *
- * Search progress stays `live` for the whole search generation (including
- * reasoning and answer streaming). When the turn ends with sources, the
- * block keeps mounted long enough for exit animation (`exiting`) before
- * permanent unmount (`done`) so footer chips can take over.
+ * Search stays `live` while generating unless live reasoning owns the strip
+ * (temporary demotion; chip under Reasoning). When reasoning finishes mid
+ * turn, search can re-enter `live`. When the turn ends with sources, exit
+ * animation (`exiting`) then permanent unmount (`done`) so footer chips own
+ * the list.
  */
 
 /** Lifecycle of search progress chrome relative to the finished turn. */
@@ -13,12 +14,14 @@ export type SearchHandoffPhase = 'idle' | 'live' | 'exiting' | 'done';
 /** Inputs that drive handoff transitions from ChatBubble render props. */
 export interface SearchHandoffSignals {
   /**
-   * True while the search turn is still generating (`isSearching`).
+   * True while search progress should stay the live strip (searching and
+   * not yet demoted for reasoning).
    */
   showLiveSearch: boolean;
   /**
-   * True once generation ended with sources (footer list ready).
-   * Triggers exit retention when the block was live.
+   * True once sources should leave the search strip (reasoning owns a chip,
+   * or generation ended and the footer list is ready). Triggers exit
+   * retention when the block was live.
    */
   handedOff: boolean;
 }

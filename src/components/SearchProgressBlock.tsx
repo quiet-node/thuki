@@ -50,6 +50,12 @@ export interface SearchProgressBlockProps {
    * stays mounted and the user can re-expand via the chevron.
    */
   preferSourcesExpanded?: boolean;
+  /**
+   * After reasoning, answer-stream phases use inventory copy `Sources (N)`
+   * instead of replaying "Reading sources" / "Composing answer". Verify still
+   * uses the live verifying stage label. Three-dot strip stays either way.
+   */
+  postReasoningSourcesLabel?: boolean;
 }
 
 /**
@@ -80,12 +86,22 @@ export function liveSearchStageLabel(stage: SearchStage): string {
 /**
  * Builds the progress header: live stage copy, with `(N)` when sources exist.
  * Expand/collapse never rewrites this string; only stage advances do.
+ * When `postReasoning` and not verifying, uses inventory `Sources (N)` so the
+ * restored strip does not re-claim "Reading sources" during answer stream.
+ *
+ * @param stage - Live pipeline stage.
+ * @param sourceCount - Number of sources for the `(N)` suffix.
+ * @param postReasoning - Prefer inventory label after a reasoned turn.
+ * @returns Header string for the strip toggle.
  */
-function searchProgressHeaderLabel(
+export function searchProgressHeaderLabel(
   stage: SearchStage,
   sourceCount: number,
+  postReasoning = false,
 ): string {
-  const stageLabel = liveSearchStageLabel(stage);
+  const useInventory =
+    postReasoning && (!stage || stage.kind !== 'verifying_sources');
+  const stageLabel = useInventory ? 'Sources' : liveSearchStageLabel(stage);
   return sourceCount > 0 ? `${stageLabel} (${sourceCount})` : stageLabel;
 }
 
@@ -105,6 +121,7 @@ export function SearchProgressBlock({
   isExiting = false,
   shouldAutoScroll,
   preferSourcesExpanded = true,
+  postReasoningSourcesLabel = false,
 }: SearchProgressBlockProps) {
   const panelId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -120,8 +137,7 @@ export function SearchProgressBlock({
    * (`preferSourcesExpanded` false) so the answer has room; user can re-open.
    * Handoff exit always forces collapsed so body AnimatePresence can run.
    */
-  const autoExpanded =
-    isSearching && hasSources && preferSourcesExpanded;
+  const autoExpanded = isSearching && hasSources && preferSourcesExpanded;
 
   // When a live search first gains sources (enters the auto-expand state),
   // drop any user override so the fresh batch re-opens the list. Done as a
@@ -197,7 +213,12 @@ export function SearchProgressBlock({
   }
 
   // Stage label always; count parens when sources exist. Collapse never swaps copy.
-  const headerLabel = searchProgressHeaderLabel(stage, sourceCount);
+  // Post-reasoning answer stream: "Sources (N)"; verify keeps stage copy.
+  const headerLabel = searchProgressHeaderLabel(
+    stage,
+    sourceCount,
+    postReasoningSourcesLabel,
+  );
 
   /**
    * Toggles expand/collapse. Only wired on the sources toggle button, which

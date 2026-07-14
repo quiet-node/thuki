@@ -2030,7 +2030,9 @@ describe('AskBarView', () => {
       });
       const notice = screen.getByTestId('version-announcement');
       expect(notice).toBeInTheDocument();
-      expect(screen.getByTestId('version-announcement-slot')).toBeInTheDocument();
+      expect(
+        screen.getByTestId('version-announcement-slot'),
+      ).toBeInTheDocument();
       // Design D: below the logo/input row in DOM order.
       const row = screen.getByTestId('ask-bar-row');
       expect(

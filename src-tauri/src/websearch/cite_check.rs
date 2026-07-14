@@ -219,7 +219,7 @@ fn format_index_markers(indices: &[usize]) -> String {
 /// `HONEST_FAILURE_NOTE_BODY` in `src/utils/honestFailureNote.ts`.
 pub const HONEST_FAILURE_NOTE_BODY: &str = "Thuki found sources but could not \
 verify the answer's citations against the page text. Treat specific claims \
-carefully, or try rephrasing or a larger model in Settings.";
+carefully.";
 
 /// User-facing note used only after repair rounds are exhausted and **every**
 /// citation still fails the audit. Speaks as Thuki owning the verification
