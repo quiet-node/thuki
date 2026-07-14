@@ -3,8 +3,8 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import {
   SearchTrustNotice,
   SEARCH_DISCLOSURE_URL,
-  SEARCH_TRUST_NOTICE_BODY_LEAD,
-  SEARCH_TRUST_NOTICE_BODY_LOCAL,
+  SEARCH_TRUST_NOTICE_BODY,
+  SEARCH_TRUST_NOTICE_LEARN_LABEL,
   SEARCH_TRUST_NOTICE_TITLE,
 } from '../SearchTrustNotice';
 
@@ -18,13 +18,14 @@ describe('SearchTrustNotice', () => {
     invoke.mockReset();
   });
 
-  it('renders approved title and body copy', () => {
+  it('renders approved title, one-paragraph body, and in-body learn link', () => {
     render(
       <SearchTrustNotice onAcknowledge={() => {}} onOpenSettings={() => {}} />,
     );
     expect(screen.getByText(SEARCH_TRUST_NOTICE_TITLE)).toBeTruthy();
-    expect(screen.getByText(SEARCH_TRUST_NOTICE_BODY_LEAD)).toBeTruthy();
-    expect(screen.getByText(SEARCH_TRUST_NOTICE_BODY_LOCAL)).toBeTruthy();
+    expect(screen.getByText(SEARCH_TRUST_NOTICE_BODY, { exact: false })).toBeTruthy();
+    expect(screen.getByText(SEARCH_TRUST_NOTICE_LEARN_LABEL)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'How Auto search works' })).toBeNull();
   });
 
   it('Got it calls onAcknowledge', () => {
@@ -55,7 +56,7 @@ describe('SearchTrustNotice', () => {
     );
   });
 
-  it('How Auto search works opens blog URL via open_url', () => {
+  it('See how Auto search works opens blog URL via open_url', () => {
     render(
       <SearchTrustNotice onAcknowledge={() => {}} onOpenSettings={() => {}} />,
     );

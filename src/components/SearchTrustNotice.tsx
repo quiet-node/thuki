@@ -6,8 +6,8 @@
 import { invoke } from '@tauri-apps/api/core';
 
 /**
- * Public blog URL for "How Auto search works". Placeholder index until the
- * dedicated post slug lands (issue #320).
+ * Public blog URL for the in-body "See how Auto search works" link.
+ * Blog index placeholder until the dedicated post slug lands (issue #320).
  */
 export const SEARCH_DISCLOSURE_URL = 'https://thuki.app/blog';
 
@@ -15,19 +15,27 @@ export const SEARCH_DISCLOSURE_URL = 'https://thuki.app/blog';
 export const SEARCH_TRUST_NOTICE_TITLE =
   'Thuki can now search the web, automatically!';
 
-/** Lead body: what Auto search does (details live on the blog CTA). */
-export const SEARCH_TRUST_NOTICE_BODY_LEAD =
-  'Since v0.16.0, when a question needs fresh facts, Thuki smartly searches the web for them.';
+/**
+ * Body copy before the disclosure link. One paragraph with the local-off line.
+ */
+export const SEARCH_TRUST_NOTICE_BODY =
+  'Since v0.16.0, when a question needs fresh facts, Thuki smartly searches the web for them. Turn Auto search off to stay fully local and use /search only when you want a look-up.';
 
-/** Second body line: how to stay fully local. */
-export const SEARCH_TRUST_NOTICE_BODY_LOCAL =
-  'Turn Auto search off to stay fully local and use /search only when you want a look-up.';
+/** Label for the in-body disclosure control (↗ marks external open). */
+export const SEARCH_TRUST_NOTICE_LEARN_LABEL = 'See how Auto search works ↗';
 
 export interface SearchTrustNoticeProps {
   /** Persist acknowledgement and hide the card. */
   onAcknowledge: () => void;
   /** Open Settings → Behavior with Auto search highlighted. */
   onOpenSettings: () => void;
+}
+
+/**
+ * Opens the Auto search disclosure URL via Tauri open_url (http/https only).
+ */
+function openDisclosure(): void {
+  void invoke('open_url', { url: SEARCH_DISCLOSURE_URL });
 }
 
 /**
@@ -49,10 +57,15 @@ export function SearchTrustNotice({
         {SEARCH_TRUST_NOTICE_TITLE}
       </p>
       <p className="mt-1 text-xs text-white/45 leading-relaxed">
-        {SEARCH_TRUST_NOTICE_BODY_LEAD}
-      </p>
-      <p className="mt-1.5 text-xs text-white/45 leading-relaxed">
-        {SEARCH_TRUST_NOTICE_BODY_LOCAL}
+        {SEARCH_TRUST_NOTICE_BODY}{' '}
+        <button
+          type="button"
+          data-testid="search-trust-notice-how"
+          onClick={openDisclosure}
+          className="inline p-0 m-0 border-0 bg-transparent text-xs text-white/55 hover:text-white/80 underline-offset-2 hover:underline cursor-pointer"
+        >
+          {SEARCH_TRUST_NOTICE_LEARN_LABEL}
+        </button>
       </p>
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
         <button
@@ -70,14 +83,6 @@ export function SearchTrustNotice({
           className="rounded-md px-2.5 py-1 text-xs font-medium text-white/55 hover:text-white/80 transition-colors"
         >
           Turn off in Settings
-        </button>
-        <button
-          type="button"
-          data-testid="search-trust-notice-how"
-          onClick={() => void invoke('open_url', { url: SEARCH_DISCLOSURE_URL })}
-          className="rounded-md px-2.5 py-1 text-xs font-medium text-white/55 hover:text-white/80 transition-colors"
-        >
-          How Auto search works
         </button>
       </div>
     </div>
