@@ -46,11 +46,12 @@
 //! failures are cleaned without a guilt footer.
 
 use crate::config::defaults::{
-    CITE_MAGNITUDE_ABBREVIATIONS, CITE_MAGNITUDE_WORDS, CITE_MONTH_NAMES, CITE_SUPPORTED_MIN,
-    CITE_UNVERIFIABLE_MIN_SOURCE_BYTES, CITE_WEAK_MIN, TRACE_AUDIT_CLAIM_MAX_CHARS,
+    CITE_FULLWIDTH_DIGITS, CITE_MAGNITUDE_ABBREVIATIONS, CITE_MAGNITUDE_WORDS, CITE_MONTH_NAMES,
+    CITE_SUPPORTED_MIN, CITE_UNVERIFIABLE_MIN_SOURCE_BYTES, CITE_WEAK_MIN,
+    TRACE_AUDIT_CLAIM_MAX_CHARS,
 };
 use crate::websearch::assemble::SourceBlock;
-use crate::websearch::script::is_bigram_script;
+use crate::websearch::script::{is_bigram_script, push_bigram_tokens};
 use std::collections::{BTreeMap, HashSet};
 
 /// The outcome of auditing one answer's citations against its sources.
@@ -771,37 +772,26 @@ fn skip_unicode_whitespace(text: &str, mut byte_i: usize) -> usize {
     byte_i
 }
 
-/// Moves a bigram-script run into `tokens` as its overlapping character bigrams
-/// (`ABCD` yields `AB`, `BC`, `CD`; a single character yields itself), then
-/// clears it. Every emitted token counts as a content token, bypassing
-/// [`push_token`]'s length rule for the reason given in [`content_tokens`]'s
-/// rustdoc. A no-op for an empty run.
-fn push_bigram_tokens(tokens: &mut Vec<String>, run: &mut Vec<char>) {
-    if run.is_empty() {
-        return;
-    }
-    if run.len() == 1 {
-        tokens.push(run[0].to_lowercase().collect());
-    } else {
-        for pair in run.windows(2) {
-            tokens.push(pair.iter().collect::<String>().to_lowercase());
-        }
-    }
-    run.clear();
-}
-
 /// Moves `current` into `tokens` when it qualifies as a content token (longer
-/// than three chars or containing an ASCII digit), then clears it. A no-op for
-/// an empty or too-short non-numeric run.
+/// than three chars or containing a digit), then clears it. A no-op for an
+/// empty or too-short non-numeric run.
 fn push_token(tokens: &mut Vec<String>, current: &mut String) {
     if !current.is_empty() {
-        let is_number_like = current.chars().any(|c| c.is_ascii_digit());
+        let is_number_like = current.chars().any(is_digit_like);
         if current.chars().count() > 3 || is_number_like {
             tokens.push(std::mem::take(current));
         } else {
             current.clear();
         }
     }
+}
+
+/// True when `c` is an ASCII digit or a fullwidth digit
+/// ([`CITE_FULLWIDTH_DIGITS`]). Used by [`push_token`] so a short numeral
+/// clears the content-token length rule regardless of which digit form a
+/// source page happens to render it in.
+fn is_digit_like(c: char) -> bool {
+    c.is_ascii_digit() || CITE_FULLWIDTH_DIGITS.contains(&c)
 }
 
 /// The numeric and date mentions extracted from a span of text: money
@@ -1396,6 +1386,45 @@ mod tests {
         let claim = "ブラジル代表がワールドカップで優勝しました。";
         let score = support_score(claim, JA_SOURCE);
         assert!(score < CITE_WEAK_MIN, "score was {score}");
+    }
+
+    // ── support_score: fullwidth numerals (both directions) ───────────────────
+
+    /// A Chinese source paragraph carrying a lone fullwidth digit (`３`), used
+    /// to prove a short fullwidth numeral survives as a content token the same
+    /// way a short ASCII one does.
+    const ZH_FULLWIDTH_NUMERAL_SOURCE: &str = "这家书店３层楼，环境很好，欢迎光临。";
+
+    #[test]
+    fn content_tokens_keeps_short_fullwidth_numeral() {
+        // "３" alone is one character, far under the `> 3` length rule. A
+        // fullwidth digit must clear the number-like rule the same way an
+        // ASCII digit does, or a short fullwidth numeral is silently dropped
+        // from every CJK claim.
+        assert_eq!(content_tokens("书店３层楼。"), vec!["书店", "３", "层楼"]);
+    }
+
+    #[test]
+    fn support_score_short_fullwidth_numeral_claim_is_supported() {
+        // The claim's only numeric fact is the lone fullwidth "３"; it must
+        // count as a content token and match the source's own fullwidth "３"
+        // for the claim to score supported.
+        let claim = "书店３层楼。";
+        let score = support_score(claim, ZH_FULLWIDTH_NUMERAL_SOURCE);
+        assert!(score >= CITE_SUPPORTED_MIN, "score was {score}");
+        assert_eq!(classify(score), CiteClass::Supported);
+    }
+
+    #[test]
+    fn support_score_short_fullwidth_numeral_claim_stays_unsupported() {
+        // Same fullwidth-numeral claim against an unrelated source: neither
+        // the "３" nor the surrounding bigrams appear in it, so recognizing
+        // the fullwidth digit as number-like must not be enough by itself to
+        // inflate an off-topic claim to "supported".
+        let claim = "书店３层楼。";
+        let score = support_score(claim, ZH_SOURCE);
+        assert!(score < CITE_WEAK_MIN, "score was {score}");
+        assert_eq!(classify(score), CiteClass::Unsupported);
     }
 
     #[test]

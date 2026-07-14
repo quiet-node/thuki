@@ -47,6 +47,30 @@ fn is_hangul(c: char) -> bool {
     matches!(c, '\u{AC00}'..='\u{D7AF}' | '\u{1100}'..='\u{11FF}')
 }
 
+/// Moves a bigram-script run into `out` as its overlapping character bigrams
+/// (`ABCD` yields `AB`, `BC`, `CD`), then clears it. A single-character run
+/// emits that character as a unigram, so a one-character word is not lost. A
+/// no-op for an empty run.
+///
+/// Shared by the ranker's tokenizer (`crate::websearch::rank`) and the
+/// citation audit's content-token extractor (`crate::websearch::cite_check`):
+/// both accumulate an unspaced-script run character by character and need
+/// identical bigram-emission behavior over it, so the logic lives here once
+/// instead of twice.
+pub(crate) fn push_bigram_tokens(out: &mut Vec<String>, run: &mut Vec<char>) {
+    if run.is_empty() {
+        return;
+    }
+    if run.len() == 1 {
+        out.push(run[0].to_lowercase().collect());
+    } else {
+        for pair in run.windows(2) {
+            out.push(pair.iter().collect::<String>().to_lowercase());
+        }
+    }
+    run.clear();
+}
+
 /// The fraction of `text`'s non-whitespace characters that belong to an
 /// unspaced script, in `0.0..=1.0`. Text with no non-whitespace character
 /// scores `0.0`. Used to decide whether a page chunks on words or on a

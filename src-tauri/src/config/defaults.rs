@@ -5,6 +5,8 @@
 //! Changing a default here propagates to a fresh first-run config file and to
 //! any field a user has left unset or left empty in their existing file.
 
+use std::ops::RangeInclusive;
+
 /// Default Ollama HTTP endpoint (loopback, standard port). Seed value for the
 /// Ollama provider's `base_url` on a fresh install or after a migration.
 pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
@@ -1431,6 +1433,18 @@ pub const CITE_REPAIR_MAX_ATTEMPTS: u32 = 1;
 /// Not user-tunable: a defense-in-depth bound over externally fetched web
 /// content, not a user preference.
 pub const CITE_UNVERIFIABLE_MIN_SOURCE_BYTES: usize = 20;
+
+/// Unicode code-point range of the fullwidth ASCII digits (`０`-`９`,
+/// U+FF10-U+FF19, the digit run of the Halfwidth and Fullwidth Forms block).
+/// The citation audit's content-token filter treats a run as number-like if
+/// any of its characters fall in this range, alongside plain ASCII digits:
+/// Japanese and Chinese source pages routinely render numerals fullwidth, and
+/// without this a short fullwidth numeral (a lone `２`, or `３人`) never
+/// clears the `> 3` character length rule and is silently dropped as a
+/// content token, even though the same numeral in ASCII form would be kept.
+///
+/// Not user-tunable: a fixed Unicode block boundary, not a preference.
+pub const CITE_FULLWIDTH_DIGITS: RangeInclusive<char> = '\u{FF10}'..='\u{FF19}';
 
 /// Attached letter magnitude suffixes the citation audit's numeric-consistency
 /// guard recognizes directly after a digit run (`615B`, `1.2mn`), paired with

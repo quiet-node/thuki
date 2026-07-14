@@ -17,7 +17,7 @@ use crate::config::defaults::{
 use crate::websearch::credibility::{classify_domain, DomainClass};
 use crate::websearch::domain_of;
 use crate::websearch::fetch::FetchedPage;
-use crate::websearch::script::{is_bigram_script, unspaced_ratio};
+use crate::websearch::script::{is_bigram_script, push_bigram_tokens, unspaced_ratio};
 
 /// A page chunk that survived ranking, carrying the provenance the citation
 /// stage needs (source URL and title) plus its relevance score.
@@ -186,15 +186,15 @@ fn tokenize(text: &str) -> Vec<String> {
             push_word(&mut out, &mut word);
             bigram_run.push(ch);
         } else if ch.is_alphanumeric() {
-            push_bigrams(&mut out, &mut bigram_run);
+            push_bigram_tokens(&mut out, &mut bigram_run);
             word.push(ch);
         } else {
             push_word(&mut out, &mut word);
-            push_bigrams(&mut out, &mut bigram_run);
+            push_bigram_tokens(&mut out, &mut bigram_run);
         }
     }
     push_word(&mut out, &mut word);
-    push_bigrams(&mut out, &mut bigram_run);
+    push_bigram_tokens(&mut out, &mut bigram_run);
     out
 }
 
@@ -207,24 +207,6 @@ fn push_word(out: &mut Vec<String>, word: &mut String) {
         out.push(word.to_lowercase());
         word.clear();
     }
-}
-
-/// Moves a bigram-script run into `out` as its overlapping character bigrams
-/// (`ABCD` yields `AB`, `BC`, `CD`), then clears it. A single-character run
-/// emits that character as a unigram, so a one-character word is not lost. A
-/// no-op for an empty run.
-fn push_bigrams(out: &mut Vec<String>, run: &mut Vec<char>) {
-    if run.is_empty() {
-        return;
-    }
-    if run.len() == 1 {
-        out.push(run[0].to_lowercase().collect());
-    } else {
-        for pair in run.windows(2) {
-            out.push(pair.iter().collect::<String>().to_lowercase());
-        }
-    }
-    run.clear();
 }
 
 /// Okapi BM25 score of every chunk against `query`, treating the `chunks` slice
