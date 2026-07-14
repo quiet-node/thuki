@@ -28,13 +28,14 @@ describe('SearchTrustNotice', () => {
     expect(screen.queryByRole('button', { name: 'How Auto search works' })).toBeNull();
   });
 
-  it('uses elevated warm panel chrome without a version kicker', () => {
+  it('renders flat footer body without nested elevated chrome or version kicker', () => {
     render(
       <SearchTrustNotice onAcknowledge={() => {}} onOpenSettings={() => {}} />,
     );
     const root = screen.getByTestId('search-trust-notice');
-    expect(root.className).toContain('bg-surface-elevated');
-    expect(root.className).toContain('border-surface-border');
+    // Design D: parent ask-bar slot owns border/fill; notice is content-only.
+    expect(root.className).not.toContain('bg-surface-elevated');
+    expect(root.className).not.toContain('border-surface-border');
     expect(root.textContent).not.toMatch(/^v0\.16\.0/);
     expect(screen.queryByText('v0.16.0', { exact: true })).toBeNull();
   });
