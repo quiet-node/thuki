@@ -251,6 +251,27 @@ fn reasoning_template_kwargs(flavor: V1Flavor, enable_thinking: bool) -> Option<
     }
 }
 
+/// Chat-template kwargs for structured (classifier / judge) builtin calls.
+///
+/// Extends the thinking-off blast with `reasoning_effort: "low"` for models
+/// whose Harmony / Jinja templates honor that knob (gpt-oss). Templates that
+/// ignore unknown kwargs (gemma and others) keep emitting JSON with no
+/// reasoning tokens, so this is a no-op on those families rather than a
+/// gemma-only false green. Does not require a spawn-arg change: b9946 enables
+/// Jinja by default. Remote providers still get no kwargs.
+fn structured_reasoning_kwargs(flavor: V1Flavor) -> Option<serde_json::Value> {
+    match flavor {
+        V1Flavor::Builtin => {
+            let mut kwargs = reasoning_template_kwargs(flavor, false)?;
+            // Low effort steers gpt-oss away from thousand-token reasoning
+            // blocks that burn PREPASS/JUDGE max_tokens before any JSON.
+            kwargs["reasoning_effort"] = serde_json::json!("low");
+            Some(kwargs)
+        }
+        V1Flavor::Remote => None,
+    }
+}
+
 /// Builds the streaming `/v1/chat/completions` request body. Pulled out of
 /// [`stream_openai_chat`] so the reasoning-control wiring is unit-tested
 /// without a live server. No sampling parameters are sent: the server and
@@ -475,8 +496,9 @@ pub(crate) fn json_request_body(
     });
     // Structured output must never reason on the built-in engine: a thinking
     // pass would consume the `max_tokens` budget before any JSON is emitted,
-    // yielding empty content. Force the switch off (remote servers get nothing).
-    if let Some(kwargs) = reasoning_template_kwargs(flavor, false) {
+    // yielding empty content. Force thinking off and (for Harmony/Jinja
+    // models) set reasoning_effort low; remote servers get nothing.
+    if let Some(kwargs) = structured_reasoning_kwargs(flavor) {
         body["chat_template_kwargs"] = kwargs;
     }
     body
@@ -1487,7 +1509,8 @@ mod tests {
     /// Structured-output calls (search judges, title generation) must never
     /// reason on the built-in engine: a thinking pass would consume the
     /// `max_tokens` budget before any JSON is emitted. The builtin structured
-    /// body forces `enable_thinking = false`.
+    /// body forces thinking off and sets `reasoning_effort: low` for Harmony
+    /// models; templates that ignore the knobs (gemma) still emit JSON only.
     #[test]
     fn builtin_structured_body_disables_thinking() {
         let body = json_request_body(
@@ -1501,7 +1524,19 @@ mod tests {
         assert_eq!(kwargs["enable_thinking"], serde_json::json!(false));
         assert_eq!(kwargs["thinking"], serde_json::json!(false));
         assert_eq!(kwargs["thinking_budget"], serde_json::json!(0));
+        assert_eq!(kwargs["reasoning_effort"], serde_json::json!("low"));
         assert_eq!(body["stream"], serde_json::json!(false));
+    }
+
+    /// Streaming chat (user-facing writer) does NOT set `reasoning_effort`:
+    /// that knob is reserved for structured critical-path calls so a user
+    /// `/think` opt-in is not fighting a forced-low effort.
+    #[test]
+    fn builtin_chat_body_omits_reasoning_effort() {
+        let off = chat_request_body("m", &[user_message("hi")], V1Flavor::Builtin, false);
+        assert!(off["chat_template_kwargs"].get("reasoning_effort").is_none());
+        let on = chat_request_body("m", &[user_message("hi")], V1Flavor::Builtin, true);
+        assert!(on["chat_template_kwargs"].get("reasoning_effort").is_none());
     }
 
     /// Remote structured-output bodies stay clean of the llama.cpp kwarg.
