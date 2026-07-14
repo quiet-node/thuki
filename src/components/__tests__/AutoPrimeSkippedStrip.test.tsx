@@ -128,7 +128,7 @@ describe('AutoPrimeSkippedStrip', () => {
     // Fit line stays; consequence appears muted under it; load has NOT fired.
     expect(
       screen.getByText(
-        'Qwen3.5 9B may not fit in memory (~0.0 GB needed, ~0.0 GB available)',
+        'Qwen3.5 9B may not fit in memory (~0.0 GB needed, ~0.0 GB available, over the 80% safe limit)',
       ),
     ).toBeInTheDocument();
     expect(
