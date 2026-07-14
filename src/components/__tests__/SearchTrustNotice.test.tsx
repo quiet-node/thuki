@@ -28,6 +28,17 @@ describe('SearchTrustNotice', () => {
     expect(screen.queryByRole('button', { name: 'How Auto search works' })).toBeNull();
   });
 
+  it('uses elevated warm panel chrome without a version kicker', () => {
+    render(
+      <SearchTrustNotice onAcknowledge={() => {}} onOpenSettings={() => {}} />,
+    );
+    const root = screen.getByTestId('search-trust-notice');
+    expect(root.className).toContain('bg-surface-elevated');
+    expect(root.className).toContain('border-surface-border');
+    expect(root.textContent).not.toMatch(/^v0\.16\.0/);
+    expect(screen.queryByText('v0.16.0', { exact: true })).toBeNull();
+  });
+
   it('Got it calls onAcknowledge', () => {
     const onAcknowledge = vi.fn();
     render(
