@@ -18,6 +18,7 @@ use async_trait::async_trait;
 
 use crate::config::defaults::{
     ENGINE_HEALTH_PROBE_TIMEOUT_SECS, ENGINE_STDERR_TAIL_LINES, ENGINE_STDERR_TAIL_LINE_MAX_BYTES,
+    LLAMA_SERVER_CACHE_RAM_MIB, LLAMA_SERVER_PARALLEL_SLOTS,
 };
 
 /// Everything needed to launch one engine process.
@@ -128,7 +129,8 @@ pub struct TokioEngineProcess {
 }
 
 /// Pure: the `llama-server` command line for one spawn:
-/// `-m <model> [--mmproj <p>] --ctx-size <n> --host 127.0.0.1 --port <p> --no-webui --parallel 1`.
+/// `-m <model> [--mmproj <p>] --ctx-size <n> --host 127.0.0.1 --port <p>
+/// --no-webui --parallel 1 --cache-prompt --cache-idle-slots --cache-ram <mib>`.
 fn llama_server_args(args: &SpawnArgs) -> Vec<std::ffi::OsString> {
     let mut argv: Vec<std::ffi::OsString> = vec!["-m".into(), args.model_path.clone().into()];
     if let Some(mmproj) = &args.mmproj_path {
@@ -143,13 +145,22 @@ fn llama_server_args(args: &SpawnArgs) -> Vec<std::ffi::OsString> {
     argv.push(args.port.to_string().into());
     argv.push("--no-webui".into());
     // Single decode slot. Thuki is single-user, so it never needs parallel
-    // slots, and the default (n_parallel = 4) actively hurts: the summon-time
-    // warm-up prime and the user's first message can land on different KV
-    // slots, so the first message re-does the full system-prompt prefill cold
-    // instead of reusing the prime's cache (slow first turn, fast after). One
-    // slot also gives the conversation the full --ctx-size instead of ctx / 4.
+    // slots, and multi-slot actively hurts: the summon-time warm-up prime and
+    // the user's first message can land on different KV slots, so the first
+    // message re-does the full system-prompt prefill cold instead of reusing
+    // the prime's cache (slow first turn, fast after). One slot also gives the
+    // conversation the full --ctx-size instead of ctx / N.
     argv.push("--parallel".into());
-    argv.push("1".into());
+    argv.push(LLAMA_SERVER_PARALLEL_SLOTS.to_string().into());
+    // Host-memory prompt cache (llama.cpp #16391): idle-slot KV spills to host
+    // RAM and hot-swaps back on prefix similarity. Defaults are "enabled", but
+    // we pin the flags so a future upstream flip cannot silently disable the
+    // feature under Thuki. Sized via LLAMA_SERVER_CACHE_RAM_MIB (not the 8GB
+    // upstream default) for the 24GB unified-memory envelope.
+    argv.push("--cache-prompt".into());
+    argv.push("--cache-idle-slots".into());
+    argv.push("--cache-ram".into());
+    argv.push(LLAMA_SERVER_CACHE_RAM_MIB.to_string().into());
     argv
 }
 
@@ -376,8 +387,32 @@ mod tests {
                 "--no-webui",
                 "--parallel",
                 "1",
+                "--cache-prompt",
+                "--cache-idle-slots",
+                "--cache-ram",
+                "512",
             ]
         );
+    }
+
+    #[test]
+    fn llama_server_args_pins_cache_and_single_slot() {
+        let argv = llama_server_args(&args(None));
+        let as_str: Vec<String> = argv
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(as_str.contains(&"--cache-prompt".into()));
+        assert!(as_str.contains(&"--cache-idle-slots".into()));
+        assert!(as_str.contains(&"--cache-ram".into()));
+        assert!(as_str.contains(&LLAMA_SERVER_CACHE_RAM_MIB.to_string()));
+        // Parallel stays at one slot: never multi-slot on this host envelope.
+        let p = as_str.iter().position(|s| s == "--parallel").unwrap();
+        assert_eq!(as_str[p + 1], LLAMA_SERVER_PARALLEL_SLOTS.to_string());
+        assert_eq!(LLAMA_SERVER_PARALLEL_SLOTS, 1);
+        // Cache RAM is bounded well below the 8GB upstream default.
+        assert!(LLAMA_SERVER_CACHE_RAM_MIB <= 1024);
+        assert!(LLAMA_SERVER_CACHE_RAM_MIB > 0);
     }
 
     #[test]
@@ -454,6 +489,10 @@ mod tests {
                 "--no-webui",
                 "--parallel",
                 "1",
+                "--cache-prompt",
+                "--cache-idle-slots",
+                "--cache-ram",
+                "512",
             ]
         );
     }

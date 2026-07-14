@@ -154,6 +154,27 @@ pub const ENGINE_COMMAND_QUEUE_CAPACITY: usize = 64;
 /// load-error block llama.cpp prints without retaining its whole log.
 pub const ENGINE_STDERR_TAIL_LINES: usize = 20;
 
+/// Host-memory prompt-cache RAM bound (MiB) for the bundled llama-server
+/// (`-cram` / `--cache-ram`). Upstream defaults to 8192 MiB, which competes
+/// with Metal model weights on a 24GB unified-memory host (gpt-oss-20b alone
+/// is ~11GB) and has a documented Metal-OOM failure mode that poisons the
+/// backend until process restart. Two short system prefixes (classifier +
+/// chat) plus a conversation prefix fit in a few hundred MB; 512 MiB is
+/// generous headroom without unbounded cache growth. Raise only after live
+/// cache-entry sizes are measured.
+///
+/// Not user-tunable: an engine spawn constant sized for the ship hardware
+/// envelope, not a quality knob.
+pub const LLAMA_SERVER_CACHE_RAM_MIB: u32 = 512;
+
+/// Decode slot count for the bundled llama-server (`--parallel`). Always 1:
+/// Thuki is single-user, multi-slot splits ctx and historically caused cold
+/// first-turn prefill when warm-up and the user message landed on different
+/// slots. Do not raise without a new latency package and memory budget.
+///
+/// Not user-tunable: architectural constant of the single-slot design.
+pub const LLAMA_SERVER_PARALLEL_SLOTS: u32 = 1;
+
 /// Maximum bytes buffered (and retained) per captured engine stderr line. Not
 /// user-tunable: defense-in-depth bound so one pathological newline-less line
 /// (e.g. an enormous architecture string echoed from crafted GGUF metadata)
