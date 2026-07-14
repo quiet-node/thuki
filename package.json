@@ -55,7 +55,7 @@
     "undici": "^7.28.0"
   },
   "devDependencies": {
-    "@eslint-react/eslint-plugin": "5.14.1",
+    "@eslint-react/eslint-plugin": "5.14.8",
     "@eslint/js": "^10.0.1",
     "@tailwindcss/vite": "^4.2.2",
     "@tauri-apps/cli": "^2.10.1",
