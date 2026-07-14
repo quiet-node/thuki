@@ -40,7 +40,8 @@ function openDisclosure(): void {
 
 /**
  * Compact glass card matching chat chrome. Never blocks compose; search
- * proceeds underneath.
+ * proceeds underneath. Visual treatment follows ErrorCard-adjacent tokens
+ * (warm surface, thin accent, Nunito weights) until a design variant is locked.
  */
 export function SearchTrustNotice({
   onAcknowledge,
@@ -51,39 +52,45 @@ export function SearchTrustNotice({
       data-testid="search-trust-notice"
       role="region"
       aria-label={SEARCH_TRUST_NOTICE_TITLE}
-      className="mb-2 rounded-xl border border-white/10 bg-white/[0.04] px-3.5 py-3"
+      className="mb-2 flex items-stretch gap-3 rounded-md bg-white/[0.025] px-1 py-2"
     >
-      <p className="text-sm font-medium text-white/85 leading-snug">
-        {SEARCH_TRUST_NOTICE_TITLE}
-      </p>
-      <p className="mt-1 text-xs text-white/45 leading-relaxed">
-        {SEARCH_TRUST_NOTICE_BODY}{' '}
-        <button
-          type="button"
-          data-testid="search-trust-notice-how"
-          onClick={openDisclosure}
-          className="inline p-0 m-0 border-0 bg-transparent text-xs text-white/55 hover:text-white/80 underline-offset-2 hover:underline cursor-pointer"
-        >
-          {SEARCH_TRUST_NOTICE_LEARN_LABEL}
-        </button>
-      </p>
-      <div className="mt-2.5 flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          data-testid="search-trust-notice-got-it"
-          onClick={onAcknowledge}
-          className="rounded-md bg-white/12 hover:bg-white/18 px-2.5 py-1 text-xs font-medium text-white/90 transition-colors"
-        >
-          Got it
-        </button>
-        <button
-          type="button"
-          data-testid="search-trust-notice-settings"
-          onClick={onOpenSettings}
-          className="rounded-md px-2.5 py-1 text-xs font-medium text-white/55 hover:text-white/80 transition-colors"
-        >
-          Turn off in Settings
-        </button>
+      <div
+        aria-hidden
+        className="w-[2.5px] shrink-0 self-stretch min-h-[36px] rounded-sm bg-primary/55"
+      />
+      <div className="min-w-0 flex-1 py-0.5 pr-2">
+        <p className="text-sm font-medium text-white/90 leading-snug">
+          {SEARCH_TRUST_NOTICE_TITLE}
+        </p>
+        <p className="mt-1 text-xs text-white/45 leading-relaxed">
+          {SEARCH_TRUST_NOTICE_BODY}{' '}
+          <button
+            type="button"
+            data-testid="search-trust-notice-how"
+            onClick={openDisclosure}
+            className="inline cursor-pointer border-0 bg-transparent p-0 m-0 text-xs text-primary/80 hover:text-primary underline-offset-2 hover:underline"
+          >
+            {SEARCH_TRUST_NOTICE_LEARN_LABEL}
+          </button>
+        </p>
+        <div className="mt-2.5 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            data-testid="search-trust-notice-got-it"
+            onClick={onAcknowledge}
+            className="cursor-pointer rounded-lg border border-primary/45 bg-transparent px-3 py-1.5 text-[11.5px] font-semibold text-primary transition-colors hover:bg-primary/10"
+          >
+            Got it
+          </button>
+          <button
+            type="button"
+            data-testid="search-trust-notice-settings"
+            onClick={onOpenSettings}
+            className="cursor-pointer border-0 bg-transparent px-1 py-1.5 text-[11.5px] font-medium text-white/50 transition-colors hover:text-white/75"
+          >
+            Turn off in Settings
+          </button>
+        </div>
       </div>
     </div>
   );
