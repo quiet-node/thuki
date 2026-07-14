@@ -138,6 +138,36 @@ describe('SearchProgressBlock', () => {
     expect(chevron).toHaveStyle({ transform: 'rotate(180deg)' });
   });
 
+  it('auto-collapses the source list when preferSourcesExpanded is false', () => {
+    const { rerender } = render(
+      <SearchProgressBlock
+        stage={{ kind: 'reading_sources' }}
+        isSearching
+        sources={SOURCES}
+        preferSourcesExpanded
+      />,
+    );
+    expect(screen.getByTestId('search-progress-body')).toBeInTheDocument();
+
+    rerender(
+      <SearchProgressBlock
+        stage={{ kind: 'composing' }}
+        isSearching
+        sources={SOURCES}
+        preferSourcesExpanded={false}
+      />,
+    );
+    // Strip stays; list collapses so answer streaming has room.
+    expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('search-progress-body'),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId('search-progress-toggle')).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  });
+
   it('caps the sources list with max-height and inner overflow scroll', () => {
     render(
       <SearchProgressBlock

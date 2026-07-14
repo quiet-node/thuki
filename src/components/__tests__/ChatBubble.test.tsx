@@ -1458,8 +1458,22 @@ describe('ChatBubble', () => {
       );
     });
 
-    it('keeps SearchProgress while answer streams during a search turn', () => {
-      render(
+    it('keeps SearchProgress while answer streams but collapses the source list', () => {
+      const { rerender } = render(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching
+          searchStage={{ kind: 'reading_sources' }}
+          searchSources={[
+            { title: 'A', url: 'https://example.com/a' },
+          ]}
+        />,
+      );
+      expect(screen.getByTestId('search-progress-body')).toBeInTheDocument();
+
+      rerender(
         <ChatBubble
           role="assistant"
           content="Partial answer"
@@ -1472,6 +1486,9 @@ describe('ChatBubble', () => {
         />,
       );
       expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+      expect(
+        screen.queryByTestId('search-progress-body'),
+      ).not.toBeInTheDocument();
       expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
         'data-search-handoff-phase',
         'live',

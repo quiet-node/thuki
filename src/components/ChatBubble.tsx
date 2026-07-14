@@ -600,6 +600,9 @@ export function ChatBubble({
                     isSearching={isSearching || phase === 'exiting'}
                     isExiting={phase === 'exiting'}
                     shouldAutoScroll={shouldAutoScroll}
+                    // Expand while reading; collapse when answer tokens start
+                    // so the stream has room. Strip stays until generation ends.
+                    preferSourcesExpanded={!displayContent}
                   />
                 </motion.div>
               ) : null}

@@ -44,6 +44,12 @@ export interface SearchProgressBlockProps {
    * isolation tests, where an unconditional pin is the intended behavior.
    */
   shouldAutoScroll?: () => boolean;
+  /**
+   * Auto-expand the source list while reading. When false (e.g. answer tokens
+   * started streaming), auto policy collapses the list to free room; the strip
+   * stays mounted and the user can re-expand via the chevron.
+   */
+  preferSourcesExpanded?: boolean;
 }
 
 /**
@@ -98,6 +104,7 @@ export function SearchProgressBlock({
   isSearching,
   isExiting = false,
   shouldAutoScroll,
+  preferSourcesExpanded = true,
 }: SearchProgressBlockProps) {
   const panelId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -108,11 +115,13 @@ export function SearchProgressBlock({
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
 
   /**
-   * Auto policy: expand when searching with sources. Collapse when no
-   * sources yet. User toggle wins until sources go empty or the turn resets.
+   * Auto policy: expand while searching with sources and the parent still
+   * prefers expansion (reading phase). Collapse when answer streaming starts
+   * (`preferSourcesExpanded` false) so the answer has room; user can re-open.
    * Handoff exit always forces collapsed so body AnimatePresence can run.
    */
-  const autoExpanded = isSearching && hasSources;
+  const autoExpanded =
+    isSearching && hasSources && preferSourcesExpanded;
 
   // When a live search first gains sources (enters the auto-expand state),
   // drop any user override so the fresh batch re-opens the list. Done as a
@@ -120,11 +129,22 @@ export function SearchProgressBlock({
   // rather than a state-in-effect, so it lands in the same commit and never a
   // frame late. React bails out once the condition stops changing; the
   // `userExpanded !== null` guard keeps the setState converging.
-  const autoExpandActive = isSearching && !isExiting && hasSources;
+  const autoExpandActive =
+    isSearching && !isExiting && hasSources && preferSourcesExpanded;
   const prevAutoExpandActiveRef = useRef(autoExpandActive);
   if (prevAutoExpandActiveRef.current !== autoExpandActive) {
     prevAutoExpandActiveRef.current = autoExpandActive;
     if (autoExpandActive && userExpanded !== null) {
+      setUserExpanded(null);
+    }
+  }
+
+  // Answer started: clear any user-expanded override so the list auto-collapses
+  // for room; user can still re-expand via the chevron afterward.
+  const prevPreferExpandedRef = useRef(preferSourcesExpanded);
+  if (prevPreferExpandedRef.current !== preferSourcesExpanded) {
+    prevPreferExpandedRef.current = preferSourcesExpanded;
+    if (!preferSourcesExpanded && userExpanded !== null) {
       setUserExpanded(null);
     }
   }
