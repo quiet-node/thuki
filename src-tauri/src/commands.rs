@@ -1070,6 +1070,23 @@ fn record_citation_audit(
         return None;
     }
     let audit = crate::websearch::cite_check::audit_citations(answer, sources);
+    let answer_for_trace = crate::trace::truncate_for_trace(
+        answer,
+        crate::config::defaults::TRACE_AUDIT_ANSWER_MAX_BYTES,
+    );
+    let details = audit
+        .details
+        .iter()
+        .map(|d| crate::trace::CitationDetail {
+            index: d.index,
+            class: d.class.clone(),
+            claim: d.claim.clone(),
+            lexical_score: d.lexical_score.clone(),
+            numeric_checked: d.numeric_checked,
+            numeric_matched: d.numeric_matched,
+            numeric_missing: d.numeric_missing,
+        })
+        .collect();
     recorder.record(crate::trace::RecorderEvent::CitationAudit {
         cited: audit.cited,
         supported: audit.supported,
@@ -1080,6 +1097,8 @@ fn record_citation_audit(
         numeric_matched: audit.numeric_matched,
         numeric_missing: audit.numeric_missing,
         unverifiable: audit.unverifiable,
+        answer: answer_for_trace,
+        details,
     });
     eprintln!(
         "[search] citation audit: cited={} supported={} weak={} unsupported={} unverifiable={} numeric_checked={} numeric_matched={} numeric_missing={}",
@@ -4895,6 +4914,7 @@ mod tests {
             numeric_checked: 0,
             numeric_matched: 0,
             numeric_missing: 0,
+            details: vec![],
         };
         let msgs = build_repair_messages(base, "bad answer [3]", &audit);
         assert_eq!(msgs.len(), 3);

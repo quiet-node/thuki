@@ -47,7 +47,7 @@
 
 use crate::config::defaults::{
     CITE_MAGNITUDE_ABBREVIATIONS, CITE_MAGNITUDE_WORDS, CITE_MONTH_NAMES, CITE_SUPPORTED_MIN,
-    CITE_UNVERIFIABLE_MIN_SOURCE_BYTES, CITE_WEAK_MIN,
+    CITE_UNVERIFIABLE_MIN_SOURCE_BYTES, CITE_WEAK_MIN, TRACE_AUDIT_CLAIM_MAX_CHARS,
 };
 use crate::websearch::assemble::SourceBlock;
 use std::collections::{BTreeMap, HashSet};
@@ -85,8 +85,28 @@ pub struct CitationAudit {
     /// Of `numeric_checked`, how many were found in their cited source.
     pub numeric_matched: usize,
     /// Of `numeric_checked`, how many were absent from their cited source.
-    /// Each one caps its citation's classification at unsupported; see
-    /// [`classify_with_numeric_guard`].
+    /// See [`classify_with_numeric_guard`] for how missing interacts with
+    /// partial matches.
+    pub numeric_missing: usize,
+    /// Per-marker forensic rows for offline evaluation (claim text, class,
+    /// lexical score, numeric counts). Same length as `cited`.
+    pub details: Vec<CitationDetailRow>,
+}
+
+/// One citation marker's evaluation row produced by [`audit_citations`].
+/// Mirrored into the forensic JSONL `citation_audit.details` list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CitationDetailRow {
+    /// 1-based source number from the `[n]` marker.
+    pub index: usize,
+    /// `supported` | `weak` | `unsupported` | `unverifiable`.
+    pub class: String,
+    /// Claim sentence with the marker excised (truncated for dump size).
+    pub claim: String,
+    /// Lexical support fraction in \[0, 1\], or empty when not scored.
+    pub lexical_score: String,
+    pub numeric_checked: usize,
+    pub numeric_matched: usize,
     pub numeric_missing: usize,
 }
 
@@ -133,11 +153,16 @@ pub fn audit_citations(answer_text: &str, sources: &[SourceBlock]) -> CitationAu
         numeric_checked: 0,
         numeric_matched: 0,
         numeric_missing: 0,
+        details: Vec::new(),
     };
 
     for cref in refs {
         audit.cited += 1;
         let source = sources.iter().find(|s| s.index == cref.index);
+        let detail_claim = claim_text(answer_text, &sentences, &cref);
+        let mut detail_score = String::new();
+        let mut detail_checked = 0usize;
+        let mut detail_missing = 0usize;
         let class = match source {
             // Out-of-range citation: no source to back it, so unsupported.
             None => CiteClass::Unsupported,
@@ -148,9 +173,9 @@ pub fn audit_citations(answer_text: &str, sources: &[SourceBlock]) -> CitationAu
                 CiteClass::Unverifiable
             }
             Some(source) => {
-                let claim = claim_text(answer_text, &sentences, &cref);
-                let lexical_class = classify(support_score(&claim, &source.text));
-                let claim_facts = extract_numeric_facts(&claim);
+                let score = support_score(&detail_claim, &source.text);
+                let lexical_class = classify(score);
+                let claim_facts = extract_numeric_facts(&detail_claim);
                 // Only scan the (potentially large) source text when the
                 // claim actually has a number or date to check against it.
                 let (checked, missing) =
@@ -163,6 +188,9 @@ pub fn audit_citations(answer_text: &str, sources: &[SourceBlock]) -> CitationAu
                 audit.numeric_checked += checked;
                 audit.numeric_missing += missing;
                 audit.numeric_matched += checked - missing;
+                detail_score = format!("{score:.3}");
+                detail_checked = checked;
+                detail_missing = missing;
                 classify_with_numeric_guard(lexical_class, checked, missing)
             }
         };
@@ -175,9 +203,29 @@ pub fn audit_citations(answer_text: &str, sources: &[SourceBlock]) -> CitationAu
             }
             CiteClass::Unverifiable => audit.unverifiable += 1,
         }
+        audit.details.push(CitationDetailRow {
+            index: cref.index,
+            class: class.as_trace_label().to_string(),
+            claim: truncate_chars(&detail_claim, TRACE_AUDIT_CLAIM_MAX_CHARS),
+            lexical_score: detail_score,
+            numeric_checked: detail_checked,
+            numeric_matched: detail_checked.saturating_sub(detail_missing),
+            numeric_missing: detail_missing,
+        });
     }
 
     audit
+}
+
+/// Truncates `text` to at most `max_chars` Unicode scalars, with an ellipsis
+/// when clipped (forensic dump size bound).
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_string();
+    }
+    let take = max_chars.saturating_sub(1);
+    format!("{}…", text.chars().take(take).collect::<String>())
 }
 
 /// True when the answer cited at least one source and **every** citation was
@@ -334,6 +382,18 @@ enum CiteClass {
     /// [`CITE_UNVERIFIABLE_MIN_SOURCE_BYTES`]: nothing substantive to score
     /// the claim against, so the citation is neither trusted nor accused.
     Unverifiable,
+}
+
+impl CiteClass {
+    /// Stable snake_case label written into forensic `citation_audit.details`.
+    fn as_trace_label(self) -> &'static str {
+        match self {
+            CiteClass::Supported => "supported",
+            CiteClass::Weak => "weak",
+            CiteClass::Unsupported => "unsupported",
+            CiteClass::Unverifiable => "unverifiable",
+        }
+    }
 }
 
 /// Buckets a support score into a [`CiteClass`] using the baked-in thresholds.
@@ -1412,6 +1472,7 @@ mod tests {
                 numeric_checked: 0,
                 numeric_matched: 0,
                 numeric_missing: 0,
+                details: vec![],
             }
         );
     }
@@ -1960,6 +2021,7 @@ mod tests {
             numeric_checked: 0,
             numeric_matched: 0,
             numeric_missing: 0,
+            details: vec![],
         }
     }
 
@@ -1984,6 +2046,7 @@ mod tests {
             numeric_checked: 0,
             numeric_matched: 0,
             numeric_missing: 0,
+            details: vec![],
         };
         assert!(!is_total_citation_failure(&audit));
         assert_eq!(honest_failure_note(&audit), None);
@@ -2031,6 +2094,7 @@ mod tests {
             numeric_checked: 0,
             numeric_matched: 0,
             numeric_missing: 0,
+            details: vec![],
         };
         assert_eq!(finalize_answer_after_audit("ok [1]", &audit), "ok [1]");
     }
@@ -2072,6 +2136,7 @@ mod tests {
             numeric_checked: 0,
             numeric_matched: 0,
             numeric_missing: 0,
+            details: vec![],
         };
         let out = finalize_answer_after_audit(answer, &audit);
         assert_eq!(out, "A is true [1]. B is false.");

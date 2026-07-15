@@ -59,9 +59,9 @@ use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::ChatMessage;
-use crate::config::defaults::SERP_EARLY_STOP_HITS;
+use crate::config::defaults::{SERP_EARLY_STOP_HITS, TRACE_SOURCE_TEXT_MAX_BYTES};
 use crate::net::transport::HttpTransport;
-use crate::trace::{BoundRecorder, EngineStat, RecorderEvent, RetrievedSource};
+use crate::trace::{truncate_for_trace, BoundRecorder, EngineStat, RecorderEvent, RetrievedSource};
 use crate::websearch::assemble::{assemble_context, SourceBlock};
 use crate::websearch::cache::{CachedSearch, SourceCache};
 use crate::websearch::encyclopedia::{fetch_encyclopedia, is_volatile_question};
@@ -1533,8 +1533,10 @@ fn grounded_answer(
         sources: sources
             .iter()
             .map(|s| RetrievedSource {
+                index: s.index,
                 url: s.url.clone(),
                 title: s.title.clone(),
+                text: truncate_for_trace(&s.text, TRACE_SOURCE_TEXT_MAX_BYTES),
             })
             .collect(),
         engine_stats,
@@ -1838,8 +1840,10 @@ async fn judge_and_requery(
         sources: sources
             .iter()
             .map(|s| RetrievedSource {
+                index: s.index,
                 url: s.url.clone(),
                 title: s.title.clone(),
+                text: truncate_for_trace(&s.text, TRACE_SOURCE_TEXT_MAX_BYTES),
             })
             .collect(),
         engine_stats: Vec::new(),
@@ -4724,10 +4728,12 @@ mod tests {
         assert!(events.iter().any(|e| matches!(
             e,
             RecorderEvent::SearchRetrieved { tier, sources, .. }
-            if tier == "cache" && sources == &vec![RetrievedSource {
-                url: "https://blog.rust-lang.org/".into(),
-                title: "Rust 1.90.0".into(),
-            }]
+            if tier == "cache"
+                && sources.len() == 1
+                && sources[0].index == 1
+                && sources[0].url == "https://blog.rust-lang.org/"
+                && sources[0].title == "Rust 1.90.0"
+                && sources[0].text.contains("Rust 1.90.0")
         )));
     }
 
@@ -4975,10 +4981,11 @@ mod tests {
         assert!(events.iter().any(|e| matches!(
             e,
             RecorderEvent::SearchRetrieved { tier, sources, .. }
-            if tier == "news" && sources == &vec![RetrievedSource {
-                url: "https://news.google.com/".into(),
-                title: "Google News headlines: f1 race winner".into(),
-            }]
+            if tier == "news"
+                && sources.len() == 1
+                && sources[0].url == "https://news.google.com/"
+                && sources[0].title == "Google News headlines: f1 race winner"
+                && !sources[0].text.is_empty()
         )));
     }
 
@@ -5675,10 +5682,11 @@ mod tests {
             .position(|e| {
                 matches!(e,
                 RecorderEvent::SearchRetrieved { tier, sources, round: Some(1), .. }
-                if tier == "engine" && sources == &vec![RetrievedSource {
-                    url: "https://match.example/".into(),
-                    title: "Treaty of Versailles".into(),
-                }])
+                if tier == "engine"
+                    && sources.len() == 1
+                    && sources[0].url == "https://match.example/"
+                    && sources[0].title == "Treaty of Versailles"
+                    && !sources[0].text.is_empty())
             })
             .expect("round-one SearchRetrieved must be recorded when a requery fires");
         let requeried_index = events

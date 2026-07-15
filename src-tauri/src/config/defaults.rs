@@ -1324,6 +1324,27 @@ pub const CITE_WEAK_MIN: f64 = 0.3;
 /// Not user-tunable: an internal defensive bound.
 pub const CITE_AUDIT_MAX_ANSWER_BYTES: usize = 262_144;
 
+/// Cap on each source's body text written into a forensic
+/// [`crate::trace::RecorderEvent::SearchRetrieved`] record. Tracing is
+/// opt-in and evaluation-oriented: the full retrieved chunk is what the
+/// writer and citation audit saw, so re-eval offline needs it, but a
+/// multi-source turn must not grow a single JSONL line without bound.
+///
+/// Not user-tunable: forensic dump size bound (only when `trace_enabled`).
+pub const TRACE_SOURCE_TEXT_MAX_BYTES: usize = 24_576;
+
+/// Cap on the audited answer body embedded in a
+/// [`crate::trace::RecorderEvent::CitationAudit`] record (the text the
+/// audit actually scored, including pre-repair streams).
+///
+/// Not user-tunable: forensic dump size bound.
+pub const TRACE_AUDIT_ANSWER_MAX_BYTES: usize = 32_768;
+
+/// Cap on per-citation claim text in a forensic citation-detail row.
+///
+/// Not user-tunable: forensic dump size bound.
+pub const TRACE_AUDIT_CLAIM_MAX_CHARS: usize = 512;
+
 /// Maximum number of targeted writer repair rounds after a citation audit
 /// finds unsupported claims. Each round is one extra full writer stream
 /// (costly on reasoning models: multi-second thinking before any rewrite).
