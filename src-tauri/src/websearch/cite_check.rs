@@ -390,12 +390,13 @@ pub fn strip_unsupported_citations(answer: &str, unsupported_indices: &[usize]) 
 pub fn finalize_answer_after_audit(answer: &str, audit: &CitationAudit) -> String {
     // Zero [n]: nothing to strip. After repair rounds (caller already looped),
     // still-uncited prose gets the same honest note as total bad-cite failure.
+    // `cited == 0` is always total failure under [`is_total_citation_failure`],
+    // so the note is categorical here (no defensive None branch).
     if audit.cited == 0 {
-        return match honest_failure_note(audit) {
-            Some(note) if answer.trim().is_empty() => note,
-            Some(note) => format!("{answer}\n\n{note}"),
-            None => answer.to_string(),
-        };
+        if answer.trim().is_empty() {
+            return HONEST_FAILURE_NOTE_BODY.to_string();
+        }
+        return format!("{answer}\n\n{HONEST_FAILURE_NOTE_BODY}");
     }
     if audit.unsupported_indices.is_empty() {
         return answer.to_string();
@@ -737,10 +738,9 @@ fn content_tokens(text: &str) -> Vec<String> {
 /// magnitude words after a digit run so model-emitted thin spaces still
 /// fold `$12 million` to `12000000`.
 fn skip_unicode_whitespace(text: &str, mut byte_i: usize) -> usize {
-    while byte_i < text.len() {
-        let Some(ch) = text[byte_i..].chars().next() else {
-            break;
-        };
+    // Iterate chars from the slice: a non-empty UTF-8 suffix always yields
+    // at least one char, so there is no unreachable None branch.
+    for ch in text[byte_i..].chars() {
         if !ch.is_whitespace() {
             break;
         }
@@ -2288,5 +2288,48 @@ mod tests {
         assert!(out.contains("Fake number 999."));
         assert!(out.ends_with(HONEST_FAILURE_NOTE_BODY));
         assert!(out.contains(&format!("\n\n{HONEST_FAILURE_NOTE_BODY}")));
+    }
+
+    #[test]
+    fn finalize_answer_after_audit_zero_cite_empty_answer_is_note_alone() {
+        let audit = CitationAudit {
+            cited: 0,
+            supported: 0,
+            weak: 0,
+            unsupported: 0,
+            unverifiable: 0,
+            unsupported_indices: vec![],
+            numeric_checked: 0,
+            numeric_matched: 0,
+            numeric_missing: 0,
+            details: vec![],
+        };
+        assert_eq!(
+            finalize_answer_after_audit("   ", &audit),
+            HONEST_FAILURE_NOTE_BODY
+        );
+    }
+
+    #[test]
+    fn truncate_chars_clips_with_ellipsis() {
+        // Direct unit coverage for the forensic claim-size bound helper.
+        assert_eq!(truncate_chars("short", 10), "short");
+        let long = "abcdefghij";
+        assert_eq!(truncate_chars(long, 5), "abcd…");
+        // Multi-byte: count by Unicode scalars, never mid-scalar.
+        assert_eq!(truncate_chars("🎉🎉🎉", 2), "🎉…");
+    }
+
+    #[test]
+    fn skip_unicode_whitespace_advances_over_nnbsp_and_stops() {
+        let nnbsp = '\u{202f}';
+        let text = format!("12{nnbsp}{nnbsp}million");
+        // Start just past "12".
+        let after = skip_unicode_whitespace(&text, 2);
+        assert_eq!(&text[after..], "million");
+        // No whitespace at pos: unchanged.
+        assert_eq!(skip_unicode_whitespace("abc", 1), 1);
+        // At end: unchanged.
+        assert_eq!(skip_unicode_whitespace("ab", 2), 2);
     }
 }

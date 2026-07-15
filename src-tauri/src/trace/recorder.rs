@@ -1498,4 +1498,31 @@ mod tests {
         assert_eq!(dump[0]["chunk"], "a");
         assert_eq!(dump[1]["chunk"], "b");
     }
+
+    // ── truncate_for_trace ───────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_for_trace_leaves_short_text_unchanged() {
+        assert_eq!(truncate_for_trace("hello", 10), "hello");
+        assert_eq!(truncate_for_trace("exact", 5), "exact");
+    }
+
+    #[test]
+    fn truncate_for_trace_clips_on_char_boundary_with_ellipsis() {
+        // Multi-byte emoji: each is 4 bytes; cap mid-sequence must not panic
+        // and must land on a char boundary before the ellipsis.
+        let text = "ab🎉cd";
+        let out = truncate_for_trace(text, 5);
+        assert!(out.ends_with('…'));
+        assert!(out.len() <= 5 + '…'.len_utf8());
+        // "ab" (2 bytes) fits under max_bytes-1; emoji does not.
+        assert_eq!(out, "ab…");
+    }
+
+    #[test]
+    fn truncate_for_trace_hard_cap_zero_yields_ellipsis_only() {
+        // max_bytes 0 / 1: saturating_sub leaves end at 0 → empty prefix + ellipsis.
+        assert_eq!(truncate_for_trace("xyz", 0), "…");
+        assert_eq!(truncate_for_trace("xyz", 1), "…");
+    }
 }

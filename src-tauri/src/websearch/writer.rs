@@ -147,10 +147,11 @@ pub(crate) fn format_partial_missing_directive(missing: &str) -> String {
                 last_ws = Some(byte_idx);
             }
         }
-        match (cut, last_ws) {
-            (Some(_), Some(ws)) if ws > 0 => cleaned[..ws].to_string(),
-            (Some(b), _) => cleaned[..b].to_string(),
-            _ => cleaned,
+        // Overlong `cleaned` always yields `cut` (loop hits `count == cap`).
+        let byte_idx = cut.expect("overlong cleaned always yields a cut index");
+        match last_ws {
+            Some(ws) if ws > 0 => cleaned[..ws].to_string(),
+            _ => cleaned[..byte_idx].to_string(),
         }
     };
     let gap = if capped.is_empty() {
@@ -652,6 +653,28 @@ mod tests {
         let d = format_partial_missing_directive("  total   GDP\nvalue  ");
         assert!(d.contains("total GDP value"));
         assert!(!d.contains('\n'));
+    }
+
+    #[test]
+    fn format_partial_missing_directive_hard_cuts_and_uses_default_gap() {
+        let cap = crate::config::defaults::REQUERY_MISSING_MAX_CHARS;
+        // No whitespace: hard cut on char boundary.
+        let long = "m".repeat(cap + 30);
+        let d = format_partial_missing_directive(&long);
+        assert!(d.contains(&"m".repeat(cap)));
+        assert!(!d.contains(&"m".repeat(cap + 1)));
+        // Empty / whitespace-only → default gap phrase.
+        let empty = format_partial_missing_directive("   \n\t  ");
+        assert!(empty.contains("the exact figure or detail the user asked for"));
+        // Over-cap with word boundary: cut at last space before cap.
+        let words = format!(
+            "{} {}",
+            "word ".repeat(cap / 5 + 2).trim_end(),
+            "tailtailtail"
+        );
+        let cut = format_partial_missing_directive(&words);
+        assert!(!cut.contains("tailtailtail"));
+        assert!(cut.contains("word"));
     }
 
     #[test]

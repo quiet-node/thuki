@@ -289,6 +289,17 @@ struct JudgeWire {
 /// Pure boundary sanitizer for LLM output: called only from [`parse_judge`].
 pub(crate) fn normalize_requery_queries(raw: Vec<String>) -> Vec<String> {
     use crate::config::defaults::{REQUERY_QUERY_MAX, REQUERY_QUERY_MAX_CHARS};
+    normalize_requery_queries_with_caps(raw, REQUERY_QUERY_MAX, REQUERY_QUERY_MAX_CHARS)
+}
+
+/// Same as [`normalize_requery_queries`] with injectable caps so tests can
+/// drive the hard-cut and post-cap-empty branches without rewriting product
+/// constants.
+fn normalize_requery_queries_with_caps(
+    raw: Vec<String>,
+    max_queries: usize,
+    max_chars: usize,
+) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for query in raw {
@@ -298,13 +309,13 @@ pub(crate) fn normalize_requery_queries(raw: Vec<String>) -> Vec<String> {
         }
         // Char-cap without mid-word glue when possible: take a prefix, then if
         // we clipped, cut back to the last whitespace so SERP `q=` stays clean.
-        let capped = if trimmed.chars().count() <= REQUERY_QUERY_MAX_CHARS {
+        let capped = if trimmed.chars().count() <= max_chars {
             trimmed.to_string()
         } else {
             let mut cut_at = None;
             let mut last_ws = None;
             for (count, (byte_idx, ch)) in trimmed.char_indices().enumerate() {
-                if count == REQUERY_QUERY_MAX_CHARS {
+                if count == max_chars {
                     cut_at = Some(byte_idx);
                     break;
                 }
@@ -312,10 +323,11 @@ pub(crate) fn normalize_requery_queries(raw: Vec<String>) -> Vec<String> {
                     last_ws = Some(byte_idx);
                 }
             }
-            match (cut_at, last_ws) {
-                (Some(_), Some(ws)) if ws > 0 => trimmed[..ws].to_string(),
-                (Some(byte_idx), _) => trimmed[..byte_idx].to_string(),
-                _ => trimmed.to_string(),
+            // Overlong input always finds `cut_at` (loop hits `count == max_chars`).
+            let byte_idx = cut_at.expect("overlong query always yields a cut index");
+            match last_ws {
+                Some(ws) if ws > 0 => trimmed[..ws].to_string(),
+                _ => trimmed[..byte_idx].to_string(),
             }
         };
         let capped = capped.trim();
@@ -324,7 +336,7 @@ pub(crate) fn normalize_requery_queries(raw: Vec<String>) -> Vec<String> {
         }
         if seen.insert(capped.to_ascii_lowercase()) {
             out.push(capped.to_string());
-            if out.len() == REQUERY_QUERY_MAX {
+            if out.len() == max_queries {
                 break;
             }
         }
@@ -732,6 +744,44 @@ mod tests {
         assert!(out[0].chars().count() <= crate::config::defaults::REQUERY_QUERY_MAX_CHARS);
         // Prefer cutting at whitespace rather than mid-token when possible.
         assert!(!out[0].ends_with('b') || out[0].chars().count() < 120);
+    }
+
+    #[test]
+    fn normalize_requery_queries_drops_empty_and_hard_cuts_single_token() {
+        // Whitespace-only entries drop; a single overlong token with no
+        // whitespace hard-cuts on the char boundary (no word to back up to).
+        let long_token = "x".repeat(crate::config::defaults::REQUERY_QUERY_MAX_CHARS + 40);
+        let out = normalize_requery_queries(vec![
+            "   ".into(),
+            "".into(),
+            long_token.clone(),
+            long_token, // de-dupe after cap
+        ]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].chars().count(),
+            crate::config::defaults::REQUERY_QUERY_MAX_CHARS
+        );
+        assert!(out[0].chars().all(|c| c == 'x'));
+    }
+
+    #[test]
+    fn normalize_requery_queries_post_cap_empty_is_dropped() {
+        // max_chars 0: hard-cut at byte 0 → empty after trim → drop entry.
+        let out = normalize_requery_queries_with_caps(vec!["abc".into()], 2, 0);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn normalize_requery_queries_respects_max_query_count() {
+        let a = "alpha query one".to_string();
+        let b = "beta query two".to_string();
+        let c = "gamma should not appear".to_string();
+        let out = normalize_requery_queries(vec![a.clone(), a, b.clone(), c]);
+        assert_eq!(
+            out,
+            vec!["alpha query one".to_string(), "beta query two".to_string()]
+        );
     }
 
     #[test]
