@@ -12,8 +12,12 @@ name: Engine Regression Gate
 # llama-server's /v1 chat endpoint (Thuki's actual runtime path, so a broken chat
 # template is caught) with greedy decoding, and asserts the answers are
 # semantically correct rather than byte-identical to a frozen golden (greedy
-# output is only reproducible on the same build + hardware). A throughput floor
-# catches a gross performance regression such as a silent CPU fallback.
+# output is only reproducible on the same build + hardware). Generation
+# throughput is reported in the job summary as an informational number only: it
+# does not gate. The hosted runner's tok/s for this model swings wide enough that
+# any floor worth setting fired on runner noise rather than on real breakage, and
+# it never caught a CPU fallback (Metal was live in every failing run). Perf
+# regressions are caught by the mandatory human review on engine-bump PRs.
 
 on:
   pull_request:

@@ -15,7 +15,7 @@ The pin is two constants in `scripts/ensure-llama-server.ts`: `LLAMA_CPP_TAG` an
 2. Verifies `codesign -vv` on the `llama-server` binary and every bundled dylib.
 3. Downloads the pinned gate model (verified by sha256, cached) and drives it through `llama-server`'s `/v1/chat/completions` endpoint — Thuki's real runtime path, so a broken chat template is caught — with greedy decoding (per-request `samplers: ["top_k"]`, `top_k: 1`, `seed: 0`, penalties off).
 4. Asserts the answers are **semantically** correct, not byte-identical to a frozen golden (greedy output is only reproducible on the same build + hardware, so a golden would false-fail across a bump while real breakage — crash, garbage, broken template, unsupported architecture — still trips).
-5. Reads the generation throughput from llama-server's own timings and fails on a **catastrophic-throughput floor** (a silent CPU fallback). The exact tok/s is printed in the job summary; subtler performance regressions are caught by the human review on the (rare) bump PR — a deliberate choice not to chase a noisy absolute perf baseline on shared CI runners.
+5. Reads the generation throughput from llama-server's own timings and prints the tok/s in the job summary as an **informational** signal. It does not gate. The hosted macOS runner's throughput for this model swings across a wide band, so a floor set anywhere useful fired on runner noise instead of on breakage, and it never once caught a CPU fallback (Metal was live in every failing run). Performance is judged by the human review on the (rare) bump PR: a deliberate choice not to chase a noisy absolute perf baseline on shared CI runners.
 
 The decision logic (`scripts/engine-gate/assertions.ts`, `report.ts`) is pure and unit-tested; the workflow shell collects the raw signals and `decide.ts` judges them.
 
@@ -27,7 +27,7 @@ The decision logic (`scripts/engine-gate/assertions.ts`, `report.ts`) is pure an
 
 Because no inspectable project in this space runs one. Ollama's llama.cpp-update workflow builds the runtime; correctness comes from its normal integration tests. Jan/cortex's submodule-bump quality gate builds a matrix and runs a real-model E2E smoke. Neither compares logit distributions or gates a throughput ratio against the previous build. Build + load-a-real-model + generate + assert is the field standard, and matching it (rather than building a bespoke numeric gate that needs threshold calibration and babysitting) is the right reliability/maintainability trade.
 
-The one place the field is demonstrably weak is performance: Ollama shipped a [~56% regression](https://github.com/ollama/ollama/issues/15601) from a bump because it had no perf gate. The throughput floor plus the printed tok/s on the human-reviewed bump PR is the deliberately cheap answer to that; if it proves insufficient, the right next step is a simple recorded-throughput comparison, not a KL apparatus.
+The one place the field is demonstrably weak is performance: Ollama shipped a [~56% regression](https://github.com/ollama/ollama/issues/15601) from a bump because it had no perf gate. The printed tok/s on the human-reviewed bump PR is the deliberately cheap answer to that. Gating on it was tried and removed: a shared CI runner does not hold throughput steady enough for an absolute floor to mean anything. If the printed number proves insufficient, the right next step is a stable measurement on dedicated hardware, not a tighter threshold on noisy hardware and not a KL apparatus.
 
 ## Bump via Renovate
 

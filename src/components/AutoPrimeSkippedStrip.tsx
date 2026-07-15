@@ -8,32 +8,35 @@
  *
  * Two-stage confirm: stage 1 states the fit warning and offers "Switch model"
  * (primary) or "Load anyway"; clicking "Load anyway" does NOT load yet, it
- * advances to stage 2, which spells out the consequence of forcing an
- * oversized model into memory and swaps the button roles so "Acknowledge"
- * becomes the deliberate, second-click confirmation. Only that stage-2 click
- * force-loads the model past the gate. There is no dismiss affordance: the
- * strip resolves by switching model or loading anyway, and clears on its own
- * when a load or download supersedes it.
+ * advances to stage 2, which keeps the fit warning and adds the consequence
+ * as muted text underneath, with "Acknowledge" as the deliberate second-click
+ * force-load. There is no dismiss affordance: the strip resolves by switching
+ * model or loading anyway, and clears on its own when a load or download
+ * supersedes it.
  *
- * Mirrors `DownloadStatusStrip`'s borderless Shell pattern (thin accent
- * edge, dot, inline row, no box of its own) and reuses the warning amber
- * already established for `InsufficientMemory` (`ErrorCard.tsx`'s
- * `barColors.InsufficientMemory`) rather than inventing a new color.
+ * Visual: amber status dot, primary body copy, muted consequence on confirm
+ * (height+opacity expand matching ask-bar strips), SearchTrustNotice-style
+ * action row (outlined primary + ghost secondary).
  */
 import { useState } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { INSUFFICIENT_MEMORY_CONSEQUENCE } from './ErrorCard';
+
+/**
+ * Shared ease for height expands elsewhere in the ask bar (command suggestion).
+ * Soft overshoot-free curve for premium feel without bounce.
+ */
+const EXPAND_EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
 
 /** Warning amber, matching `ErrorCard.tsx`'s `barColors.InsufficientMemory`. */
 const AMBER = '#f59e0b';
-/** Muted secondary-action color, matching `DownloadStatusStrip`'s `MUTED`. */
-const MUTED = 'rgba(255,255,255,0.4)';
-/** Primary-action color, matching `DownloadStatusStrip`'s `ACTION`. */
-const ACTION = '#ff8d5c';
 
 /** Bytes per gigabyte, matching `ErrorCard.tsx`'s divisor. */
 const BYTES_PER_GB = 1024 ** 3;
 
-/** Formats a byte count as a one-decimal GB string, matching `ErrorCard.tsx`. */
+/**
+ * Formats a byte count as a one-decimal GB string, matching `ErrorCard.tsx`.
+ */
 function formatGb(bytes: number): string {
   return (bytes / BYTES_PER_GB).toFixed(1);
 }
@@ -46,6 +49,13 @@ export interface AutoPrimeSkippedStripProps {
   requiredBytes: number;
   /** Memory estimated available at skip time, in bytes. */
   availableBytes: number;
+  /**
+   * The memory gate's ceiling fraction (`MODEL_FIT_CEILING_FRACTION` on the
+   * backend), e.g. `0.8` for 80%. Rendered in the stage-1 message so the "may
+   * not fit" verdict states the actual headroom rule instead of leaving the
+   * 80%-of-available gate invisible in the copy.
+   */
+  ceilingFraction: number;
   /** Opens the model picker so the user can pick a different model. */
   onSwitchModel: () => void;
   /**
@@ -56,116 +66,132 @@ export interface AutoPrimeSkippedStripProps {
   onLoadAnyway: () => void;
 }
 
-/**
- * Shared style for both action buttons in both stages: a plain text button
- * with no background, border, or box. Prominence comes purely from the color
- * ({@link ACTION} vs {@link MUTED}) and position, never from a filled or
- * bordered treatment, so the primary and secondary read as the same control
- * with only color and order distinguishing them across the two stages.
- */
-const BUTTON_CLASS = 'shrink-0 font-bold cursor-pointer';
-const BUTTON_STYLE_BASE = {
-  background: 'transparent',
-  border: 'none',
-} as const;
+/** Outlined primary CTA, matching SearchTrustNotice "Got it". */
+const PRIMARY_BTN_CLASS =
+  'cursor-pointer rounded-lg border border-primary/45 bg-transparent px-3 py-1.5 text-[11.5px] font-semibold text-primary transition-colors hover:bg-primary/10 w-fit';
+
+/** Ghost secondary CTA, matching SearchTrustNotice "Turn off in Settings". */
+const GHOST_BTN_CLASS =
+  'cursor-pointer border-0 bg-transparent px-1 py-1.5 text-[11.5px] font-medium text-white/50 transition-colors hover:text-white/75 w-fit';
 
 /**
  * Renders the two-stage ambient memory warning. Stage 1 shows the model name
- * and need-vs-available GB figures; stage 2 (after the first "Load anyway"
- * click) replaces that message with the consequence copy and swaps the button
- * roles so a second, deliberate "Acknowledge" click confirms the force-load.
+ * and need-vs-available GB figures; stage 2 keeps that line and adds the
+ * consequence as muted text, with Acknowledge as the deliberate force-load.
  */
 export function AutoPrimeSkippedStrip({
   modelName,
   requiredBytes,
   availableBytes,
+  ceilingFraction,
   onSwitchModel,
   onLoadAnyway,
 }: AutoPrimeSkippedStripProps) {
   // why: the stage lives inside the strip, not the host, so the confirm is a
-  // pure interaction detail. The first "Load anyway" click only flips this;
+  // pure presentation detail. The first "Load anyway" click only flips this;
   // the actual force-load fires on the stage-2 click. Keeping it internal also
   // means the strip resets to stage 1 whenever the host remounts it (a fresh
   // skip event), so a stale confirm never carries over to a new warning.
   const [confirming, setConfirming] = useState(false);
+  const reduceMotion = useReducedMotion();
 
-  const message = confirming
-    ? INSUFFICIENT_MEMORY_CONSEQUENCE
-    : `${modelName} may not fit in memory (~${formatGb(requiredBytes)} GB needed, ~${formatGb(availableBytes)} GB available)`;
+  // Keep fit line always; ceilingFraction is this branch's 80% headroom copy.
+  const fitMessage = `${modelName} may not fit in memory (~${formatGb(requiredBytes)} GB needed, ~${formatGb(availableBytes)} GB available, over the ${Math.round(ceilingFraction * 100)}% safe limit)`;
 
-  // The confirm/force button: stage 1 reads "Load anyway" (muted, rendered
-  // second) and only advances to the consequence stage; stage 2 reads
-  // "Acknowledge" (primary ACTION color, rendered first), the deliberate second
-  // click that force-loads the model past the memory gate. Only the label,
-  // color, and order change between stages; the plain borderless styling is
-  // identical. The aria-label tracks the visible text.
-  const confirmLabel = confirming ? 'Acknowledge' : 'Load anyway';
-  const loadAnyway = (
-    <button
-      type="button"
-      aria-label={confirmLabel}
-      onClick={confirming ? onLoadAnyway : () => setConfirming(true)}
-      className={BUTTON_CLASS}
-      style={{ ...BUTTON_STYLE_BASE, color: confirming ? ACTION : MUTED }}
-    >
-      {confirmLabel}
-    </button>
-  );
+  // Stage 1: Switch model = primary (safe path). Load anyway = ghost.
+  // Stage 2: Acknowledge = primary (deliberate force). Switch model = ghost.
+  const primaryLabel = confirming ? 'Acknowledge' : 'Switch model';
+  const secondaryLabel = confirming ? 'Switch model' : 'Load anyway';
 
-  // The "Switch model" button: primary (ACTION color, rendered first) in
-  // stage 1 where picking a smaller model is the safe recommendation; muted in
-  // stage 2 where "Load anyway" takes over as the confirmed action.
-  const switchModel = (
-    <button
-      type="button"
-      aria-label="Switch model"
-      onClick={onSwitchModel}
-      className={BUTTON_CLASS}
-      style={{ ...BUTTON_STYLE_BASE, color: confirming ? MUTED : ACTION }}
-    >
-      Switch model
-    </button>
-  );
+  /**
+   * Handles the primary button: Switch model in stage 1, force-load in stage 2.
+   */
+  function onPrimaryClick(): void {
+    if (confirming) {
+      onLoadAnyway();
+    } else {
+      onSwitchModel();
+    }
+  }
+
+  /**
+   * Handles the secondary button: advance to confirm in stage 1, or Switch
+   * model in stage 2.
+   */
+  function onSecondaryClick(): void {
+    if (confirming) {
+      onSwitchModel();
+    } else {
+      setConfirming(true);
+    }
+  }
 
   return (
     <div
       role="status"
       aria-live="polite"
       data-testid="auto-prime-skipped-strip"
-      className="mx-4 mt-2 mb-0"
-      style={{ color: 'var(--color-text-primary, #f0f0f2)' }}
+      className="px-3.5 py-2.5"
     >
-      <span
-        aria-hidden="true"
-        className="block h-[2px] rounded-full overflow-hidden"
-        style={{ background: 'rgba(255,255,255,0.08)' }}
-      >
-        <span
-          className="block h-full rounded-full"
-          style={{ width: '100%', background: AMBER }}
-        />
-      </span>
-      <div className="flex items-center gap-2.5 pt-1.5 text-xs">
+      <div className="flex items-start gap-2.5">
         <span
           aria-hidden="true"
-          className="shrink-0 w-2 h-2 rounded-full"
+          data-testid="auto-prime-skipped-dot"
+          className="mt-1 shrink-0 w-2 h-2 rounded-full"
           style={{ background: AMBER, boxShadow: `0 0 6px ${AMBER}` }}
         />
-        <span className="flex-1 leading-snug">{message}</span>
-        {/* Role swap by stage: stage 1 leads with "Switch model" (the safe
-            recommendation); stage 2 leads with "Acknowledge" (the confirmed
-            force). Order and color are the only things that change. */}
-        {confirming ? (
-          <>
-            {loadAnyway}
-            {switchModel}
-          </>
-        ) : (
-          <>
-            {switchModel}
-            {loadAnyway}
-          </>
-        )}
+        {/* Copy + actions share this column so CTAs line up with the text,
+            not under the status dot. */}
+        <div className="min-w-0 flex-1">
+          <p className="text-xs text-text-primary leading-relaxed">
+            {fitMessage}
+          </p>
+          <AnimatePresence initial={false}>
+            {confirming ? (
+              <motion.div
+                key="auto-prime-consequence"
+                initial={
+                  reduceMotion ? false : { height: 0, opacity: 0, y: -4 }
+                }
+                animate={{ height: 'auto', opacity: 1, y: 0 }}
+                exit={
+                  reduceMotion ? undefined : { height: 0, opacity: 0, y: -2 }
+                }
+                transition={{
+                  height: { duration: 0.24, ease: EXPAND_EASE },
+                  opacity: { duration: 0.2, ease: 'easeOut' },
+                  y: { duration: 0.22, ease: EXPAND_EASE },
+                }}
+                style={{ overflow: 'hidden' }}
+              >
+                <p
+                  data-testid="auto-prime-skipped-consequence"
+                  className="mt-1 text-xs text-white/45 leading-relaxed"
+                >
+                  {INSUFFICIENT_MEMORY_CONSEQUENCE}
+                </p>
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
+          <div className="mt-2.5 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              aria-label={primaryLabel}
+              onClick={onPrimaryClick}
+              className={PRIMARY_BTN_CLASS}
+            >
+              {primaryLabel}
+            </button>
+            <button
+              type="button"
+              aria-label={secondaryLabel}
+              onClick={onSecondaryClick}
+              className={GHOST_BTN_CLASS}
+            >
+              {secondaryLabel}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

@@ -6,19 +6,22 @@ export interface GateSection {
   name: string;
   pass: boolean;
   detail?: string;
+  /** Reported for the reviewer but never gates: excluded from the verdict. */
+  informational?: boolean;
 }
 
-// True only when there is at least one section and all of them passed. An empty
-// list is a failure: it means no checks ran, which must never read as a pass.
+// True only when there is at least one section and every blocking section passed.
+// Informational sections are reported, not judged. An empty list is a failure: it
+// means no checks ran, which must never read as a pass.
 export function overallPass(sections: GateSection[]): boolean {
-  return sections.length > 0 && sections.every((s) => s.pass);
+  return sections.length > 0 && sections.every((s) => s.informational || s.pass);
 }
 
 // Markdown: a verdict header plus one checklist line per section.
 export function renderGateSummary(title: string, sections: GateSection[]): string {
   const verdict = overallPass(sections) ? 'PASS' : 'FAIL';
   const lines = sections.map((s) => {
-    const mark = s.pass ? '✅' : '❌';
+    const mark = s.informational ? 'ℹ️' : s.pass ? '✅' : '❌';
     const detail = s.detail ? ` — ${s.detail}` : '';
     return `- ${mark} ${s.name}${detail}`;
   });
