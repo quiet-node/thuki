@@ -216,11 +216,17 @@ export function ModelPickerPanel({
   };
 
   return (
-    <div className="flex flex-col w-full">
+    // min-h-0 + max-h-full: when a parent caps the panel (chat dropdown
+    // under the morphing container's overflow-hidden), the listbox below
+    // can shrink and scroll instead of clipping the last rows off-window.
+    <div
+      className="flex flex-col w-full min-h-0 max-h-full"
+      data-testid="model-picker-panel"
+    >
       {/* The filter row only earns its space when there is a list to filter;
           an empty picker shows just its guidance message below. */}
       {models.length > 0 ? (
-        <div className="flex items-center gap-2 px-3 pt-3 pb-2 border-b border-surface-border">
+        <div className="flex shrink-0 items-center gap-2 px-3 pt-3 pb-2 border-b border-surface-border">
           <input
             type="text"
             role="combobox"
@@ -340,7 +346,10 @@ export function ModelPickerPanel({
         id={LISTBOX_ID}
         role="listbox"
         aria-label="Available models"
-        className="overflow-y-auto py-1 max-h-[280px]"
+        // flex-1 min-h-0: fill remaining panel height and scroll when the
+        // parent is shorter than the full list. max-h-[280px] still caps
+        // the unconstrained ask-bar drawer so it does not grow forever.
+        className="overflow-y-auto overscroll-contain py-1 min-h-0 flex-1 max-h-[280px]"
       >
         {models.length === 0 ? (
           <p
@@ -453,7 +462,7 @@ export function ModelPickerPanel({
       </div>
 
       {compact && models.length > 0 && (
-        <div className="border-t border-surface-border px-3 py-2">
+        <div className="shrink-0 border-t border-surface-border px-3 py-2">
           <p className="text-[10px] text-text-secondary/60 text-center">
             Larger models answer better.
           </p>
