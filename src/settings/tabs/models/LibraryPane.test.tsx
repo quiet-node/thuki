@@ -75,7 +75,7 @@ const BASE_CONFIG: RawAppConfig = {
     auto_search: true,
     search_notice_acknowledged: false,
   },
-  debug: { trace_enabled: false },
+  debug: { trace_enabled: false, trace_retention_days: 7 },
 };
 
 /** Distinct snapshot so onSaved assertions cannot pass by referential luck. */
@@ -333,7 +333,10 @@ describe('LibraryPane', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Delete model' }));
     expect(screen.getByText('Delete gemma?')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByText('Delete gemma?')).not.toBeInTheDocument();
+    // The dialog animates out, then unmounts once the exit finishes.
+    await waitFor(() =>
+      expect(screen.queryByText('Delete gemma?')).not.toBeInTheDocument(),
+    );
     expect(invokeMock).not.toHaveBeenCalledWith(
       'delete_installed_model',
       expect.anything(),

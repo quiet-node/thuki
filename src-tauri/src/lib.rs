@@ -2298,11 +2298,7 @@ pub fn build_trace_inner(
     if !enabled {
         return Arc::new(trace::NoopRecorder);
     }
-    let traces_root = app_handle
-        .path()
-        .app_data_dir()
-        .map(|d| d.join("traces"))
-        .unwrap_or_else(|_| std::env::temp_dir().join("thuki").join("traces"));
+    let traces_root = settings_commands::traces_root(app_handle);
     eprintln!(
         "thuki: [trace] trace_enabled = ON. Writing forensic JSONL to {}.",
         traces_root.display()
@@ -2860,6 +2856,12 @@ pub fn run() {
             let initial_inner = build_trace_inner(app.handle(), trace_enabled);
             app.manage(Arc::new(trace::LiveTraceRecorder::new(initial_inner)));
 
+            // Enforce `[debug] trace_retention_days` with a one-shot prune of
+            // stale trace files. Runs here (after config is managed) rather than
+            // on any per-message path: a bounded metadata-only walk that never
+            // gates launch on failure. The keep-forever sentinel (-1) skips it.
+            settings_commands::prune_traces_at_startup(app.handle());
+
             // ── SQLite database for conversation history ──────────
             let app_data_dir = app
                 .path()
@@ -3010,6 +3012,12 @@ pub fn run() {
             settings_commands::get_corrupt_marker,
             #[cfg(not(coverage))]
             settings_commands::reveal_config_in_finder,
+            #[cfg(not(coverage))]
+            settings_commands::open_traces_in_finder,
+            #[cfg(not(coverage))]
+            settings_commands::free_traces,
+            #[cfg(not(coverage))]
+            settings_commands::traces_stats,
             #[cfg(not(coverage))]
             models::get_model_picker_state,
             #[cfg(not(coverage))]

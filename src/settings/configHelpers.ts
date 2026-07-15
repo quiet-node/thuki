@@ -70,6 +70,8 @@ const HELPERS = {
   debug: {
     trace_enabled:
       'When on, Thuki saves a JSONL trace of every chat and search session to ~/Library/Application Support/com.quietnode.thuki/traces/. Useful for debugging and refining your prompts. Off by default.',
+    trace_retention_days:
+      'How many days recorded traces are kept on disk before Thuki prunes them at startup or when you change this. Raise to keep history longer; lower to reclaim disk sooner; set -1 to keep them forever. 0 and other out-of-range values reset to the default of 7.',
   },
 } as const;
 

@@ -19,9 +19,10 @@ use super::defaults::{
     DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_SEARCH_NOTICE_ACKNOWLEDGED,
     DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX, DEFAULT_TEXT_FONT_WEIGHT,
-    DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS,
-    DEFAULT_UPDATER_MANIFEST_URL, PROVIDER_ID_BUILTIN, PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN,
-    PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI, SLASH_COMMAND_PROMPT_APPENDIX,
+    DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT, DEFAULT_TRACE_RETENTION_DAYS,
+    DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL, PROVIDER_ID_BUILTIN,
+    PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
+    SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
 use super::loader::{compose_system_prompt, load_from_path, resolve};
@@ -1227,12 +1228,14 @@ fn toml_without_behavior_section_deserializes_to_defaults() {
 fn debug_section_default_matches_compiled_defaults() {
     let d = DebugSection::default();
     assert_eq!(d.trace_enabled, DEFAULT_DEBUG_TRACE_ENABLED);
+    assert_eq!(d.trace_retention_days, DEFAULT_TRACE_RETENTION_DAYS);
 }
 
 #[test]
 fn app_config_default_includes_debug_section_with_compiled_defaults() {
     let c = AppConfig::default();
     assert_eq!(c.debug.trace_enabled, DEFAULT_DEBUG_TRACE_ENABLED);
+    assert_eq!(c.debug.trace_retention_days, DEFAULT_TRACE_RETENTION_DAYS);
 }
 
 #[test]
@@ -1257,6 +1260,85 @@ fn toml_without_debug_section_deserializes_to_defaults() {
     assert_eq!(
         loaded.debug.trace_enabled, DEFAULT_DEBUG_TRACE_ENABLED,
         "missing [debug] section must deserialize to defaults via #[serde(default)]"
+    );
+    assert_eq!(
+        loaded.debug.trace_retention_days, DEFAULT_TRACE_RETENTION_DAYS,
+        "missing [debug] section must deserialize to defaults via #[serde(default)]"
+    );
+}
+
+#[test]
+fn debug_trace_retention_minus_one_is_preserved() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[debug]\ntrace_retention_days = -1\n").unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(
+        loaded.debug.trace_retention_days, -1,
+        "the keep-forever sentinel -1 must survive the loader"
+    );
+}
+
+#[test]
+fn debug_trace_retention_in_bounds_is_preserved() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[debug]\ntrace_retention_days = 30\n").unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(loaded.debug.trace_retention_days, 30);
+}
+
+#[test]
+fn debug_trace_retention_zero_falls_back_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[debug]\ntrace_retention_days = 0\n").unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(
+        loaded.debug.trace_retention_days, DEFAULT_TRACE_RETENTION_DAYS,
+        "0 is not a valid window and must reset to the default, never pass through"
+    );
+}
+
+#[test]
+fn debug_trace_retention_above_max_falls_back_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[debug]\ntrace_retention_days = 5000\n").unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(
+        loaded.debug.trace_retention_days, DEFAULT_TRACE_RETENTION_DAYS,
+        "above the 3650 ceiling resets to default (reset, not saturate)"
+    );
+}
+
+#[test]
+fn debug_trace_retention_below_minus_one_falls_back_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[debug]\ntrace_retention_days = -2\n").unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(
+        loaded.debug.trace_retention_days, DEFAULT_TRACE_RETENTION_DAYS,
+        "below the -1 sentinel is invalid and resets to default"
+    );
+}
+
+#[test]
+fn debug_trace_retention_round_trips_through_toml() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[debug]\ntrace_retention_days = 14\n").unwrap();
+    let config = load_from_path(&path).unwrap();
+    assert_eq!(config.debug.trace_retention_days, 14);
+
+    // Re-seed from the resolved config and reload: the field survives a full
+    // serialize -> parse -> resolve cycle unchanged.
+    atomic_write(&path, &config).unwrap();
+    let reloaded = load_from_path(&path).unwrap();
+    assert_eq!(
+        reloaded.debug.trace_retention_days, config.debug.trace_retention_days,
+        "trace_retention_days must round-trip through a TOML write + reload"
     );
 }
 

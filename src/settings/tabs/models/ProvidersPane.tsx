@@ -19,8 +19,7 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
-import { ConfirmDialog, Textarea, Toggle } from '../../components';
-import { SaveField } from '../../components/SaveField';
+import { ConfirmDialog, Textarea } from '../../components';
 import { OpenAiProviderCard, AddOpenAiProvider } from '../ProviderCards';
 import { useDebouncedSave } from '../../hooks/useDebouncedSave';
 import { useModelSelection } from '../../../hooks/useModelSelection';
@@ -228,7 +227,6 @@ export function ProvidersPane({
   );
 
   const [promptOpen, setPromptOpen] = useState(false);
-  const [devOpen, setDevOpen] = useState(false);
   // A provider switch is confirmed before it takes effect.
   const [pendingSwitch, setPendingSwitch] = useState<RawProvider | null>(null);
 
@@ -786,56 +784,6 @@ export function ProvidersPane({
             </div>
           </div>
         ) : null}
-      </div>
-
-      <div className={styles.devSection}>
-        <button
-          type="button"
-          className={styles.devTrigger}
-          aria-expanded={devOpen}
-          aria-controls="dev-diagnostics"
-          onClick={() => setDevOpen((o) => !o)}
-        >
-          <span className={styles.devTriggerLabel}>Diagnostics</span>
-          <span className={styles.devTag}>DEV</span>
-          <svg
-            className={`${styles.devChevron} ${devOpen ? styles.devChevronOpen : ''}`}
-            viewBox="0 0 10 10"
-            fill="currentColor"
-            aria-hidden
-          >
-            <path
-              d="M3 2l4 3-4 3"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              fill="none"
-            />
-          </svg>
-        </button>
-        {devOpen && (
-          <div id="dev-diagnostics">
-            <SaveField
-              section="debug"
-              fieldKey="trace_enabled"
-              label="Trace recording"
-              helper={configHelp('debug', 'trace_enabled')}
-              initialValue={config.debug.trace_enabled}
-              resyncToken={resyncToken}
-              onSaved={onSaved}
-              tooltipPlacement="top"
-              rightAlign
-              render={(value, setValue) => (
-                <Toggle
-                  checked={value}
-                  onChange={setValue}
-                  ariaLabel="Enable trace recording"
-                />
-              )}
-            />
-          </div>
-        )}
       </div>
 
       {pendingSwitch ? (

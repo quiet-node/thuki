@@ -6,18 +6,20 @@
 //! indirectly through the testable internals (`patch_document`,
 //! `coerce_json_to_toml`, `read_document`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use serde_json::json;
 use toml_edit::DocumentMut;
 
 use super::{
-    add_openai_provider_to_disk, builtin_deactivated, cleanup_provider_secrets,
+    add_openai_provider_to_disk, builtin_deactivated, cleanup_provider_secrets, clear_traces_dir,
     coerce_json_to_toml, is_allowed_field, is_allowed_section, is_http_url, json_type_name,
     json_value_to_toml_item, keep_warm_idle_minutes_changed, ollama_deactivated, patch_document,
-    read_document, remove_openai_provider_from_disk, reset_section_on_disk, trace_enabled_changed,
-    validate_provider_value, write_active_provider_to_disk, write_field_to_disk,
-    write_provider_field_to_disk,
+    prune_traces_for_retention, prune_traces_older_than, read_document,
+    remove_openai_provider_from_disk, reset_section_on_disk, trace_enabled_changed,
+    trace_retention_days_changed, traces_stats_for, validate_provider_value,
+    write_active_provider_to_disk, write_field_to_disk, write_provider_field_to_disk,
 };
 use crate::config::defaults::{ALLOWED_FIELDS, ALLOWED_SECTIONS};
 use crate::config::{AppConfig, ConfigError};
@@ -108,8 +110,7 @@ vision = false
 
 #[test]
 fn allowed_fields_count_matches_schema_field_count() {
-    // Hand-counted from `AppConfig`: inference(2) + prompt(1) + window(7) + quote(3)
-    // + behavior(4) + debug(1) + updater(3) = 21 tunable flat fields.
+    // + behavior(4) + debug(2) + updater(3) = 22 tunable flat fields.
     // The inference section's two flat tunables are `keep_warm_inactivity_minutes`
     // and `num_ctx`; `active_provider` and the `providers` array are NOT flat
     // fields: they are written through the dedicated `set_active_model` /
@@ -122,7 +123,7 @@ fn allowed_fields_count_matches_schema_field_count() {
     // and is intentionally absent from ALLOWED_FIELDS. If this assertion fails, the
     // schema has drifted from the allowlist and someone added a field without
     // extending ALLOWED_FIELDS.
-    assert_eq!(ALLOWED_FIELDS.len(), 21);
+    assert_eq!(ALLOWED_FIELDS.len(), 22);
 }
 
 #[test]
@@ -1579,6 +1580,25 @@ fn trace_enabled_changed_returns_false_when_value_unchanged() {
     assert!(!trace_enabled_changed(false, &cfg));
 }
 
+// ─── trace_retention_days_changed ────────────────────────────────────────────
+
+#[test]
+fn trace_retention_days_changed_returns_new_value_on_change() {
+    let mut cfg = AppConfig::default();
+    cfg.debug.trace_retention_days = 30;
+    assert_eq!(trace_retention_days_changed(7, &cfg), Some(30));
+    // A change onto the keep-forever sentinel is still a change.
+    cfg.debug.trace_retention_days = -1;
+    assert_eq!(trace_retention_days_changed(7, &cfg), Some(-1));
+}
+
+#[test]
+fn trace_retention_days_changed_returns_none_when_unchanged() {
+    let mut cfg = AppConfig::default();
+    cfg.debug.trace_retention_days = 14;
+    assert_eq!(trace_retention_days_changed(14, &cfg), None);
+}
+
 // ─── keep_warm_idle_minutes_changed ──────────────────────────────────────────
 
 #[test]
@@ -1716,4 +1736,250 @@ fn tempdir() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("thuki-settings-cmd-{pid}-{nanos}-{n}"));
     std::fs::create_dir_all(&dir).expect("create tempdir");
     dir
+}
+
+// ─── clear_traces_dir ────────────────────────────────────────────────────────
+
+#[test]
+fn clear_traces_dir_removes_top_level_files_and_leaves_empty_root() {
+    let root = tempdir().join("traces");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.jsonl"), b"one").unwrap();
+    std::fs::write(root.join("b.jsonl"), b"two").unwrap();
+
+    clear_traces_dir(&root).expect("clear should succeed");
+
+    assert!(root.exists(), "root must be recreated");
+    assert_eq!(
+        std::fs::read_dir(&root).unwrap().count(),
+        0,
+        "root must be empty after clear"
+    );
+}
+
+#[test]
+fn clear_traces_dir_removes_nested_subdirectories() {
+    let root = tempdir().join("traces");
+    let chat = root.join("chat");
+    std::fs::create_dir_all(&chat).unwrap();
+    std::fs::write(chat.join("x.jsonl"), b"nested").unwrap();
+
+    clear_traces_dir(&root).expect("clear should succeed");
+
+    assert!(root.exists(), "root must be recreated");
+    assert!(!chat.exists(), "nested subdirectory must be gone");
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+}
+
+#[test]
+fn clear_traces_dir_missing_root_is_noop_ok() {
+    let root = tempdir().join("never-created");
+    assert!(!root.exists());
+
+    clear_traces_dir(&root).expect("missing root must be a no-op Ok");
+
+    // A no-op leaves the missing directory absent (it is not created).
+    assert!(!root.exists(), "missing root must stay absent on no-op");
+}
+
+// ─── traces_stats_for ────────────────────────────────────────────────────────
+
+#[test]
+fn traces_stats_for_counts_files_and_sums_bytes_including_nested() {
+    let root = tempdir().join("traces");
+    let chat = root.join("chat");
+    std::fs::create_dir_all(&chat).unwrap();
+    // Top-level file + two nested files: 3 files, 3 + 5 + 7 = 15 bytes.
+    std::fs::write(root.join("top.jsonl"), b"abc").unwrap();
+    std::fs::write(chat.join("a.jsonl"), b"hello").unwrap();
+    std::fs::write(chat.join("b.jsonl"), b"seventy").unwrap();
+
+    let (count, bytes) = traces_stats_for(&root).expect("stats should succeed");
+
+    assert_eq!(count, 3, "every regular file across subdirs is counted");
+    assert_eq!(bytes, 15, "byte total sums file sizes across subdirs");
+}
+
+#[test]
+fn traces_stats_for_missing_root_is_zero() {
+    let root = tempdir().join("never-created");
+    assert!(!root.exists());
+
+    assert_eq!(
+        traces_stats_for(&root).expect("missing root must be Ok"),
+        (0, 0),
+        "missing root reports an empty footprint"
+    );
+}
+
+#[test]
+fn traces_stats_for_empty_root_is_zero() {
+    let root = tempdir().join("traces");
+    std::fs::create_dir_all(&root).unwrap();
+
+    assert_eq!(
+        traces_stats_for(&root).expect("empty root must be Ok"),
+        (0, 0),
+        "an existing but empty root reports zero"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn traces_stats_for_does_not_follow_symlinks() {
+    let root = tempdir().join("traces");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("real.jsonl"), b"real").unwrap();
+    // A symlink to the real file must NOT be counted (link, not a regular file).
+    std::os::unix::fs::symlink(root.join("real.jsonl"), root.join("link.jsonl")).unwrap();
+
+    let (count, bytes) = traces_stats_for(&root).expect("stats should succeed");
+
+    assert_eq!(
+        count, 1,
+        "the symlink is skipped, only the real file counts"
+    );
+    assert_eq!(bytes, 4, "only the real file's bytes are summed");
+}
+
+// ─── prune_traces_older_than ─────────────────────────────────────────────────
+
+/// Writes `name` under `dir` and stamps its modification time to `mtime` so
+/// prune tests are deterministic without sleeping on the wall clock.
+fn write_trace_with_mtime(dir: &Path, name: &str, contents: &[u8], mtime: SystemTime) {
+    let path = dir.join(name);
+    std::fs::write(&path, contents).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+}
+
+#[test]
+fn prune_traces_older_than_deletes_old_keeps_fresh_across_subdirs() {
+    let root = tempdir().join("traces");
+    let chat = root.join("chat");
+    std::fs::create_dir_all(&chat).unwrap();
+
+    // Fix a stable reference time; back-date each file explicitly relative to it.
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+    let ten_days = Duration::from_secs(10 * 86_400);
+    let one_day = Duration::from_secs(86_400);
+    // Old: top-level + nested, both older than the 7-day window.
+    write_trace_with_mtime(&root, "old-top.jsonl", b"old", now - ten_days);
+    write_trace_with_mtime(&chat, "old-nested.jsonl", b"old", now - ten_days);
+    // Fresh: within the window, must survive.
+    write_trace_with_mtime(&chat, "fresh.jsonl", b"new", now - one_day);
+
+    let pruned =
+        prune_traces_older_than(&root, Duration::from_secs(7 * 86_400), now).expect("prune ok");
+
+    assert_eq!(pruned, 2, "both old files (top + nested) are removed");
+    assert!(!root.join("old-top.jsonl").exists());
+    assert!(!chat.join("old-nested.jsonl").exists());
+    assert!(chat.join("fresh.jsonl").exists(), "fresh file is kept");
+    assert!(chat.exists(), "directory structure is left intact");
+}
+
+#[test]
+fn prune_traces_older_than_keeps_everything_when_now_predates_files() {
+    let root = tempdir().join("traces");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.jsonl"), b"a").unwrap();
+    std::fs::write(root.join("b.jsonl"), b"b").unwrap();
+
+    // `now` far in the past: every real file's mtime is in the future, so
+    // `duration_since` returns Err and nothing is pruned (clock-ambiguity safe).
+    let pruned =
+        prune_traces_older_than(&root, Duration::from_secs(86_400), SystemTime::UNIX_EPOCH)
+            .expect("prune ok");
+
+    assert_eq!(pruned, 0, "future-dated files are never deleted");
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+}
+
+#[test]
+fn prune_traces_older_than_missing_root_is_zero() {
+    let root = tempdir().join("never-created");
+    assert!(!root.exists());
+    assert_eq!(
+        prune_traces_older_than(&root, Duration::from_secs(86_400), SystemTime::now())
+            .expect("missing root must be Ok"),
+        0
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn prune_traces_older_than_does_not_follow_symlinks() {
+    let root = tempdir().join("traces");
+    std::fs::create_dir_all(&root).unwrap();
+    // A real, old target OUTSIDE the traces tree.
+    let outside = tempdir();
+    let target = outside.join("secret.jsonl");
+    std::fs::write(&target, b"keep me").unwrap();
+    // A symlink INSIDE the tree pointing at it. The link's own file_type is
+    // symlink, so it is neither counted as a file (deleted) nor a dir
+    // (descended): the target must be left untouched.
+    std::os::unix::fs::symlink(&target, root.join("link.jsonl")).unwrap();
+
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+    let pruned =
+        prune_traces_older_than(&root, Duration::from_secs(86_400), now).expect("prune ok");
+
+    assert_eq!(pruned, 0, "the symlink is skipped, never followed");
+    assert!(target.exists(), "the symlink target is left untouched");
+    assert!(
+        root.join("link.jsonl").exists(),
+        "the symlink itself remains"
+    );
+}
+
+// ─── prune_traces_for_retention ──────────────────────────────────────────────
+
+#[test]
+fn prune_traces_for_retention_forever_sentinel_skips_walk() {
+    let root = tempdir().join("traces");
+    std::fs::create_dir_all(&root).unwrap();
+    // A file old enough to prune under any positive window.
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+    write_trace_with_mtime(
+        &root,
+        "old.jsonl",
+        b"old",
+        now - Duration::from_secs(365 * 86_400),
+    );
+
+    let pruned = prune_traces_for_retention(&root, -1, now).expect("prune ok");
+
+    assert_eq!(pruned, 0, "-1 keeps files forever, no walk");
+    assert!(root.join("old.jsonl").exists(), "the old file is untouched");
+}
+
+#[test]
+fn prune_traces_for_retention_positive_days_prunes_old_files() {
+    let root = tempdir().join("traces");
+    std::fs::create_dir_all(&root).unwrap();
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+    write_trace_with_mtime(
+        &root,
+        "old.jsonl",
+        b"old",
+        now - Duration::from_secs(10 * 86_400),
+    );
+    write_trace_with_mtime(
+        &root,
+        "fresh.jsonl",
+        b"new",
+        now - Duration::from_secs(3600),
+    );
+
+    // 7-day retention: the 10-day-old file goes, the hour-old file stays.
+    let pruned = prune_traces_for_retention(&root, 7, now).expect("prune ok");
+
+    assert_eq!(pruned, 1);
+    assert!(!root.join("old.jsonl").exists());
+    assert!(root.join("fresh.jsonl").exists());
 }

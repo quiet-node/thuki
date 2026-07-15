@@ -64,6 +64,7 @@ const CONFIG_A: RawAppConfig = {
   },
   debug: {
     trace_enabled: false,
+    trace_retention_days: 7,
   },
 };
 

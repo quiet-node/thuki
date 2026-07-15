@@ -91,7 +91,7 @@ function makeConfig(
       auto_search: true,
       search_notice_acknowledged: false,
     },
-    debug: { trace_enabled: false },
+    debug: { trace_enabled: false, trace_retention_days: 7 },
   };
 }
 
@@ -476,11 +476,14 @@ describe('ProvidersPane other providers', () => {
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith(next));
   });
 
-  it('cancels a provider switch without changing the active provider', () => {
+  it('cancels a provider switch without changing the active provider', async () => {
     renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]));
     fireEvent.click(screen.getAllByRole('button', { name: 'Switch' })[0]);
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByRole('button', { name: /^Switch to / })).toBeNull();
+    // The dialog animates out, then unmounts once the exit finishes.
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /^Switch to / })).toBeNull(),
+    );
     expect(invokeMock).not.toHaveBeenCalledWith(
       'set_active_provider',
       expect.anything(),
@@ -845,12 +848,14 @@ describe('ProvidersPane generation', () => {
     expect(screen.queryByRole('textbox', { name: 'System prompt' })).toBeNull();
   });
 
-  it('opens the diagnostics section with the trace toggle', () => {
+  it('no longer hosts the Diagnostics section (moved to the Behavior tab)', () => {
     renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]));
-    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
     expect(
-      screen.getByRole('switch', { name: 'Enable trace recording' }),
-    ).toBeInTheDocument();
+      screen.queryByRole('button', { name: /Diagnostics/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('switch', { name: 'Enable trace recording' }),
+    ).not.toBeInTheDocument();
   });
 });
 

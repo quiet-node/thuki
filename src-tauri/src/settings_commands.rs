@@ -42,6 +42,7 @@
 //! (matches user expectation when rapidly tabbing between fields).
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use parking_lot::RwLock;
 use serde::Serialize;
@@ -114,6 +115,28 @@ pub(crate) fn is_http_url(url: &str) -> bool {
 /// bodies that own the hot-swap.
 pub(crate) fn trace_enabled_changed(prior_enabled: bool, resolved: &AppConfig) -> bool {
     resolved.debug.trace_enabled != prior_enabled
+}
+
+/// Returns the post-write `[debug] trace_retention_days` value when a config
+/// write changed it relative to the pre-write snapshot, `None` when it is
+/// unchanged. Pulled out so the change detection is unit-tested instead of
+/// riding inside the coverage-off command bodies that fire the retention prune.
+pub(crate) fn trace_retention_days_changed(prior_days: i64, resolved: &AppConfig) -> Option<i64> {
+    let new_days = resolved.debug.trace_retention_days;
+    (new_days != prior_days).then_some(new_days)
+}
+
+/// Fires a retention prune when a config write changed `[debug]
+/// trace_retention_days`, applying the new window immediately so shortening
+/// retention reclaims disk without waiting for the next launch. Thin dispatch
+/// (excluded from coverage): the change predicate and the prune walk are each
+/// tested on their own. Best-effort; a walk error is swallowed so a config
+/// write never fails because of a hostile traces directory.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn prune_traces_on_retention_change(app: &AppHandle, prior_days: i64, resolved: &AppConfig) {
+    if let Some(new_days) = trace_retention_days_changed(prior_days, resolved) {
+        let _ = prune_traces_for_retention(&traces_root(app), new_days, SystemTime::now());
+    }
 }
 
 /// Returns the engine runner's new `idle_minutes` value when the post-write
@@ -258,11 +281,12 @@ pub fn set_config_field(
     trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
-    let (prior_trace_enabled, prior_keep_warm_minutes) = {
+    let (prior_trace_enabled, prior_keep_warm_minutes, prior_trace_retention_days) = {
         let guard = state.read();
         (
             guard.debug.trace_enabled,
             guard.inference.keep_warm_inactivity_minutes,
+            guard.debug.trace_retention_days,
         )
     };
     let resolved = {
@@ -286,6 +310,9 @@ pub fn set_config_field(
     // engine runner so the new residency policy applies without restarting
     // Thuki.
     forward_keep_warm_idle_minutes(&app, prior_keep_warm_minutes, &resolved);
+    // Enforce a changed `[debug] trace_retention_days` immediately so a
+    // shortened window reclaims disk without waiting for the next launch.
+    prune_traces_on_retention_change(&app, prior_trace_retention_days, &resolved);
     emit_config_updated(&app);
     Ok(resolved)
 }
@@ -825,11 +852,12 @@ pub fn reset_config(
     trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
-    let (prior_trace_enabled, prior_keep_warm_minutes) = {
+    let (prior_trace_enabled, prior_keep_warm_minutes, prior_trace_retention_days) = {
         let guard = state.read();
         (
             guard.debug.trace_enabled,
             guard.inference.keep_warm_inactivity_minutes,
+            guard.debug.trace_retention_days,
         )
     };
     let resolved = {
@@ -849,6 +877,10 @@ pub fn reset_config(
     // A whole-file or `[inference]` reset restores the default residency
     // policy; forward it so the engine runner picks it up immediately.
     forward_keep_warm_idle_minutes(&app, prior_keep_warm_minutes, &resolved);
+    // A whole-file or `[debug]` reset restores the default retention window;
+    // prune to it so a shortened window (e.g. from a prior keep-forever) takes
+    // effect immediately.
+    prune_traces_on_retention_change(&app, prior_trace_retention_days, &resolved);
     emit_config_updated(&app);
     Ok(resolved)
 }
@@ -915,11 +947,12 @@ pub fn reload_config_from_disk(
     trace_recorder: State<'_, std::sync::Arc<crate::trace::LiveTraceRecorder>>,
 ) -> Result<AppConfig, ConfigError> {
     let path = config_path(&app)?;
-    let (prior_trace_enabled, prior_keep_warm_minutes, prior_kind) = {
+    let (prior_trace_enabled, prior_keep_warm_minutes, prior_trace_retention_days, prior_kind) = {
         let guard = state.read();
         (
             guard.debug.trace_enabled,
             guard.inference.keep_warm_inactivity_minutes,
+            guard.debug.trace_retention_days,
             guard.inference.active_provider_kind().to_string(),
         )
     };
@@ -939,6 +972,9 @@ pub fn reload_config_from_disk(
     // Manual edits to `[inference] keep_warm_inactivity_minutes` reach the
     // engine runner through the same refresh path.
     forward_keep_warm_idle_minutes(&app, prior_keep_warm_minutes, &resolved);
+    // A hand-edited `[debug] trace_retention_days` picked up on refresh is
+    // enforced right away, the only non-restart path for a manual edit.
+    prune_traces_on_retention_change(&app, prior_trace_retention_days, &resolved);
     // A hand-edited `active_provider` that moved away from a local provider
     // releases its memory (builtin sidecar killed, Ollama model evicted),
     // mirroring the Settings radio path.
@@ -978,6 +1014,236 @@ pub fn reveal_config_in_finder(app: AppHandle) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+// ─── Trace folder actions ───────────────────────────────────────────────────
+
+/// Resolves the on-disk root under which trace recordings are written.
+///
+/// Single source of truth for the traces directory, shared by
+/// [`crate::build_trace_inner`] (which installs the recorder) and the
+/// [`open_traces_in_finder`] / [`free_traces`] commands, so the path they
+/// operate on can never drift apart. Resolves to `app_data_dir()/traces`,
+/// falling back to a temp-dir path when the platform data directory is
+/// unavailable (matching the recorder's own fallback).
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn traces_root(app: &AppHandle) -> PathBuf {
+    app.path()
+        .app_data_dir()
+        .map(|d| d.join("traces"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("thuki").join("traces"))
+}
+
+/// Deletes every recorded trace under `root`, leaving an empty root in place.
+///
+/// Pure and testable: the [`free_traces`] command derives `root` server-side
+/// and delegates here so no frontend-supplied path is ever a deletion target.
+///
+/// Behavior:
+/// - Missing `root` is a no-op returning `Ok(())` (nothing to clear).
+/// - Otherwise the whole tree is removed (including per-domain subdirectories
+///   such as `chat/<id>.jsonl`) and an empty `root` is recreated.
+/// - Any other I/O error is propagated, never panicked on.
+///
+/// Open file handles are safe on macOS: unlinking a `.jsonl` file that the
+/// live recorder currently holds open does not disturb the recorder, which
+/// keeps appending to the now-unlinked inode; the next conversation opens a
+/// fresh file under the recreated root.
+pub(crate) fn clear_traces_dir(root: &Path) -> std::io::Result<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+    std::fs::remove_dir_all(root)?;
+    std::fs::create_dir_all(root)
+}
+
+/// Opens the traces folder in Finder.
+///
+/// Thin FFI wrapper (excluded from coverage) that ensures the directory
+/// exists first, so the action always succeeds even before any trace has
+/// been recorded, then opens it with the macOS-native `open`.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn open_traces_in_finder(app: AppHandle) -> Result<(), String> {
+    let root = traces_root(&app);
+    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    std::process::Command::new("open")
+        .arg(&root)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Deletes all recorded traces from disk.
+///
+/// Thin command wrapper (excluded from coverage): it derives the deletion
+/// root server-side via [`traces_root`] (the frontend never supplies a path,
+/// so there is no traversal or client-controlled deletion target) and hands
+/// the real work to [`clear_traces_dir`], where it is unit-tested.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn free_traces(app: AppHandle) -> Result<(), String> {
+    clear_traces_dir(&traces_root(&app)).map_err(|e| e.to_string())
+}
+
+/// On-disk trace footprint returned to the Settings window.
+///
+/// `count` is the number of trace files; `bytes` is their combined size.
+/// The frontend renders these as a muted subtext (e.g. "12 traces · 4.2 MB
+/// on disk") beneath the trace actions.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct TracesStats {
+    pub count: u64,
+    pub bytes: u64,
+}
+
+/// Counts the trace files under `root` and sums their byte size.
+///
+/// Pure and testable: walks the traces tree iteratively (the `root` plus its
+/// per-domain subdirectories such as `chat/`), counting regular files and
+/// summing `metadata().len()`. Reads metadata only, never file contents, so
+/// memory stays bounded to two integers regardless of trace volume.
+///
+/// Symlinks are not followed: `DirEntry::file_type` and `DirEntry::metadata`
+/// report on the link itself, so a symlinked entry is neither a dir to descend
+/// nor a file to count, and is skipped. A missing `root` yields `(0, 0)`.
+/// I/O errors mid-walk are propagated rather than panicked on. Snapshot
+/// semantics are fine: no lock is taken even if a recorder writes concurrently.
+pub(crate) fn traces_stats_for(root: &Path) -> std::io::Result<(u64, u64)> {
+    if !root.exists() {
+        return Ok((0, 0));
+    }
+    let mut count: u64 = 0;
+    let mut bytes: u64 = 0;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                stack.push(entry.path());
+            } else if file_type.is_file() {
+                bytes += entry.metadata()?.len();
+                count += 1;
+            }
+        }
+    }
+    Ok((count, bytes))
+}
+
+/// Deletes every regular trace file under `root` whose modification time is
+/// older than `now - max_age`, returning the count removed.
+///
+/// Walks `root` and its per-domain subdirectories (`chat/` etc.) iteratively,
+/// reading only metadata so memory stays bounded to a few integers regardless
+/// of trace volume. `now` is a parameter (not `SystemTime::now()`) so the
+/// pruning cutoff is deterministic in tests. The directory structure is left
+/// intact; only files are removed.
+///
+/// Safety / correctness:
+/// - The deletion target is composed entirely from the app-owned `root`; no
+///   frontend-supplied path ever reaches here (callers resolve `root` via
+///   [`traces_root`]).
+/// - Symlinks are never followed: `DirEntry::file_type` reports on the link
+///   itself, so a symlinked entry is neither descended (dir) nor deleted
+///   (file), it is skipped. This keeps a symlink from redirecting a delete
+///   outside the traces tree.
+/// - A file whose mtime is in the future relative to `now` (or when `now`
+///   predates it) is kept: `SystemTime::duration_since` returns `Err` and the
+///   entry is skipped rather than deleted on a clock ambiguity.
+/// - A missing `root` yields `Ok(0)`; I/O errors mid-walk propagate via `?`.
+///
+/// The live recorder's currently-open `.jsonl` file always has a recent mtime,
+/// so any sane retention window naturally excludes it. Even if it were caught,
+/// unlinking an open trace file is safe on macOS (see [`clear_traces_dir`]):
+/// the recorder keeps appending to the now-unlinked inode and the next
+/// conversation opens a fresh file under the intact tree.
+pub(crate) fn prune_traces_older_than(
+    root: &Path,
+    max_age: Duration,
+    now: SystemTime,
+) -> std::io::Result<u64> {
+    if !root.exists() {
+        return Ok(0);
+    }
+    let mut pruned: u64 = 0;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                stack.push(entry.path());
+            } else if file_type.is_file() {
+                let mtime = entry.metadata()?.modified()?;
+                // Future-dated file (or `now` in the past): keep it. `Ok(age)`
+                // only when `now >= mtime`, so an older-than-window file is the
+                // sole delete path.
+                if let Ok(age) = now.duration_since(mtime) {
+                    if age > max_age {
+                        std::fs::remove_file(entry.path())?;
+                        pruned += 1;
+                    }
+                }
+            }
+        }
+    }
+    Ok(pruned)
+}
+
+/// Maps a config-clamped `trace_retention_days` value to a prune of the traces
+/// tree, returning the number of files removed.
+///
+/// The sentinel `-1` (keep forever) and any non-positive value short-circuit
+/// with no walk; a positive day count is converted to a `max_age` window and
+/// handed to [`prune_traces_older_than`]. `now` is injected so the mapping is
+/// deterministic in tests. The loader clamps `retention_days` to `-1` or
+/// `1..=3650` before this ever runs, so the positive branch always sees a sane
+/// day count; the multiply is saturating purely as never-panic defense.
+pub(crate) fn prune_traces_for_retention(
+    root: &Path,
+    retention_days: i64,
+    now: SystemTime,
+) -> std::io::Result<u64> {
+    if retention_days < 1 {
+        // -1 is the keep-forever sentinel; any other non-positive value cannot
+        // reach here post-clamp but is treated the same (no pruning) so a
+        // negative day count can never become a huge `max_age`.
+        return Ok(0);
+    }
+    let max_age = Duration::from_secs((retention_days as u64).saturating_mul(86_400));
+    prune_traces_older_than(root, max_age, now)
+}
+
+/// Runs one retention prune at startup, deleting trace files older than the
+/// configured `[debug] trace_retention_days` window.
+///
+/// Thin wrapper (excluded from coverage): reads the clamped retention value
+/// from managed config, resolves the traces root server-side via
+/// [`traces_root`], and delegates to [`prune_traces_for_retention`] with the
+/// wall clock. Best-effort and metadata-only: a walk error is swallowed so a
+/// hostile filesystem never blocks launch, and the bounded-memory walk keeps
+/// startup off the hot path.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn prune_traces_at_startup(app: &AppHandle) {
+    let retention_days = app
+        .state::<RwLock<AppConfig>>()
+        .read()
+        .debug
+        .trace_retention_days;
+    let _ = prune_traces_for_retention(&traces_root(app), retention_days, SystemTime::now());
+}
+
+/// Reports the current on-disk trace footprint to the Settings window.
+///
+/// Thin command wrapper (excluded from coverage): resolves the root
+/// server-side via [`traces_root`] and delegates counting to
+/// [`traces_stats_for`], where the logic is unit-tested.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn traces_stats(app: AppHandle) -> Result<TracesStats, String> {
+    let (count, bytes) = traces_stats_for(&traces_root(&app)).map_err(|e| e.to_string())?;
+    Ok(TracesStats { count, bytes })
 }
 
 // ─── Document I/O + JSON→TOML coercion (testable internals) ─────────────────
