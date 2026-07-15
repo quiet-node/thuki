@@ -12,7 +12,7 @@ use serde_json::json;
 use toml_edit::DocumentMut;
 
 use super::{
-    add_openai_provider_to_disk, builtin_deactivated, cleanup_provider_secrets,
+    add_openai_provider_to_disk, builtin_deactivated, cleanup_provider_secrets, clear_traces_dir,
     coerce_json_to_toml, is_allowed_field, is_allowed_section, is_http_url, json_type_name,
     json_value_to_toml_item, keep_warm_idle_minutes_changed, ollama_deactivated, patch_document,
     read_document, remove_openai_provider_from_disk, reset_section_on_disk, trace_enabled_changed,
@@ -1716,4 +1716,48 @@ fn tempdir() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("thuki-settings-cmd-{pid}-{nanos}-{n}"));
     std::fs::create_dir_all(&dir).expect("create tempdir");
     dir
+}
+
+// ─── clear_traces_dir ────────────────────────────────────────────────────────
+
+#[test]
+fn clear_traces_dir_removes_top_level_files_and_leaves_empty_root() {
+    let root = tempdir().join("traces");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.jsonl"), b"one").unwrap();
+    std::fs::write(root.join("b.jsonl"), b"two").unwrap();
+
+    clear_traces_dir(&root).expect("clear should succeed");
+
+    assert!(root.exists(), "root must be recreated");
+    assert_eq!(
+        std::fs::read_dir(&root).unwrap().count(),
+        0,
+        "root must be empty after clear"
+    );
+}
+
+#[test]
+fn clear_traces_dir_removes_nested_subdirectories() {
+    let root = tempdir().join("traces");
+    let chat = root.join("chat");
+    std::fs::create_dir_all(&chat).unwrap();
+    std::fs::write(chat.join("x.jsonl"), b"nested").unwrap();
+
+    clear_traces_dir(&root).expect("clear should succeed");
+
+    assert!(root.exists(), "root must be recreated");
+    assert!(!chat.exists(), "nested subdirectory must be gone");
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+}
+
+#[test]
+fn clear_traces_dir_missing_root_is_noop_ok() {
+    let root = tempdir().join("never-created");
+    assert!(!root.exists());
+
+    clear_traces_dir(&root).expect("missing root must be a no-op Ok");
+
+    // A no-op leaves the missing directory absent (it is not created).
+    assert!(!root.exists(), "missing root must stay absent on no-op");
 }

@@ -2298,11 +2298,7 @@ pub fn build_trace_inner(
     if !enabled {
         return Arc::new(trace::NoopRecorder);
     }
-    let traces_root = app_handle
-        .path()
-        .app_data_dir()
-        .map(|d| d.join("traces"))
-        .unwrap_or_else(|_| std::env::temp_dir().join("thuki").join("traces"));
+    let traces_root = settings_commands::traces_root(app_handle);
     eprintln!(
         "thuki: [trace] trace_enabled = ON. Writing forensic JSONL to {}.",
         traces_root.display()
@@ -3010,6 +3006,10 @@ pub fn run() {
             settings_commands::get_corrupt_marker,
             #[cfg(not(coverage))]
             settings_commands::reveal_config_in_finder,
+            #[cfg(not(coverage))]
+            settings_commands::open_traces_in_finder,
+            #[cfg(not(coverage))]
+            settings_commands::free_traces,
             #[cfg(not(coverage))]
             models::get_model_picker_state,
             #[cfg(not(coverage))]

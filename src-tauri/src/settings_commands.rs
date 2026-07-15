@@ -980,6 +980,76 @@ pub fn reveal_config_in_finder(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+// ─── Trace folder actions ───────────────────────────────────────────────────
+
+/// Resolves the on-disk root under which trace recordings are written.
+///
+/// Single source of truth for the traces directory, shared by
+/// [`crate::build_trace_inner`] (which installs the recorder) and the
+/// [`open_traces_in_finder`] / [`free_traces`] commands, so the path they
+/// operate on can never drift apart. Resolves to `app_data_dir()/traces`,
+/// falling back to a temp-dir path when the platform data directory is
+/// unavailable (matching the recorder's own fallback).
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn traces_root(app: &AppHandle) -> PathBuf {
+    app.path()
+        .app_data_dir()
+        .map(|d| d.join("traces"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("thuki").join("traces"))
+}
+
+/// Deletes every recorded trace under `root`, leaving an empty root in place.
+///
+/// Pure and testable: the [`free_traces`] command derives `root` server-side
+/// and delegates here so no frontend-supplied path is ever a deletion target.
+///
+/// Behavior:
+/// - Missing `root` is a no-op returning `Ok(())` (nothing to clear).
+/// - Otherwise the whole tree is removed (including per-domain subdirectories
+///   such as `chat/<id>.jsonl`) and an empty `root` is recreated.
+/// - Any other I/O error is propagated, never panicked on.
+///
+/// Open file handles are safe on macOS: unlinking a `.jsonl` file that the
+/// live recorder currently holds open does not disturb the recorder, which
+/// keeps appending to the now-unlinked inode; the next conversation opens a
+/// fresh file under the recreated root.
+pub(crate) fn clear_traces_dir(root: &Path) -> std::io::Result<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+    std::fs::remove_dir_all(root)?;
+    std::fs::create_dir_all(root)
+}
+
+/// Opens the traces folder in Finder.
+///
+/// Thin FFI wrapper (excluded from coverage) that ensures the directory
+/// exists first, so the action always succeeds even before any trace has
+/// been recorded, then opens it with the macOS-native `open`.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn open_traces_in_finder(app: AppHandle) -> Result<(), String> {
+    let root = traces_root(&app);
+    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    std::process::Command::new("open")
+        .arg(&root)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Deletes all recorded traces from disk.
+///
+/// Thin command wrapper (excluded from coverage): it derives the deletion
+/// root server-side via [`traces_root`] (the frontend never supplies a path,
+/// so there is no traversal or client-controlled deletion target) and hands
+/// the real work to [`clear_traces_dir`], where it is unit-tested.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn free_traces(app: AppHandle) -> Result<(), String> {
+    clear_traces_dir(&traces_root(&app)).map_err(|e| e.to_string())
+}
+
 // ─── Document I/O + JSON→TOML coercion (testable internals) ─────────────────
 
 /// Information returned to the frontend in the rare case where `set_config_field`

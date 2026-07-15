@@ -707,4 +707,50 @@ describe('BehaviorTab', () => {
       screen.queryByRole('button', { name: 'About Web search' }),
     ).not.toBeInTheDocument();
   });
+
+  it('keeps the Diagnostics block collapsed until opened, then reveals trace + folder actions', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    expect(
+      screen.queryByRole('switch', { name: 'Enable trace recording' }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+
+    expect(
+      screen.getByRole('switch', { name: 'Enable trace recording' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Open traces folder' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Free traces…' }),
+    ).toBeInTheDocument();
+  });
+
+  it('opens the traces folder via the open_traces_in_finder command', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open traces folder' }));
+    expect(invokeMock).toHaveBeenCalledWith('open_traces_in_finder');
+  });
+
+  it('deletes traces only after confirming the destructive dialog', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Free traces…' }));
+    // The modal arms the action but nothing is deleted yet.
+    expect(invokeMock).not.toHaveBeenCalledWith('free_traces');
+    // Exact name match hits the modal's confirm, not the "Free traces…" trigger.
+    fireEvent.click(screen.getByRole('button', { name: 'Free traces' }));
+    expect(invokeMock).toHaveBeenCalledWith('free_traces');
+  });
+
+  it('cancels the free-traces confirmation without deleting', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Free traces…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(invokeMock).not.toHaveBeenCalledWith('free_traces');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
 });

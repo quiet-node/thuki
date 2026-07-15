@@ -845,12 +845,14 @@ describe('ProvidersPane generation', () => {
     expect(screen.queryByRole('textbox', { name: 'System prompt' })).toBeNull();
   });
 
-  it('opens the diagnostics section with the trace toggle', () => {
+  it('no longer hosts the Diagnostics section (moved to the Behavior tab)', () => {
     renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]));
-    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
     expect(
-      screen.getByRole('switch', { name: 'Enable trace recording' }),
-    ).toBeInTheDocument();
+      screen.queryByRole('button', { name: /Diagnostics/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('switch', { name: 'Enable trace recording' }),
+    ).not.toBeInTheDocument();
   });
 });
 
