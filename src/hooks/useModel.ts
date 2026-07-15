@@ -528,6 +528,31 @@ export function useModel(
       let currentThinkingContent = '';
       let pendingSources: SearchResultPreview[] | undefined;
       let pendingFailReason: SearchFailReason | undefined;
+      /**
+       * True once this turn actually entered retrieval (searching/reading/
+       * verifying, sources, or a typed search failure). A lone `deciding`
+       * status is NOT enough: the classifier can still return NoSearch, and
+       * leaving `fromSearch` set paints phantom Sources chrome over a plain
+       * greeting answer.
+       */
+      let searchRetrievalCommitted = forceSearch === true;
+
+      /**
+       * Clears decide-only search chrome once the model starts streaming a
+       * plain answer (thinking or tokens) without ever committing retrieval.
+       * Idempotent: no-op after a real search or a prior clear this turn.
+       */
+      const clearPhantomSearchChrome = (): void => {
+        if (searchRetrievalCommitted) return;
+        setSearchStage(null);
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantId && message.fromSearch
+              ? { ...message, fromSearch: undefined }
+              : message,
+          ),
+        );
+      };
 
       channel.onmessage = (rawChunk) => {
         const chunk = normalizeStreamChunk(rawChunk);
@@ -549,6 +574,8 @@ export function useModel(
         }
 
         if (chunk.type === 'ThinkingToken') {
+          // Model output means NoSearch (or skip) won: drop decide-only chrome.
+          clearPhantomSearchChrome();
           currentThinkingContent += chunk.content;
           if (chunk.content) {
             markVisibleOutput();
@@ -564,6 +591,7 @@ export function useModel(
         }
 
         if (chunk.type === 'Token') {
+          clearPhantomSearchChrome();
           currentContent += chunk.content;
           if (chunk.content) {
             markVisibleOutput();
@@ -597,6 +625,11 @@ export function useModel(
         if (chunk.type === 'SearchStatus') {
           // Stamp fromSearch early so the bubble owns Variant B progress chrome
           // for the whole retrieval, not only after sources arrive.
+          // `deciding` alone is provisional: clearPhantomSearchChrome undoes it
+          // if the classifier returns NoSearch before any real retrieval.
+          if (chunk.phase !== 'deciding') {
+            searchRetrievalCommitted = true;
+          }
           setSearchStage(SEARCH_STAGE_BY_PHASE[chunk.phase]);
           setMessages((prev) =>
             prev.map((message) =>
@@ -609,6 +642,7 @@ export function useModel(
         }
 
         if (chunk.type === 'SearchSources') {
+          searchRetrievalCommitted = true;
           pendingSources = chunk.sources;
           setMessages((prev) =>
             prev.map((message) =>
@@ -627,6 +661,7 @@ export function useModel(
         // the failure note while the answer is still streaming, before the
         // reader has anything to be skeptical of yet.
         if (chunk.type === 'SearchFailed') {
+          searchRetrievalCommitted = true;
           pendingFailReason = chunk.reason;
           setMessages((prev) =>
             prev.map((message) =>
@@ -654,14 +689,26 @@ export function useModel(
               ),
             );
           }
+          // Decide-only turns never committed retrieval: do not persist
+          // fromSearch on the finished message (or history).
+          const keepFromSearch =
+            searchRetrievalCommitted ||
+            Boolean(pendingSources) ||
+            Boolean(pendingFailReason);
+          if (!keepFromSearch) {
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantId && message.fromSearch
+                  ? { ...message, fromSearch: undefined }
+                  : message,
+              ),
+            );
+          }
           onTurnComplete?.(userMsg, {
             ...assistantMsg,
             content: currentContent,
             thinkingContent: currentThinkingContent || undefined,
-            fromSearch:
-              pendingSources || pendingFailReason
-                ? true
-                : assistantMsg.fromSearch,
+            fromSearch: keepFromSearch ? true : undefined,
             searchSources: pendingSources,
             searchFailReason: pendingFailReason,
           });

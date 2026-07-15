@@ -307,15 +307,29 @@ export function ChatBubble({
   const handedOffFromSearch =
     hasSearchSources && (!isSearching || reasoningLive);
   /**
-   * Live search while generating, except during live reasoning (chip under
-   * Reasoning). Restores after thinking for answer stream and verify.
+   * Auto-search emits `deciding` before the classifier may still choose
+   * NoSearch. That stamps `fromSearch` without ever retrieving. After
+   * reasoning, inventory copy would paint bare "Sources" with dots for a
+   * turn that never searched. Only treat decide-only as live search while
+   * we have not yet produced reasoning (the brief "Analyzing query" cue).
    */
-  const showLiveSearch = isSearching && !reasoningLive;
+  const isDecideOnlyPhantom =
+    !hasSearchSources &&
+    searchStage?.kind === 'analyzing_query' &&
+    hadReasoning;
+  /**
+   * Live search while generating, except during live reasoning (chip under
+   * Reasoning). Restores after thinking for answer stream and verify when
+   * retrieval actually ran (or is still past decide).
+   */
+  const showLiveSearch = isSearching && !reasoningLive && !isDecideOnlyPhantom;
   /**
    * After reasoning ends, answer-stream header is `Sources (N)` with dots.
-   * Verify still uses the normal verifying stage label.
+   * Requires real sources: inventory without hits is the NoSearch flash bug.
+   * Verify still uses the normal verifying stage label when sources exist.
    */
-  const postReasoningSourcesLabel = hadReasoning && !reasoningLive;
+  const postReasoningSourcesLabel =
+    hadReasoning && !reasoningLive && hasSearchSources;
 
   /**
    * Exit-retention phase. `exiting` holds until outer fade finishes

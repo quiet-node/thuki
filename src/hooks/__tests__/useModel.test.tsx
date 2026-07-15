@@ -450,6 +450,84 @@ describe('useModel', () => {
       });
     });
 
+    it('clears decide-only search chrome when the model streams a plain answer', async () => {
+      // Auto-search emits deciding, then NoSearch → plain stream. Phantom
+      // fromSearch + analyzing_query would paint bare "Sources" after reasoning.
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useModel('m', onTurnComplete));
+      await act(async () => {
+        await result.current.ask('hello, hi');
+      });
+      const channel = getChannel();
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'SearchStatus',
+          data: { phase: 'deciding' },
+        });
+      });
+      expect(result.current.searchStage).toEqual({ kind: 'analyzing_query' });
+      expect(
+        result.current.messages.find((m) => m.role === 'assistant')?.fromSearch,
+      ).toBe(true);
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'ThinkingToken',
+          data: 'User is greeting me.',
+        });
+      });
+      expect(result.current.searchStage).toBeNull();
+      expect(
+        result.current.messages.find((m) => m.role === 'assistant')?.fromSearch,
+      ).toBeUndefined();
+
+      act(() => {
+        channel!.simulateMessage({ type: 'Token', data: 'Hello!' });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+      expect(onTurnComplete).toHaveBeenCalledWith(
+        expect.objectContaining({ role: 'user' }),
+        expect.objectContaining({
+          content: 'Hello!',
+          thinkingContent: 'User is greeting me.',
+          fromSearch: undefined,
+        }),
+      );
+    });
+
+    it('keeps fromSearch when retrieval advances past deciding before tokens', async () => {
+      const { result } = renderHook(() => useModel('m'));
+      await act(async () => {
+        await result.current.ask('latest news');
+      });
+      const channel = getChannel();
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'SearchStatus',
+          data: { phase: 'deciding' },
+        });
+        channel!.simulateMessage({
+          type: 'SearchStatus',
+          data: { phase: 'searching' },
+        });
+        channel!.simulateMessage({
+          type: 'SearchSources',
+          data: [{ index: 1, url: 'https://a/', title: 'A' }],
+        });
+        channel!.simulateMessage({ type: 'Token', data: 'Headlines...' });
+      });
+      expect(result.current.searchStage).toEqual({ kind: 'searching' });
+      expect(
+        result.current.messages.find((m) => m.role === 'assistant')?.fromSearch,
+      ).toBe(true);
+      expect(
+        result.current.messages.find((m) => m.role === 'assistant')
+          ?.searchSources,
+      ).toHaveLength(1);
+    });
+
     it('attaches SearchSources to the assistant message and persists them on Done', async () => {
       const onTurnComplete = vi.fn();
       const { result } = renderHook(() => useModel('m', onTurnComplete));
