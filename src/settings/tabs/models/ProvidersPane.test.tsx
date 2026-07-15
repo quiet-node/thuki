@@ -476,11 +476,14 @@ describe('ProvidersPane other providers', () => {
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith(next));
   });
 
-  it('cancels a provider switch without changing the active provider', () => {
+  it('cancels a provider switch without changing the active provider', async () => {
     renderPane(makeConfig('ollama', [BUILTIN, OLLAMA]));
     fireEvent.click(screen.getAllByRole('button', { name: 'Switch' })[0]);
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByRole('button', { name: /^Switch to / })).toBeNull();
+    // The dialog animates out, then unmounts once the exit finishes.
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /^Switch to / })).toBeNull(),
+    );
     expect(invokeMock).not.toHaveBeenCalledWith(
       'set_active_provider',
       expect.anything(),

@@ -238,9 +238,12 @@ describe('AboutTab', () => {
       screen.getByRole('button', { name: /reset all to defaults/i }),
     );
     fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
-    expect(
-      screen.queryByText(/your entire config\.toml/i),
-    ).not.toBeInTheDocument();
+    // The dialog animates out, then unmounts once the exit finishes.
+    await waitFor(() =>
+      expect(
+        screen.queryByText(/your entire config\.toml/i),
+      ).not.toBeInTheDocument(),
+    );
   });
 
   describe('Help shape Thuki card', () => {

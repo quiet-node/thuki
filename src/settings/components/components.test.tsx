@@ -1,8 +1,9 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
   ConfirmDialog,
+  DIALOG_EXIT_MS,
   Dropdown,
   NumberSlider,
   NumberStepper,
@@ -604,6 +605,179 @@ describe('ConfirmDialog', () => {
     // Class names are CSS-modules hashed; just verify there's more than one
     // class token (the destructive modifier appended).
     expect(wipe.className.split(/\s+/).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('keeps the dialog mounted through its exit animation, then unmounts', () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(
+        <ConfirmDialog
+          open
+          title="t"
+          message="m"
+          confirmLabel="Yes"
+          onConfirm={() => {}}
+          onCancel={() => {}}
+        />,
+      );
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+      rerender(
+        <ConfirmDialog
+          open={false}
+          title="t"
+          message="m"
+          confirmLabel="Yes"
+          onConfirm={() => {}}
+          onCancel={() => {}}
+        />,
+      );
+      // Still mounted while the leave animation plays, flagged as closing.
+      expect(screen.getByRole('dialog')).toHaveAttribute(
+        'data-closing',
+        'true',
+      );
+
+      act(() => {
+        vi.advanceTimersByTime(DIALOG_EXIT_MS);
+      });
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('skips the exit animation and unmounts at once under reduced motion', () => {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockReturnValue({
+        matches: true,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }),
+    );
+    try {
+      const { rerender } = render(
+        <ConfirmDialog
+          open
+          title="t"
+          message="m"
+          confirmLabel="Yes"
+          onConfirm={() => {}}
+          onCancel={() => {}}
+        />,
+      );
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+      rerender(
+        <ConfirmDialog
+          open={false}
+          title="t"
+          message="m"
+          confirmLabel="Yes"
+          onConfirm={() => {}}
+          onCancel={() => {}}
+        />,
+      );
+      // No exit animation: the dialog is gone immediately, no partial fade.
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('cancels the pending unmount when re-opened mid-exit', () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(
+        <ConfirmDialog
+          open
+          title="t"
+          message="m"
+          confirmLabel="Yes"
+          onConfirm={() => {}}
+          onCancel={() => {}}
+        />,
+      );
+      rerender(
+        <ConfirmDialog
+          open={false}
+          title="t"
+          message="m"
+          confirmLabel="Yes"
+          onConfirm={() => {}}
+          onCancel={() => {}}
+        />,
+      );
+      expect(screen.getByRole('dialog')).toHaveAttribute(
+        'data-closing',
+        'true',
+      );
+
+      // Re-open before the exit completes.
+      act(() => {
+        vi.advanceTimersByTime(DIALOG_EXIT_MS / 2);
+      });
+      rerender(
+        <ConfirmDialog
+          open
+          title="t"
+          message="m"
+          confirmLabel="Yes"
+          onConfirm={() => {}}
+          onCancel={() => {}}
+        />,
+      );
+      // Back to the open state, no longer closing.
+      expect(screen.getByRole('dialog')).not.toHaveAttribute('data-closing');
+
+      // The stale unmount timer was cancelled: advancing past it stays mounted.
+      act(() => {
+        vi.advanceTimersByTime(DIALOG_EXIT_MS);
+      });
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears a pending exit timer when it unmounts mid-close', () => {
+    vi.useFakeTimers();
+    const clearSpy = vi.spyOn(window, 'clearTimeout');
+    try {
+      const { rerender, unmount } = render(
+        <ConfirmDialog
+          open
+          title="t"
+          message="m"
+          confirmLabel="Yes"
+          onConfirm={() => {}}
+          onCancel={() => {}}
+        />,
+      );
+      rerender(
+        <ConfirmDialog
+          open={false}
+          title="t"
+          message="m"
+          confirmLabel="Yes"
+          onConfirm={() => {}}
+          onCancel={() => {}}
+        />,
+      );
+      clearSpy.mockClear();
+
+      unmount();
+      // The cleanup cleared the outstanding exit timer, so nothing fires after
+      // the component is gone.
+      expect(clearSpy).toHaveBeenCalled();
+      act(() => {
+        vi.advanceTimersByTime(DIALOG_EXIT_MS);
+      });
+    } finally {
+      clearSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -1325,6 +1325,39 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
   animation: dialogPanelIn 180ms ease-out;
 }
+
+/* Calm exit: mirror the entrance in reverse so a close reads as a settle-out
+ * rather than an instant cut. The dialog stays mounted for DIALOG_EXIT_MS (see
+ * ConfirmDialog) while this plays, then unmounts. `forwards` holds the faded
+ * end state until unmount so there is no flash back to full opacity, and
+ * pointer events are dropped so the leaving buttons cannot be clicked a second
+ * time. Suppressed under prefers-reduced-motion below, where the JS also
+ * unmounts at once. */
+@keyframes dialogBackdropOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes dialogPanelOut {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+}
+.dialogBackdrop[data-closing='true'] {
+  pointer-events: none;
+  animation: dialogBackdropOut 160ms ease-in forwards;
+}
+.dialogBackdrop[data-closing='true'] .dialog {
+  animation: dialogPanelOut 160ms ease-in forwards;
+}
 .dialogTitle {
   font-size: 15px;
   font-weight: 600;

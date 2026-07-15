@@ -408,7 +408,32 @@ export function SavedPill({ visible }: { visible: boolean }) {
   );
 }
 
+// ─── Reduced-motion helper ──────────────────────────────────────────────
+
+/**
+ * Whether the OS is set to reduce motion. Callers use it to skip non-essential
+ * animations (dialog exit fade, success ticks) and jump straight to the settled
+ * state.
+ *
+ * @returns `true` when `prefers-reduced-motion: reduce` matches, else `false`
+ *   (including when `matchMedia` is unavailable).
+ */
+export function prefersReducedMotion(): boolean {
+  return (
+    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+  );
+}
+
 // ─── Confirm dialog ─────────────────────────────────────────────────────
+
+/**
+ * Exit-animation duration for `ConfirmDialog`, in milliseconds. When `open`
+ * flips to false the dialog stays mounted this long so the leave animation
+ * (`dialogBackdropOut` / `dialogPanelOut` in `settings.module.css`) can play,
+ * then it unmounts. Mirrors the entrance timing. Exported so tests advance
+ * fake timers by the exact value rather than a guessed one.
+ */
+export const DIALOG_EXIT_MS = 160;
 
 export function ConfirmDialog({
   open,
@@ -433,6 +458,31 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  // Deferred-unmount lifecycle so a close reads as smooth as the entrance:
+  // `rendered` gates the DOM, the derived `closing` drives the exit CSS. State
+  // that reacts to an `open` change is adjusted during render (React's
+  // recommended pattern over an effect): re-opening shows immediately, and
+  // reduced motion unmounts at once with no partial fade. The exit timer is the
+  // only side effect, and it clears itself in its own cleanup, which also
+  // cancels the pending unmount when the dialog is re-opened mid-exit.
+  const [rendered, setRendered] = useState(open);
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (open !== prevOpen) {
+    setPrevOpen(open);
+    if (open) {
+      setRendered(true);
+    } else if (rendered && prefersReducedMotion()) {
+      setRendered(false);
+    }
+  }
+  const closing = rendered && !open;
+
+  useEffect(() => {
+    if (!closing) return;
+    const id = window.setTimeout(() => setRendered(false), DIALOG_EXIT_MS);
+    return () => window.clearTimeout(id);
+  }, [closing]);
+
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
@@ -445,10 +495,11 @@ export function ConfirmDialog({
     return () => document.removeEventListener('keydown', handler);
   }, [open, onCancel]);
 
-  if (!open) return null;
+  if (!rendered) return null;
   return (
     <div
       className={styles.dialogBackdrop}
+      data-closing={closing ? 'true' : undefined}
       role="dialog"
       aria-modal="true"
       aria-labelledby="dialog-title"

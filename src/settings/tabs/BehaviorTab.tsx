@@ -15,7 +15,13 @@ import {
   PointingWiggle,
   POINTING_WIGGLE_MS,
 } from '../../components/PointingWiggle';
-import { ConfirmDialog, Section, SettingRow, Toggle } from '../components';
+import {
+  ConfirmDialog,
+  prefersReducedMotion,
+  Section,
+  SettingRow,
+  Toggle,
+} from '../components';
 import { DrawCheckIcon } from '../../components/DrawCheckIcon';
 import { SaveField } from '../components/SaveField';
 import { useDebouncedSave } from '../hooks/useDebouncedSave';
@@ -54,20 +60,6 @@ interface TracesStats {
  * cut the checkmark mid-stroke. This holds the completed tick for ~450ms more.
  */
 export const FREE_SUCCESS_HOLD_MS = 1200;
-
-/**
- * Whether the OS is set to reduce motion. Gates the Free-traces success draw:
- * when true, the tick animation is skipped and the button goes straight to its
- * settled grey state. Mirrors the guard used by `ThreeDotMotion`.
- *
- * @returns `true` when `prefers-reduced-motion: reduce` matches, else `false`
- *   (including when `matchMedia` is unavailable).
- */
-function prefersReducedMotion(): boolean {
-  return (
-    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
-  );
-}
 
 /**
  * Section-level "?" copy: what the Text Replacement group is and which commands

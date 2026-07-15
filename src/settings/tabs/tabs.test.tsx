@@ -383,7 +383,10 @@ describe('AboutTab', () => {
       screen.getByText(/Reset all settings to defaults/),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByText(/Reset all settings to defaults\?/)).toBeNull();
+    // The dialog animates out, then unmounts once the exit finishes.
+    await waitFor(() =>
+      expect(screen.queryByText(/Reset all settings to defaults\?/)).toBeNull(),
+    );
     expect(invokeMock).not.toHaveBeenCalledWith(
       'reset_config',
       expect.anything(),
@@ -747,13 +750,16 @@ describe('BehaviorTab', () => {
     expect(invokeMock).toHaveBeenCalledWith('free_traces');
   });
 
-  it('cancels the free-traces confirmation without deleting', () => {
+  it('cancels the free-traces confirmation without deleting', async () => {
     render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Free traces…' }));
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(invokeMock).not.toHaveBeenCalledWith('free_traces');
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    // The dialog animates out, then unmounts once the exit finishes.
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument(),
+    );
   });
 
   it('shows the on-disk footprint subtext below the side-by-side action bar', async () => {

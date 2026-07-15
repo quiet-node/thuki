@@ -333,7 +333,10 @@ describe('LibraryPane', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Delete model' }));
     expect(screen.getByText('Delete gemma?')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByText('Delete gemma?')).not.toBeInTheDocument();
+    // The dialog animates out, then unmounts once the exit finishes.
+    await waitFor(() =>
+      expect(screen.queryByText('Delete gemma?')).not.toBeInTheDocument(),
+    );
     expect(invokeMock).not.toHaveBeenCalledWith(
       'delete_installed_model',
       expect.anything(),
