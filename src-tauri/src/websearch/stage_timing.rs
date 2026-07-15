@@ -27,8 +27,11 @@ pub const STAGE_SERP: &str = "serp";
 pub const STAGE_FETCH: &str = "fetch";
 /// Stable stage name for BM25 rank + context assembly.
 pub const STAGE_RANK_ASSEMBLY: &str = "rank_assembly";
-/// Stable stage name for the sufficiency-judge LLM call.
+/// Stable stage name for the first (pre-requery) sufficiency-judge LLM call.
 pub const STAGE_JUDGE: &str = "judge";
+/// Stable stage name for the post-requery sufficiency-judge LLM call (merged
+/// sources only; never fires a third requery).
+pub const STAGE_JUDGE_POST_REQUERY: &str = "judge_post_requery";
 /// Stable stage name for writer prompt assembly (messages ready to stream).
 pub const STAGE_WRITER_PREPARE: &str = "writer_prepare";
 /// Stable stage name for submit → first writer answer token (stream TTFT).
@@ -216,6 +219,7 @@ mod tests {
         let bag = TimingBag::starting_at(Instant::now());
         bag.record_ms(STAGE_CLASSIFIER, 100);
         bag.record_ms(STAGE_JUDGE, 50);
+        bag.record_ms(STAGE_JUDGE_POST_REQUERY, 40);
         bag.flush(&bound);
         let events = mock.snapshot();
         assert_eq!(events.len(), 1);
@@ -224,9 +228,18 @@ mod tests {
             RecorderEvent::SearchTimings { stages }
                 if stages.iter().any(|s| s.stage == STAGE_CLASSIFIER && s.ms == 100)
                     && stages.iter().any(|s| s.stage == STAGE_JUDGE && s.ms == 50)
+                    && stages
+                        .iter()
+                        .any(|s| s.stage == STAGE_JUDGE_POST_REQUERY && s.ms == 40)
                     && stages.iter().any(|s| s.stage == STAGE_PIPELINE)
         );
         assert!(ok);
+    }
+
+    #[test]
+    fn stage_judge_post_requery_label_is_stable() {
+        assert_eq!(STAGE_JUDGE_POST_REQUERY, "judge_post_requery");
+        assert_ne!(STAGE_JUDGE, STAGE_JUDGE_POST_REQUERY);
     }
 
     #[test]
