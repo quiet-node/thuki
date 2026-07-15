@@ -33,11 +33,16 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 /// A scripted classifier standing in for the live model: returns a fixed `web`
-/// decision with the given route, rewrite, and queries.
+/// decision with the given route, rewrite, queries, and language.
 struct ScriptedPrePass {
     route: SearchRoute,
     standalone: &'static str,
     queries: Vec<&'static str>,
+    /// The `lang` the classifier would have named, per `prepass.rs`'s
+    /// language-preservation instruction. Defaults to `"en"` for every
+    /// existing English-only smoke test; the Vietnamese live smoke sets it
+    /// explicitly so `resolve_lang` sees the same signal production would.
+    lang: &'static str,
 }
 
 #[async_trait]
@@ -56,7 +61,7 @@ impl PrePass for ScriptedPrePass {
             standalone_question: self.standalone.to_string(),
             queries: self.queries.iter().map(|q| q.to_string()).collect(),
             explicit_search: false,
-            lang: "en".to_string(),
+            lang: self.lang.to_string(),
         })
     }
 }
@@ -93,11 +98,26 @@ async fn live_turn(
     standalone: &'static str,
     queries: Vec<&'static str>,
 ) -> SearchOutcome {
+    live_turn_with_lang(latest_user, route, standalone, queries, "en", "en-US").await
+}
+
+/// [`live_turn`], with the classifier's `lang` judgement and the resolved user
+/// `locale` threaded through explicitly, for a live smoke in a language other
+/// than English (see `live_vietnamese_wiki_answers_via_vietnamese_wikipedia`).
+async fn live_turn_with_lang(
+    latest_user: &str,
+    route: SearchRoute,
+    standalone: &'static str,
+    queries: Vec<&'static str>,
+    lang: &'static str,
+    locale: &str,
+) -> SearchOutcome {
     let transport = ReqwestTransport::new().expect("transport builds");
     let prepass = ScriptedPrePass {
         route,
         standalone,
         queries,
+        lang,
     };
     let judge = AlwaysSufficientJudge;
     let health = EngineHealth::new();
@@ -132,7 +152,7 @@ async fn live_turn(
         latest_user,
         16384,
         "2026-07-08",
-        "en-US",
+        locale,
         &CancellationToken::new(),
         &|phase| eprintln!("[smoke] phase={phase:?}"),
     )
@@ -256,4 +276,62 @@ async fn live_photosynthesis_answers_via_wikipedia() {
         assert!(sources[0].text.contains("Photosynthesis is"));
     }
     expect_answer(outcome, "photosynthesis-wiki");
+}
+
+#[tokio::test]
+#[ignore = "hits the live internet; run explicitly"]
+async fn live_vietnamese_wiki_answers_via_vietnamese_wikipedia() {
+    // "quang hợp là gì" = "what is photosynthesis" in Vietnamese. The
+    // language-parity research verified live that vi.wikipedia's `srsearch`
+    // resolves this native-language query correctly (top hit: "Quang hợp",
+    // 20265 hits) while the ENGLISH term "photosynthesis" against the SAME
+    // vi edition resolves to the wrong article ("Thực vật" / "Plants").
+    // Language and locale threading are therefore co-gated for this route:
+    // this smoke exercises both at once, through the real `run_search`, with
+    // only the classifier stubbed (its live decision quality is validated
+    // separately, in `live_language_parity_eval`).
+    let outcome = live_turn_with_lang(
+        "quang hợp là gì",
+        SearchRoute::Wiki,
+        "quang hợp là gì",
+        vec!["quang hợp"],
+        "vi",
+        "vi-VN",
+    )
+    .await;
+    if let SearchOutcome::Answer { sources, .. } = &outcome {
+        assert!(
+            sources[0].url.starts_with("https://vi.wikipedia.org/"),
+            "expected the Vietnamese Wikipedia edition, got {}",
+            sources[0].url
+        );
+        // "Quang hợp" (photosynthesis) is the Vietnamese article's own title,
+        // so its presence in the fetched text is proof the result is
+        // genuinely Vietnamese-language, not an English article that merely
+        // happened to resolve.
+        assert!(sources[0].text.contains("Quang hợp"));
+    }
+    expect_answer(outcome, "vietnamese-wiki-photosynthesis");
+}
+
+#[tokio::test]
+#[ignore = "hits the live internet; run explicitly"]
+async fn live_vietnamese_gold_price_answers_via_engines() {
+    // "giá vàng hôm nay bao nhiêu" = "what is the price of gold today", one of
+    // the mandatory shared-diacritic rows (see `search_decision_eval.jsonl`):
+    // it carries no character in U+1EA0-U+1EF9, so only the classifier's
+    // `lang` field (not script detection) can name it Vietnamese. Routed
+    // `web`/engines rather than `wiki`, so this exercises the DuckDuckGo/
+    // Mojeek region + Accept-Language path, distinct from the wiki-edition
+    // path the photosynthesis smoke above exercises.
+    let outcome = live_turn_with_lang(
+        "giá vàng hôm nay bao nhiêu",
+        SearchRoute::Web,
+        "giá vàng hôm nay bao nhiêu",
+        vec!["giá vàng hôm nay"],
+        "vi",
+        "vi-VN",
+    )
+    .await;
+    expect_answer(outcome, "vietnamese-gold-price");
 }
