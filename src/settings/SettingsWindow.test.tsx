@@ -63,6 +63,7 @@ const SAMPLE: RawAppConfig = {
   },
   debug: {
     trace_enabled: false,
+    trace_retention_days: 7,
   },
 };
 

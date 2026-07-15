@@ -4,11 +4,11 @@
  * Web search mode (auto vs on-demand), Text Replacement for `/rewrite` /
  * `/refine` (auto-replace and auto-close; the per-result Replace button is
  * always available regardless of those toggles), and a collapsible
- * Diagnostics block (trace recording plus open / free actions for the
- * on-disk trace folder).
+ * Diagnostics block (trace recording, on-disk retention, plus open / free
+ * actions for the on-disk trace folder).
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 import {
@@ -17,6 +17,7 @@ import {
 } from '../../components/PointingWiggle';
 import { ConfirmDialog, Section, SettingRow, Toggle } from '../components';
 import { SaveField } from '../components/SaveField';
+import { useDebouncedSave } from '../hooks/useDebouncedSave';
 import { configHelp } from '../configHelpers';
 import { formatTracesSubtext } from '../../utils/formatTracesSubtext';
 import styles from '../../styles/settings.module.css';
@@ -91,6 +92,40 @@ export function BehaviorTab({
   // resolves, and on any invoke failure, so a backend error never throws into
   // render).
   const [tracesSubtext, setTracesSubtext] = useState<string | null>(null);
+
+  // Trace retention days (debounced save). Mirrors the Keep Warm "Release
+  // after" numeric input: a raw string backs the field so a partial "-" or a
+  // literal "-1" can be typed, and the committed integer is written through
+  // the same `set_config_field` path every other row uses. The backend loader
+  // is the authoritative clamp (`-1` kept, `1..=3650` kept, anything else
+  // reset to the default); the frontend only bounds the value to the input's
+  // advertised range.
+  const [retentionDays, setRetentionDays] = useState(
+    config.debug.trace_retention_days,
+  );
+  const [rawRetention, setRawRetention] = useState(
+    String(config.debug.trace_retention_days),
+  );
+  const retentionFocusedRef = useRef(false);
+  const { resetTo: resetRetention } = useDebouncedSave(
+    'debug',
+    'trace_retention_days',
+    retentionDays,
+    { onSaved },
+  );
+
+  // Re-seed the retention field from an external resync (e.g. after the loader
+  // clamps a saved value back to a valid one), but never while the user is
+  // mid-edit, so a background reload cannot clobber an in-progress keystroke.
+  const prevTokenRef = useRef(resyncToken);
+  if (prevTokenRef.current !== resyncToken) {
+    prevTokenRef.current = resyncToken;
+    if (!retentionFocusedRef.current) {
+      setRetentionDays(config.debug.trace_retention_days);
+      setRawRetention(String(config.debug.trace_retention_days));
+      resetRetention(config.debug.trace_retention_days);
+    }
+  }
 
   // Reads the live trace footprint and formats it for the subtext. Kept in a
   // callback so both the "on expand" effect and the post-delete refresh share
@@ -235,6 +270,45 @@ export function BehaviorTab({
                 />
               )}
             />
+            <SettingRow
+              label="Retention"
+              helper={configHelp('debug', 'trace_retention_days')}
+              tooltipPlacement="top"
+              rightAlign
+            >
+              <span className={styles.genWarmControls}>
+                <input
+                  type="number"
+                  className={styles.keepWarmNumberInput}
+                  value={rawRetention}
+                  min={-1}
+                  max={3650}
+                  aria-label="Days to keep recorded traces"
+                  onFocus={() => {
+                    retentionFocusedRef.current = true;
+                  }}
+                  onChange={(e) => {
+                    const n = parseInt(e.target.value, 10);
+                    if (Number.isNaN(n)) {
+                      setRawRetention(e.target.value);
+                    } else {
+                      const clamped = Math.max(-1, Math.min(3650, n));
+                      setRawRetention(String(clamped));
+                      setRetentionDays(clamped);
+                    }
+                  }}
+                  onBlur={() => {
+                    retentionFocusedRef.current = false;
+                    // A left-empty or otherwise unparseable field reverts to the
+                    // last committed value rather than writing a stray number.
+                    if (Number.isNaN(parseInt(rawRetention, 10))) {
+                      setRawRetention(String(retentionDays));
+                    }
+                  }}
+                />
+                <span className={styles.keepWarmUnit}>days</span>
+              </span>
+            </SettingRow>
             <SettingRow
               label="Traces"
               helper={TRACES_HELP}

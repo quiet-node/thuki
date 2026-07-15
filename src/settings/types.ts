@@ -57,6 +57,7 @@ export interface RawAppConfig {
   };
   debug: {
     trace_enabled: boolean;
+    trace_retention_days: number;
   };
 }
 

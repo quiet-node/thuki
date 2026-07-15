@@ -75,7 +75,7 @@ const BASE_CONFIG: RawAppConfig = {
     auto_search: true,
     search_notice_acknowledged: false,
   },
-  debug: { trace_enabled: false },
+  debug: { trace_enabled: false, trace_retention_days: 7 },
 };
 
 /** Distinct snapshot so onSaved assertions cannot pass by referential luck. */

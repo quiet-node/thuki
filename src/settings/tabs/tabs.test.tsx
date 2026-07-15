@@ -78,6 +78,7 @@ const CONFIG: RawAppConfig = {
   },
   debug: {
     trace_enabled: false,
+    trace_retention_days: 7,
   },
 };
 
@@ -839,5 +840,180 @@ describe('BehaviorTab', () => {
     expect(
       await screen.findByText('No traces recorded yet'),
     ).toBeInTheDocument();
+  });
+
+  const RETENTION_NAME = 'Days to keep recorded traces';
+
+  function retentionConfig(days: number): RawAppConfig {
+    return {
+      ...CONFIG,
+      debug: { trace_enabled: false, trace_retention_days: days },
+    };
+  }
+
+  it('renders the Retention row with a number input, days unit, and help', () => {
+    render(
+      <BehaviorTab
+        config={retentionConfig(7)}
+        resyncToken={0}
+        onSaved={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+
+    expect(screen.getByText('Retention')).toBeInTheDocument();
+    const input = screen.getByRole('spinbutton', { name: RETENTION_NAME });
+    expect(input).toHaveValue(7);
+    expect(screen.getByText('days')).toBeInTheDocument();
+
+    // The compact explanation lives only inside the "?" affordance.
+    fireEvent.mouseEnter(
+      screen.getByRole('button', { name: 'About Retention' }).parentElement!,
+    );
+    expect(screen.getByText(/kept on disk/)).toBeInTheDocument();
+  });
+
+  it('writes an edited retention value through set_config_field', async () => {
+    render(
+      <BehaviorTab
+        config={retentionConfig(7)}
+        resyncToken={0}
+        onSaved={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+
+    const input = screen.getByRole('spinbutton', { name: RETENTION_NAME });
+    fireEvent.change(input, { target: { value: '30' } });
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('set_config_field', {
+        section: 'debug',
+        key: 'trace_retention_days',
+        value: 30,
+      }),
+    );
+  });
+
+  it('accepts -1 (keep forever) as a valid retention value', async () => {
+    render(
+      <BehaviorTab
+        config={retentionConfig(7)}
+        resyncToken={0}
+        onSaved={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+
+    const input = screen.getByRole('spinbutton', { name: RETENTION_NAME });
+    fireEvent.change(input, { target: { value: '-1' } });
+    expect(input).toHaveValue(-1);
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('set_config_field', {
+        section: 'debug',
+        key: 'trace_retention_days',
+        value: -1,
+      }),
+    );
+  });
+
+  it('clamps an out-of-range retention entry to the input maximum', () => {
+    render(
+      <BehaviorTab
+        config={retentionConfig(7)}
+        resyncToken={0}
+        onSaved={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+
+    const input = screen.getByRole('spinbutton', { name: RETENTION_NAME });
+    fireEvent.change(input, { target: { value: '99999' } });
+    expect(input).toHaveValue(3650);
+  });
+
+  it('reverts a cleared retention field to the last committed value on blur', () => {
+    render(
+      <BehaviorTab
+        config={retentionConfig(14)}
+        resyncToken={0}
+        onSaved={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+
+    const input = screen.getByRole('spinbutton', { name: RETENTION_NAME });
+    fireEvent.change(input, { target: { value: '' } });
+    expect(input).toHaveValue(null);
+    fireEvent.blur(input);
+    expect(input).toHaveValue(14);
+  });
+
+  it('keeps a valid retention value untouched on blur', () => {
+    render(
+      <BehaviorTab
+        config={retentionConfig(7)}
+        resyncToken={0}
+        onSaved={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+
+    const input = screen.getByRole('spinbutton', { name: RETENTION_NAME });
+    fireEvent.change(input, { target: { value: '21' } });
+    fireEvent.blur(input);
+    expect(input).toHaveValue(21);
+  });
+
+  it('re-seeds the retention field on resync when it is not focused', () => {
+    const { rerender } = render(
+      <BehaviorTab
+        config={retentionConfig(7)}
+        resyncToken={0}
+        onSaved={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+    expect(
+      screen.getByRole('spinbutton', { name: RETENTION_NAME }),
+    ).toHaveValue(7);
+
+    rerender(
+      <BehaviorTab
+        config={retentionConfig(90)}
+        resyncToken={1}
+        onSaved={() => {}}
+      />,
+    );
+    expect(
+      screen.getByRole('spinbutton', { name: RETENTION_NAME }),
+    ).toHaveValue(90);
+  });
+
+  it('preserves an in-progress retention edit across a resync while focused', () => {
+    const { rerender } = render(
+      <BehaviorTab
+        config={retentionConfig(7)}
+        resyncToken={0}
+        onSaved={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+
+    const input = screen.getByRole('spinbutton', { name: RETENTION_NAME });
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: '45' } });
+
+    // A background reload arrives mid-edit; the focused field must not snap
+    // back to the reloaded config value.
+    rerender(
+      <BehaviorTab
+        config={retentionConfig(90)}
+        resyncToken={1}
+        onSaved={() => {}}
+      />,
+    );
+    expect(input).toHaveValue(45);
   });
 });

@@ -28,6 +28,7 @@ describe('configHelp', () => {
       ['behavior', 'auto_replace'],
       ['behavior', 'auto_close'],
       ['debug', 'trace_enabled'],
+      ['debug', 'trace_retention_days'],
     ];
     for (const [section, key] of fields) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
