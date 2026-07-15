@@ -606,15 +606,19 @@ fn support_score(claim: &str, source: &str) -> f64 {
 
 /// Splits `text` into lowercased content tokens: maximal runs of ASCII
 /// alphanumerics, kept only when longer than three characters or number-like
-/// (containing a digit). Non-alphanumeric bytes are separators. Non-ASCII bytes
-/// are treated as token content so accented words are not shredded; a run
-/// counts as number-like only via ASCII digits, which is all the facts we care
-/// about (`3.5`, `2026`, `$42`) use.
+/// (containing a digit). Separators are ASCII non-alnum **and** any Unicode
+/// whitespace (including U+202F NARROW NO-BREAK SPACE that gpt-oss emits
+/// between `$12` and `million`). Non-ASCII non-whitespace (accented letters)
+/// stays inside tokens so they are not shredded. Number-like is still only
+/// via ASCII digits (`3.5`, `2026`, `$42`).
 fn content_tokens(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     for ch in text.chars() {
-        if ch.is_ascii_alphanumeric() || !ch.is_ascii() {
+        if ch.is_whitespace() {
+            // Unicode + ASCII spaces: never glue `$12` to `million`.
+            push_token(&mut tokens, &mut current);
+        } else if ch.is_ascii_alphanumeric() || !ch.is_ascii() {
             current.extend(ch.to_lowercase());
         } else {
             push_token(&mut tokens, &mut current);
@@ -622,6 +626,23 @@ fn content_tokens(text: &str) -> Vec<String> {
     }
     push_token(&mut tokens, &mut current);
     tokens
+}
+
+/// Advances `byte_i` past every Unicode whitespace character in `text`
+/// (`char::is_whitespace`, so NNBSP/NBSP count). Used when attaching
+/// magnitude words after a digit run so model-emitted thin spaces still
+/// fold `$12 million` to `12000000`.
+fn skip_unicode_whitespace(text: &str, mut byte_i: usize) -> usize {
+    while byte_i < text.len() {
+        let Some(ch) = text[byte_i..].chars().next() else {
+            break;
+        };
+        if !ch.is_whitespace() {
+            break;
+        }
+        byte_i += ch.len_utf8();
+    }
+    byte_i
 }
 
 /// Moves `current` into `tokens` when it qualifies as a content token (longer
@@ -980,22 +1001,19 @@ fn match_magnitude_abbrev(bytes: &[u8], pos: usize) -> Option<(usize, u32)> {
 }
 
 /// Matches a following word-form magnitude suffix (`thousand`, `million`,
-/// `billion`, `trillion`) at `pos`: at least one whitespace byte, then a
-/// case-insensitive whole-word match against [`CITE_MAGNITUDE_WORDS`].
-/// Returns the byte offset just past the matched word and its exponent, or
-/// `None` if there is no leading whitespace or the following word does not
-/// match, in which case the caller's scan position is left untouched so no
-/// text is wrongly consumed on a failed attempt.
+/// `billion`, `trillion`) at `pos`: at least one Unicode whitespace character
+/// (ASCII space/tab **or** NNBSP U+202F / NBSP, as gpt-oss emits in
+/// `$12 million`), then a case-insensitive whole-word match against
+/// [`CITE_MAGNITUDE_WORDS`]. Returns the byte offset just past the matched
+/// word and its exponent, or `None` if there is no leading whitespace or the
+/// following word does not match (caller leaves `pos` untouched).
 fn match_word_magnitude(text: &str, bytes: &[u8], pos: usize) -> Option<(usize, u32)> {
-    let mut i = pos;
-    let ws_start = i;
-    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    if i == ws_start {
+    let i = skip_unicode_whitespace(text, pos);
+    if i == pos {
         return None;
     }
     let word_start = i;
+    let mut i = word_start;
     while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
         i += 1;
     }
@@ -1711,6 +1729,38 @@ mod tests {
             classify_with_numeric_guard(CiteClass::Supported, 1, 0),
             CiteClass::Supported
         );
+    }
+
+    #[test]
+    fn gpt_oss_nnbsp_before_million_matches_source_plain_space() {
+        // Live JD Vance failure (2026-07-14): model wrote `$12 million` /
+        // `$20 million` with U+202F between digits and "million"; source text
+        // uses normal `$20 Million`. Old scanner only skipped ASCII
+        // whitespace, so claims became bare `12`/`20` and never matched
+        // `20000000` → total-failure note despite true $20M on Celebrity
+        // Net Worth.
+        let nnbsp = '\u{202f}';
+        let answer = format!(
+            "JD Vance's net worth is roughly in the $12{nnbsp}million to \
+             $20{nnbsp}million range [1]."
+        );
+        let src = source(
+            1,
+            "J.D. Vance Net Worth $20 Million. He has a net worth of $20 million.",
+        );
+        let audit = audit_citations(&answer, &[src]);
+        // $20 million must fold to 20000000 and match the source; $12 million
+        // is absent from this source (partial → weak via soft numeric rule).
+        assert!(audit.numeric_matched >= 1, "{audit:?}");
+        assert_eq!(audit.unsupported, 0, "{audit:?}");
+        assert!(
+            !is_total_citation_failure(&audit),
+            "NNBSP magnitude must not total-fail: {audit:?}"
+        );
+        assert!(honest_failure_note(&audit).is_none());
+        // Prove folding happened: without NNBSP handling matched would be 0.
+        let facts = extract_numeric_facts(&format!("$20{nnbsp}million"));
+        assert_eq!(facts.numbers, vec!["20000000".to_string()], "{facts:?}");
     }
 
     #[test]
