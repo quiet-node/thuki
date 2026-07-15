@@ -61,7 +61,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::commands::ChatMessage;
 use crate::config::defaults::{
-    REQUERY_MISSING_MAX_CHARS, SERP_EARLY_STOP_HITS, TRACE_SOURCE_TEXT_MAX_BYTES,
+    REQUERY_MISSING_MAX_CHARS, SEARCH_LANG_DEFAULT, SERP_EARLY_STOP_HITS,
+    TRACE_SOURCE_TEXT_MAX_BYTES,
 };
 use crate::net::transport::HttpTransport;
 use crate::trace::{truncate_for_trace, BoundRecorder, EngineStat, RecorderEvent, RetrievedSource};
@@ -76,7 +77,7 @@ use crate::websearch::engine::{
 use crate::websearch::evidence::filter_evidence_chunks;
 use crate::websearch::fetch::{fetch_pages, FetchedPage};
 use crate::websearch::judge::{deterministic_sufficiency, SufficiencyJudge, SufficiencyVerdict};
-use crate::websearch::lang::resolve_lang;
+use crate::websearch::lang::{detect_script_lang, resolve_lang, supported_lang};
 use crate::websearch::news::{fetch_news, is_news_intent};
 use crate::websearch::prefilter::{prefilter, PreFilterVerdict};
 use crate::websearch::prepass::{
@@ -355,7 +356,7 @@ async fn run_search_inner(
     // returns (≤1 DDG when the race is kept; divergent rewrites re-SERP).
     status(SearchPhase::Deciding);
     let classified_and_race =
-        classify_maybe_race_raw(deps, history, latest_user, today, locale, cancel, verdict).await;
+        classify_maybe_race_raw(deps, history, latest_user, today, cancel, verdict).await;
     let (classified, raced_serp) = match classified_and_race {
         ClassifyRaceResult::Cancelled => return SearchOutcome::Cancelled,
         ClassifyRaceResult::NoSearch => return SearchOutcome::NoSearch,
@@ -387,8 +388,9 @@ async fn run_search_inner(
         standalone_question: decision.standalone_question.clone(),
         queries: decision.queries.clone(),
     });
-    // Keep raced ForceWeb SERP only when rewrite ≈ raw and decision is web.
-    let preloaded_serp = preloaded_serp_for_decision(&decision, latest_user, raced_serp);
+    // Keep raced ForceWeb SERP only when rewrite ≈ raw, decision is web, and the
+    // race language matches the final resolved language (else re-SERP under final).
+    let preloaded_serp = preloaded_serp_for_decision(&decision, latest_user, lang, raced_serp);
     // Explicit "look it up / verify / double-check" request, or the `/search`
     // command (`deps.force_search`): re-serving ANY fast path is forbidden. Skip
     // the cache AND every vertical and go straight to the scraped engines with
@@ -503,10 +505,27 @@ enum ClassifyRaceResult {
     /// Ambiguous-turn classifier infra failure: answer without search.
     NoSearch,
     /// Classifier finished (or ForceWeb fallback synthesized); optional raced SERP.
+    ///
+    /// The raced triple is `(hits, engine stats, race_lang)`: `race_lang` is the
+    /// script-only language the concurrent SERP used, so
+    /// [`preloaded_serp_for_decision`] can discard hits when the final resolved
+    /// language differs.
     Ready {
         classified: PrePassDecision,
-        raced_serp: Option<(Vec<SearchHit>, Vec<EngineStat>)>,
+        raced_serp: Option<(Vec<SearchHit>, Vec<EngineStat>, &'static str)>,
     },
+}
+
+/// Language for a ForceWeb concurrent raw-query SERP race.
+///
+/// Script only: the classifier has not returned yet, and locale must not bias
+/// the race. A `vi_VN` machine racing an English query under `vi` was the live
+/// regression this path exists to prevent. No supported script signal →
+/// [`SEARCH_LANG_DEFAULT`].
+fn race_lang_for_force_web(latest_user: &str) -> &'static str {
+    detect_script_lang(latest_user)
+        .and_then(supported_lang)
+        .unwrap_or(SEARCH_LANG_DEFAULT)
 }
 
 /// Whether a ForceWeb turn should race a raw-query SERP with the classifier.
@@ -534,7 +553,6 @@ async fn classify_maybe_race_raw(
     history: &[ChatMessage],
     latest_user: &str,
     today: &str,
-    locale: &str,
     cancel: &CancellationToken,
     verdict: PreFilterVerdict,
 ) -> ClassifyRaceResult {
@@ -556,9 +574,10 @@ async fn classify_maybe_race_raw(
             deps.timings.record(STAGE_CLASSIFIER, start);
             res
         };
-        // Race SERP cannot wait for the classifier's lang field. Resolve from the
-        // raw user message (script + locale) so locale threading still applies.
-        let race_lang = resolve_lang(latest_user, "", locale);
+        // Race SERP cannot wait for the classifier's lang field. Script only
+        // (default en); never locale: locale is the weak signal that raced
+        // English queries under a non-English $LANG on ForceWeb.
+        let race_lang = race_lang_for_force_web(latest_user);
         let race = async {
             let start = Instant::now();
             let res = web_search(
@@ -592,9 +611,10 @@ async fn classify_maybe_race_raw(
                 }
             }
         };
+        let (hits, stats) = race_res;
         return ClassifyRaceResult::Ready {
             classified,
-            raced_serp: Some(race_res),
+            raced_serp: Some((hits, stats, race_lang)),
         };
     }
 
@@ -647,19 +667,27 @@ async fn classify_maybe_race_raw(
 }
 
 /// Keeps a ForceWeb raced SERP only when the classifier's first query is a
-/// near-duplicate of the raw user message and the decision is still `web`.
-/// Empty race results are kept too (same miss, no second DDG round that would
-/// re-touch engines already cooling from the race). Divergent rewrites return
-/// `None` so the engine tier re-SERPs the rewrite.
+/// near-duplicate of the raw user message, the decision is still `web`, and the
+/// race language matches the final resolved language. Empty race results are
+/// kept too when those hold (same miss, no second DDG round that would re-touch
+/// engines already cooling from the race). Divergent rewrites or a language
+/// mismatch return `None` so the engine tier re-SERPs under the final language.
 fn preloaded_serp_for_decision(
     decision: &PrePassDecision,
     latest_user: &str,
-    raced_serp: Option<(Vec<SearchHit>, Vec<EngineStat>)>,
+    final_lang: &str,
+    raced_serp: Option<(Vec<SearchHit>, Vec<EngineStat>, &'static str)>,
 ) -> Option<(Vec<SearchHit>, Vec<EngineStat>)> {
     if decision.decision != SearchDecision::Web {
         return None;
     }
-    let (hits, stats) = raced_serp?;
+    let (hits, stats, race_lang) = raced_serp?;
+    if race_lang != final_lang {
+        eprintln!(
+            "[search] force_web race: discard raw SERP (lang mismatch race={race_lang} final={final_lang})"
+        );
+        return None;
+    }
     let first = decision
         .queries
         .first()
@@ -4361,6 +4389,19 @@ mod tests {
     }
 
     #[test]
+    fn race_lang_for_force_web_is_script_only() {
+        // No locale arg: English text defaults to en even when the machine is
+        // vi_VN (that was the live race regression).
+        assert_eq!(
+            race_lang_for_force_web("what is the latest rust version"),
+            "en"
+        );
+        assert_eq!(race_lang_for_force_web("thời tiết Hà Nội hôm nay"), "vi");
+        assert_eq!(race_lang_for_force_web("東京の天気は"), "ja");
+        assert_eq!(race_lang_for_force_web("SJC"), "en");
+    }
+
+    #[test]
     fn preloaded_serp_keeps_near_duplicate_web_including_empty() {
         let decision = PrePassDecision {
             decision: SearchDecision::Web,
@@ -4370,8 +4411,12 @@ mod tests {
             explicit_search: false,
             lang: "en".into(),
         };
-        let empty =
-            preloaded_serp_for_decision(&decision, "latest rust version", Some((vec![], vec![])));
+        let empty = preloaded_serp_for_decision(
+            &decision,
+            "latest rust version",
+            "en",
+            Some((vec![], vec![], "en")),
+        );
         assert!(empty.is_some());
         let hit = SearchHit {
             title: "t".into(),
@@ -4381,7 +4426,8 @@ mod tests {
         let kept = preloaded_serp_for_decision(
             &decision,
             "  Latest  Rust  Version ",
-            Some((vec![hit], vec![])),
+            "en",
+            Some((vec![hit], vec![], "en")),
         );
         assert_eq!(kept.unwrap().0.len(), 1);
     }
@@ -4399,13 +4445,15 @@ mod tests {
         assert!(preloaded_serp_for_decision(
             &web,
             "latest figma ownership",
+            "en",
             Some((
                 vec![SearchHit {
                     title: "t".into(),
                     url: "https://example.com/".into(),
                     snippet: "s".into(),
                 }],
-                vec![]
+                vec![],
+                "en"
             )),
         )
         .is_none());
@@ -4420,9 +4468,65 @@ mod tests {
         assert!(preloaded_serp_for_decision(
             &cached,
             "latest rust version",
-            Some((vec![], vec![])),
+            "en",
+            Some((vec![], vec![], "en")),
         )
         .is_none());
+    }
+
+    #[test]
+    fn preloaded_serp_drops_when_race_lang_mismatches_final() {
+        let decision = PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: "latest rust version".into(),
+            queries: vec!["latest rust version".into()],
+            explicit_search: false,
+            lang: "en".into(),
+        };
+        // Near-duplicate rewrite would keep, but race ran under vi and final is en.
+        assert!(preloaded_serp_for_decision(
+            &decision,
+            "latest rust version",
+            "en",
+            Some((
+                vec![SearchHit {
+                    title: "t".into(),
+                    url: "https://example.com/".into(),
+                    snippet: "s".into(),
+                }],
+                vec![],
+                "vi"
+            )),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn preloaded_serp_keeps_when_race_lang_matches_final() {
+        let decision = PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: "latest rust version".into(),
+            queries: vec!["latest rust version".into()],
+            explicit_search: false,
+            lang: "en".into(),
+        };
+        let kept = preloaded_serp_for_decision(
+            &decision,
+            "latest rust version",
+            "en",
+            Some((
+                vec![SearchHit {
+                    title: "t".into(),
+                    url: "https://example.com/".into(),
+                    snippet: "s".into(),
+                }],
+                vec![],
+                "en"
+            )),
+        );
+        assert_eq!(kept.unwrap().0.len(), 1);
     }
 
     #[tokio::test]
