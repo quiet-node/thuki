@@ -228,15 +228,35 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     format!("{}…", text.chars().take(take).collect::<String>())
 }
 
-/// True when the answer cited at least one source and **every** citation was
-/// unsupported (none supported or weak). That is the only case where we still
-/// surface an honest failure note after repair attempts are exhausted; partial
-/// failures are stripped silently instead of shaming the user with a footer.
+/// True when grounded cleanup should surface the honest failure note after
+/// repair attempts are exhausted.
+///
+/// Two shapes count:
+/// - **Cited but all bad**: every `[n]` was unsupported (none supported or weak).
+/// - **Zero markers**: answer never placed `[n]` at all (`cited == 0`). Common
+///   with gpt-oss on conflict turns (prose outlet names only). Callers only
+///   finalize when sources were provided, so zero markers is not "no search".
+///
+/// Partial failures (some supported/weak remain) strip silently instead of
+/// appending a footer.
 pub fn is_total_citation_failure(audit: &CitationAudit) -> bool {
-    audit.cited > 0
-        && audit.supported == 0
-        && audit.weak == 0
-        && !audit.unsupported_indices.is_empty()
+    if audit.cited == 0 {
+        return true;
+    }
+    audit.supported == 0 && audit.weak == 0 && !audit.unsupported_indices.is_empty()
+}
+
+/// True when a grounded answer should enter (or continue) citation repair.
+///
+/// - Any unsupported `[n]` (existing path), or
+/// - **Zero** `[n]` markers while sources were provided (model named outlets in
+///   prose only, common on conflict turns with gpt-oss). Empty `unsupported`
+///   alone is not success when nothing was cited.
+pub fn needs_citation_repair(audit: &CitationAudit, sources_present: bool) -> bool {
+    if !audit.unsupported_indices.is_empty() {
+        return true;
+    }
+    sources_present && audit.cited == 0
 }
 
 /// Distinct unsupported source indices in first-seen order (deduped).
@@ -285,6 +305,21 @@ pub fn honest_failure_note(audit: &CitationAudit) -> Option<String> {
 /// or re-ground. Pure: does not include source bodies (those stay in the
 /// earlier writer messages).
 pub fn repair_critique(audit: &CitationAudit) -> String {
+    if audit.cited == 0 {
+        return "Automatic citation check failed: the answer has no [n] source \
+                markers at all.\n\n\
+                Rewrite the full answer from scratch using only the web sources \
+                already provided. Rules:\n\
+                - After every factual claim, place the matching source index in \
+                  its own brackets, like [1] or [3][4].\n\
+                - Naming a publisher in prose (e.g. \"according to Forbes\") does \
+                  not replace [n] citations.\n\
+                - Place [n] only when that source's text actually contains the \
+                  figure or fact.\n\
+                - Do not invent numbers or dates.\n\
+                - Output only the rewritten answer, with no preamble or apology."
+            .to_string();
+    }
     let markers = format_index_markers(&distinct_unsupported_indices(audit));
     format!(
         "Automatic citation check failed. These source numbers do not support the \
@@ -350,9 +385,18 @@ pub fn strip_unsupported_citations(answer: &str, unsupported_indices: &[usize]) 
 }
 
 /// Applies post-repair cleanup: strip remaining bad citations; append the
-/// honest total-failure note only when nothing citable remains supported.
-/// Pure over audit + answer text.
+/// honest total-failure note only when nothing citable remains supported (or
+/// when the answer never cited anything). Pure over audit + answer text.
 pub fn finalize_answer_after_audit(answer: &str, audit: &CitationAudit) -> String {
+    // Zero [n]: nothing to strip. After repair rounds (caller already looped),
+    // still-uncited prose gets the same honest note as total bad-cite failure.
+    if audit.cited == 0 {
+        return match honest_failure_note(audit) {
+            Some(note) if answer.trim().is_empty() => note,
+            Some(note) => format!("{answer}\n\n{note}"),
+            None => answer.to_string(),
+        };
+    }
     if audit.unsupported_indices.is_empty() {
         return answer.to_string();
     }
@@ -1068,23 +1112,22 @@ fn match_magnitude_abbrev(bytes: &[u8], pos: usize) -> Option<(usize, u32)> {
 /// word and its exponent, or `None` if there is no leading whitespace or the
 /// following word does not match (caller leaves `pos` untouched).
 fn match_word_magnitude(text: &str, bytes: &[u8], pos: usize) -> Option<(usize, u32)> {
-    let i = skip_unicode_whitespace(text, pos);
-    if i == pos {
+    let word_start = skip_unicode_whitespace(text, pos);
+    if word_start == pos {
         return None;
     }
-    let word_start = i;
-    let mut i = word_start;
-    while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
-        i += 1;
+    let mut word_end = word_start;
+    while word_end < bytes.len() && bytes[word_end].is_ascii_alphabetic() {
+        word_end += 1;
     }
-    if i == word_start {
+    if word_end == word_start {
         return None;
     }
-    let word = text[word_start..i].to_ascii_lowercase();
+    let word = text[word_start..word_end].to_ascii_lowercase();
     CITE_MAGNITUDE_WORDS
         .iter()
         .find(|entry| entry.0 == word)
-        .map(|entry| (i, entry.1))
+        .map(|entry| (word_end, entry.1))
 }
 
 /// Moves the decimal point in `digits` (a string of decimal digits with no
@@ -2027,6 +2070,7 @@ mod tests {
 
     #[test]
     fn honest_failure_note_none_when_nothing_unsupported() {
+        // cited>0 synthetic with empty unsupported_indices (helper floors cited at 1).
         assert_eq!(
             honest_failure_note(&audit_with_unsupported_indices(vec![])),
             None
@@ -2063,9 +2107,79 @@ mod tests {
     }
 
     #[test]
+    fn zero_cite_is_total_failure_and_needs_repair() {
+        // Elon-shaped: prose outlet names, no [n]. Grounded path only finalizes
+        // when sources exist, so cited==0 is not "no search".
+        let audit = CitationAudit {
+            cited: 0,
+            supported: 0,
+            weak: 0,
+            unsupported: 0,
+            unverifiable: 0,
+            unsupported_indices: vec![],
+            numeric_checked: 0,
+            numeric_matched: 0,
+            numeric_missing: 0,
+            details: vec![],
+        };
+        assert!(is_total_citation_failure(&audit));
+        assert!(needs_citation_repair(&audit, true));
+        assert!(!needs_citation_repair(&audit, false));
+        assert_eq!(
+            honest_failure_note(&audit).as_deref(),
+            Some(HONEST_FAILURE_NOTE_BODY)
+        );
+    }
+
+    #[test]
+    fn needs_citation_repair_false_when_all_present_cites_ok() {
+        let audit = CitationAudit {
+            cited: 2,
+            supported: 2,
+            weak: 0,
+            unsupported: 0,
+            unverifiable: 0,
+            unsupported_indices: vec![],
+            numeric_checked: 0,
+            numeric_matched: 0,
+            numeric_missing: 0,
+            details: vec![],
+        };
+        assert!(!needs_citation_repair(&audit, true));
+    }
+
+    #[test]
+    fn needs_citation_repair_true_when_any_unsupported() {
+        assert!(needs_citation_repair(
+            &audit_with_unsupported_indices(vec![1]),
+            true
+        ));
+    }
+
+    #[test]
     fn repair_critique_names_failing_markers() {
         let critique = repair_critique(&audit_with_unsupported_indices(vec![5, 2, 5]));
         assert!(critique.contains("[5], [2]"));
+        assert!(critique.contains("Rewrite the full answer"));
+    }
+
+    #[test]
+    fn repair_critique_zero_cite_demands_bracket_markers() {
+        let audit = CitationAudit {
+            cited: 0,
+            supported: 0,
+            weak: 0,
+            unsupported: 0,
+            unverifiable: 0,
+            unsupported_indices: vec![],
+            numeric_checked: 0,
+            numeric_matched: 0,
+            numeric_missing: 0,
+            details: vec![],
+        };
+        let critique = repair_critique(&audit);
+        assert!(critique.contains("no [n] source"));
+        assert!(critique.contains("Naming a publisher in prose"));
         assert!(critique.contains("Rewrite the full answer"));
     }
 
@@ -2097,6 +2211,29 @@ mod tests {
             details: vec![],
         };
         assert_eq!(finalize_answer_after_audit("ok [1]", &audit), "ok [1]");
+    }
+
+    #[test]
+    fn finalize_answer_after_audit_appends_note_on_zero_cite() {
+        // Live Elon-shaped: Bloomberg/Forbes in prose, no markers → note.
+        let answer = "El Musk net worth is about $913 billion according to \
+                      Bloomberg and $917 billion according to Forbes.";
+        let audit = CitationAudit {
+            cited: 0,
+            supported: 0,
+            weak: 0,
+            unsupported: 0,
+            unverifiable: 0,
+            unsupported_indices: vec![],
+            numeric_checked: 0,
+            numeric_matched: 0,
+            numeric_missing: 0,
+            details: vec![],
+        };
+        let out = finalize_answer_after_audit(answer, &audit);
+        assert!(out.starts_with(answer));
+        assert!(out.ends_with(HONEST_FAILURE_NOTE_BODY));
+        assert!(out.contains(&format!("\n\n{HONEST_FAILURE_NOTE_BODY}")));
     }
 
     #[test]

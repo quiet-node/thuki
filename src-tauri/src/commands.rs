@@ -1169,13 +1169,17 @@ async fn refine_grounded_answer(
         let Some(audit) = record_citation_audit(&content, sources, recorder) else {
             return content;
         };
-        if audit.unsupported_indices.is_empty() {
+        // Success only when every present [n] is ok AND the answer cited
+        // something. cited==0 with sources present is a silent failure mode
+        // (gpt-oss often names Bloomberg/Forbes in prose without [n]).
+        if !crate::websearch::cite_check::needs_citation_repair(&audit, true) {
             return content;
         }
         eprintln!(
-            "[search] citation repair: attempt {}/{} unsupported={:?}",
+            "[search] citation repair: attempt {}/{} cited={} unsupported={:?}",
             attempt + 1,
             crate::config::defaults::CITE_REPAIR_MAX_ATTEMPTS,
+            audit.cited,
             audit.unsupported_indices
         );
         let repair_messages = build_repair_messages(writer_messages.clone(), &content, &audit);
@@ -4923,6 +4927,35 @@ mod tests {
         assert_eq!(msgs[2].role, "user");
         assert!(msgs[2].content.contains("[3]"));
         assert!(msgs[2].content.contains("Rewrite the full answer"));
+    }
+
+    #[test]
+    fn build_repair_messages_zero_cite_demands_bracket_markers() {
+        use crate::websearch::cite_check::CitationAudit;
+        let base = vec![ChatMessage {
+            role: "user".into(),
+            content: "sources here".into(),
+            images: None,
+        }];
+        // Elon-shaped: prose outlet names, no [n] markers.
+        let audit = CitationAudit {
+            cited: 0,
+            supported: 0,
+            weak: 0,
+            unsupported: 0,
+            unverifiable: 0,
+            unsupported_indices: vec![],
+            numeric_checked: 0,
+            numeric_matched: 0,
+            numeric_missing: 0,
+            details: vec![],
+        };
+        let prose = "Worth $913B according to Bloomberg and $917B per Forbes.";
+        let msgs = build_repair_messages(base, prose, &audit);
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[1].content, prose);
+        assert!(msgs[2].content.contains("no [n] source"));
+        assert!(msgs[2].content.contains("Naming a publisher in prose"));
     }
 
     #[test]

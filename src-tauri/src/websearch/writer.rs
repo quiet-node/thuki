@@ -115,7 +115,7 @@ const CACHE_BREVITY_DIRECTIVE: &str = "The user is asking again about the answer
 /// source and date, and state the spread in one line rather than hedging every
 /// sentence. Kept tight (token budget), matching the categorical-directive
 /// pattern of [`CACHE_BREVITY_DIRECTIVE`].
-const CONFLICT_DIRECTIVE: &str = "The sources disagree on a value the question asks for. Do not hedge throughout: lead with the figure from the most recently dated source, then in one sentence attribute each differing figure to its named source with that source's date, stating the spread between them plainly.";
+const CONFLICT_DIRECTIVE: &str = "The sources disagree on a value the question asks for. Do not hedge throughout: lead with the figure from the most recently dated source, then in one sentence attribute each differing figure to its named source with that source's date, and place the matching [n] index immediately after each figure (e.g. $913 billion [3]), stating the spread plainly. Naming a publisher in prose does not replace [n] citations.";
 
 /// Forbidden to surface to the end user: scaffolding, delimiters, or a tour of
 /// the grounding prompt. Local VLMs have narrated `UNTRUSTED_WEB_CONTENT` and
@@ -527,7 +527,11 @@ mod tests {
         assert!(appendix.contains("The sources disagree on a value"));
         assert!(appendix.contains("lead with the figure from the most recently dated source"));
         assert!(appendix.contains("attribute each differing figure to its named source"));
-        assert!(appendix.contains("stating the spread between them plainly"));
+        // Require [n] after each figure: prose outlet names alone are not cites
+        // (gpt-oss conflict path historically omitted brackets).
+        assert!(appendix.contains("place the matching [n] index immediately after each figure"));
+        assert!(appendix.contains("stating the spread plainly"));
+        assert!(appendix.contains("Naming a publisher in prose does not replace [n]"));
     }
 
     #[test]
