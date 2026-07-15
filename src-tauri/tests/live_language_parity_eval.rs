@@ -203,7 +203,10 @@ async fn baseline_would_search(base_url: &str, message: &str, today: &str) -> bo
 /// "explain how photosynthesis works" instead) for the drift adjudication.
 async fn run_measurement_1(base_url: &str, model_label: &str) {
     let today = "2026-07-08";
-    let rows: Vec<EvalRow> = corpus().into_iter().filter(|r| r.message.is_ascii()).collect();
+    let rows: Vec<EvalRow> = corpus()
+        .into_iter()
+        .filter(|r| r.message.is_ascii())
+        .collect();
 
     let mut baseline_correct = 0usize;
     let mut branch_correct = 0usize;
@@ -225,11 +228,7 @@ async fn run_measurement_1(base_url: &str, model_label: &str) {
         } else {
             baseline_misses.push(format!(
                 "  BASELINE MISS [{}] ({}): want {} got {} :: {}",
-                row.label,
-                row.category,
-                want_search,
-                got_baseline,
-                row.message
+                row.label, row.category, want_search, got_baseline, row.message
             ));
         }
 
@@ -239,11 +238,7 @@ async fn run_measurement_1(base_url: &str, model_label: &str) {
         } else {
             branch_misses.push(format!(
                 "  BRANCH MISS [{}] ({}): want {} got {} :: {}",
-                row.label,
-                row.category,
-                want_search,
-                got_branch,
-                row.message
+                row.label, row.category, want_search, got_branch, row.message
             ));
         }
     }
@@ -290,10 +285,16 @@ async fn run_measurements_2_and_3(base_url: &str, model_label: &str) {
 
     let mut lang_correct = 0usize;
     let mut lang_total = 0usize;
-    eprintln!("\n[parity][{model_label}] MEASUREMENT 2 & 3 (non-English rows, n={})", rows.len());
+    eprintln!(
+        "\n[parity][{model_label}] MEASUREMENT 2 & 3 (non-English rows, n={})",
+        rows.len()
+    );
     for row in &rows {
         let Some(want_lang) = true_lang(&row) else {
-            eprintln!("  SKIP (no known lang prefix): {} :: {}", row.category, row.message);
+            eprintln!(
+                "  SKIP (no known lang prefix): {} :: {}",
+                row.category, row.message
+            );
             continue;
         };
         match prepass

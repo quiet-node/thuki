@@ -1229,7 +1229,7 @@ async fn run_engine_tier(
         } else {
             &[]
         }
-} else {
+    } else {
         queries
     };
     // Skip the SERP loop when race alone already hit early-stop, or when the
@@ -1999,7 +1999,7 @@ async fn judge_and_requery(
         missing: first_missing.clone(),
         requery: requery_trace,
     });
-// Multi-query requery: same fan-out shape as `run_engine_tier`'s primary
+    // Multi-query requery: same fan-out shape as `run_engine_tier`'s primary
     // loop (early-stop at SERP_EARLY_STOP_HITS). Prefer judge keyword queries
     // so the second SERP aims at the gap, not a prose restatement of round one.
     // The requery races the keyless engines exactly as the primary query does,
