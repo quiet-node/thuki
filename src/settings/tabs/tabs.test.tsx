@@ -753,4 +753,91 @@ describe('BehaviorTab', () => {
     expect(invokeMock).not.toHaveBeenCalledWith('free_traces');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
+
+  it('shows the on-disk footprint subtext below the side-by-side action bar', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'traces_stats')
+        return Promise.resolve({ count: 12, bytes: 4404019 });
+      return Promise.resolve(undefined);
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+
+    const subtext = await screen.findByText('12 traces · 4.2 MB on disk');
+    const openBtn = screen.getByRole('button', { name: 'Open traces folder' });
+    const freeBtn = screen.getByRole('button', { name: 'Free traces…' });
+    // Both actions share one side-by-side bar...
+    expect(openBtn.parentElement).toBe(freeBtn.parentElement);
+    // ...and the footprint renders directly below that bar.
+    expect(openBtn.parentElement?.nextElementSibling).toBe(subtext);
+  });
+
+  it('hides the footprint subtext when the stats command fails', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'traces_stats') return Promise.reject(new Error('nope'));
+      return Promise.resolve(undefined);
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Open traces folder' }),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/on disk/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('No traces recorded yet'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('refreshes the footprint to the empty state after freeing traces', async () => {
+    let freed = false;
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'traces_stats')
+        return Promise.resolve(
+          freed ? { count: 0, bytes: 0 } : { count: 3, bytes: 900 },
+        );
+      if (cmd === 'free_traces') {
+        freed = true;
+        return Promise.resolve(undefined);
+      }
+      return Promise.resolve(undefined);
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+    await screen.findByText('3 traces · 900 B on disk');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Free traces…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Free traces' }));
+
+    expect(
+      await screen.findByText('No traces recorded yet'),
+    ).toBeInTheDocument();
+  });
+
+  it('still refreshes the footprint when freeing fails', async () => {
+    let attempted = false;
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'traces_stats')
+        return Promise.resolve(
+          attempted ? { count: 0, bytes: 0 } : { count: 3, bytes: 900 },
+        );
+      if (cmd === 'free_traces') {
+        attempted = true;
+        return Promise.reject(new Error('locked'));
+      }
+      return Promise.resolve(undefined);
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+    await screen.findByText('3 traces · 900 B on disk');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Free traces…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Free traces' }));
+
+    // Delete rejected, but the reload still resyncs to the true (empty) state.
+    expect(
+      await screen.findByText('No traces recorded yet'),
+    ).toBeInTheDocument();
+  });
 });

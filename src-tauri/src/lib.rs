@@ -3011,6 +3011,8 @@ pub fn run() {
             #[cfg(not(coverage))]
             settings_commands::free_traces,
             #[cfg(not(coverage))]
+            settings_commands::traces_stats,
+            #[cfg(not(coverage))]
             models::get_model_picker_state,
             #[cfg(not(coverage))]
             models::set_active_model,

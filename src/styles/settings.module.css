@@ -1767,6 +1767,22 @@
   transform: rotate(90deg);
 }
 
+/* Variant C: the two trace actions sit side by side as a compact bar, with the
+ * on-disk footprint subtext stacked below them (the SettingRow control is
+ * right-aligned, so both the bar and the subtext hug the right edge). */
+.tracesActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tracesSubtext {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--t3);
+  font-variant-numeric: tabular-nums;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sideItem,
   .input,

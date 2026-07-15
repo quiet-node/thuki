@@ -16,7 +16,7 @@ use super::{
     coerce_json_to_toml, is_allowed_field, is_allowed_section, is_http_url, json_type_name,
     json_value_to_toml_item, keep_warm_idle_minutes_changed, ollama_deactivated, patch_document,
     read_document, remove_openai_provider_from_disk, reset_section_on_disk, trace_enabled_changed,
-    validate_provider_value, write_active_provider_to_disk, write_field_to_disk,
+    traces_stats_for, validate_provider_value, write_active_provider_to_disk, write_field_to_disk,
     write_provider_field_to_disk,
 };
 use crate::config::defaults::{ALLOWED_FIELDS, ALLOWED_SECTIONS};
@@ -1760,4 +1760,64 @@ fn clear_traces_dir_missing_root_is_noop_ok() {
 
     // A no-op leaves the missing directory absent (it is not created).
     assert!(!root.exists(), "missing root must stay absent on no-op");
+}
+
+// ─── traces_stats_for ────────────────────────────────────────────────────────
+
+#[test]
+fn traces_stats_for_counts_files_and_sums_bytes_including_nested() {
+    let root = tempdir().join("traces");
+    let chat = root.join("chat");
+    std::fs::create_dir_all(&chat).unwrap();
+    // Top-level file + two nested files: 3 files, 3 + 5 + 7 = 15 bytes.
+    std::fs::write(root.join("top.jsonl"), b"abc").unwrap();
+    std::fs::write(chat.join("a.jsonl"), b"hello").unwrap();
+    std::fs::write(chat.join("b.jsonl"), b"seventy").unwrap();
+
+    let (count, bytes) = traces_stats_for(&root).expect("stats should succeed");
+
+    assert_eq!(count, 3, "every regular file across subdirs is counted");
+    assert_eq!(bytes, 15, "byte total sums file sizes across subdirs");
+}
+
+#[test]
+fn traces_stats_for_missing_root_is_zero() {
+    let root = tempdir().join("never-created");
+    assert!(!root.exists());
+
+    assert_eq!(
+        traces_stats_for(&root).expect("missing root must be Ok"),
+        (0, 0),
+        "missing root reports an empty footprint"
+    );
+}
+
+#[test]
+fn traces_stats_for_empty_root_is_zero() {
+    let root = tempdir().join("traces");
+    std::fs::create_dir_all(&root).unwrap();
+
+    assert_eq!(
+        traces_stats_for(&root).expect("empty root must be Ok"),
+        (0, 0),
+        "an existing but empty root reports zero"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn traces_stats_for_does_not_follow_symlinks() {
+    let root = tempdir().join("traces");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("real.jsonl"), b"real").unwrap();
+    // A symlink to the real file must NOT be counted (link, not a regular file).
+    std::os::unix::fs::symlink(root.join("real.jsonl"), root.join("link.jsonl")).unwrap();
+
+    let (count, bytes) = traces_stats_for(&root).expect("stats should succeed");
+
+    assert_eq!(
+        count, 1,
+        "the symlink is skipped, only the real file counts"
+    );
+    assert_eq!(bytes, 4, "only the real file's bytes are summed");
 }

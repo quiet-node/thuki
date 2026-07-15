@@ -8,7 +8,7 @@
  * on-disk trace folder).
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 import {
@@ -18,6 +18,7 @@ import {
 import { ConfirmDialog, Section, SettingRow, Toggle } from '../components';
 import { SaveField } from '../components/SaveField';
 import { configHelp } from '../configHelpers';
+import { formatTracesSubtext } from '../../utils/formatTracesSubtext';
 import styles from '../../styles/settings.module.css';
 import type { RawAppConfig } from '../types';
 
@@ -35,6 +36,12 @@ interface BehaviorTabProps {
   onHighlightAutoSearchDone?: () => void;
 }
 
+/** Serde shape returned by the `traces_stats` Tauri command. */
+interface TracesStats {
+  count: number;
+  bytes: number;
+}
+
 /**
  * Section-level "?" copy: what the Text Replacement group is and which commands
  * it covers. The individual toggles explain their own behavior in their own
@@ -43,13 +50,9 @@ interface BehaviorTabProps {
 const TEXT_REPLACEMENT_HELP =
   'Applies only to /rewrite and /refine: writing their result back into the app you were using, replacing your highlighted text.';
 
-/** Row "?" copy: what "Open traces folder" does. */
-const OPEN_TRACES_HELP =
-  'Opens the folder where trace recordings are written, creating it if no trace has been recorded yet.';
-
-/** Row "?" copy: what "Free traces" does and that it cannot be undone. */
-const FREE_TRACES_HELP =
-  'Permanently deletes every recorded trace from disk. This cannot be undone.';
+/** Row "?" copy for the Traces action bar: what the two actions do. */
+const TRACES_HELP =
+  'Open the folder where trace recordings are written, or permanently delete every recorded trace from disk (this cannot be undone).';
 
 /**
  * Renders Behavior settings: Auto search, Text Replacement toggles, then the
@@ -84,6 +87,29 @@ export function BehaviorTab({
   // Two-stage guard for the destructive "Free traces" action: the button only
   // arms the modal; the actual delete runs from the modal's confirm.
   const [confirmFree, setConfirmFree] = useState(false);
+  // On-disk footprint subtext. `null` hides the line (before the first load
+  // resolves, and on any invoke failure, so a backend error never throws into
+  // render).
+  const [tracesSubtext, setTracesSubtext] = useState<string | null>(null);
+
+  // Reads the live trace footprint and formats it for the subtext. Kept in a
+  // callback so both the "on expand" effect and the post-delete refresh share
+  // one code path.
+  const loadTracesStats = useCallback(async () => {
+    try {
+      const stats = await invoke<TracesStats>('traces_stats');
+      setTracesSubtext(formatTracesSubtext(stats.count, stats.bytes));
+    } catch {
+      // Hide the subtext rather than surfacing a raw error in the UI.
+      setTracesSubtext(null);
+    }
+  }, []);
+
+  // Fetch the footprint only once the Diagnostics block is opened; a collapsed
+  // block never touches disk.
+  useEffect(() => {
+    if (devOpen) void loadTracesStats();
+  }, [devOpen, loadTracesStats]);
 
   return (
     <>
@@ -210,32 +236,30 @@ export function BehaviorTab({
               )}
             />
             <SettingRow
-              label="Traces folder"
-              helper={OPEN_TRACES_HELP}
+              label="Traces"
+              helper={TRACES_HELP}
               tooltipPlacement="top"
               rightAlign
             >
-              <button
-                type="button"
-                className={`${styles.button} ${styles.buttonGhost}`}
-                onClick={() => void invoke('open_traces_in_finder')}
-              >
-                Open traces folder
-              </button>
-            </SettingRow>
-            <SettingRow
-              label="Free traces"
-              helper={FREE_TRACES_HELP}
-              tooltipPlacement="top"
-              rightAlign
-            >
-              <button
-                type="button"
-                className={`${styles.button} ${styles.buttonDestructive}`}
-                onClick={() => setConfirmFree(true)}
-              >
-                Free traces…
-              </button>
+              <div className={styles.tracesActions}>
+                <button
+                  type="button"
+                  className={`${styles.button} ${styles.buttonGhost}`}
+                  onClick={() => void invoke('open_traces_in_finder')}
+                >
+                  Open traces folder
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.button} ${styles.buttonDestructive}`}
+                  onClick={() => setConfirmFree(true)}
+                >
+                  Free traces…
+                </button>
+              </div>
+              {tracesSubtext !== null ? (
+                <div className={styles.tracesSubtext}>{tracesSubtext}</div>
+              ) : null}
             </SettingRow>
           </div>
         )}
@@ -249,7 +273,18 @@ export function BehaviorTab({
         destructive
         onConfirm={() => {
           setConfirmFree(false);
-          void invoke('free_traces');
+          // Delete, then refresh the footprint so the subtext drops to the
+          // empty state. Swallow a delete failure and reload regardless, so the
+          // subtext always resyncs to the true on-disk state and no rejection
+          // escapes into an unhandled promise.
+          void (async () => {
+            try {
+              await invoke('free_traces');
+            } catch {
+              // Deletion failed; the reload below reflects the real state.
+            }
+            await loadTracesStats();
+          })();
         }}
         onCancel={() => setConfirmFree(false)}
       />

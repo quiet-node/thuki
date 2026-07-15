@@ -1050,6 +1050,63 @@ pub fn free_traces(app: AppHandle) -> Result<(), String> {
     clear_traces_dir(&traces_root(&app)).map_err(|e| e.to_string())
 }
 
+/// On-disk trace footprint returned to the Settings window.
+///
+/// `count` is the number of trace files; `bytes` is their combined size.
+/// The frontend renders these as a muted subtext (e.g. "12 traces · 4.2 MB
+/// on disk") beneath the trace actions.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct TracesStats {
+    pub count: u64,
+    pub bytes: u64,
+}
+
+/// Counts the trace files under `root` and sums their byte size.
+///
+/// Pure and testable: walks the traces tree iteratively (the `root` plus its
+/// per-domain subdirectories such as `chat/`), counting regular files and
+/// summing `metadata().len()`. Reads metadata only, never file contents, so
+/// memory stays bounded to two integers regardless of trace volume.
+///
+/// Symlinks are not followed: `DirEntry::file_type` and `DirEntry::metadata`
+/// report on the link itself, so a symlinked entry is neither a dir to descend
+/// nor a file to count, and is skipped. A missing `root` yields `(0, 0)`.
+/// I/O errors mid-walk are propagated rather than panicked on. Snapshot
+/// semantics are fine: no lock is taken even if a recorder writes concurrently.
+pub(crate) fn traces_stats_for(root: &Path) -> std::io::Result<(u64, u64)> {
+    if !root.exists() {
+        return Ok((0, 0));
+    }
+    let mut count: u64 = 0;
+    let mut bytes: u64 = 0;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                stack.push(entry.path());
+            } else if file_type.is_file() {
+                bytes += entry.metadata()?.len();
+                count += 1;
+            }
+        }
+    }
+    Ok((count, bytes))
+}
+
+/// Reports the current on-disk trace footprint to the Settings window.
+///
+/// Thin command wrapper (excluded from coverage): resolves the root
+/// server-side via [`traces_root`] and delegates counting to
+/// [`traces_stats_for`], where the logic is unit-tested.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn traces_stats(app: AppHandle) -> Result<TracesStats, String> {
+    let (count, bytes) = traces_stats_for(&traces_root(&app)).map_err(|e| e.to_string())?;
+    Ok(TracesStats { count, bytes })
+}
+
 // ─── Document I/O + JSON→TOML coercion (testable internals) ─────────────────
 
 /// Information returned to the frontend in the rare case where `set_config_field`
