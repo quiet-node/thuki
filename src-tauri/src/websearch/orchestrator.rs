@@ -4523,7 +4523,7 @@ mod tests {
                     snippet: "s".into(),
                 }],
                 vec![],
-                "en"
+                "en",
             )),
         );
         assert_eq!(kept.unwrap().0.len(), 1);
