@@ -49,17 +49,22 @@
 //! question ([`judge_and_requery`]). An insufficient verdict naming what is
 //! missing fires exactly one bounded requery
 //! ([`crate::config::defaults::ENGINE_REQUERY_MAX`]); its new sources merge
-//! with round one's rather than replace them, and no second judge ever runs.
-//! A judge failure, timeout, or unparseable body fails toward committing
-//! round one's sources unchanged, the same posture [`commit_or_escalate`]
-//! takes on a vertical judge failure.
+//! with round one's rather than replace them. After that merge a **second**
+//! judge call sets `still_missing` / conflict on the merged set; there is no
+//! third requery. A first-round judge failure, timeout, or unparseable body
+//! fails toward committing round one's sources unchanged, the same posture
+//! [`commit_or_escalate`] takes on a vertical judge failure.
+
+use std::time::Instant;
 
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::ChatMessage;
-use crate::config::defaults::SERP_EARLY_STOP_HITS;
+use crate::config::defaults::{
+    REQUERY_MISSING_MAX_CHARS, SERP_EARLY_STOP_HITS, TRACE_SOURCE_TEXT_MAX_BYTES,
+};
 use crate::net::transport::HttpTransport;
-use crate::trace::{BoundRecorder, EngineStat, RecorderEvent, RetrievedSource};
+use crate::trace::{truncate_for_trace, BoundRecorder, EngineStat, RecorderEvent, RetrievedSource};
 use crate::websearch::assemble::{assemble_context, SourceBlock};
 use crate::websearch::cache::{CachedSearch, SourceCache};
 use crate::websearch::encyclopedia::{fetch_encyclopedia, is_volatile_question};
@@ -77,6 +82,11 @@ use crate::websearch::rank::{rerank_by_score, select_chunks, ScoredChunk, Scorer
 use crate::websearch::recency::recency_reorder;
 use crate::websearch::serp_cache::WebCache;
 use crate::websearch::sports::{fetch_sports, is_sports_intent};
+use crate::websearch::stage_timing::{
+    queries_near_duplicate, TimingBag, STAGE_CLASSIFIER, STAGE_FETCH, STAGE_JUDGE,
+    STAGE_JUDGE_POST_REQUERY, STAGE_RANK_ASSEMBLY, STAGE_RAW_RACE_SERP, STAGE_SERP,
+    STAGE_WRITER_PREPARE,
+};
 use crate::websearch::weather::fetch_weather;
 use crate::websearch::writer::{unreachable_messages, writer_messages};
 
@@ -201,6 +211,10 @@ pub struct SearchDeps<'a> {
     /// so grounded answers keep the photo. `None` or empty keeps the text-only
     /// path (no multimodal prefill). Never sent to search engines.
     pub latest_images: Option<&'a [String]>,
+    /// Per-stage wall-clock bag for this turn. Callers create one bag per
+    /// search; the orchestrator records stage ms without holding locks across
+    /// awaits and flushes a [`RecorderEvent::SearchTimings`] before return.
+    pub timings: &'a TimingBag,
 }
 
 /// Runs the pipeline for one turn. `chat_system_prompt`, `history`, and
@@ -281,6 +295,14 @@ async fn run_search_inner(
     status: &(dyn Fn(SearchPhase) + Send + Sync),
     force_search: bool,
 ) -> SearchOutcome {
+    // Flush stage timings on every exit path (including cancel and early NoSearch).
+    // Drop runs after the function body returns, so awaits complete first; the bag
+    // never holds its mutex across those awaits (see TimingBag::record).
+    let _timing_flush = TimingFlushGuard {
+        bag: deps.timings,
+        recorder: deps.recorder,
+    };
+
     // Slash `/search` (and any other explicit force): skip ForceNo and go
     // engines-only. Still runs the classifier when possible for a better
     // rewrite, then stamps explicit_search so cache/verticals never win.
@@ -319,49 +341,19 @@ async fn run_search_inner(
     }
     // Stage two: the persona-free classifier decides the ambiguous middle and
     // rewrites the query. A `ForceWeb` verdict still runs it, for the rewrite.
+    // On ForceWeb only, race a raw-query SERP against the classifier so the
+    // common near-duplicate rewrite path pays zero SERP wait after the model
+    // returns (≤1 DDG when the race is kept; divergent rewrites re-SERP).
     status(SearchPhase::Deciding);
-    let classified = match deps
-        .prepass
-        .decide(history, latest_user, deps.latest_images, today, cancel)
-        .await
-    {
-        Ok(classified) => classified,
-        Err(InferenceError::Cancelled) => return SearchOutcome::Cancelled,
-        // Classifier infra failure (engine wedged, call timed out). On a
-        // ForceWeb turn the deterministic signal already decided: search with
-        // the raw message rather than dropping to a stale answer (observed
-        // live: reasoning-heavy models can blow the classifier timeout, and
-        // losing the search on a "latest ..." turn is the worst outcome). On an
-        // ambiguous turn, fall back to a plain model answer.
-        Err(InferenceError::Request(reason)) => {
-            eprintln!("[search] classifier error: {reason}");
-            // A deterministic ForceWeb signal, or an explicit `/search`
-            // (`force_search`), already committed to searching: fall through to
-            // the raw-message search below rather than dropping to a stale
-            // answer. Only an ambiguous, non-forced turn abandons the search.
-            if verdict != PreFilterVerdict::ForceWeb && !deps.force_search {
-                deps.recorder.record(RecorderEvent::SearchDecided {
-                    prefilter: prefilter_label(verdict).to_string(),
-                    decision: "no".to_string(),
-                    force: false,
-                    route: String::new(),
-                    standalone_question: latest_user.trim().to_string(),
-                    queries: Vec::new(),
-                });
-                return SearchOutcome::NoSearch;
-            }
-            // No classifier output: search the raw message and route to the
-            // general engine tier (no route hint to steer a vertical).
-            PrePassDecision {
-                decision: SearchDecision::Web,
-                route: SearchRoute::Web,
-                standalone_question: latest_user.trim().to_string(),
-                queries: vec![latest_user.trim().to_string()],
-                // A classifier infra failure yields no rewrite, so no explicit
-                // look-it-up signal either: run the standard vertical pipeline.
-                explicit_search: false,
-            }
-        }
+    let classified_and_race =
+        classify_maybe_race_raw(deps, history, latest_user, today, cancel, verdict).await;
+    let (classified, raced_serp) = match classified_and_race {
+        ClassifyRaceResult::Cancelled => return SearchOutcome::Cancelled,
+        ClassifyRaceResult::NoSearch => return SearchOutcome::NoSearch,
+        ClassifyRaceResult::Ready {
+            classified,
+            raced_serp,
+        } => (classified, raced_serp),
     };
     let decision = resolve_decision(verdict, classified);
     eprintln!(
@@ -378,6 +370,8 @@ async fn run_search_inner(
         standalone_question: decision.standalone_question.clone(),
         queries: decision.queries.clone(),
     });
+    // Keep raced ForceWeb SERP only when rewrite ≈ raw and decision is web.
+    let preloaded_serp = preloaded_serp_for_decision(&decision, latest_user, raced_serp);
     // Explicit "look it up / verify / double-check" request, or the `/search`
     // command (`deps.force_search`): re-serving ANY fast path is forbidden. Skip
     // the cache AND every vertical and go straight to the scraped engines with
@@ -399,6 +393,7 @@ async fn run_search_inner(
             cancel,
             status,
             true,
+            preloaded_serp,
         )
         .await;
     }
@@ -421,6 +416,7 @@ async fn run_search_inner(
                 Vec::new(),
                 // A cache hit is never a conflict commit: no fresh judge ran.
                 false,
+                None,
             ),
             None => {
                 run_web(
@@ -437,6 +433,7 @@ async fn run_search_inner(
                     cancel,
                     status,
                     false,
+                    preloaded_serp,
                 )
                 .await
             }
@@ -456,9 +453,199 @@ async fn run_search_inner(
                 cancel,
                 status,
                 false,
+                preloaded_serp,
             )
             .await
         }
+    }
+}
+
+/// Flushes [`TimingBag`] into the trace recorder when dropped. Placed at the
+/// top of [`run_search_inner`] so every exit path (including early returns and
+/// cancellation) emits one [`RecorderEvent::SearchTimings`].
+struct TimingFlushGuard<'a> {
+    bag: &'a TimingBag,
+    recorder: &'a BoundRecorder,
+}
+
+impl Drop for TimingFlushGuard<'_> {
+    /// Records pipeline total + stage list to the forensic recorder.
+    fn drop(&mut self) {
+        self.bag.flush(self.recorder);
+    }
+}
+
+/// Result of the classifier stage, optionally concurrent with a ForceWeb raw SERP race.
+enum ClassifyRaceResult {
+    /// User cancelled during the classifier (or race is abandoned on cancel).
+    Cancelled,
+    /// Ambiguous-turn classifier infra failure: answer without search.
+    NoSearch,
+    /// Classifier finished (or ForceWeb fallback synthesized); optional raced SERP.
+    Ready {
+        classified: PrePassDecision,
+        raced_serp: Option<(Vec<SearchHit>, Vec<EngineStat>)>,
+    },
+}
+
+/// Whether a ForceWeb turn should race a raw-query SERP with the classifier.
+///
+/// Skips vertical-shaped questions (weather / sports / news keywords) so the
+/// race never spends DDG quota on turns a keyless vertical is about to answer.
+/// Engine-shaped ForceWeb turns race; that is the latency win the package
+/// targets. Cached decisions on engine-shaped ForceWeb may still race once and
+/// discard hits (rare follow-up path); see [`preloaded_serp_for_decision`].
+fn force_web_should_race_raw(latest_user: &str) -> bool {
+    if is_sports_intent(latest_user) || is_news_intent(latest_user) {
+        return false;
+    }
+    let lower = latest_user.to_ascii_lowercase();
+    let weather_shaped = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|t| matches!(t, "weather" | "temperature" | "forecast" | "humidity"));
+    !weather_shaped
+}
+
+/// Runs the classifier; on [`PreFilterVerdict::ForceWeb`] only (and when the
+/// turn looks engine-shaped, see [`force_web_should_race_raw`]), races a
+/// raw-query SERP in parallel so a near-duplicate rewrite can reuse those hits
+/// (common path stays at one DDG request). Non-ForceWeb paths never race.
+async fn classify_maybe_race_raw(
+    deps: &SearchDeps<'_>,
+    history: &[ChatMessage],
+    latest_user: &str,
+    today: &str,
+    cancel: &CancellationToken,
+    verdict: PreFilterVerdict,
+) -> ClassifyRaceResult {
+    let raw = latest_user.trim().to_string();
+    if verdict == PreFilterVerdict::ForceWeb && force_web_should_race_raw(latest_user) {
+        // Freshness bias matches run_web: volatile raw phrasing gets the date
+        // filter; stable ForceWeb still races without it.
+        let freshness = is_volatile_question(&raw);
+        // Time each future from its own Instant, recorded when that future
+        // completes, not after tokio::join returns. Recording both stages from
+        // pre-join start until post-join end would make both report
+        // max(classifier, serp) and hide which side dominated.
+        let decide = async {
+            let start = Instant::now();
+            let res = deps
+                .prepass
+                .decide(history, latest_user, deps.latest_images, today, cancel)
+                .await;
+            deps.timings.record(STAGE_CLASSIFIER, start);
+            res
+        };
+        let race = async {
+            let start = Instant::now();
+            let res = web_search(
+                deps.transport,
+                &raw,
+                deps.health,
+                freshness,
+                deps.web_cache,
+                false,
+            )
+            .await;
+            deps.timings.record(STAGE_RAW_RACE_SERP, start);
+            res
+        };
+        let (classified_res, race_res) = tokio::join!(decide, race);
+        let classified = match classified_res {
+            Ok(c) => c,
+            Err(InferenceError::Cancelled) => return ClassifyRaceResult::Cancelled,
+            Err(InferenceError::Request(reason)) => {
+                eprintln!("[search] classifier error: {reason}");
+                // ForceWeb: fall through to raw-message search.
+                PrePassDecision {
+                    decision: SearchDecision::Web,
+                    route: SearchRoute::Web,
+                    standalone_question: raw.clone(),
+                    queries: vec![raw.clone()],
+                    explicit_search: false,
+                }
+            }
+        };
+        return ClassifyRaceResult::Ready {
+            classified,
+            raced_serp: Some(race_res),
+        };
+    }
+
+    // Ambiguous (and ForceNo never reaches here): sequential classifier only.
+    let classifier_start = Instant::now();
+    match deps
+        .prepass
+        .decide(history, latest_user, deps.latest_images, today, cancel)
+        .await
+    {
+        Ok(classified) => {
+            deps.timings.record(STAGE_CLASSIFIER, classifier_start);
+            ClassifyRaceResult::Ready {
+                classified,
+                raced_serp: None,
+            }
+        }
+        Err(InferenceError::Cancelled) => {
+            deps.timings.record(STAGE_CLASSIFIER, classifier_start);
+            ClassifyRaceResult::Cancelled
+        }
+        Err(InferenceError::Request(reason)) => {
+            deps.timings.record(STAGE_CLASSIFIER, classifier_start);
+            eprintln!("[search] classifier error: {reason}");
+            if !deps.force_search {
+                deps.recorder.record(RecorderEvent::SearchDecided {
+                    prefilter: prefilter_label(verdict).to_string(),
+                    decision: "no".to_string(),
+                    force: false,
+                    route: String::new(),
+                    standalone_question: raw,
+                    queries: Vec::new(),
+                });
+                return ClassifyRaceResult::NoSearch;
+            }
+            ClassifyRaceResult::Ready {
+                classified: PrePassDecision {
+                    decision: SearchDecision::Web,
+                    route: SearchRoute::Web,
+                    standalone_question: latest_user.trim().to_string(),
+                    queries: vec![latest_user.trim().to_string()],
+                    explicit_search: false,
+                },
+                raced_serp: None,
+            }
+        }
+    }
+}
+
+/// Keeps a ForceWeb raced SERP only when the classifier's first query is a
+/// near-duplicate of the raw user message and the decision is still `web`.
+/// Empty race results are kept too (same miss, no second DDG round that would
+/// re-touch engines already cooling from the race). Divergent rewrites return
+/// `None` so the engine tier re-SERPs the rewrite.
+fn preloaded_serp_for_decision(
+    decision: &PrePassDecision,
+    latest_user: &str,
+    raced_serp: Option<(Vec<SearchHit>, Vec<EngineStat>)>,
+) -> Option<(Vec<SearchHit>, Vec<EngineStat>)> {
+    if decision.decision != SearchDecision::Web {
+        return None;
+    }
+    let (hits, stats) = raced_serp?;
+    let first = decision
+        .queries
+        .first()
+        .map(String::as_str)
+        .unwrap_or(decision.standalone_question.as_str());
+    if queries_near_duplicate(first, latest_user.trim()) {
+        eprintln!(
+            "[search] force_web race: keeping raw SERP (near-duplicate rewrite, hits={})",
+            hits.len()
+        );
+        Some((hits, stats))
+    } else {
+        eprintln!("[search] force_web race: discard raw SERP (rewrite diverged)");
+        None
     }
 }
 
@@ -549,14 +736,22 @@ async fn force_explicit_web(
     status: &(dyn Fn(SearchPhase) + Send + Sync),
 ) -> SearchOutcome {
     status(SearchPhase::Deciding);
+    let classifier_start = Instant::now();
     let classified = match deps
         .prepass
         .decide(history, latest_user, deps.latest_images, today, cancel)
         .await
     {
-        Ok(classified) => classified,
-        Err(InferenceError::Cancelled) => return SearchOutcome::Cancelled,
+        Ok(classified) => {
+            deps.timings.record(STAGE_CLASSIFIER, classifier_start);
+            classified
+        }
+        Err(InferenceError::Cancelled) => {
+            deps.timings.record(STAGE_CLASSIFIER, classifier_start);
+            return SearchOutcome::Cancelled;
+        }
         Err(InferenceError::Request(reason)) => {
+            deps.timings.record(STAGE_CLASSIFIER, classifier_start);
             eprintln!("[search] force_search classifier error: {reason} -> raw query");
             PrePassDecision {
                 decision: SearchDecision::Web,
@@ -604,6 +799,9 @@ async fn force_explicit_web(
         cancel,
         status,
         true, /* explicit_search: skip cache + verticals */
+        // `/search` force path does not race the raw query (no ForceWeb
+        // prefilter gate); always SERP the classifier rewrite.
+        None,
     )
     .await
 }
@@ -636,6 +834,9 @@ async fn run_web(
     cancel: &CancellationToken,
     status: &(dyn Fn(SearchPhase) + Send + Sync),
     engines_only: bool,
+    // ForceWeb raw-query race hits to reuse when the rewrite matched; `None`
+    // runs the normal SERP loop inside `run_engine_tier`.
+    preloaded_serp: Option<(Vec<SearchHit>, Vec<EngineStat>)>,
 ) -> SearchOutcome {
     if cancel.is_cancelled() {
         return SearchOutcome::Cancelled;
@@ -815,6 +1016,7 @@ async fn run_web(
         engines_only,
         cancel,
         status,
+        preloaded_serp,
     )
     .await
     {
@@ -861,7 +1063,7 @@ async fn run_web(
             .await
             {
                 EngineJudgeOutcome::Cancelled => SearchOutcome::Cancelled,
-                EngineJudgeOutcome::Sources(sources, requery_stats, conflict) => {
+                EngineJudgeOutcome::Sources(sources, requery_stats, conflict, still_missing) => {
                     let mut engine_stats = engine_stats;
                     engine_stats.extend(requery_stats);
                     grounded_answer(
@@ -876,6 +1078,7 @@ async fn run_web(
                         locale,
                         engine_stats,
                         conflict,
+                        still_missing,
                     )
                 }
             }
@@ -960,36 +1163,60 @@ async fn run_engine_tier(
     bypass_cache: bool,
     cancel: &CancellationToken,
     status: &(dyn Fn(SearchPhase) + Send + Sync),
+    preloaded_serp: Option<(Vec<SearchHit>, Vec<EngineStat>)>,
 ) -> EngineTierOutcome {
-    let mut hits: Vec<SearchHit> = Vec::new();
     // Per-(query, engine) outcome summary accumulated across every web_search
     // call this tier makes, for the caller to surface in the trace (see
     // `EngineTierOutcome::Ranked`'s docs). Collected even on a path that ends
     // up `Empty`-content-wise being discarded with the outcome: only the
     // `Ranked` arm below actually forwards it, since that is the only path a
     // `SearchRetrieved` event gets recorded for this tier.
+    //
+    // ForceWeb race: when `preloaded_serp` is `Some`, the SERP already ran
+    // concurrent with the classifier on the raw (near-duplicate first) query.
+    // Seed hits/stats from that race, then still SERP remaining queries so a
+    // multi-query classifier fan-out is not dropped on the keep path.
+    let mut hits: Vec<SearchHit> = Vec::new();
     let mut engine_stats: Vec<EngineStat> = Vec::new();
-    for query in queries {
-        if cancel.is_cancelled() {
-            return EngineTierOutcome::Cancelled;
+    let queries_to_serp: &[String] = if let Some((pre_hits, pre_stats)) = preloaded_serp {
+        hits = pre_hits;
+        engine_stats = pre_stats;
+        if queries.len() > 1 {
+            &queries[1..]
+        } else {
+            &[]
         }
-        let (query_hits, query_stats) = web_search(
-            deps.transport,
-            query,
-            deps.health,
-            freshness,
-            deps.web_cache,
-            bypass_cache,
-        )
-        .await;
-        hits.extend(query_hits);
-        engine_stats.extend(query_stats);
-        // Early stop: once one query has produced enough hits, further queries
-        // add third-party burst (the engines' rate limits are volume-triggered)
-        // and latency for marginal recall.
-        if hits.len() >= SERP_EARLY_STOP_HITS {
-            break;
+    } else {
+        queries
+    };
+    // Skip the SERP loop when race alone already hit early-stop, or when the
+    // keep path has no remaining queries (single near-dupe rewrite).
+    if !queries_to_serp.is_empty() && hits.len() < SERP_EARLY_STOP_HITS {
+        let serp_start = Instant::now();
+        for query in queries_to_serp {
+            if cancel.is_cancelled() {
+                deps.timings.record(STAGE_SERP, serp_start);
+                return EngineTierOutcome::Cancelled;
+            }
+            let (query_hits, query_stats) = web_search(
+                deps.transport,
+                query,
+                deps.health,
+                freshness,
+                deps.web_cache,
+                bypass_cache,
+            )
+            .await;
+            hits.extend(query_hits);
+            engine_stats.extend(query_stats);
+            // Early stop: once one query has produced enough hits, further queries
+            // add third-party burst (the engines' rate limits are volume-triggered)
+            // and latency for marginal recall.
+            if hits.len() >= SERP_EARLY_STOP_HITS {
+                break;
+            }
         }
+        deps.timings.record(STAGE_SERP, serp_start);
     }
     let hits = dedupe_hits(hits);
     if hits.is_empty() {
@@ -1011,9 +1238,13 @@ async fn run_engine_tier(
     // await against the token (biased, matching `openai::request_openai_json`)
     // drops the in-flight `FuturesUnordered` the instant the token trips, which
     // cancels every still-pending page fetch cleanly.
+    let fetch_start = Instant::now();
     let pages = tokio::select! {
         biased;
-        _ = cancel.cancelled() => return EngineTierOutcome::Cancelled,
+        _ = cancel.cancelled() => {
+            deps.timings.record(STAGE_FETCH, fetch_start);
+            return EngineTierOutcome::Cancelled;
+        }
         pages = fetch_pages(
             deps.transport,
             &hits,
@@ -1023,6 +1254,8 @@ async fn run_engine_tier(
             bypass_cache,
         ) => pages,
     };
+    deps.timings.record(STAGE_FETCH, fetch_start);
+    let rank_start = Instant::now();
     let chunks = select_chunks(&pages, standalone_question, deps.scorer);
     // Freshness-gated recency-prior fusion (see `recency::recency_reorder`):
     // only reorders sources on a turn the freshness signal already flagged, so
@@ -1033,6 +1266,7 @@ async fn run_engine_tier(
         chunks
     };
     let sources = assemble_context(&chunks, num_ctx);
+    deps.timings.record(STAGE_RANK_ASSEMBLY, rank_start);
     if sources.is_empty() {
         // Engines returned hits (this path is past the `hits.is_empty()` guard)
         // but nothing survived fetch, ranking, and budgeting: the web was
@@ -1101,21 +1335,25 @@ async fn commit_or_escalate(
     // judge call rather than adding one: the per-turn LLM-call budget never rises.
     let verdict = match deterministic_sufficiency(tier, &block) {
         Some(verdict) => verdict,
-        None => match deps
-            .judge
-            .judge(standalone_question, std::slice::from_ref(&block), cancel)
-            .await
-        {
-            Ok(verdict) => verdict,
-            Err(InferenceError::Cancelled) => return SearchOutcome::Cancelled,
-            // A judge infra failure fails toward committing (see the judge module
-            // docs): serve the vertical block rather than stall the user or spend
-            // an engine request on a decision the judge could not actually make.
-            Err(InferenceError::Request(reason)) => {
-                eprintln!("[search] judge error: {reason} -> committing {tier} block");
-                SufficiencyVerdict::commit()
+        None => {
+            let judge_start = Instant::now();
+            let result = deps
+                .judge
+                .judge(standalone_question, std::slice::from_ref(&block), cancel)
+                .await;
+            deps.timings.record(STAGE_JUDGE, judge_start);
+            match result {
+                Ok(verdict) => verdict,
+                Err(InferenceError::Cancelled) => return SearchOutcome::Cancelled,
+                // A judge infra failure fails toward committing (see the judge module
+                // docs): serve the vertical block rather than stall the user or spend
+                // an engine request on a decision the judge could not actually make.
+                Err(InferenceError::Request(reason)) => {
+                    eprintln!("[search] judge error: {reason} -> committing {tier} block");
+                    SufficiencyVerdict::commit()
+                }
             }
-        },
+        }
     };
     if verdict.sufficient {
         eprintln!("[search] {tier} sufficient -> committing");
@@ -1139,6 +1377,7 @@ async fn commit_or_escalate(
             Vec::new(),
             // The vertical judge (single block) never yields a conflict verdict.
             false,
+            None,
         );
     }
     eprintln!(
@@ -1169,12 +1408,22 @@ async fn commit_or_escalate(
             Vec::new(),
             // The vertical judge (single block) never yields a conflict verdict.
             false,
+            None,
         );
     }
+    // Prefer judge-authored gap-targeted keyword queries when escalating a
+    // vertical miss: the classifier's original queries already produced the
+    // related-but-wrong block; reusing them only re-ranks the same cluster.
+    // Fall back to the classifier queries when the judge omitted requery_queries.
+    let escalation_queries: Vec<String> = if !verdict.requery_queries.is_empty() {
+        verdict.requery_queries.clone()
+    } else {
+        queries.to_vec()
+    };
     match run_engine_tier(
         deps,
         standalone_question,
-        queries,
+        &escalation_queries,
         num_ctx,
         freshness,
         // A judge-driven escalation is not a user distrust signal (the user
@@ -1183,6 +1432,9 @@ async fn commit_or_escalate(
         false,
         cancel,
         status,
+        // Escalation never reuses a ForceWeb raw-query race: vertical miss
+        // paths always SERP the rewrite queries fresh.
+        None,
     )
     .await
     {
@@ -1202,7 +1454,7 @@ async fn commit_or_escalate(
             deps.recorder.record(RecorderEvent::SearchEscalated {
                 from_tier: tier.to_string(),
                 sufficient: false,
-                missing: verdict.missing,
+                missing: verdict.missing.clone(),
                 escalated: true,
                 escalation_hit: true,
             });
@@ -1223,7 +1475,7 @@ async fn commit_or_escalate(
             .await
             {
                 EngineJudgeOutcome::Cancelled => SearchOutcome::Cancelled,
-                EngineJudgeOutcome::Sources(sources, requery_stats, conflict) => {
+                EngineJudgeOutcome::Sources(sources, requery_stats, conflict, still_missing) => {
                     let mut engine_stats = engine_stats;
                     engine_stats.extend(requery_stats);
                     grounded_answer(
@@ -1238,6 +1490,7 @@ async fn commit_or_escalate(
                         locale,
                         engine_stats,
                         conflict,
+                        still_missing,
                     )
                 }
             }
@@ -1266,6 +1519,7 @@ async fn commit_or_escalate(
                 Vec::new(),
                 // Engine-miss fallback to the vertical block: no conflict verdict.
                 false,
+                None,
             )
         }
     }
@@ -1285,11 +1539,11 @@ async fn commit_or_escalate(
 /// from the cache is not a new search, so it must not reset the entry's TTL
 /// or overwrite it with the same sources).
 ///
-/// `conflict` is forwarded to the writer prompt (see
-/// [`crate::websearch::writer::writer_messages`]): `true` only on the engine
-/// tier's conflict commit (see [`judge_and_requery`]), where the judge found the
-/// sources disagree on the asked value, so the writer presents the spread rather
-/// than hedging. Every other caller passes `false`.
+/// `conflict` and `still_missing` are forwarded to the writer prompt (see
+/// [`crate::websearch::writer::writer_messages`]): `conflict` is `true` only on
+/// the engine tier's conflict commit (see [`judge_and_requery`]); `still_missing`
+/// is set when a requery still could not surface the asked fact. Every other
+/// caller passes `false` / `None`.
 #[allow(clippy::too_many_arguments)]
 fn grounded_answer(
     deps: &SearchDeps<'_>,
@@ -1303,14 +1557,17 @@ fn grounded_answer(
     locale: &str,
     engine_stats: Vec<EngineStat>,
     conflict: bool,
+    still_missing: Option<String>,
 ) -> SearchOutcome {
     deps.recorder.record(RecorderEvent::SearchRetrieved {
         tier: tier.to_string(),
         sources: sources
             .iter()
             .map(|s| RetrievedSource {
+                index: s.index,
                 url: s.url.clone(),
                 title: s.title.clone(),
+                text: truncate_for_trace(&s.text, TRACE_SOURCE_TEXT_MAX_BYTES),
             })
             .collect(),
         engine_stats,
@@ -1330,6 +1587,7 @@ fn grounded_answer(
             },
         );
     }
+    let writer_start = Instant::now();
     let messages = writer_messages(
         chat_system_prompt,
         history,
@@ -1339,8 +1597,10 @@ fn grounded_answer(
         locale,
         is_cache_tier,
         conflict,
+        still_missing.as_deref(),
         deps.latest_images,
     );
+    deps.timings.record(STAGE_WRITER_PREPARE, writer_start);
     SearchOutcome::Answer { messages, sources }
 }
 
@@ -1448,6 +1708,38 @@ fn truncate_missing(missing: &str, max_chars: usize) -> &str {
     }
 }
 
+/// Resolves the keyword SERP string(s) for the one bounded engine-tier requery.
+///
+/// Prefers the judge's already-normalized [`SufficiencyVerdict::requery_queries`]
+/// when non-empty (horizontal: gap-targeted keywords, not a prose concat that
+/// re-ranks the same related-facet cluster). Falls back to the legacy
+/// `{standalone_question} {capped_missing}` single query so a model that omits
+/// `requery_queries` still requeries.
+///
+/// Always returns at least one non-empty query when `missing` or `standalone`
+/// has content; callers only invoke this on the insufficient-missing path.
+fn resolve_requery_search_queries(
+    standalone_question: &str,
+    missing: &str,
+    judge_queries: &[String],
+) -> Vec<String> {
+    if !judge_queries.is_empty() {
+        return judge_queries.to_vec();
+    }
+    let standalone = standalone_question.trim();
+    let missing_capped = truncate_missing(missing, REQUERY_MISSING_MAX_CHARS);
+    if missing_capped.is_empty() {
+        if standalone.is_empty() {
+            return Vec::new();
+        }
+        return vec![standalone.to_string()];
+    }
+    if standalone.is_empty() {
+        return vec![missing_capped.to_string()];
+    }
+    vec![format!("{standalone} {missing_capped}")]
+}
+
 /// What [`judge_and_requery`] resolved to: the user cancelling mid-judge or
 /// mid-requery, or the final source list to answer from paired with the
 /// requery's per-engine outcome summary.
@@ -1456,7 +1748,7 @@ enum EngineJudgeOutcome {
     Cancelled,
     /// The sources to answer from, paired with the per-query, per-engine outcome
     /// summary of the one requery this call may have fired (see [`EngineStat`]),
-    /// and a conflict flag.
+    /// a conflict flag, and an optional still-missing phrase.
     ///
     /// The sources are `sources` unchanged (a sufficient verdict, a judge
     /// failure, an empty `missing` phrase, a conflict verdict, or a requery that
@@ -1465,11 +1757,16 @@ enum EngineJudgeOutcome {
     /// the caller to fold into the primary query's [`RecorderEvent::SearchRetrieved`]
     /// so one retrieval record shows both rounds' engines.
     ///
-    /// The final `bool` is the conflict flag: `true` only when the judge returned
-    /// an insufficient-because-conflicting verdict (see [`judge_and_requery`]), so
+    /// `conflict` is `true` only when the judge returned an
+    /// insufficient-because-conflicting verdict (see [`judge_and_requery`]), so
     /// the caller forwards it to [`grounded_answer`] and the writer presents the
-    /// disagreement rather than hedging. `false` on every other path.
-    Sources(Vec<SourceBlock>, Vec<EngineStat>, bool),
+    /// disagreement rather than hedging.
+    ///
+    /// `still_missing` is `Some(phrase)` when a requery ran (or found no new
+    /// URLs) and the asked fact is still absent: the writer gets a partial
+    /// directive so it does not treat a related metric as the full answer.
+    /// Mutually exclusive with `conflict` in practice (conflict skips requery).
+    Sources(Vec<SourceBlock>, Vec<EngineStat>, bool, Option<String>),
 }
 
 /// Round one's ranked chunks and fetched pages, supplied only by the
@@ -1505,12 +1802,14 @@ struct RequeryRerank {
 ///
 /// On a confident insufficient verdict naming what is missing, this records
 /// `sources` as a round-one [`RecorderEvent::SearchRetrieved`] (`round:
-/// Some(1)`, see its docs) before firing exactly one requery: the standalone
-/// question with the missing phrase appended (capped to
-/// [`crate::config::defaults::REQUERY_MISSING_MAX_CHARS`] at a word boundary,
-/// see [`truncate_missing`]), through the normal engine path (`web_search`
-/// then `fetch_pages`, so cache read/write and `bypass_cache` behave exactly
-/// as they do for any other engine-tier call). Its hits are deduped by URL
+/// Some(1)`, see its docs) before firing exactly one requery round: up to
+/// [`crate::config::defaults::REQUERY_QUERY_MAX`] keyword SERPs from
+/// [`resolve_requery_search_queries`] (judge `requery_queries` when present,
+/// else standalone + capped `missing`, see
+/// [`crate::config::defaults::REQUERY_MISSING_MAX_CHARS`] /
+/// [`truncate_missing`]), through the normal engine path (`web_search` then
+/// `fetch_pages`, so cache read/write and `bypass_cache` behave exactly as
+/// they do for any other engine-tier call). Its hits are deduped by URL
 /// against `sources` ([`new_urls_only`]) so only genuinely new pages are
 /// fetched and ranked. The round-one record is emitted whenever the requery
 /// fires, even when it turns up nothing new, so a trace always shows what
@@ -1535,12 +1834,14 @@ struct RequeryRerank {
 ///   first contract is locked, so it never takes the fused re-rank. Round two
 ///   is still recency-reordered on a fresh turn before the merge.
 ///
-/// NO second judge ever runs on the requeried result: a judge error, timeout,
-/// or unparseable body (surfaced as [`InferenceError::Request`]) fails toward
-/// committing `sources` unchanged, the same posture [`commit_or_escalate`]
-/// takes on a vertical judge failure; a [`InferenceError::Cancelled`] or an
-/// observed cancellation before the requery's network calls yields
-/// [`EngineJudgeOutcome::Cancelled`] instead.
+/// After the requery merges new sources (or finds none), a **second** judge
+/// call checks whether the asked fact is now present. If still missing, the
+/// commit carries `still_missing` so the writer partial-directive path fires
+/// (related metrics must not masquerade as the asked total/level). A post-
+/// requery judge error fails toward committing with the first-round
+/// `still_missing` phrase (safe: better a partial caveat than a false full
+/// answer). A [`InferenceError::Cancelled`] or an observed cancellation
+/// before the requery's network calls yields [`EngineJudgeOutcome::Cancelled`].
 #[allow(clippy::too_many_arguments)]
 async fn judge_and_requery(
     deps: &SearchDeps<'_>,
@@ -1552,16 +1853,24 @@ async fn judge_and_requery(
     bypass_cache: bool,
     cancel: &CancellationToken,
 ) -> EngineJudgeOutcome {
+    let judge_start = Instant::now();
     let verdict = match deps
         .judge
         .judge(standalone_question, &sources, cancel)
         .await
     {
-        Ok(verdict) => verdict,
-        Err(InferenceError::Cancelled) => return EngineJudgeOutcome::Cancelled,
+        Ok(verdict) => {
+            deps.timings.record(STAGE_JUDGE, judge_start);
+            verdict
+        }
+        Err(InferenceError::Cancelled) => {
+            deps.timings.record(STAGE_JUDGE, judge_start);
+            return EngineJudgeOutcome::Cancelled;
+        }
         Err(InferenceError::Request(reason)) => {
+            deps.timings.record(STAGE_JUDGE, judge_start);
             eprintln!("[search] engine-tier judge error: {reason} -> committing round-one sources");
-            return EngineJudgeOutcome::Sources(sources, Vec::new(), false);
+            return EngineJudgeOutcome::Sources(sources, Vec::new(), false, None);
         }
     };
     // Conflict: the sources DO hold the asked value but disagree on it (see
@@ -1575,7 +1884,7 @@ async fn judge_and_requery(
             "[search] engine tier conflicting (missing: {}) -> committing, flagging writer",
             verdict.missing
         );
-        return EngineJudgeOutcome::Sources(sources, Vec::new(), true);
+        return EngineJudgeOutcome::Sources(sources, Vec::new(), true, None);
     }
     // Sufficient, or insufficient with nothing to search for: commit
     // round-one's sources. `ENGINE_REQUERY_MAX == 0` also lands here (the
@@ -1586,8 +1895,11 @@ async fn judge_and_requery(
         || verdict.missing.is_empty()
         || crate::config::defaults::ENGINE_REQUERY_MAX == 0
     {
-        return EngineJudgeOutcome::Sources(sources, Vec::new(), false);
+        return EngineJudgeOutcome::Sources(sources, Vec::new(), false, None);
     }
+    // Keep the gap phrase for post-requery partial-missing if the second
+    // search still cannot fill it (or finds no new URLs).
+    let first_missing = verdict.missing.clone();
     if cancel.is_cancelled() {
         return EngineJudgeOutcome::Cancelled;
     }
@@ -1604,42 +1916,72 @@ async fn judge_and_requery(
         sources: sources
             .iter()
             .map(|s| RetrievedSource {
+                index: s.index,
                 url: s.url.clone(),
                 title: s.title.clone(),
+                text: truncate_for_trace(&s.text, TRACE_SOURCE_TEXT_MAX_BYTES),
             })
             .collect(),
         engine_stats: Vec::new(),
         round: Some(1),
     });
-    let missing_capped = truncate_missing(
+    let requery_queries: Vec<String> = resolve_requery_search_queries(
+        standalone_question,
         &verdict.missing,
-        crate::config::defaults::REQUERY_MISSING_MAX_CHARS,
-    );
-    let requery = format!("{standalone_question} {missing_capped}");
+        &verdict.requery_queries,
+    )
+    .into_iter()
+    // Drop pure-whitespace judge strings that bypassed normalize (defensive):
+    // never issue a SERP with an empty `q=`.
+    .filter(|q| !q.trim().is_empty())
+    .collect();
+    if requery_queries.is_empty() {
+        // No searchable string at all: commit with partial flag so the writer
+        // does not treat related metrics as the asked answer.
+        return EngineJudgeOutcome::Sources(sources, Vec::new(), false, Some(first_missing));
+    }
+    // Forensic: first query is the primary; join extras so multi-query requeries
+    // remain readable in one field without a schema bump on SearchRequeried.
+    let requery_trace = requery_queries.join(" | ");
     eprintln!(
-        "[search] engine tier insufficient (missing: {}) -> requerying once: {requery}",
-        verdict.missing
+        "[search] engine tier insufficient (missing: {}) -> requerying once: {requery_trace}",
+        first_missing
     );
     deps.recorder.record(RecorderEvent::SearchRequeried {
-        missing: verdict.missing,
-        requery: requery.clone(),
+        missing: first_missing.clone(),
+        requery: requery_trace,
     });
-    // The requery races the keyless engines exactly as the primary query does,
-    // so it produces its own per-engine outcome summary. Carry it back to the
-    // caller regardless of whether new pages survive below, so the trace
-    // records the requery's engines even when it found no new URLs.
-    let (hits, requery_stats) = web_search(
-        deps.transport,
-        &requery,
-        deps.health,
-        freshness,
-        deps.web_cache,
-        bypass_cache,
-    )
-    .await;
+    // Multi-query requery: same fan-out shape as `run_engine_tier`'s primary
+    // loop (early-stop at SERP_EARLY_STOP_HITS). Prefer judge keyword queries
+    // so the second SERP aims at the gap, not a prose restatement of round one.
+    let mut hits: Vec<SearchHit> = Vec::new();
+    let mut requery_stats: Vec<EngineStat> = Vec::new();
+    for query in &requery_queries {
+        if cancel.is_cancelled() {
+            return EngineJudgeOutcome::Cancelled;
+        }
+        let (query_hits, query_stats) = web_search(
+            deps.transport,
+            query,
+            deps.health,
+            freshness,
+            deps.web_cache,
+            bypass_cache,
+        )
+        .await;
+        hits.extend(query_hits);
+        requery_stats.extend(query_stats);
+        if hits.len() >= SERP_EARLY_STOP_HITS {
+            break;
+        }
+    }
     let new_hits = new_urls_only(hits, &sources);
     if new_hits.is_empty() {
-        return EngineJudgeOutcome::Sources(sources, requery_stats, false);
+        // Requery found nothing new: still missing the asked fact.
+        eprintln!(
+            "[search] engine tier requery found no new URLs -> committing with still_missing={first_missing}"
+        );
+        return EngineJudgeOutcome::Sources(sources, requery_stats, false, Some(first_missing));
     }
     if cancel.is_cancelled() {
         return EngineJudgeOutcome::Cancelled;
@@ -1710,7 +2052,50 @@ async fn judge_and_requery(
             merge_sources(sources, new_sources, num_ctx)
         }
     };
-    EngineJudgeOutcome::Sources(merged, requery_stats, false)
+    // Post-requery judge: did the merged set finally contain the asked fact?
+    // Without this, a related-facet corpus (growth % only) was committed as a
+    // full answer. One extra LLM call, only on the requery path.
+    if cancel.is_cancelled() {
+        return EngineJudgeOutcome::Cancelled;
+    }
+    let post_start = Instant::now();
+    let post = match deps.judge.judge(standalone_question, &merged, cancel).await {
+        Ok(v) => {
+            deps.timings.record(STAGE_JUDGE_POST_REQUERY, post_start);
+            v
+        }
+        Err(InferenceError::Cancelled) => {
+            deps.timings.record(STAGE_JUDGE_POST_REQUERY, post_start);
+            return EngineJudgeOutcome::Cancelled;
+        }
+        Err(InferenceError::Request(reason)) => {
+            deps.timings.record(STAGE_JUDGE_POST_REQUERY, post_start);
+            // Fail toward commit with the original gap: never claim sufficiency
+            // we did not verify.
+            eprintln!(
+                "[search] post-requery judge error: {reason} -> committing with still_missing"
+            );
+            return EngineJudgeOutcome::Sources(merged, requery_stats, false, Some(first_missing));
+        }
+    };
+    if post.conflicting() {
+        eprintln!(
+            "[search] post-requery conflicting (missing: {}) -> committing, flagging writer",
+            post.missing
+        );
+        return EngineJudgeOutcome::Sources(merged, requery_stats, true, None);
+    }
+    if post.sufficient {
+        eprintln!("[search] post-requery sufficient -> committing");
+        return EngineJudgeOutcome::Sources(merged, requery_stats, false, None);
+    }
+    let still = if post.missing.is_empty() {
+        first_missing
+    } else {
+        post.missing
+    };
+    eprintln!("[search] post-requery still insufficient (missing: {still}) -> partial writer path");
+    EngineJudgeOutcome::Sources(merged, requery_stats, false, Some(still))
 }
 
 #[cfg(test)]
@@ -1742,6 +2127,26 @@ mod tests {
                 final_url: DDG_ENDPOINT.into(),
                 body: self.serp.clone(),
             })
+        }
+    }
+
+    /// Cancels on the requery page fetch only (not Mojeek/SERP), after returning
+    /// the inner response. Exercises cancel between requery merge and the
+    /// post-requery judge without tripping the mid-SERP cancel check.
+    struct CancelOnPageFetch {
+        token: CancellationToken,
+        inner: FakeHttpTransport,
+    }
+
+    #[async_trait]
+    impl HttpTransport for CancelOnPageFetch {
+        async fn send(&self, req: &HttpRequest) -> Result<HttpResponse, TransportError> {
+            let resp = self.inner.send(req).await;
+            // Only the page URL: engine SERP races also hit non-DDG hosts.
+            if req.url.starts_with("https://requery.example") {
+                self.token.cancel();
+            }
+            resp
         }
     }
 
@@ -1872,6 +2277,7 @@ mod tests {
             local_zone: None,
             force_search: false,
             latest_images: None,
+            timings: Box::leak(Box::new(TimingBag::new())),
         }
     }
 
@@ -1907,6 +2313,7 @@ mod tests {
             local_zone: None,
             force_search: false,
             latest_images: None,
+            timings: Box::leak(Box::new(TimingBag::new())),
         }
     }
 
@@ -1938,6 +2345,7 @@ mod tests {
             local_zone: None,
             force_search: false,
             latest_images: None,
+            timings: Box::leak(Box::new(TimingBag::new())),
         }
     }
 
@@ -2048,6 +2456,64 @@ mod tests {
             .map(|b| crate::websearch::assemble::estimate_tokens(&b.text))
             .sum();
         assert!(spent <= budget);
+    }
+
+    // ── resolve_requery_search_queries ────────────────────────────────────────
+
+    #[test]
+    fn resolve_requery_prefers_judge_keyword_queries() {
+        // Horizontal gap-targeting: judge queries win over the legacy concat.
+        let q = resolve_requery_search_queries(
+            "what is Vietnam's total GDP in 2026",
+            "total GDP value for 2026",
+            &[
+                "Vietnam nominal GDP USD billion".into(),
+                "Vietnam GDP current US$".into(),
+            ],
+        );
+        assert_eq!(
+            q,
+            vec![
+                "Vietnam nominal GDP USD billion".to_string(),
+                "Vietnam GDP current US$".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_requery_falls_back_to_standalone_plus_capped_missing() {
+        let q = resolve_requery_search_queries(
+            "what is Vietnam's total GDP in 2026",
+            "total GDP value for 2026",
+            &[],
+        );
+        assert_eq!(
+            q,
+            vec!["what is Vietnam's total GDP in 2026 total GDP value for 2026".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_requery_empty_both_yields_empty_vec() {
+        assert!(resolve_requery_search_queries("", "", &[]).is_empty());
+        // Standalone trims empty; empty missing → no searchable string.
+        assert!(resolve_requery_search_queries("   \t", "", &[]).is_empty());
+    }
+
+    #[test]
+    fn resolve_requery_standalone_only_or_missing_only() {
+        assert_eq!(
+            resolve_requery_search_queries("standalone alone", "", &[]),
+            vec!["standalone alone".to_string()]
+        );
+        assert_eq!(
+            resolve_requery_search_queries("", "missing alone", &[]),
+            vec!["missing alone".to_string()]
+        );
+        assert_eq!(
+            resolve_requery_search_queries("   ", "gap phrase", &[]),
+            vec!["gap phrase".to_string()]
+        );
     }
 
     // ── truncate_missing ──────────────────────────────────────────────────────
@@ -3465,6 +3931,324 @@ mod tests {
         );
     }
 
+    // ── ForceWeb raw-query race helpers (pure) ───────────────────────────────
+
+    #[test]
+    fn force_web_should_race_raw_skips_vertical_shaped() {
+        assert!(!force_web_should_race_raw("weather in Tokyo"));
+        assert!(!force_web_should_race_raw("NBA Lakers score tonight"));
+        assert!(!force_web_should_race_raw("latest news about tariffs"));
+        assert!(force_web_should_race_raw("what is the latest rust version"));
+    }
+
+    #[test]
+    fn preloaded_serp_keeps_near_duplicate_web_including_empty() {
+        let decision = PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: "latest rust version".into(),
+            queries: vec!["latest rust version".into()],
+            explicit_search: false,
+        };
+        let empty =
+            preloaded_serp_for_decision(&decision, "latest rust version", Some((vec![], vec![])));
+        assert!(empty.is_some());
+        let hit = SearchHit {
+            title: "t".into(),
+            url: "https://example.com/".into(),
+            snippet: "s".into(),
+        };
+        let kept = preloaded_serp_for_decision(
+            &decision,
+            "  Latest  Rust  Version ",
+            Some((vec![hit], vec![])),
+        );
+        assert_eq!(kept.unwrap().0.len(), 1);
+    }
+
+    #[test]
+    fn preloaded_serp_drops_divergent_and_non_web() {
+        let web = PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: "adobe figma deal".into(),
+            queries: vec!["adobe figma deal".into()],
+            explicit_search: false,
+        };
+        assert!(preloaded_serp_for_decision(
+            &web,
+            "latest figma ownership",
+            Some((
+                vec![SearchHit {
+                    title: "t".into(),
+                    url: "https://example.com/".into(),
+                    snippet: "s".into(),
+                }],
+                vec![]
+            )),
+        )
+        .is_none());
+        let cached = PrePassDecision {
+            decision: SearchDecision::Cached,
+            route: SearchRoute::Web,
+            standalone_question: "latest rust version".into(),
+            queries: vec!["latest rust version".into()],
+            explicit_search: false,
+        };
+        assert!(preloaded_serp_for_decision(
+            &cached,
+            "latest rust version",
+            Some((vec![], vec![])),
+        )
+        .is_none());
+    }
+
+    #[tokio::test]
+    async fn force_web_race_classifier_cancel_yields_cancelled() {
+        // ForceWeb + engine-shaped race: classifier cancel must surface Cancelled
+        // even though the concurrent SERP may still complete.
+        let prepass = FakePrePass::returning(Err(InferenceError::Cancelled));
+        let transport = transport_with_serp_and_page();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "what is the latest rust version",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn force_web_near_duplicate_race_uses_one_ddg_round() {
+        // Engine-shaped ForceWeb with rewrite ≈ raw: race SERP is kept; engines
+        // must not be hit a second time for the same query.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: "what is the latest rust version".into(),
+            queries: vec!["what is the latest rust version".into()],
+            explicit_search: false,
+        }));
+        let transport = transport_with_serp_and_page();
+        let (_p, status) = recorder();
+        let _ = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "what is the latest rust version",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        let ddg_calls = transport
+            .calls()
+            .into_iter()
+            .filter(|c| c.url == DDG_ENDPOINT)
+            .count();
+        assert_eq!(
+            ddg_calls, 1,
+            "near-duplicate ForceWeb race must keep common path at 1 DDG"
+        );
+    }
+
+    #[tokio::test]
+    async fn force_web_keep_still_serps_secondary_distinct_query() {
+        // H1: race keep seeds first near-dupe query, but a distinct second
+        // classifier query must still hit the engine when early-stop is not met.
+        let raw = "what is the latest rust version";
+        let secondary = "rust 1.80 release notes changelog";
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: raw.into(),
+            queries: vec![raw.into(), secondary.into()],
+            explicit_search: false,
+        }));
+        let transport = transport_with_serp_and_page();
+        let (_p, status) = recorder();
+        let _ = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            raw,
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        let ddg_qs: Vec<String> = transport
+            .calls()
+            .into_iter()
+            .filter(|c| c.url == DDG_ENDPOINT)
+            .filter_map(|c| c.form.into_iter().find(|(k, _)| k == "q").map(|(_, v)| v))
+            .collect();
+        assert_eq!(
+            ddg_qs.len(),
+            2,
+            "race keep must still SERP the distinct secondary query, got {ddg_qs:?}"
+        );
+        assert!(
+            ddg_qs
+                .iter()
+                .any(|q| q == raw || queries_near_duplicate(q, raw)),
+            "race raw query should appear, got {ddg_qs:?}"
+        );
+        assert!(
+            ddg_qs.iter().any(|q| q == secondary),
+            "distinct secondary must be SERPed, got {ddg_qs:?}"
+        );
+    }
+
+    /// Classifier that sleeps before returning, so concurrent race timing tests
+    /// can prove classifier wall time is measured independently of SERP.
+    struct DelayedPrePass {
+        delay: std::time::Duration,
+        result: Result<PrePassDecision, InferenceError>,
+    }
+
+    #[async_trait]
+    impl PrePass for DelayedPrePass {
+        /// Sleeps `delay`, then returns the scripted result.
+        async fn decide(
+            &self,
+            _history: &[ChatMessage],
+            _latest_user_message: &str,
+            _latest_images: Option<&[String]>,
+            _today: &str,
+            _cancel: &CancellationToken,
+        ) -> Result<PrePassDecision, InferenceError> {
+            tokio::time::sleep(self.delay).await;
+            self.result.clone()
+        }
+    }
+
+    /// Transport that sleeps before each send, so SERP wall time can be made
+    /// much larger than a fast classifier without relying on real network.
+    struct DelayedTransport {
+        inner: FakeHttpTransport,
+        delay: std::time::Duration,
+    }
+
+    #[async_trait]
+    impl HttpTransport for DelayedTransport {
+        /// Sleeps `delay`, then delegates to the inner fake transport.
+        async fn send(&self, req: &HttpRequest) -> Result<HttpResponse, TransportError> {
+            tokio::time::sleep(self.delay).await;
+            self.inner.send(req).await
+        }
+    }
+
+    #[tokio::test]
+    async fn force_web_race_records_independent_classifier_and_serp_times() {
+        // Regression: stage Instant must live inside each concurrent future.
+        // If both stages snap Instant before join and record after join, both
+        // report max(classifier, serp). With a ~20ms classifier and ~120ms SERP,
+        // classifier ms must stay well below serp ms (not both ≈ serp).
+        let prepass = DelayedPrePass {
+            delay: std::time::Duration::from_millis(20),
+            result: Ok(PrePassDecision {
+                decision: SearchDecision::Web,
+                route: SearchRoute::Web,
+                standalone_question: "what is the latest rust version".into(),
+                queries: vec!["what is the latest rust version".into()],
+                explicit_search: false,
+            }),
+        };
+        let transport = DelayedTransport {
+            inner: transport_with_serp_and_page(),
+            delay: std::time::Duration::from_millis(120),
+        };
+        let timings = TimingBag::new();
+        let (mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let mut d = deps_with_recorder(&prepass, &transport, &Bm25Scorer, &bound);
+        d.timings = &timings;
+        let _ = run_search(
+            &d,
+            "sys",
+            &[],
+            "what is the latest rust version",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        let stages = timings.snapshot();
+        let classifier_ms = stages
+            .iter()
+            .find(|s| s.stage == STAGE_CLASSIFIER)
+            .map(|s| s.ms)
+            .expect("classifier stage");
+        let race_ms = stages
+            .iter()
+            .find(|s| s.stage == STAGE_RAW_RACE_SERP)
+            .map(|s| s.ms)
+            .expect("raw_race_serp stage");
+        // Allow scheduling jitter: classifier should be far below SERP delay.
+        assert!(
+            classifier_ms < race_ms.saturating_sub(40),
+            "classifier={classifier_ms}ms must be independent of serp={race_ms}ms (not both max)"
+        );
+        assert!(
+            race_ms >= 80,
+            "serp stage should reflect its own ~120ms delay, got {race_ms}ms"
+        );
+        // Trace flush also carries both stage names.
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        let flushed = events
+            .iter()
+            .find_map(|e| match e {
+                RecorderEvent::SearchTimings { stages } => Some(stages),
+                _ => None,
+            })
+            .expect("SearchTimings");
+        assert!(flushed.iter().any(|s| s.stage == STAGE_CLASSIFIER));
+        assert!(flushed.iter().any(|s| s.stage == STAGE_RAW_RACE_SERP));
+    }
+
+    #[tokio::test]
+    async fn non_force_web_does_not_race_raw_serp() {
+        // Ambiguous turn: sequential classifier only; one SERP after decision.
+        let prepass = FakePrePass::returning(Ok(web_decision(vec![
+            "when was the treaty of versailles signed in paris",
+        ])));
+        let transport = transport_with_serp_and_page();
+        let (_p, status) = recorder();
+        let _ = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "when was the treaty of versailles signed in paris",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        // No raw_race stage: only the post-decision SERP (and no double race).
+        let ddg_calls = transport
+            .calls()
+            .into_iter()
+            .filter(|c| c.url == DDG_ENDPOINT)
+            .count();
+        assert_eq!(ddg_calls, 1);
+    }
+
     // ── resolve_decision (pure) ───────────────────────────────────────────────
 
     #[test]
@@ -3670,6 +4454,7 @@ mod tests {
             sufficient: false,
             missing: "the exact figure".into(),
             reason: InsufficiencyReason::Conflicting,
+            requery_queries: Vec::new(),
         }));
         let health = EngineHealth::new();
         let (mock, bound) = mock_recorder();
@@ -3894,7 +4679,16 @@ mod tests {
 
     #[tokio::test]
     async fn web_with_blocked_engine_yields_no_results_disclosure() {
-        let prepass = FakePrePass::returning(Ok(web_decision(vec!["q"])));
+        // Query matches the raw user message so a ForceWeb race (if fired)
+        // is near-duplicate-kept and its blocked-engine stats drive NoResults
+        // without a second SERP that would only see DDG cooling.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: "what is the latest rust version".into(),
+            queries: vec!["what is the latest rust version".into()],
+            explicit_search: false,
+        }));
         // DDG returns a bot challenge (blocked, but online) and Mojeek transport-
         // fails. At least one engine reached the web, so the miss is `NoResults`,
         // not `Unreachable`: the disclosure says no usable current sources were
@@ -4146,11 +4940,16 @@ mod tests {
         // same conversation (same scope) with a `cached` decision must answer
         // straight from those sources: no transport call at all, and the
         // writer prompt embeds the cached source text.
+        //
+        // Message is Ambiguous (no ForceWeb freshness word) so the ForceWeb
+        // raw-query race does not fire; a ForceWeb+Cached turn may still race
+        // once and discard (see force_web_should_race_raw), which is outside
+        // this unit's contract.
         let cache = TtlSourceCache::new(std::time::Duration::from_secs(600));
         cache.store(
             7,
             CachedSearch {
-                standalone_question: "what's the latest stable rust version".into(),
+                standalone_question: "what is the stable rust version we discussed".into(),
                 sources: vec![SourceBlock {
                     index: 1,
                     url: "https://blog.rust-lang.org/".into(),
@@ -4162,8 +4961,8 @@ mod tests {
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Cached,
             route: SearchRoute::Web,
-            standalone_question: "what's the latest stable rust version".into(),
-            queries: vec!["rust latest stable version".into()],
+            standalone_question: "what is the stable rust version we discussed".into(),
+            queries: vec!["rust stable version".into()],
             explicit_search: false,
         }));
         // No canned responses at all: a network call would fail the test by
@@ -4175,7 +4974,7 @@ mod tests {
             &deps_with_cache(&prepass, &transport, &Bm25Scorer, &bound, &cache, 7),
             "sys",
             &[],
-            "what's the latest stable rust version",
+            "what is the stable rust version we discussed",
             16384,
             "2026-07-05",
             "en-US",
@@ -4190,7 +4989,7 @@ mod tests {
                 && messages.first().is_some_and(|m| m.role == "system"
                     && m.content.contains("Rust 1.90.0 is the latest stable release"))
                 && messages.last().is_some_and(|m|
-                    m.content == "what's the latest stable rust version"))
+                    m.content == "what is the stable rust version we discussed"))
         );
         assert!(
             transport.calls().is_empty(),
@@ -4205,10 +5004,12 @@ mod tests {
         assert!(events.iter().any(|e| matches!(
             e,
             RecorderEvent::SearchRetrieved { tier, sources, .. }
-            if tier == "cache" && sources == &vec![RetrievedSource {
-                url: "https://blog.rust-lang.org/".into(),
-                title: "Rust 1.90.0".into(),
-            }]
+            if tier == "cache"
+                && sources.len() == 1
+                && sources[0].index == 1
+                && sources[0].url == "https://blog.rust-lang.org/"
+                && sources[0].title == "Rust 1.90.0"
+                && sources[0].text.contains("Rust 1.90.0")
         )));
     }
 
@@ -4456,17 +5257,19 @@ mod tests {
         assert!(events.iter().any(|e| matches!(
             e,
             RecorderEvent::SearchRetrieved { tier, sources, .. }
-            if tier == "news" && sources == &vec![RetrievedSource {
-                url: "https://news.google.com/".into(),
-                title: "Google News headlines: f1 race winner".into(),
-            }]
+            if tier == "news"
+                && sources.len() == 1
+                && sources[0].url == "https://news.google.com/"
+                && sources[0].title == "Google News headlines: f1 race winner"
+                && !sources[0].text.is_empty()
         )));
     }
 
     #[tokio::test]
     async fn trace_records_decision_only_on_force_no_turn() {
-        // A greeting is force-skipped: exactly one SearchDecided event with the
-        // "force_no" pre-filter label and an empty route, and no SearchRetrieved.
+        // A greeting is force-skipped: SearchDecided with the "force_no"
+        // pre-filter label and empty route, plus SearchTimings (pipeline only);
+        // no SearchRetrieved.
         let prepass = FakePrePass::returning(Ok(web_decision(vec!["unused"])));
         let transport = FakeHttpTransport::new();
         let (mock, bound) = mock_recorder();
@@ -4484,17 +5287,79 @@ mod tests {
         )
         .await;
         let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
-        assert_eq!(events.len(), 1);
-        assert!(matches!(
-            &events[0],
-            RecorderEvent::SearchDecided {
-                prefilter,
-                decision,
-                force,
-                route,
-                ..
-            } if prefilter == "force_no" && decision == "no" && !*force && route.is_empty()
-        ));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                RecorderEvent::SearchDecided {
+                    prefilter,
+                    decision,
+                    force,
+                    route,
+                    ..
+                } if prefilter == "force_no" && decision == "no" && !*force && route.is_empty()
+            )),
+            "missing SearchDecided force_no: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, RecorderEvent::SearchTimings { .. })),
+            "missing SearchTimings: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, RecorderEvent::SearchRetrieved { .. })),
+            "ForceNo must not retrieve: {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn trace_records_stage_timings_on_engine_web_answer() {
+        // A full engine path records classifier, serp, fetch, rank_assembly,
+        // writer_prepare, and pipeline on SearchTimings (stderr format covered
+        // by stage_timing unit tests).
+        use crate::websearch::stage_timing::{
+            STAGE_CLASSIFIER, STAGE_FETCH, STAGE_PIPELINE, STAGE_RANK_ASSEMBLY, STAGE_SERP,
+            STAGE_WRITER_PREPARE,
+        };
+        let prepass = FakePrePass::returning(Ok(web_decision(vec!["treaty versailles paris"])));
+        let transport = transport_with_serp_and_page();
+        let (mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let _ = run_search(
+            &deps_with_recorder(&prepass, &transport, &Bm25Scorer, &bound),
+            "sys",
+            &[],
+            "when was the treaty of versailles signed in paris",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        let stages = events
+            .iter()
+            .find_map(|e| match e {
+                RecorderEvent::SearchTimings { stages } => Some(stages.clone()),
+                _ => None,
+            })
+            .expect("SearchTimings event");
+        for name in [
+            STAGE_CLASSIFIER,
+            STAGE_SERP,
+            STAGE_FETCH,
+            STAGE_RANK_ASSEMBLY,
+            STAGE_WRITER_PREPARE,
+            STAGE_PIPELINE,
+        ] {
+            assert!(
+                stages.iter().any(|s| s.stage == name),
+                "missing stage {name} in {stages:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -4590,6 +5455,7 @@ mod tests {
             sufficient: false,
             missing: "the treaty terms".into(),
             reason: InsufficiencyReason::Missing,
+            requery_queries: Vec::new(),
         }))
     }
 
@@ -4634,12 +5500,66 @@ mod tests {
                 sufficient: false,
                 missing: "the treaty terms".into(),
                 reason: InsufficiencyReason::Missing,
+                requery_queries: Vec::new(),
             },
             second: SufficiencyVerdict {
                 sufficient: true,
                 missing: String::new(),
                 reason: InsufficiencyReason::Missing,
+                requery_queries: Vec::new(),
             },
+        }
+    }
+
+    /// Scripted judge that pops results from a queue (last result repeats).
+    /// Covers post-requery branches that need Error / conflict / still-missing
+    /// on the second call after a first-round insufficient.
+    struct QueueJudge {
+        results: Mutex<Vec<Result<SufficiencyVerdict, InferenceError>>>,
+    }
+
+    impl QueueJudge {
+        /// Builds a queue that yields `results` in order; after the last entry,
+        /// further calls clone that last entry.
+        fn new(results: Vec<Result<SufficiencyVerdict, InferenceError>>) -> Self {
+            assert!(!results.is_empty(), "QueueJudge needs at least one result");
+            Self {
+                results: Mutex::new(results),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl SufficiencyJudge for QueueJudge {
+        async fn judge(
+            &self,
+            _standalone_question: &str,
+            _sources: &[SourceBlock],
+            _cancel: &CancellationToken,
+        ) -> Result<SufficiencyVerdict, InferenceError> {
+            let mut guard = self.results.lock().unwrap();
+            if guard.len() == 1 {
+                return guard[0].clone();
+            }
+            guard.remove(0)
+        }
+    }
+
+    fn insufficient_verdict(missing: &str) -> SufficiencyVerdict {
+        SufficiencyVerdict {
+            sufficient: false,
+            missing: missing.into(),
+            reason: InsufficiencyReason::Missing,
+            requery_queries: Vec::new(),
+        }
+    }
+
+    fn insufficient_with_queries(missing: &str, queries: Vec<&str>) -> SufficiencyVerdict {
+        SufficiencyVerdict {
+            sufficient: false,
+            missing: missing.into(),
+            reason: InsufficiencyReason::Missing,
+            requery_queries: queries.into_iter().map(String::from).collect(),
         }
     }
 
@@ -5028,7 +5948,7 @@ mod tests {
             &CancellationToken::new(),
         )
         .await;
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _) if s == &sources));
+        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None) if s == &sources));
         assert!(
             transport.calls().is_empty(),
             "a sufficient verdict must never requery"
@@ -5041,13 +5961,366 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn judge_and_requery_post_judge_still_insufficient_sets_still_missing() {
+        // Same insufficient on both rounds: merge runs, second judge keeps gap.
+        let prepass = dummy_prepass();
+        let transport = requery_transport();
+        let judge = FakeSufficiencyJudge::returning(Ok(insufficient_verdict("the treaty terms")));
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let outcome = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            round_one_sources(),
+            None,
+            16384,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(
+            &outcome,
+            EngineJudgeOutcome::Sources(s, _, false, Some(m))
+                if s.len() == 2 && m == "the treaty terms"
+        ));
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_post_judge_conflict_flags_writer() {
+        let prepass = dummy_prepass();
+        let transport = requery_transport();
+        let judge = QueueJudge::new(vec![
+            Ok(insufficient_verdict("the treaty terms")),
+            Ok(SufficiencyVerdict {
+                sufficient: false,
+                missing: "attendance figure".into(),
+                reason: InsufficiencyReason::Conflicting,
+                requery_queries: Vec::new(),
+            }),
+        ]);
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let outcome = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            round_one_sources(),
+            None,
+            16384,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(
+            &outcome,
+            EngineJudgeOutcome::Sources(s, _, true, None) if s.len() == 2
+        ));
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_post_judge_request_error_keeps_first_missing() {
+        let prepass = dummy_prepass();
+        let transport = requery_transport();
+        let judge = QueueJudge::new(vec![
+            Ok(insufficient_verdict("the treaty terms")),
+            Err(InferenceError::Request("post boom".into())),
+        ]);
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let outcome = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            round_one_sources(),
+            None,
+            16384,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(
+            &outcome,
+            EngineJudgeOutcome::Sources(s, _, false, Some(m))
+                if s.len() == 2 && m == "the treaty terms"
+        ));
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_post_judge_cancelled_yields_cancelled() {
+        let prepass = dummy_prepass();
+        let transport = requery_transport();
+        let judge = QueueJudge::new(vec![
+            Ok(insufficient_verdict("the treaty terms")),
+            Err(InferenceError::Cancelled),
+        ]);
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let outcome = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            round_one_sources(),
+            None,
+            16384,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(outcome, EngineJudgeOutcome::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_post_judge_empty_missing_falls_back_to_first() {
+        // Post-requery insufficient with empty missing → keep first_missing.
+        let prepass = dummy_prepass();
+        let transport = requery_transport();
+        let judge = QueueJudge::new(vec![
+            Ok(insufficient_verdict("the treaty terms")),
+            Ok(SufficiencyVerdict {
+                sufficient: false,
+                missing: String::new(),
+                reason: InsufficiencyReason::Missing,
+                requery_queries: Vec::new(),
+            }),
+        ]);
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let outcome = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            round_one_sources(),
+            None,
+            16384,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(
+            &outcome,
+            EngineJudgeOutcome::Sources(_, _, false, Some(m)) if m == "the treaty terms"
+        ));
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_whitespace_only_requery_queries_commit_partial() {
+        // Judge authored only whitespace `requery_queries` (bypassing normalize):
+        // after the empty filter there is nothing to SERP → still_missing, no DDG.
+        let prepass = dummy_prepass();
+        let transport = FakeHttpTransport::new();
+        let judge = FakeSufficiencyJudge::returning(Ok(SufficiencyVerdict {
+            sufficient: false,
+            missing: "the treaty terms".into(),
+            reason: InsufficiencyReason::Missing,
+            requery_queries: vec!["   ".into(), "\t".into()],
+        }));
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let sources = round_one_sources();
+        let outcome = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            sources.clone(),
+            None,
+            16384,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(
+            &outcome,
+            EngineJudgeOutcome::Sources(s, _, false, Some(m))
+                if s == &sources && m == "the treaty terms"
+        ));
+        assert!(
+            transport.calls().is_empty(),
+            "whitespace-only requery queries must not hit engines"
+        );
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_cancel_after_merge_before_post_judge() {
+        // Cancel during the requery page fetch: merge may complete, then the
+        // pre-post-judge cancel check must abort.
+        let prepass = dummy_prepass();
+        let cancel = CancellationToken::new();
+        let transport = CancelOnPageFetch {
+            token: cancel.clone(),
+            inner: requery_transport(),
+        };
+        let judge = FakeSufficiencyJudge::returning(Ok(insufficient_verdict("the treaty terms")));
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let outcome = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            round_one_sources(),
+            None,
+            16384,
+            false,
+            false,
+            &cancel,
+        )
+        .await;
+        assert!(matches!(outcome, EngineJudgeOutcome::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_multi_query_cancel_between_iterations() {
+        // Two requery queries: CancelOnSend trips on the first SERP; the
+        // second iteration's pre-check must yield Cancelled (line 1943 path).
+        let prepass = dummy_prepass();
+        let cancel = CancellationToken::new();
+        let transport = CancelOnSend {
+            token: cancel.clone(),
+            serp: REQUERY_SERP_HTML.as_bytes().to_vec(),
+        };
+        let judge = FakeSufficiencyJudge::returning(Ok(insufficient_with_queries(
+            "the treaty terms",
+            vec!["first gap query", "second gap query"],
+        )));
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let outcome = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            round_one_sources(),
+            None,
+            16384,
+            false,
+            false,
+            &cancel,
+        )
+        .await;
+        assert!(matches!(outcome, EngineJudgeOutcome::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_requery_early_stops_when_hits_enough() {
+        // SERP with many organic results: requery loop must early-stop and not
+        // issue a second query when SERP_EARLY_STOP_HITS is already met.
+        let mut serp = String::new();
+        for i in 0..SERP_EARLY_STOP_HITS + 2 {
+            serp.push_str(&format!(
+                r#"<div class="result">
+                  <a class="result__a" href="https://requery{i}.example/">Hit {i}</a>
+                  <a class="result__snippet">the treaty terms extra {i}</a>
+                </div>"#
+            ));
+        }
+        let transport = FakeHttpTransport::new()
+            .with_response(
+                DDG_ENDPOINT,
+                HttpResponse {
+                    status: 200,
+                    final_url: DDG_ENDPOINT.into(),
+                    body: serp.into_bytes(),
+                },
+            )
+            .with_response(
+                "https://requery0.example/",
+                HttpResponse {
+                    status: 200,
+                    final_url: "https://requery0.example/".into(),
+                    body: REQUERY_PAGE_HTML.as_bytes().to_vec(),
+                },
+            );
+        let prepass = dummy_prepass();
+        let judge = FakeSufficiencyJudge::returning(Ok(insufficient_with_queries(
+            "the treaty terms",
+            vec!["first gap query", "second gap query should not run"],
+        )));
+        let health = EngineHealth::new();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let _ = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            round_one_sources(),
+            None,
+            16384,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        let ddg_qs: Vec<String> = transport
+            .calls()
+            .into_iter()
+            .filter(|c| c.url == DDG_ENDPOINT)
+            .filter_map(|c| c.form.into_iter().find(|(k, _)| k == "q").map(|(_, v)| v))
+            .collect();
+        assert_eq!(
+            ddg_qs,
+            vec!["first gap query".to_string()],
+            "early-stop must skip the second requery query, got {ddg_qs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn vertical_escalation_uses_judge_requery_queries() {
+        // Escalation with non-empty verdict.requery_queries must SERP those
+        // keywords (not only the classifier's original query).
+        let prepass = FakePrePass::returning(Ok(news_route_decision()));
+        let transport = news_and_engine_transport();
+        let judge = QueueJudge::new(vec![
+            Ok(insufficient_with_queries(
+                "the treaty terms",
+                vec!["versailles reparations schedule keywords"],
+            )),
+            Ok(SufficiencyVerdict {
+                sufficient: true,
+                missing: String::new(),
+                reason: InsufficiencyReason::Missing,
+                requery_queries: Vec::new(),
+            }),
+        ]);
+        let health = EngineHealth::new();
+        let (mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let _ = run_search(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        let ddg_qs: Vec<String> = transport
+            .calls()
+            .into_iter()
+            .filter(|c| c.url == DDG_ENDPOINT)
+            .filter_map(|c| c.form.into_iter().find(|(k, _)| k == "q").map(|(_, v)| v))
+            .collect();
+        assert!(
+            ddg_qs
+                .iter()
+                .any(|q| q == "versailles reparations schedule keywords"),
+            "escalation must SERP judge requery_queries, got {ddg_qs:?}"
+        );
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            RecorderEvent::SearchEscalated {
+                escalated: true,
+                ..
+            }
+        )));
+    }
+
+    #[tokio::test]
     async fn judge_and_requery_insufficient_with_missing_fires_one_requery_and_merges() {
         // Insufficient with a `missing` phrase: exactly one requery fires,
         // and its new source is merged in alongside round-one's, never
         // replacing it.
         let prepass = dummy_prepass();
         let transport = requery_transport();
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let (mock, bound) = mock_recorder();
         let sources = round_one_sources();
@@ -5064,12 +6337,14 @@ mod tests {
             &CancellationToken::new(),
         )
         .await;
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
+        assert!(
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None)
             if s.len() == 2
                 && s[0].url == "https://match.example/"
                 && s[0].index == 1
                 && s[1].url == "https://requery.example/"
-                && s[1].index == 2));
+                && s[1].index == 2)
+        );
         // Exactly one requery: the DDG POST carried the missing phrase
         // appended to the standalone question.
         let ddg_call = transport
@@ -5093,10 +6368,11 @@ mod tests {
             .position(|e| {
                 matches!(e,
                 RecorderEvent::SearchRetrieved { tier, sources, round: Some(1), .. }
-                if tier == "engine" && sources == &vec![RetrievedSource {
-                    url: "https://match.example/".into(),
-                    title: "Treaty of Versailles".into(),
-                }])
+                if tier == "engine"
+                    && sources.len() == 1
+                    && sources[0].url == "https://match.example/"
+                    && sources[0].title == "Treaty of Versailles"
+                    && !sources[0].text.is_empty())
             })
             .expect("round-one SearchRetrieved must be recorded when a requery fires");
         let requeried_index = events
@@ -5107,6 +6383,57 @@ mod tests {
             round_one_index < requeried_index,
             "round-one's SearchRetrieved must be recorded before SearchRequeried"
         );
+    }
+
+    #[tokio::test]
+    async fn judge_and_requery_uses_judge_requery_queries_not_concat() {
+        // When the judge authors keyword SERPs, the DDG `q=` must be those
+        // keywords (gap-targeted), not the legacy standalone+missing concat.
+        let prepass = dummy_prepass();
+        let transport = requery_transport();
+        let judge = FakeSufficiencyJudge::returning(Ok(SufficiencyVerdict {
+            sufficient: false,
+            missing: "nominal GDP total in USD".into(),
+            reason: InsufficiencyReason::Missing,
+            requery_queries: vec!["Vietnam nominal GDP USD billion".into()],
+        }));
+        let health = EngineHealth::new();
+        let (mock, bound) = mock_recorder();
+        let sources = round_one_sources();
+        let _ = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            sources,
+            None,
+            16384,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        let ddg_call = transport
+            .calls()
+            .into_iter()
+            .find(|c| c.url == DDG_ENDPOINT)
+            .expect("the requery must hit DDG");
+        assert!(
+            ddg_call
+                .form
+                .iter()
+                .any(|(k, v)| k == "q" && v == "Vietnam nominal GDP USD billion"),
+            "requery must search the judge keyword query, got {:?}",
+            ddg_call.form
+        );
+        // Must not fall back to the prose concat when judge queries exist.
+        assert!(!ddg_call
+            .form
+            .iter()
+            .any(|(k, v)| k == "q" && v.contains("nominal GDP total in USD")));
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert!(events.iter().any(|e| matches!(e,
+            RecorderEvent::SearchRequeried { missing, requery }
+            if missing == "nominal GDP total in USD"
+                && requery == "Vietnam nominal GDP USD billion")));
     }
 
     #[tokio::test]
@@ -5124,6 +6451,7 @@ mod tests {
             sufficient: false,
             missing: long_missing.into(),
             reason: InsufficiencyReason::Missing,
+            requery_queries: Vec::new(),
         }));
         let health = EngineHealth::new();
         let (mock, bound) = mock_recorder();
@@ -5179,7 +6507,7 @@ mod tests {
                 body: dup_serp.as_bytes().to_vec(),
             },
         );
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let (mock, bound) = mock_recorder();
         let sources = round_one_sources();
@@ -5196,7 +6524,12 @@ mod tests {
             &CancellationToken::new(),
         )
         .await;
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _) if s == &sources));
+        // No new URLs: sources unchanged, still_missing flags partial writer path.
+        assert!(matches!(
+            &outcome,
+            EngineJudgeOutcome::Sources(s, _, false, Some(m))
+                if s == &sources && m == "the treaty terms"
+        ));
         assert!(!transport
             .calls()
             .iter()
@@ -5236,7 +6569,7 @@ mod tests {
             &CancellationToken::new(),
         )
         .await;
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _) if s == &sources));
+        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None) if s == &sources));
         assert!(transport.calls().is_empty());
         let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
         assert!(
@@ -5258,6 +6591,7 @@ mod tests {
             sufficient: false,
             missing: "attendance figure".into(),
             reason: InsufficiencyReason::Conflicting,
+            requery_queries: Vec::new(),
         }));
         let health = EngineHealth::new();
         let (mock, bound) = mock_recorder();
@@ -5275,7 +6609,7 @@ mod tests {
         .await;
         // Sources unchanged, conflict flag raised, so the writer presents the
         // spread rather than re-searching.
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, true) if s == &sources));
+        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, true, None) if s == &sources));
         // No requery fired: a disagreement is not searchable.
         assert!(transport.calls().is_empty());
         let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
@@ -5319,7 +6653,7 @@ mod tests {
         // record and `SearchRequeried` sit on the far side of this check).
         let prepass = dummy_prepass();
         let transport = FakeHttpTransport::new();
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let (mock, bound) = mock_recorder();
         let cancel = CancellationToken::new();
@@ -5353,7 +6687,7 @@ mod tests {
             token: cancel.clone(),
             serp: REQUERY_SERP_HTML.as_bytes().to_vec(),
         };
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
         let outcome = judge_and_requery(
@@ -5379,7 +6713,7 @@ mod tests {
         // budget, so the merge must drop it rather than append unchecked.
         let prepass = dummy_prepass();
         let transport = requery_transport();
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
         let sources = round_one_sources();
@@ -5397,7 +6731,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _) if s == &sources),
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None) if s == &sources),
             "the oversized requery source must be dropped, leaving round-one sources unchanged"
         );
     }
@@ -5433,7 +6767,7 @@ mod tests {
                 body: REQUERY_PAGE_HTML.as_bytes().to_vec(),
             },
         );
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
         let outcome = judge_and_requery(
@@ -5457,8 +6791,10 @@ mod tests {
             &CancellationToken::new(),
         )
         .await;
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
-            if s.iter().any(|b| b.url == "https://cached-requery.example/")));
+        assert!(
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None)
+            if s.iter().any(|b| b.url == "https://cached-requery.example/"))
+        );
         assert!(!transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
         let mojeek_url = crate::websearch::engine::mojeek_request(&requery_text, false).url;
         assert!(!transport.calls().iter().any(|c| c.url == mojeek_url));
@@ -5484,7 +6820,7 @@ mod tests {
         );
         web_cache.serp_put("duckduckgo", &requery_text, false, vec![cached_hit]);
         let transport = requery_transport();
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
         let outcome = judge_and_requery(
@@ -5511,9 +6847,11 @@ mod tests {
         // The network's hit (requery.example), not the stale cached one, made
         // it through: the cache read was genuinely skipped, not
         // coincidentally equal.
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
+        assert!(
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None)
             if s.iter().any(|b| b.url == "https://requery.example/")
-                && !s.iter().any(|b| b.url == "https://cached-requery.example/")));
+                && !s.iter().any(|b| b.url == "https://cached-requery.example/"))
+        );
         assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
     }
 
@@ -5572,7 +6910,7 @@ mod tests {
         // ahead the way the vertical-escalation (`None`) contract would.
         let prepass = dummy_prepass();
         let transport = requery_transport();
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
         let (sources, rerank) = round_one_rerank(0.5, "round one is weakly relevant here", None);
@@ -5595,7 +6933,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None)
                 if s.len() == 2
                     && s[0].url == "https://requery.example/"
                     && s[0].index == 1
@@ -5615,7 +6953,7 @@ mod tests {
         // freshness-gated recency fusion ran over the combined set.
         let prepass = dummy_prepass();
         let transport = requery_transport();
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
         let ancient = time::macros::datetime!(2000-01-01 00:00:00 UTC);
@@ -5640,7 +6978,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None)
                 if s.first().map(|b| b.url.as_str()) == Some("https://requery.example/")),
             "the fresher round-two source must be recency-reordered ahead of the ancient round one"
         );
@@ -5657,7 +6995,7 @@ mod tests {
         // proves truncation follows fused score, not round order.
         let prepass = dummy_prepass();
         let transport = requery_transport();
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
         let huge = "round one padding ".repeat(400); // ~7200 chars, far over budget
@@ -5681,7 +7019,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None)
                 if s.iter().any(|b| b.url == "https://requery.example/")
                     && !s.iter().any(|b| b.url == "https://round-one.example/")),
             "the fused tail (weak, oversized round one) must be dropped, not round two"
@@ -5755,7 +7093,7 @@ mod tests {
                     body: older.into_bytes(),
                 },
             );
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
         let outcome = judge_and_requery(
@@ -5777,7 +7115,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None)
                 if s.len() == 3
                     && s[0].url == "https://match.example/"
                     && s[1].url == "https://newer.example/"
@@ -5841,6 +7179,7 @@ mod tests {
                     sufficient: false,
                     missing: "the treaty terms".into(),
                     reason: InsufficiencyReason::Missing,
+                    requery_queries: Vec::new(),
                 })
             } else {
                 Err(InferenceError::Cancelled)

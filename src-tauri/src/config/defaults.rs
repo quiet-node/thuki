@@ -154,6 +154,27 @@ pub const ENGINE_COMMAND_QUEUE_CAPACITY: usize = 64;
 /// load-error block llama.cpp prints without retaining its whole log.
 pub const ENGINE_STDERR_TAIL_LINES: usize = 20;
 
+/// Host-memory prompt-cache RAM bound (MiB) for the bundled llama-server
+/// (`-cram` / `--cache-ram`). Upstream defaults to 8192 MiB, which competes
+/// with Metal model weights on a 24GB unified-memory host (gpt-oss-20b alone
+/// is ~11GB) and has a documented Metal-OOM failure mode that poisons the
+/// backend until process restart. Two short system prefixes (classifier +
+/// chat) plus a conversation prefix fit in a few hundred MB; 512 MiB is
+/// generous headroom without unbounded cache growth. Raise only after live
+/// cache-entry sizes are measured.
+///
+/// Not user-tunable: an engine spawn constant sized for the ship hardware
+/// envelope, not a quality knob.
+pub const LLAMA_SERVER_CACHE_RAM_MIB: u32 = 512;
+
+/// Decode slot count for the bundled llama-server (`--parallel`). Always 1:
+/// Thuki is single-user, multi-slot splits ctx and historically caused cold
+/// first-turn prefill when warm-up and the user message landed on different
+/// slots. Do not raise without a new latency package and memory budget.
+///
+/// Not user-tunable: architectural constant of the single-slot design.
+pub const LLAMA_SERVER_PARALLEL_SLOTS: u32 = 1;
+
 /// Maximum bytes buffered (and retained) per captured engine stderr line. Not
 /// user-tunable: defense-in-depth bound so one pathological newline-less line
 /// (e.g. an enormous architecture string echoed from crafted GGUF metadata)
@@ -1303,15 +1324,37 @@ pub const CITE_WEAK_MIN: f64 = 0.3;
 /// Not user-tunable: an internal defensive bound.
 pub const CITE_AUDIT_MAX_ANSWER_BYTES: usize = 262_144;
 
+/// Cap on each source's body text written into a forensic
+/// [`crate::trace::RecorderEvent::SearchRetrieved`] record. Tracing is
+/// opt-in and evaluation-oriented: the full retrieved chunk is what the
+/// writer and citation audit saw, so re-eval offline needs it, but a
+/// multi-source turn must not grow a single JSONL line without bound.
+///
+/// Not user-tunable: forensic dump size bound (only when `trace_enabled`).
+pub const TRACE_SOURCE_TEXT_MAX_BYTES: usize = 24_576;
+
+/// Cap on the audited answer body embedded in a
+/// [`crate::trace::RecorderEvent::CitationAudit`] record (the text the
+/// audit actually scored, including pre-repair streams).
+///
+/// Not user-tunable: forensic dump size bound.
+pub const TRACE_AUDIT_ANSWER_MAX_BYTES: usize = 32_768;
+
+/// Cap on per-citation claim text in a forensic citation-detail row.
+///
+/// Not user-tunable: forensic dump size bound.
+pub const TRACE_AUDIT_CLAIM_MAX_CHARS: usize = 512;
+
 /// Maximum number of targeted writer repair rounds after a citation audit
-/// finds unsupported claims. Each round is one extra LLM call with a critique
-/// of the failed `[n]` indices; 0 means never repair (strip-only path). Cap
-/// is small on purpose: repairs cost latency and KV, and after this many tries
-/// Thuki falls back to deterministic strip / total-failure wording instead of
-/// looping forever.
+/// finds unsupported claims. Each round is one extra full writer stream
+/// (costly on reasoning models: multi-second thinking before any rewrite).
+/// 0 means never repair (strip-only path). Cap is 1 on purpose: a second
+/// repair rarely recovers total-failure cases (live gpt-oss traces still
+/// failed after two) while adding ~5–15s of "Verifying" UX; one attempt plus
+/// strip / honest note is enough.
 ///
 /// Not user-tunable: fixed product budget for the grounded-answer repair loop.
-pub const CITE_REPAIR_MAX_ATTEMPTS: u32 = 2;
+pub const CITE_REPAIR_MAX_ATTEMPTS: u32 = 1;
 
 /// Minimum byte length a cited source's fetched text must reach before the
 /// post-generation citation audit will score a claim against it. Below this
@@ -1387,24 +1430,27 @@ pub const CITE_MONTH_NAMES: [(&str, u32); 12] = [
 /// Maximum number of bounded requeries the engine tier's own sufficiency judge
 /// (`crate::websearch::orchestrator::judge_and_requery`) may fire per turn.
 /// After the engine tier assembles its sources for the standalone question,
-/// one additional judge call checks whether they actually answer it; on a
-/// confident insufficient verdict naming what is missing, the orchestrator
-/// requeries once with the missing phrase appended, merges the new sources in,
-/// and never judges again. The flow has no loop back into itself, so `1` is
-/// the only value that fires a requery; `0` disables the requery outright
-/// (the judge still runs and its verdict is still recorded, but an
-/// insufficient result simply commits round-one's sources) and is the gate's
-/// only other meaningful setting.
+/// one judge call checks whether they actually answer it; on a confident
+/// insufficient verdict naming what is missing, the orchestrator fires one
+/// requery round (preferring the judge's keyword `requery_queries`, else
+/// standalone + capped `missing`), merges the new sources in, then runs a
+/// **second** judge only to set `still_missing` / conflict on the merged set.
+/// There is no third requery. The flow has no loop back into the requery, so
+/// `1` is the only value that fires a requery; `0` disables the requery
+/// outright (the first judge still runs and its verdict is still recorded, but
+/// an insufficient result simply commits round-one's sources) and is the
+/// gate's only other meaningful setting.
 ///
 /// Not user-tunable: fixed LLM-call budget per turn is a product invariant.
 pub const ENGINE_REQUERY_MAX: usize = 1;
 
 /// Maximum characters of the sufficiency judge's `missing` phrase appended to
 /// the standalone question when `judge_and_requery` builds its one bounded
-/// requery. `missing` is free-form model prose and can run to a full
-/// sentence; a long tail of prose degrades keyless-engine SERP quality far
-/// more than a whole trailing word left out does, so the appended text is
-/// truncated at the last word boundary within this cap
+/// requery **fallback** (only when the judge omitted `requery_queries`).
+/// `missing` is free-form model prose and can run to a full sentence; a long
+/// tail of prose degrades keyless-engine SERP quality far more than a whole
+/// trailing word left out does, so the appended text is truncated at the last
+/// word boundary within this cap
 /// (`crate::websearch::orchestrator::truncate_missing`). The trace's
 /// `RecorderEvent::SearchRequeried::missing` field still carries the judge's
 /// full, uncapped phrase; only the text actually searched is capped.
@@ -1412,3 +1458,37 @@ pub const ENGINE_REQUERY_MAX: usize = 1;
 /// Not user-tunable: engine query hygiene is a pipeline-shape constant, not a
 /// preference.
 pub const REQUERY_MISSING_MAX_CHARS: usize = 80;
+
+/// Maximum number of keyword SERP queries the engine-tier requery may issue
+/// from a judge `requery_queries` list (or the single fallback concat query).
+/// Matches the early-stop fan-out budget used by the primary engine tier's
+/// multi-query loop; more than two rarely helps and doubles third-party burst.
+///
+/// Not user-tunable: fixed per-turn network budget.
+pub const REQUERY_QUERY_MAX: usize = 2;
+
+/// Maximum characters of each judge-authored requery keyword string after
+/// trim. Longer free-form strings degrade keyless SERP quality the same way
+/// an uncapped `missing` phrase does.
+///
+/// Not user-tunable: engine query hygiene is a pipeline-shape constant.
+pub const REQUERY_QUERY_MAX_CHARS: usize = 120;
+
+/// Maximum characters of HTML table text the page extractor may append to a
+/// readability article body (or use alone when readability returns nothing).
+/// Tables hold level/amount figures that Mozilla-style readability often
+/// drops; this bound keeps token budget and attacker-controlled HTML in check.
+///
+/// Not user-tunable: extract size is a pipeline-shape constant.
+pub const TABLE_EXTRACT_MAX_CHARS: usize = 4000;
+
+/// Maximum number of `<table>` elements whose cells are harvested into the
+/// table extract. Further tables are ignored.
+///
+/// Not user-tunable: extract size is a pipeline-shape constant.
+pub const TABLE_EXTRACT_MAX_TABLES: usize = 8;
+
+/// Maximum cells read from one table during table extract (row-major).
+///
+/// Not user-tunable: extract size is a pipeline-shape constant.
+pub const TABLE_EXTRACT_MAX_CELLS_PER_TABLE: usize = 200;

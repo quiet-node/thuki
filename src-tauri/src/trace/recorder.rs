@@ -129,16 +129,54 @@ impl TraceRecorder for NoopRecorder {
     fn record(&self, _conversation_id: &ConversationId, _event: RecorderEvent) {}
 }
 
-/// One cited source recorded in a [`RecorderEvent::SearchRetrieved`] event: the
-/// URL that grounded the answer and its human-readable title. The title is what
-/// makes a vertical's generic homepage URL ("https://www.espn.com/",
-/// "https://news.google.com/") legible in the forensic trace: those URLs alone
-/// do not say which league or which headline set actually answered the turn, so
-/// the title is recorded alongside every URL.
+/// One cited source recorded in a [`RecorderEvent::SearchRetrieved`] event.
+///
+/// Forensic traces are evaluation-oriented when enabled: URL + title alone
+/// cannot re-run citation audit offline. `text` is the body (or truncated
+/// body) the writer and audit actually saw, capped by
+/// [`crate::config::defaults::TRACE_SOURCE_TEXT_MAX_BYTES`]. `index` is the
+/// 1-based source number used in `[n]` markers.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct RetrievedSource {
+    /// 1-based index as shown to the writer / in `[n]` citations.
+    pub index: usize,
     pub url: String,
     pub title: String,
+    /// Retrieved source body (chunk text), truncated for the JSONL dump.
+    pub text: String,
+}
+
+/// One citation marker's forensic scorecard, embedded in
+/// [`RecorderEvent::CitationAudit`]. Lets offline re-eval see claim text,
+/// class, and numeric-guard counts without re-fetching the web.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CitationDetail {
+    /// 1-based source number from the `[n]` marker.
+    pub index: usize,
+    /// `supported` | `weak` | `unsupported` | `unverifiable` | `out_of_range`.
+    pub class: String,
+    /// Claim sentence (marker excised), truncated for the dump.
+    pub claim: String,
+    /// Lexical support score in \[0, 1\] as a fixed-point thousandths string
+    /// (e.g. `"0.667"`) so the JSON stays simple without float noise. Empty
+    /// when the citation was not scored (out of range / unverifiable).
+    pub lexical_score: String,
+    pub numeric_checked: usize,
+    pub numeric_matched: usize,
+    pub numeric_missing: usize,
+}
+
+/// Truncates `text` to at most `max_bytes` on a char boundary and appends an
+/// ellipsis marker when clipped, so forensic dumps stay bounded.
+pub fn truncate_for_trace(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let mut end = max_bytes.saturating_sub(1);
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end])
 }
 
 /// One keyless engine's outcome for a single query, recorded in
@@ -158,6 +196,16 @@ pub struct EngineStat {
     /// line emitted alongside it.
     pub status: String,
     pub hit_count: usize,
+}
+
+/// One finished pipeline stage's wall time, recorded in
+/// [`RecorderEvent::SearchTimings`]. `stage` is a stable snake_case label
+/// (e.g. `classifier`, `serp`, `fetch`, `rank_assembly`, `judge`,
+/// `writer_ttft`, `pipeline`); `ms` is whole milliseconds.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct StageTiming {
+    pub stage: String,
+    pub ms: u64,
 }
 
 /// Forensic trace events emitted by the chat layer, including built-in
@@ -301,6 +349,10 @@ pub enum RecorderEvent {
         numeric_matched: usize,
         numeric_missing: usize,
         unverifiable: usize,
+        /// Answer text the audit scored (pre-strip / pre-note), truncated.
+        answer: String,
+        /// Per-marker forensic rows (claim, class, scores).
+        details: Vec<CitationDetail>,
     },
     /// Final event in a chat-domain file. Emitted by the frontend when
     /// the user resets the conversation or by the backend on app quit
@@ -324,6 +376,14 @@ pub enum RecorderEvent {
     /// verdict, a judge failure, or an empty `missing` phrase never
     /// emits this event.
     SearchRequeried { missing: String, requery: String },
+    /// Per-stage wall times for one built-in search turn (classifier, SERP,
+    /// fetch, rank/assembly, judge, writer TTFT, pipeline total, and any
+    /// other stages the orchestrator or stream layer recorded). Emitted once
+    /// when the search pipeline flushes its [`crate::websearch::stage_timing::TimingBag`]
+    /// (and again with `writer_ttft` only if the stream layer records that
+    /// stage after the first answer token). Forensic only; not a typed SLA
+    /// contract. Empty `stages` is valid but unused.
+    SearchTimings { stages: Vec<StageTiming> },
 }
 
 impl RecorderEvent {
@@ -347,7 +407,8 @@ impl RecorderEvent {
             | RecorderEvent::SearchEscalated { .. }
             | RecorderEvent::CitationAudit { .. }
             | RecorderEvent::ConversationEnd { .. }
-            | RecorderEvent::SearchRequeried { .. } => TraceDomain::Chat,
+            | RecorderEvent::SearchRequeried { .. }
+            | RecorderEvent::SearchTimings { .. } => TraceDomain::Chat,
         }
     }
 
@@ -696,6 +757,8 @@ impl Serialize for RecorderEvent {
                 numeric_matched,
                 numeric_missing,
                 unverifiable,
+                answer,
+                details,
             } => {
                 map.serialize_entry("kind", "citation_audit")?;
                 map.serialize_entry("cited", cited)?;
@@ -707,6 +770,8 @@ impl Serialize for RecorderEvent {
                 map.serialize_entry("numeric_matched", numeric_matched)?;
                 map.serialize_entry("numeric_missing", numeric_missing)?;
                 map.serialize_entry("unverifiable", unverifiable)?;
+                map.serialize_entry("answer", answer)?;
+                map.serialize_entry("details", details)?;
             }
             RecorderEvent::ConversationEnd { reason } => {
                 map.serialize_entry("kind", "conversation_end")?;
@@ -716,6 +781,10 @@ impl Serialize for RecorderEvent {
                 map.serialize_entry("kind", "search_requeried")?;
                 map.serialize_entry("missing", missing)?;
                 map.serialize_entry("requery", requery)?;
+            }
+            RecorderEvent::SearchTimings { stages } => {
+                map.serialize_entry("kind", "search_timings")?;
+                map.serialize_entry("stages", stages)?;
             }
         }
         map.end()
@@ -830,8 +899,10 @@ mod tests {
             RecorderEvent::SearchRetrieved {
                 tier: "news".into(),
                 sources: vec![RetrievedSource {
+                    index: 1,
                     url: "https://news.google.com/".into(),
                     title: "Google News headlines".into(),
+                    text: String::new(),
                 }],
                 engine_stats: vec![],
                 round: None,
@@ -853,6 +924,8 @@ mod tests {
                 numeric_matched: 0,
                 numeric_missing: 1,
                 unverifiable: 0,
+                answer: String::new(),
+                details: vec![],
             },
             RecorderEvent::ConversationEnd {
                 reason: "quit".into(),
@@ -860,6 +933,12 @@ mod tests {
             RecorderEvent::SearchRequeried {
                 missing: "the treaty terms".into(),
                 requery: "when signed the treaty terms".into(),
+            },
+            RecorderEvent::SearchTimings {
+                stages: vec![StageTiming {
+                    stage: "classifier".into(),
+                    ms: 12,
+                }],
             },
         ];
         for e in cases {
@@ -1016,8 +1095,10 @@ mod tests {
             RecorderEvent::SearchRetrieved {
                 tier: "wiki".into(),
                 sources: vec![RetrievedSource {
+                    index: 1,
                     url: "https://en.wikipedia.org/wiki/Photosynthesis".into(),
                     title: "Photosynthesis".into(),
+                    text: String::new(),
                 }],
                 engine_stats: vec![],
                 round: None,
@@ -1045,6 +1126,17 @@ mod tests {
                 numeric_matched: 1,
                 numeric_missing: 1,
                 unverifiable: 1,
+                answer: String::new(),
+                details: vec![],
+            },
+        );
+        r.record(
+            &cid("conv-chat"),
+            RecorderEvent::SearchTimings {
+                stages: vec![StageTiming {
+                    stage: "classifier".into(),
+                    ms: 42,
+                }],
             },
         );
         r.record(
@@ -1069,6 +1161,7 @@ mod tests {
                 "search_retrieved",
                 "search_escalated",
                 "citation_audit",
+                "search_timings",
                 "conversation_end"
             ]
         );
@@ -1084,7 +1177,12 @@ mod tests {
         assert_eq!(lines[8]["tier"], "wiki");
         assert_eq!(
             lines[8]["sources"],
-            json!([{"url": "https://en.wikipedia.org/wiki/Photosynthesis", "title": "Photosynthesis"}])
+            json!([{
+                "index": 1,
+                "url": "https://en.wikipedia.org/wiki/Photosynthesis",
+                "title": "Photosynthesis",
+                "text": ""
+            }])
         );
         assert_eq!(lines[9]["from_tier"], "sports");
         assert_eq!(lines[9]["sufficient"], false);
@@ -1099,8 +1197,15 @@ mod tests {
         assert_eq!(lines[10]["numeric_checked"], 2);
         assert_eq!(lines[10]["numeric_matched"], 1);
         assert_eq!(lines[10]["numeric_missing"], 1);
+        assert_eq!(lines[10]["answer"], "");
+        assert_eq!(lines[10]["details"], json!([]));
         assert_eq!(lines[10]["unverifiable"], 1);
-        assert_eq!(lines[11]["reason"], "quit");
+        assert_eq!(lines[11]["kind"], "search_timings");
+        assert_eq!(
+            lines[11]["stages"],
+            json!([{"stage": "classifier", "ms": 42}])
+        );
+        assert_eq!(lines[12]["reason"], "quit");
     }
 
     #[test]
@@ -1116,8 +1221,10 @@ mod tests {
             RecorderEvent::SearchRetrieved {
                 tier: "engine".into(),
                 sources: vec![RetrievedSource {
+                    index: 1,
                     url: "https://example.com/a".into(),
                     title: "Example".into(),
+                    text: String::new(),
                 }],
                 engine_stats: vec![
                     EngineStat {
@@ -1157,8 +1264,10 @@ mod tests {
             RecorderEvent::SearchRetrieved {
                 tier: "engine".into(),
                 sources: vec![RetrievedSource {
+                    index: 1,
                     url: "https://round-one.example/".into(),
                     title: "Round One".into(),
+                    text: String::new(),
                 }],
                 engine_stats: vec![],
                 round: Some(1),
@@ -1388,5 +1497,32 @@ mod tests {
             .collect();
         assert_eq!(dump[0]["chunk"], "a");
         assert_eq!(dump[1]["chunk"], "b");
+    }
+
+    // ── truncate_for_trace ───────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_for_trace_leaves_short_text_unchanged() {
+        assert_eq!(truncate_for_trace("hello", 10), "hello");
+        assert_eq!(truncate_for_trace("exact", 5), "exact");
+    }
+
+    #[test]
+    fn truncate_for_trace_clips_on_char_boundary_with_ellipsis() {
+        // Multi-byte emoji: each is 4 bytes; cap mid-sequence must not panic
+        // and must land on a char boundary before the ellipsis.
+        let text = "ab🎉cd";
+        let out = truncate_for_trace(text, 5);
+        assert!(out.ends_with('…'));
+        assert!(out.len() <= 5 + '…'.len_utf8());
+        // "ab" (2 bytes) fits under max_bytes-1; emoji does not.
+        assert_eq!(out, "ab…");
+    }
+
+    #[test]
+    fn truncate_for_trace_hard_cap_zero_yields_ellipsis_only() {
+        // max_bytes 0 / 1: saturating_sub leaves end at 0 → empty prefix + ellipsis.
+        assert_eq!(truncate_for_trace("xyz", 0), "…");
+        assert_eq!(truncate_for_trace("xyz", 1), "…");
     }
 }

@@ -80,6 +80,7 @@ impl SufficiencyJudge for AlwaysSufficientJudge {
             sufficient: true,
             missing: String::new(),
             reason: InsufficiencyReason::Missing,
+            requery_queries: Vec::new(),
         })
     }
 }
@@ -107,6 +108,7 @@ async fn live_turn(
         64,
         128,
     );
+    let timings = thuki_agent_lib::websearch::stage_timing::TimingBag::new();
     let deps = SearchDeps {
         prepass: &prepass,
         judge: &judge,
@@ -120,6 +122,7 @@ async fn live_turn(
         local_zone: None,
         force_search: false,
         latest_images: None,
+        timings: &timings,
     };
     run_search(
         &deps,

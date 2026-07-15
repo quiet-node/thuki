@@ -586,6 +586,9 @@ enum BuiltinSearchResult {
     Grounded {
         messages: Vec<ChatMessage>,
         sources: Vec<crate::websearch::assemble::SourceBlock>,
+        /// Instant the search pipeline started (submit), used to measure
+        /// writer TTFT (submit → first answer token) once streaming begins.
+        search_submit: std::time::Instant,
     },
     /// No search this turn (a `no` decision, an infra failure, or nothing worth
     /// citing): stream the original plain messages.
@@ -937,6 +940,9 @@ async fn run_builtin_search(
     // kickoff times; `None` (unreadable /etc/localtime) degrades to date-only
     // event lines.
     let local_zone = zone_label();
+    // One timing bag per search turn: orchestrator records stage ms and flushes
+    // SearchTimings; writer_ttft is appended on the first answer token below.
+    let timing_bag = crate::websearch::stage_timing::TimingBag::new();
     let deps = crate::websearch::orchestrator::SearchDeps {
         prepass: &prepass,
         judge: &judge,
@@ -960,6 +966,7 @@ async fn run_builtin_search(
         force_search,
         // Vision turns only: classifier + writer keep the photo; engines stay text.
         latest_images,
+        timings: &timing_bag,
     };
     let status = |phase| on_chunk(StreamChunk::SearchStatus { phase });
     let outcome = if force_search {
@@ -997,10 +1004,15 @@ async fn run_builtin_search(
         "search: run_builtin_search resolved outcome={}",
         builtin_search_outcome_label(&outcome)
     );
+    let search_submit = timing_bag.submit_instant();
     match outcome {
         crate::websearch::orchestrator::SearchOutcome::Answer { messages, sources } => {
             on_chunk(StreamChunk::SearchSources(source_metas(&sources)));
-            BuiltinSearchResult::Grounded { messages, sources }
+            BuiltinSearchResult::Grounded {
+                messages,
+                sources,
+                search_submit,
+            }
         }
         // Search wanted but produced nothing: emit a reliable, typed failure
         // signal (independent of the model's prose) so the frontend always shows
@@ -1011,11 +1023,30 @@ async fn run_builtin_search(
             BuiltinSearchResult::Grounded {
                 messages,
                 sources: Vec::new(),
+                search_submit,
             }
         }
         crate::websearch::orchestrator::SearchOutcome::NoSearch => BuiltinSearchResult::Plain,
         crate::websearch::orchestrator::SearchOutcome::Cancelled => BuiltinSearchResult::Cancelled,
     }
+}
+
+/// Records writer TTFT (submit → first answer token) to stderr and the trace.
+/// Pure except for the recorder/stderr side effects; coverage-off thin glue.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn record_writer_ttft(
+    search_submit: std::time::Instant,
+    recorder: &std::sync::Arc<crate::trace::BoundRecorder>,
+) {
+    use crate::websearch::stage_timing::{elapsed_ms, format_timing_line, STAGE_WRITER_TTFT};
+    let ms = elapsed_ms(search_submit);
+    eprintln!("{}", format_timing_line(STAGE_WRITER_TTFT, ms));
+    recorder.record(crate::trace::RecorderEvent::SearchTimings {
+        stages: vec![crate::trace::StageTiming {
+            stage: STAGE_WRITER_TTFT.to_string(),
+            ms,
+        }],
+    });
 }
 
 /// Records one citation audit to the trace + stderr, then returns the audit.
@@ -1039,6 +1070,23 @@ fn record_citation_audit(
         return None;
     }
     let audit = crate::websearch::cite_check::audit_citations(answer, sources);
+    let answer_for_trace = crate::trace::truncate_for_trace(
+        answer,
+        crate::config::defaults::TRACE_AUDIT_ANSWER_MAX_BYTES,
+    );
+    let details = audit
+        .details
+        .iter()
+        .map(|d| crate::trace::CitationDetail {
+            index: d.index,
+            class: d.class.clone(),
+            claim: d.claim.clone(),
+            lexical_score: d.lexical_score.clone(),
+            numeric_checked: d.numeric_checked,
+            numeric_matched: d.numeric_matched,
+            numeric_missing: d.numeric_missing,
+        })
+        .collect();
     recorder.record(crate::trace::RecorderEvent::CitationAudit {
         cited: audit.cited,
         supported: audit.supported,
@@ -1049,6 +1097,8 @@ fn record_citation_audit(
         numeric_matched: audit.numeric_matched,
         numeric_missing: audit.numeric_missing,
         unverifiable: audit.unverifiable,
+        answer: answer_for_trace,
+        details,
     });
     eprintln!(
         "[search] citation audit: cited={} supported={} weak={} unsupported={} unverifiable={} numeric_checked={} numeric_matched={} numeric_missing={}",
@@ -1119,13 +1169,17 @@ async fn refine_grounded_answer(
         let Some(audit) = record_citation_audit(&content, sources, recorder) else {
             return content;
         };
-        if audit.unsupported_indices.is_empty() {
+        // Success only when every present [n] is ok AND the answer cited
+        // something. cited==0 with sources present is a silent failure mode
+        // (gpt-oss often names Bloomberg/Forbes in prose without [n]).
+        if !crate::websearch::cite_check::needs_citation_repair(&audit, true) {
             return content;
         }
         eprintln!(
-            "[search] citation repair: attempt {}/{} unsupported={:?}",
+            "[search] citation repair: attempt {}/{} cited={} unsupported={:?}",
             attempt + 1,
             crate::config::defaults::CITE_REPAIR_MAX_ATTEMPTS,
+            audit.cited,
             audit.unsupported_indices
         );
         let repair_messages = build_repair_messages(writer_messages.clone(), &content, &audit);
@@ -2409,12 +2463,15 @@ pub async fn ask_model(
                             // Keep the resolved sources (empty on a plain or
                             // unreachable turn) so the streamed answer can be
                             // citation-audited after the stream completes.
-                            let (stream_messages, audit_sources) = match grounded_or_plain {
-                                BuiltinSearchResult::Grounded { messages, sources } => {
-                                    (messages, sources)
-                                }
-                                _ => (messages, Vec::new()),
-                            };
+                            let (stream_messages, audit_sources, search_submit) =
+                                match grounded_or_plain {
+                                    BuiltinSearchResult::Grounded {
+                                        messages,
+                                        sources,
+                                        search_submit,
+                                    } => (messages, sources, Some(search_submit)),
+                                    _ => (messages, Vec::new(), None),
+                                };
                             // Observe whether reasoning streamed this turn so the
                             // runtime backstop can mark a model that reasons even
                             // with reasoning requested OFF (see
@@ -2430,8 +2487,21 @@ pub async fn ask_model(
                             let done_pending =
                                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                             let done_pending_for_pump = std::sync::Arc::clone(&done_pending);
+                            let writer_ttft_recorded =
+                                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                            let writer_ttft_flag = std::sync::Arc::clone(&writer_ttft_recorded);
+                            let recorder_for_ttft = std::sync::Arc::clone(&bound_recorder);
                             let builtin_pump = move |chunk: StreamChunk| {
                                 observe_reasoning_chunk(&chunk, &seen_for_pump);
+                                // First answer token after a search: record writer TTFT.
+                                if let Some(submit) = search_submit {
+                                    if matches!(chunk, StreamChunk::Token(_))
+                                        && !writer_ttft_flag
+                                            .swap(true, std::sync::atomic::Ordering::Relaxed)
+                                    {
+                                        record_writer_ttft(submit, &recorder_for_ttft);
+                                    }
+                                }
                                 if matches!(chunk, StreamChunk::Done) {
                                     done_pending_for_pump
                                         .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -4789,6 +4859,7 @@ mod tests {
             sufficient: false,
             missing: "the two sources report different revenue figures".into(),
             reason: InsufficiencyReason::Conflicting,
+            requery_queries: Vec::new(),
         };
         assert!(verdict.conflicting());
 
@@ -4807,9 +4878,17 @@ mod tests {
             "deadbeef",
             false, /* is_cache_tier */
             verdict.conflicting(),
+            None,
         );
-        let plain_appendix =
-            build_writer_appendix(&blocks, "2026-07-10", "en-US", "deadbeef", false, false);
+        let plain_appendix = build_writer_appendix(
+            &blocks,
+            "2026-07-10",
+            "en-US",
+            "deadbeef",
+            false,
+            false,
+            None,
+        );
         assert!(conflict_appendix.contains("The sources disagree on a value the question asks for"));
         assert!(!plain_appendix.contains("The sources disagree on a value the question asks for"));
 
@@ -4848,6 +4927,7 @@ mod tests {
             numeric_checked: 0,
             numeric_matched: 0,
             numeric_missing: 0,
+            details: vec![],
         };
         let msgs = build_repair_messages(base, "bad answer [3]", &audit);
         assert_eq!(msgs.len(), 3);
@@ -4856,6 +4936,35 @@ mod tests {
         assert_eq!(msgs[2].role, "user");
         assert!(msgs[2].content.contains("[3]"));
         assert!(msgs[2].content.contains("Rewrite the full answer"));
+    }
+
+    #[test]
+    fn build_repair_messages_zero_cite_demands_bracket_markers() {
+        use crate::websearch::cite_check::CitationAudit;
+        let base = vec![ChatMessage {
+            role: "user".into(),
+            content: "sources here".into(),
+            images: None,
+        }];
+        // Elon-shaped: prose outlet names, no [n] markers.
+        let audit = CitationAudit {
+            cited: 0,
+            supported: 0,
+            weak: 0,
+            unsupported: 0,
+            unverifiable: 0,
+            unsupported_indices: vec![],
+            numeric_checked: 0,
+            numeric_matched: 0,
+            numeric_missing: 0,
+            details: vec![],
+        };
+        let prose = "Worth $913B according to Bloomberg and $917B per Forbes.";
+        let msgs = build_repair_messages(base, prose, &audit);
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[1].content, prose);
+        assert!(msgs[2].content.contains("no [n] source"));
+        assert!(msgs[2].content.contains("Naming a publisher in prose"));
     }
 
     #[test]

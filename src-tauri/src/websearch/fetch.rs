@@ -33,10 +33,13 @@ use std::time::Duration;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use futures_util::FutureExt;
 
+use scraper::{Html, Selector};
+
 use crate::config::defaults::{
     FETCH_FIRST_K_COMPLETIONS, FETCH_LARGE_CTX_THRESHOLD, FETCH_MAX_ELEMENTS_TO_PARSE,
     FETCH_MAX_PAGES_LARGE_CTX, FETCH_MAX_PAGES_SMALL_CTX, FETCH_PER_URL_TIMEOUT_S,
-    FETCH_SOFT_DEADLINE_MS,
+    FETCH_SOFT_DEADLINE_MS, TABLE_EXTRACT_MAX_CELLS_PER_TABLE, TABLE_EXTRACT_MAX_CHARS,
+    TABLE_EXTRACT_MAX_TABLES,
 };
 use crate::net::transport::{HttpRequest, HttpTransport};
 use crate::websearch::engine::SearchHit;
@@ -76,17 +79,23 @@ pub(crate) fn pages_to_fetch(num_ctx: u32, available: usize) -> usize {
     available.min(cap)
 }
 
-/// Extracts readable article text from raw HTML via `dom_smoothie`, returning
-/// the whitespace-normalised text or `None` when the page yields no extractable
-/// article (parse error or empty result). Pure CPU over the input — no I/O — so
-/// it is unit-tested with fixture pages.
+/// Extracts readable page text from raw HTML: Mozilla-style readability article
+/// body plus a bounded harvest of HTML table cells. Returns `None` only when
+/// both layers yield nothing usable.
 ///
-/// `dom_smoothie`'s `text_content` (not markdown) is used deliberately: the
+/// Horizontal fix for stats/wiki pages where the asked figure lives in a table
+/// that readability drops (observed: Economy of Vietnam ~281B prose only).
+/// Table extract is pure CPU, size-capped ([`TABLE_EXTRACT_MAX_CHARS`]), and
+/// gated by the same element-count DoS bound as the rest of the fetch stage.
+///
+/// `dom_smoothie`'s `text_content` (not markdown) is used for the article: the
 /// downstream extractive filter chunks on plain text and the writer consumes
 /// numbered text blocks, so markdown structure would have no consumer. Because
 /// `text_content` strips tags, base64-image data URIs never reach the output.
 pub(crate) fn extract_readable(html: &str, url: &str) -> Option<String> {
-    extract_with_limit(html, url, FETCH_MAX_ELEMENTS_TO_PARSE)
+    let article = extract_with_limit(html, url, FETCH_MAX_ELEMENTS_TO_PARSE);
+    let tables = extract_table_text(html);
+    merge_article_and_tables(article, tables)
 }
 
 /// Extraction with an explicit element cap, so tests can drive the DoS bound
@@ -101,6 +110,109 @@ fn extract_with_limit(html: &str, url: &str, max_elements: usize) -> Option<Stri
     let article = readability.parse().ok()?;
     let text = normalize_ws(&article.text_content);
     (!text.is_empty()).then_some(text)
+}
+
+/// Harvests plain text from HTML `<table>` cells (row-major), bounded by
+/// [`TABLE_EXTRACT_MAX_TABLES`], [`TABLE_EXTRACT_MAX_CELLS_PER_TABLE`], and
+/// [`TABLE_EXTRACT_MAX_CHARS`]. Returns `None` when the DOM is over the
+/// element DoS cap, has no tables, or yields only empty cells.
+///
+/// Pure CPU over attacker-controlled HTML: never panics; uses `scraper` (already
+/// a dep for SERP/date parse). Tables are the horizontal home of level/amount
+/// figures that news-style readability often discards.
+pub(crate) fn extract_table_text(html: &str) -> Option<String> {
+    extract_table_text_with_limit(html, FETCH_MAX_ELEMENTS_TO_PARSE)
+}
+
+/// Table extract with an explicit element cap so tests can drive both the
+/// pre-parse estimate gate and the post-parse scraper-tree gate.
+fn extract_table_text_with_limit(html: &str, max_elements: usize) -> Option<String> {
+    // Same pre-gate as readability/date paths: refuse pathological DOMs before
+    // building a full scraper tree we would then throw away.
+    if estimate_element_count(html) > max_elements {
+        return None;
+    }
+    let doc = Html::parse_document(html);
+    // Second bound after parse: scraper's tree can still be huge on odd markup.
+    let all = Selector::parse("*").expect("static selector \"*\" always parses");
+    if doc.select(&all).count() > max_elements {
+        return None;
+    }
+    let table_sel = Selector::parse("table").expect("static selector \"table\" always parses");
+    let cell_sel = Selector::parse("th, td").expect("static selector \"th, td\" always parses");
+    let mut out = String::new();
+    for (tables_seen, table) in doc.select(&table_sel).enumerate() {
+        if tables_seen >= TABLE_EXTRACT_MAX_TABLES {
+            break;
+        }
+        let mut cells = 0usize;
+        let mut row_bits: Vec<String> = Vec::new();
+        for cell in table.select(&cell_sel) {
+            if cells >= TABLE_EXTRACT_MAX_CELLS_PER_TABLE {
+                break;
+            }
+            let cell_text = normalize_ws(&cell.text().collect::<String>());
+            if cell_text.is_empty() {
+                continue;
+            }
+            cells += 1;
+            row_bits.push(cell_text);
+        }
+        if row_bits.is_empty() {
+            continue;
+        }
+        let table_line = row_bits.join(" | ");
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&table_line);
+        if out.chars().count() >= TABLE_EXTRACT_MAX_CHARS {
+            break;
+        }
+    }
+    if out.is_empty() {
+        return None;
+    }
+    // Cap by char, not byte, so multi-byte figures are never split mid-scalar.
+    if out.chars().count() > TABLE_EXTRACT_MAX_CHARS {
+        let mut cut = None;
+        for (count, (byte_idx, _)) in out.char_indices().enumerate() {
+            if count == TABLE_EXTRACT_MAX_CHARS {
+                cut = Some(byte_idx);
+                break;
+            }
+        }
+        if let Some(byte_idx) = cut {
+            out.truncate(byte_idx);
+        }
+    }
+    let out = out.trim().to_string();
+    (!out.is_empty()).then_some(out)
+}
+
+/// Merges readability article text with bounded table harvest.
+///
+/// - Both present: append tables only when they are not already fully covered
+///   by a prefix of the article (cheap containment check), so we do not double
+///   spend tokens on pages that already inlined the table.
+/// - Article only / tables only: that side alone.
+/// - Neither: `None` (caller falls back to SERP snippet).
+fn merge_article_and_tables(article: Option<String>, tables: Option<String>) -> Option<String> {
+    match (article, tables) {
+        (Some(a), Some(t)) => {
+            // If the article already contains the start of the table harvest,
+            // readability likely kept the figures; skip append.
+            let probe: String = t.chars().take(48).collect();
+            if !probe.is_empty() && a.contains(&probe) {
+                Some(a)
+            } else {
+                Some(format!("{a} {t}"))
+            }
+        }
+        (Some(a), None) => Some(a),
+        (None, Some(t)) => Some(t),
+        (None, None) => None,
+    }
 }
 
 /// Collapses runs of Unicode whitespace to single spaces and trims, keeping the
@@ -514,6 +626,147 @@ mod tests {
         // A 1-element cap against the multi-element article makes the parser
         // bail (DoS bound), which degrades to None like any unreadable page.
         assert!(extract_with_limit(ARTICLE_HTML, "https://x.example/", 1).is_none());
+    }
+
+    #[test]
+    fn extract_table_text_reads_cells() {
+        let html = r#"<!DOCTYPE html><html><body>
+          <table><tr><th>Year</th><th>GDP</th></tr>
+          <tr><td>2026</td><td>$527 billion</td></tr></table>
+          </body></html>"#;
+        let text = extract_table_text(html).expect("table cells extract");
+        assert!(text.contains("Year"));
+        assert!(text.contains("$527 billion"));
+        assert!(text.contains("2026"));
+    }
+
+    #[test]
+    fn extract_readable_keeps_table_figures_when_article_is_thin() {
+        // Horizontal pin: sparse prose + a stats table must still yield the
+        // level figure for the writer (wiki/economy pages).
+        let html = r#"<!DOCTYPE html><html><head><title>Economy</title></head><body>
+          <p>It is a developing mixed economy.</p>
+          <table><tr><th>Metric</th><th>Value</th></tr>
+          <tr><td>Nominal GDP</td><td>$527 billion USD</td></tr></table>
+          </body></html>"#;
+        let text = extract_readable(html, "https://example.test/economy").unwrap();
+        assert!(
+            text.contains("$527 billion") || text.contains("527"),
+            "table figure must survive extract, got {text:?}"
+        );
+        assert!(text.contains("Nominal GDP") || text.contains("GDP"));
+    }
+
+    #[test]
+    fn merge_article_and_tables_skips_duplicate_table_prefix() {
+        let article = Some("GDP is $527 billion USD this year.".into());
+        // Table harvest starts with text already present in the article.
+        let tables = Some("$527 billion USD".into());
+        let merged = merge_article_and_tables(article, tables).unwrap();
+        // Probe of first 48 chars of tables is already in article → no append.
+        assert_eq!(merged, "GDP is $527 billion USD this year.");
+    }
+
+    #[test]
+    fn merge_article_and_tables_appends_when_novel() {
+        let article = Some("Sparse prose about the economy.".into());
+        let tables = Some("Nominal GDP | $527 billion USD".into());
+        let merged = merge_article_and_tables(article, tables).unwrap();
+        assert!(merged.contains("Sparse prose"));
+        assert!(merged.contains("$527 billion"));
+    }
+
+    #[test]
+    fn merge_article_and_tables_sides_alone_or_none() {
+        assert_eq!(
+            merge_article_and_tables(Some("article only".into()), None).as_deref(),
+            Some("article only")
+        );
+        assert_eq!(
+            merge_article_and_tables(None, Some("tables only".into())).as_deref(),
+            Some("tables only")
+        );
+        assert!(merge_article_and_tables(None, None).is_none());
+    }
+
+    #[test]
+    fn extract_table_text_none_when_dom_over_element_cap() {
+        // Pre-gate: estimate_element_count > cap.
+        let many = "<div>".repeat(50);
+        assert!(extract_table_text_with_limit(&many, 10).is_none());
+        // Full production cap still refuses a pathological estimate.
+        let huge = "<div>".repeat(FETCH_MAX_ELEMENTS_TO_PARSE + 50);
+        assert!(extract_table_text(&huge).is_none());
+    }
+
+    #[test]
+    fn extract_table_text_none_when_post_parse_tree_over_cap() {
+        // Fragment HTML: estimate counts only explicit start tags (table/tr/td
+        // = 3), but scraper synthesizes html/head/body so select("*") is larger.
+        let html = "<table><tr><td>Cell</td></tr></table>";
+        let estimate = estimate_element_count(html);
+        assert!(estimate <= 3, "estimate={estimate}");
+        // Cap equals estimate: pre-gate passes, post-parse tree exceeds.
+        assert!(extract_table_text_with_limit(html, estimate).is_none());
+    }
+
+    #[test]
+    fn extract_table_text_skips_empty_cells_and_joins_tables() {
+        let html = r#"<!DOCTYPE html><html><body>
+          <table><tr><td>   </td><td>First</td></tr></table>
+          <table><tr><td>Second</td></tr></table>
+          </body></html>"#;
+        let text = extract_table_text(html).expect("non-empty cells");
+        assert!(text.contains("First"));
+        assert!(text.contains("Second"));
+        // Space between tables when out already non-empty.
+        assert!(text.contains("First Second") || text.contains("First") && text.contains("Second"));
+    }
+
+    #[test]
+    fn extract_table_text_respects_max_tables_and_empty_table() {
+        // One empty table (only blank cells) plus one real table.
+        let mut html = String::from("<!DOCTYPE html><html><body>");
+        html.push_str("<table><tr><td>   </td></tr></table>");
+        html.push_str("<table><tr><td>Keep</td></tr></table>");
+        // Extra tables beyond the max: first TABLE_EXTRACT_MAX_TABLES only.
+        for i in 0..TABLE_EXTRACT_MAX_TABLES + 2 {
+            html.push_str(&format!("<table><tr><td>T{i}</td></tr></table>"));
+        }
+        html.push_str("</body></html>");
+        let text = extract_table_text(&html).expect("some cells");
+        // Cap: last over-max tables must not all appear.
+        let last = format!("T{}", TABLE_EXTRACT_MAX_TABLES + 1);
+        assert!(
+            !text.contains(&last),
+            "table past max must be ignored, got {text:?}"
+        );
+        assert!(text.contains("Keep") || text.contains("T0"));
+    }
+
+    #[test]
+    fn extract_table_text_caps_cells_per_table() {
+        let mut html = String::from("<!DOCTYPE html><html><body><table><tr>");
+        for i in 0..TABLE_EXTRACT_MAX_CELLS_PER_TABLE + 20 {
+            html.push_str(&format!("<td>C{i}</td>"));
+        }
+        html.push_str("</tr></table></body></html>");
+        let text = extract_table_text(&html).expect("cells");
+        assert!(text.contains("C0"));
+        let over = format!("C{}", TABLE_EXTRACT_MAX_CELLS_PER_TABLE + 5);
+        assert!(!text.contains(&over));
+    }
+
+    #[test]
+    fn extract_table_text_caps_total_chars() {
+        // One giant cell pushes past TABLE_EXTRACT_MAX_CHARS → truncate path.
+        let cell = "Z".repeat(TABLE_EXTRACT_MAX_CHARS + 200);
+        let html = format!(
+            "<!DOCTYPE html><html><body><table><tr><td>{cell}</td></tr></table></body></html>"
+        );
+        let text = extract_table_text(&html).expect("capped text");
+        assert!(text.chars().count() <= TABLE_EXTRACT_MAX_CHARS);
+        assert!(text.chars().all(|c| c == 'Z'));
     }
 
     // ── estimate_element_count ─────────────────────────────────────────────────

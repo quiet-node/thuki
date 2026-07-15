@@ -41,6 +41,25 @@ describe('ModelPickerPanel', () => {
     }
   });
 
+  it('listbox is flex-scroll capped so long lists do not clip off-window', () => {
+    // Chat-mode hosts the panel under overflow-hidden with a viewport-relative
+    // max-height; the listbox must shrink (min-h-0 flex-1) and scroll
+    // (overflow-y-auto) instead of growing past the card edge.
+    const many = Array.from({ length: 20 }, (_, i) => `model-${i}`);
+    renderPanel({ models: many, activeModel: 'model-0' });
+    const list = screen.getByRole('listbox');
+    expect(list.className).toMatch(/overflow-y-auto/);
+    expect(list.className).toMatch(/min-h-0/);
+    expect(list.className).toMatch(/flex-1/);
+    expect(list.className).toMatch(/max-h-\[280px\]/);
+    expect(screen.getByTestId('model-picker-panel').className).toMatch(
+      /min-h-0/,
+    );
+    expect(screen.getByTestId('model-picker-panel').className).toMatch(
+      /max-h-full/,
+    );
+  });
+
   const BUILTIN_ID = 'unsloth/Qwen3.5-9B-GGUF:Qwen3.5-9B-Q4_K_M.gguf';
 
   it('renders the friendly display name for ids that have one', () => {

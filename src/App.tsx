@@ -4294,7 +4294,10 @@ function App() {
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, y: -8, scale: 0.97 }}
                     transition={{ type: 'spring', stiffness: 400, damping: 30 }}
-                    className="absolute right-3 top-10 z-50 w-56 rounded-xl border border-surface-border bg-surface-base shadow-chat overflow-hidden flex flex-col"
+                    // top-10 = 2.5rem; leave a little bottom gap so the card
+                    // stays inside the morphing container (overflow-hidden).
+                    // List scrolls inside ModelPickerPanel when rows exceed.
+                    className="absolute right-3 top-10 z-50 w-56 max-h-[calc(100%-2.75rem)] rounded-xl border border-surface-border bg-surface-base shadow-chat overflow-hidden flex flex-col min-h-0"
                   >
                     <ModelPickerPanel
                       models={availableModels}

@@ -25,11 +25,11 @@
 //! because token overlap alone cannot tell a swapped digit from a real
 //! match: a sentence can be almost entirely correct wording with one
 //! fabricated figure and still score high on lexical overlap. The guard
-//! cannot raise a citation past what the lexical score already earned; it
-//! can only cap a citation with a fabricated or absent figure down to
-//! unsupported, or float an exact numeric match that lexical overlap missed
-//! up to at least weak. See [`classify_with_numeric_guard`] for the exact
-//! combination rule.
+//! cannot raise a citation past what the lexical score already earned to
+//! "supported"; it can hard-fail when *every* claim figure is absent, demote
+//! partial matches to weak, or float an exact numeric match that lexical
+//! overlap missed up to at least weak. See [`classify_with_numeric_guard`]
+//! for the exact combination rule.
 //!
 //! A citation whose source text is too thin to check anything against (empty,
 //! or below [`CITE_UNVERIFIABLE_MIN_SOURCE_BYTES`], the live-observed shape of
@@ -47,7 +47,7 @@
 
 use crate::config::defaults::{
     CITE_MAGNITUDE_ABBREVIATIONS, CITE_MAGNITUDE_WORDS, CITE_MONTH_NAMES, CITE_SUPPORTED_MIN,
-    CITE_UNVERIFIABLE_MIN_SOURCE_BYTES, CITE_WEAK_MIN,
+    CITE_UNVERIFIABLE_MIN_SOURCE_BYTES, CITE_WEAK_MIN, TRACE_AUDIT_CLAIM_MAX_CHARS,
 };
 use crate::websearch::assemble::SourceBlock;
 use std::collections::{BTreeMap, HashSet};
@@ -85,8 +85,28 @@ pub struct CitationAudit {
     /// Of `numeric_checked`, how many were found in their cited source.
     pub numeric_matched: usize,
     /// Of `numeric_checked`, how many were absent from their cited source.
-    /// Each one caps its citation's classification at unsupported; see
-    /// [`classify_with_numeric_guard`].
+    /// See [`classify_with_numeric_guard`] for how missing interacts with
+    /// partial matches.
+    pub numeric_missing: usize,
+    /// Per-marker forensic rows for offline evaluation (claim text, class,
+    /// lexical score, numeric counts). Same length as `cited`.
+    pub details: Vec<CitationDetailRow>,
+}
+
+/// One citation marker's evaluation row produced by [`audit_citations`].
+/// Mirrored into the forensic JSONL `citation_audit.details` list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CitationDetailRow {
+    /// 1-based source number from the `[n]` marker.
+    pub index: usize,
+    /// `supported` | `weak` | `unsupported` | `unverifiable`.
+    pub class: String,
+    /// Claim sentence with the marker excised (truncated for dump size).
+    pub claim: String,
+    /// Lexical support fraction in \[0, 1\], or empty when not scored.
+    pub lexical_score: String,
+    pub numeric_checked: usize,
+    pub numeric_matched: usize,
     pub numeric_missing: usize,
 }
 
@@ -133,11 +153,16 @@ pub fn audit_citations(answer_text: &str, sources: &[SourceBlock]) -> CitationAu
         numeric_checked: 0,
         numeric_matched: 0,
         numeric_missing: 0,
+        details: Vec::new(),
     };
 
     for cref in refs {
         audit.cited += 1;
         let source = sources.iter().find(|s| s.index == cref.index);
+        let detail_claim = claim_text(answer_text, &sentences, &cref);
+        let mut detail_score = String::new();
+        let mut detail_checked = 0usize;
+        let mut detail_missing = 0usize;
         let class = match source {
             // Out-of-range citation: no source to back it, so unsupported.
             None => CiteClass::Unsupported,
@@ -148,9 +173,9 @@ pub fn audit_citations(answer_text: &str, sources: &[SourceBlock]) -> CitationAu
                 CiteClass::Unverifiable
             }
             Some(source) => {
-                let claim = claim_text(answer_text, &sentences, &cref);
-                let lexical_class = classify(support_score(&claim, &source.text));
-                let claim_facts = extract_numeric_facts(&claim);
+                let score = support_score(&detail_claim, &source.text);
+                let lexical_class = classify(score);
+                let claim_facts = extract_numeric_facts(&detail_claim);
                 // Only scan the (potentially large) source text when the
                 // claim actually has a number or date to check against it.
                 let (checked, missing) =
@@ -163,6 +188,9 @@ pub fn audit_citations(answer_text: &str, sources: &[SourceBlock]) -> CitationAu
                 audit.numeric_checked += checked;
                 audit.numeric_missing += missing;
                 audit.numeric_matched += checked - missing;
+                detail_score = format!("{score:.3}");
+                detail_checked = checked;
+                detail_missing = missing;
                 classify_with_numeric_guard(lexical_class, checked, missing)
             }
         };
@@ -175,20 +203,60 @@ pub fn audit_citations(answer_text: &str, sources: &[SourceBlock]) -> CitationAu
             }
             CiteClass::Unverifiable => audit.unverifiable += 1,
         }
+        audit.details.push(CitationDetailRow {
+            index: cref.index,
+            class: class.as_trace_label().to_string(),
+            claim: truncate_chars(&detail_claim, TRACE_AUDIT_CLAIM_MAX_CHARS),
+            lexical_score: detail_score,
+            numeric_checked: detail_checked,
+            numeric_matched: detail_checked.saturating_sub(detail_missing),
+            numeric_missing: detail_missing,
+        });
     }
 
     audit
 }
 
-/// True when the answer cited at least one source and **every** citation was
-/// unsupported (none supported or weak). That is the only case where we still
-/// surface an honest failure note after repair attempts are exhausted; partial
-/// failures are stripped silently instead of shaming the user with a footer.
+/// Truncates `text` to at most `max_chars` Unicode scalars, with an ellipsis
+/// when clipped (forensic dump size bound).
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_string();
+    }
+    let take = max_chars.saturating_sub(1);
+    format!("{}…", text.chars().take(take).collect::<String>())
+}
+
+/// True when grounded cleanup should surface the honest failure note after
+/// repair attempts are exhausted.
+///
+/// Two shapes count:
+/// - **Cited but all bad**: every `[n]` was unsupported (none supported or weak).
+/// - **Zero markers**: answer never placed `[n]` at all (`cited == 0`). Common
+///   with gpt-oss on conflict turns (prose outlet names only). Callers only
+///   finalize when sources were provided, so zero markers is not "no search".
+///
+/// Partial failures (some supported/weak remain) strip silently instead of
+/// appending a footer.
 pub fn is_total_citation_failure(audit: &CitationAudit) -> bool {
-    audit.cited > 0
-        && audit.supported == 0
-        && audit.weak == 0
-        && !audit.unsupported_indices.is_empty()
+    if audit.cited == 0 {
+        return true;
+    }
+    audit.supported == 0 && audit.weak == 0 && !audit.unsupported_indices.is_empty()
+}
+
+/// True when a grounded answer should enter (or continue) citation repair.
+///
+/// - Any unsupported `[n]` (existing path), or
+/// - **Zero** `[n]` markers while sources were provided (model named outlets in
+///   prose only, common on conflict turns with gpt-oss). Empty `unsupported`
+///   alone is not success when nothing was cited.
+pub fn needs_citation_repair(audit: &CitationAudit, sources_present: bool) -> bool {
+    if !audit.unsupported_indices.is_empty() {
+        return true;
+    }
+    sources_present && audit.cited == 0
 }
 
 /// Distinct unsupported source indices in first-seen order (deduped).
@@ -237,6 +305,21 @@ pub fn honest_failure_note(audit: &CitationAudit) -> Option<String> {
 /// or re-ground. Pure: does not include source bodies (those stay in the
 /// earlier writer messages).
 pub fn repair_critique(audit: &CitationAudit) -> String {
+    if audit.cited == 0 {
+        return "Automatic citation check failed: the answer has no [n] source \
+                markers at all.\n\n\
+                Rewrite the full answer from scratch using only the web sources \
+                already provided. Rules:\n\
+                - After every factual claim, place the matching source index in \
+                  its own brackets, like [1] or [3][4].\n\
+                - Naming a publisher in prose (e.g. \"according to Forbes\") does \
+                  not replace [n] citations.\n\
+                - Place [n] only when that source's text actually contains the \
+                  figure or fact.\n\
+                - Do not invent numbers or dates.\n\
+                - Output only the rewritten answer, with no preamble or apology."
+            .to_string();
+    }
     let markers = format_index_markers(&distinct_unsupported_indices(audit));
     format!(
         "Automatic citation check failed. These source numbers do not support the \
@@ -302,9 +385,19 @@ pub fn strip_unsupported_citations(answer: &str, unsupported_indices: &[usize]) 
 }
 
 /// Applies post-repair cleanup: strip remaining bad citations; append the
-/// honest total-failure note only when nothing citable remains supported.
-/// Pure over audit + answer text.
+/// honest total-failure note only when nothing citable remains supported (or
+/// when the answer never cited anything). Pure over audit + answer text.
 pub fn finalize_answer_after_audit(answer: &str, audit: &CitationAudit) -> String {
+    // Zero [n]: nothing to strip. After repair rounds (caller already looped),
+    // still-uncited prose gets the same honest note as total bad-cite failure.
+    // `cited == 0` is always total failure under [`is_total_citation_failure`],
+    // so the note is categorical here (no defensive None branch).
+    if audit.cited == 0 {
+        if answer.trim().is_empty() {
+            return HONEST_FAILURE_NOTE_BODY.to_string();
+        }
+        return format!("{answer}\n\n{HONEST_FAILURE_NOTE_BODY}");
+    }
     if audit.unsupported_indices.is_empty() {
         return answer.to_string();
     }
@@ -334,6 +427,18 @@ enum CiteClass {
     /// [`CITE_UNVERIFIABLE_MIN_SOURCE_BYTES`]: nothing substantive to score
     /// the claim against, so the citation is neither trusted nor accused.
     Unverifiable,
+}
+
+impl CiteClass {
+    /// Stable snake_case label written into forensic `citation_audit.details`.
+    fn as_trace_label(self) -> &'static str {
+        match self {
+            CiteClass::Supported => "supported",
+            CiteClass::Weak => "weak",
+            CiteClass::Unsupported => "unsupported",
+            CiteClass::Unverifiable => "unverifiable",
+        }
+    }
 }
 
 /// Buckets a support score into a [`CiteClass`] using the baked-in thresholds.
@@ -606,15 +711,19 @@ fn support_score(claim: &str, source: &str) -> f64 {
 
 /// Splits `text` into lowercased content tokens: maximal runs of ASCII
 /// alphanumerics, kept only when longer than three characters or number-like
-/// (containing a digit). Non-alphanumeric bytes are separators. Non-ASCII bytes
-/// are treated as token content so accented words are not shredded; a run
-/// counts as number-like only via ASCII digits, which is all the facts we care
-/// about (`3.5`, `2026`, `$42`) use.
+/// (containing a digit). Separators are ASCII non-alnum **and** any Unicode
+/// whitespace (including U+202F NARROW NO-BREAK SPACE that gpt-oss emits
+/// between `$12` and `million`). Non-ASCII non-whitespace (accented letters)
+/// stays inside tokens so they are not shredded. Number-like is still only
+/// via ASCII digits (`3.5`, `2026`, `$42`).
 fn content_tokens(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     for ch in text.chars() {
-        if ch.is_ascii_alphanumeric() || !ch.is_ascii() {
+        if ch.is_whitespace() {
+            // Unicode + ASCII spaces: never glue `$12` to `million`.
+            push_token(&mut tokens, &mut current);
+        } else if ch.is_ascii_alphanumeric() || !ch.is_ascii() {
             current.extend(ch.to_lowercase());
         } else {
             push_token(&mut tokens, &mut current);
@@ -622,6 +731,22 @@ fn content_tokens(text: &str) -> Vec<String> {
     }
     push_token(&mut tokens, &mut current);
     tokens
+}
+
+/// Advances `byte_i` past every Unicode whitespace character in `text`
+/// (`char::is_whitespace`, so NNBSP/NBSP count). Used when attaching
+/// magnitude words after a digit run so model-emitted thin spaces still
+/// fold `$12 million` to `12000000`.
+fn skip_unicode_whitespace(text: &str, mut byte_i: usize) -> usize {
+    // Iterate chars from the slice: a non-empty UTF-8 suffix always yields
+    // at least one char, so there is no unreachable None branch.
+    for ch in text[byte_i..].chars() {
+        if !ch.is_whitespace() {
+            break;
+        }
+        byte_i += ch.len_utf8();
+    }
+    byte_i
 }
 
 /// Moves `current` into `tokens` when it qualifies as a content token (longer
@@ -980,33 +1105,29 @@ fn match_magnitude_abbrev(bytes: &[u8], pos: usize) -> Option<(usize, u32)> {
 }
 
 /// Matches a following word-form magnitude suffix (`thousand`, `million`,
-/// `billion`, `trillion`) at `pos`: at least one whitespace byte, then a
-/// case-insensitive whole-word match against [`CITE_MAGNITUDE_WORDS`].
-/// Returns the byte offset just past the matched word and its exponent, or
-/// `None` if there is no leading whitespace or the following word does not
-/// match, in which case the caller's scan position is left untouched so no
-/// text is wrongly consumed on a failed attempt.
+/// `billion`, `trillion`) at `pos`: at least one Unicode whitespace character
+/// (ASCII space/tab **or** NNBSP U+202F / NBSP, as gpt-oss emits in
+/// `$12 million`), then a case-insensitive whole-word match against
+/// [`CITE_MAGNITUDE_WORDS`]. Returns the byte offset just past the matched
+/// word and its exponent, or `None` if there is no leading whitespace or the
+/// following word does not match (caller leaves `pos` untouched).
 fn match_word_magnitude(text: &str, bytes: &[u8], pos: usize) -> Option<(usize, u32)> {
-    let mut i = pos;
-    let ws_start = i;
-    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    if i == ws_start {
+    let word_start = skip_unicode_whitespace(text, pos);
+    if word_start == pos {
         return None;
     }
-    let word_start = i;
-    while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
-        i += 1;
+    let mut word_end = word_start;
+    while word_end < bytes.len() && bytes[word_end].is_ascii_alphabetic() {
+        word_end += 1;
     }
-    if i == word_start {
+    if word_end == word_start {
         return None;
     }
-    let word = text[word_start..i].to_ascii_lowercase();
+    let word = text[word_start..word_end].to_ascii_lowercase();
     CITE_MAGNITUDE_WORDS
         .iter()
         .find(|entry| entry.0 == word)
-        .map(|entry| (i, entry.1))
+        .map(|entry| (word_end, entry.1))
 }
 
 /// Moves the decimal point in `digits` (a string of decimal digits with no
@@ -1084,18 +1205,26 @@ fn numeric_guard(claim: &NumericFacts, source: &NumericFacts) -> (usize, usize) 
 }
 
 /// Combines the lexical support score's bucket with the numeric-consistency
-/// guard's verdict. A claim with no numeric content (`checked == 0`) is
-/// unaffected: the lexical bucket stands as-is. Otherwise: any claim number
-/// or date absent from the source caps the result at unsupported, since a
-/// fabricated figure must never pass on prose overlap alone; when every
-/// claim number and date is present, the result is floored at weak, so an
-/// exact numeric match can no longer be buried by token-formatting noise,
-/// but it still only reaches supported if the lexical score clears
-/// [`CITE_SUPPORTED_MIN`] on its own. The guard only ever adds a floor and a
-/// cap; it never manufactures a "supported" verdict by itself, which is the
-/// simpler of the two combination rules the design considered (the other
-/// being: also promote straight to supported when every number matches and
-/// the claim is majority-numeric).
+/// guard's verdict.
+///
+/// - No numeric content (`checked == 0`): lexical bucket stands as-is.
+/// - Every claim number/date is present (`missing == 0`): floor at weak so
+///   an exact numeric match cannot be buried by token-formatting noise; still
+///   only reaches supported if lexical clears [`CITE_SUPPORTED_MIN`].
+/// - **All** claim numbers/dates absent (`missing == checked`): cap at
+///   unsupported. A fully fabricated figure must never pass on prose overlap.
+/// - **Partial** match (`0 < missing < checked`): at least one claim number
+///   is present in the source. Floor/cap at weak (including promoting a
+///   lexically unsupported claim). Live forensics (gpt-oss multi-cite
+///   net-worth answers, 2026-07-14) showed the old rule "any missing →
+///   unsupported" false-failed good answers: one sentence cites two sources
+///   and carries both a money figure (in the source) and a date or second
+///   figure (often only in another source or outside the fetched chunk),
+///   which then failed every `[n]` and burned full repair rounds for a guilt
+///   footer. Partial numeric support is not fabrication; weak is the honest
+///   middle ground.
+///
+/// The guard never manufactures a "supported" verdict by itself.
 fn classify_with_numeric_guard(
     lexical_class: CiteClass,
     checked: usize,
@@ -1104,13 +1233,18 @@ fn classify_with_numeric_guard(
     if checked == 0 {
         return lexical_class;
     }
-    if missing > 0 {
+    if missing == checked {
+        // Nothing matched: hard fail (fabricated or wholly absent figures).
         return CiteClass::Unsupported;
     }
-    match lexical_class {
-        CiteClass::Unsupported => CiteClass::Weak,
-        other => other,
+    if missing == 0 {
+        return match lexical_class {
+            CiteClass::Unsupported => CiteClass::Weak,
+            other => other,
+        };
     }
+    // Partial match: at least one number present → weak, never total fail.
+    CiteClass::Weak
 }
 
 #[cfg(test)]
@@ -1381,6 +1515,7 @@ mod tests {
                 numeric_checked: 0,
                 numeric_matched: 0,
                 numeric_missing: 0,
+                details: vec![],
             }
         );
     }
@@ -1663,10 +1798,26 @@ mod tests {
             classify_with_numeric_guard(CiteClass::Supported, 0, 0),
             CiteClass::Supported
         );
-        // Any missing number caps at unsupported, even from supported.
+        // All claim numbers absent: hard-fail even from supported.
+        assert_eq!(
+            classify_with_numeric_guard(CiteClass::Supported, 2, 2),
+            CiteClass::Unsupported
+        );
+        // Partial match (some present, some missing): demote supported → weak,
+        // do not hard-fail (multi-cite / chunk-miss false positive fix).
         assert_eq!(
             classify_with_numeric_guard(CiteClass::Supported, 2, 1),
-            CiteClass::Unsupported
+            CiteClass::Weak
+        );
+        assert_eq!(
+            classify_with_numeric_guard(CiteClass::Weak, 3, 1),
+            CiteClass::Weak
+        );
+        // Partial still floors a lexically unsupported claim up to weak when
+        // at least one claim number is present in the source.
+        assert_eq!(
+            classify_with_numeric_guard(CiteClass::Unsupported, 2, 1),
+            CiteClass::Weak
         );
         // All present floors an unsupported lexical score up to weak.
         assert_eq!(
@@ -1682,6 +1833,68 @@ mod tests {
             classify_with_numeric_guard(CiteClass::Supported, 1, 0),
             CiteClass::Supported
         );
+    }
+
+    #[test]
+    fn gpt_oss_nnbsp_before_million_matches_source_plain_space() {
+        // Live JD Vance failure (2026-07-14): model wrote `$12 million` /
+        // `$20 million` with U+202F between digits and "million"; source text
+        // uses normal `$20 Million`. Old scanner only skipped ASCII
+        // whitespace, so claims became bare `12`/`20` and never matched
+        // `20000000` → total-failure note despite true $20M on Celebrity
+        // Net Worth.
+        let nnbsp = '\u{202f}';
+        let answer = format!(
+            "JD Vance's net worth is roughly in the $12{nnbsp}million to \
+             $20{nnbsp}million range [1]."
+        );
+        let src = source(
+            1,
+            "J.D. Vance Net Worth $20 Million. He has a net worth of $20 million.",
+        );
+        let audit = audit_citations(&answer, &[src]);
+        // $20 million must fold to 20000000 and match the source; $12 million
+        // is absent from this source (partial → weak via soft numeric rule).
+        assert!(audit.numeric_matched >= 1, "{audit:?}");
+        assert_eq!(audit.unsupported, 0, "{audit:?}");
+        assert!(
+            !is_total_citation_failure(&audit),
+            "NNBSP magnitude must not total-fail: {audit:?}"
+        );
+        assert!(honest_failure_note(&audit).is_none());
+        // Prove folding happened: without NNBSP handling matched would be 0.
+        let facts = extract_numeric_facts(&format!("$20{nnbsp}million"));
+        assert_eq!(facts.numbers, vec!["20000000".to_string()], "{facts:?}");
+    }
+
+    #[test]
+    fn multi_cite_sentence_with_partial_numeric_is_not_total_failure() {
+        // Live shape (Marco Rubio net-worth, gpt-oss): one sentence cites two
+        // sources; money figure is in both sources; a year/date may only be in
+        // one chunk. Old rule: any missing number → every [n] unsupported →
+        // total-failure note + two repair rounds. Now: partial numeric → weak,
+        // so no honest_failure_note.
+        let s2 = source(
+            2,
+            "Forbes and financial disclosures put Marco Rubio net worth \
+             at more than $1 million as of recent reporting.",
+        );
+        let s7 = source(
+            7,
+            "South Hill Enterprise notes Rubio net worth around $1 million \
+             based on financial disclosures.",
+        );
+        let answer = "Marco Rubio's net worth is estimated at just over $1 million \
+            – the most recent public disclosure from August 2024 puts his wealth \
+            well above the $1 million mark [2][7].";
+        let audit = audit_citations(answer, &[s2, s7]);
+        assert!(
+            !is_total_citation_failure(&audit),
+            "expected weak/supported path, got {audit:?}"
+        );
+        assert_eq!(audit.unsupported, 0, "{audit:?}");
+        assert_eq!(audit.weak + audit.supported, audit.cited, "{audit:?}");
+        assert!(honest_failure_note(&audit).is_none());
     }
 
     #[test]
@@ -1851,11 +2064,13 @@ mod tests {
             numeric_checked: 0,
             numeric_matched: 0,
             numeric_missing: 0,
+            details: vec![],
         }
     }
 
     #[test]
     fn honest_failure_note_none_when_nothing_unsupported() {
+        // cited>0 synthetic with empty unsupported_indices (helper floors cited at 1).
         assert_eq!(
             honest_failure_note(&audit_with_unsupported_indices(vec![])),
             None
@@ -1875,6 +2090,7 @@ mod tests {
             numeric_checked: 0,
             numeric_matched: 0,
             numeric_missing: 0,
+            details: vec![],
         };
         assert!(!is_total_citation_failure(&audit));
         assert_eq!(honest_failure_note(&audit), None);
@@ -1891,9 +2107,79 @@ mod tests {
     }
 
     #[test]
+    fn zero_cite_is_total_failure_and_needs_repair() {
+        // Elon-shaped: prose outlet names, no [n]. Grounded path only finalizes
+        // when sources exist, so cited==0 is not "no search".
+        let audit = CitationAudit {
+            cited: 0,
+            supported: 0,
+            weak: 0,
+            unsupported: 0,
+            unverifiable: 0,
+            unsupported_indices: vec![],
+            numeric_checked: 0,
+            numeric_matched: 0,
+            numeric_missing: 0,
+            details: vec![],
+        };
+        assert!(is_total_citation_failure(&audit));
+        assert!(needs_citation_repair(&audit, true));
+        assert!(!needs_citation_repair(&audit, false));
+        assert_eq!(
+            honest_failure_note(&audit).as_deref(),
+            Some(HONEST_FAILURE_NOTE_BODY)
+        );
+    }
+
+    #[test]
+    fn needs_citation_repair_false_when_all_present_cites_ok() {
+        let audit = CitationAudit {
+            cited: 2,
+            supported: 2,
+            weak: 0,
+            unsupported: 0,
+            unverifiable: 0,
+            unsupported_indices: vec![],
+            numeric_checked: 0,
+            numeric_matched: 0,
+            numeric_missing: 0,
+            details: vec![],
+        };
+        assert!(!needs_citation_repair(&audit, true));
+    }
+
+    #[test]
+    fn needs_citation_repair_true_when_any_unsupported() {
+        assert!(needs_citation_repair(
+            &audit_with_unsupported_indices(vec![1]),
+            true
+        ));
+    }
+
+    #[test]
     fn repair_critique_names_failing_markers() {
         let critique = repair_critique(&audit_with_unsupported_indices(vec![5, 2, 5]));
         assert!(critique.contains("[5], [2]"));
+        assert!(critique.contains("Rewrite the full answer"));
+    }
+
+    #[test]
+    fn repair_critique_zero_cite_demands_bracket_markers() {
+        let audit = CitationAudit {
+            cited: 0,
+            supported: 0,
+            weak: 0,
+            unsupported: 0,
+            unverifiable: 0,
+            unsupported_indices: vec![],
+            numeric_checked: 0,
+            numeric_matched: 0,
+            numeric_missing: 0,
+            details: vec![],
+        };
+        let critique = repair_critique(&audit);
+        assert!(critique.contains("no [n] source"));
+        assert!(critique.contains("Naming a publisher in prose"));
         assert!(critique.contains("Rewrite the full answer"));
     }
 
@@ -1922,8 +2208,32 @@ mod tests {
             numeric_checked: 0,
             numeric_matched: 0,
             numeric_missing: 0,
+            details: vec![],
         };
         assert_eq!(finalize_answer_after_audit("ok [1]", &audit), "ok [1]");
+    }
+
+    #[test]
+    fn finalize_answer_after_audit_appends_note_on_zero_cite() {
+        // Live Elon-shaped: Bloomberg/Forbes in prose, no markers → note.
+        let answer = "El Musk net worth is about $913 billion according to \
+                      Bloomberg and $917 billion according to Forbes.";
+        let audit = CitationAudit {
+            cited: 0,
+            supported: 0,
+            weak: 0,
+            unsupported: 0,
+            unverifiable: 0,
+            unsupported_indices: vec![],
+            numeric_checked: 0,
+            numeric_matched: 0,
+            numeric_missing: 0,
+            details: vec![],
+        };
+        let out = finalize_answer_after_audit(answer, &audit);
+        assert!(out.starts_with(answer));
+        assert!(out.ends_with(HONEST_FAILURE_NOTE_BODY));
+        assert!(out.contains(&format!("\n\n{HONEST_FAILURE_NOTE_BODY}")));
     }
 
     #[test]
@@ -1963,6 +2273,7 @@ mod tests {
             numeric_checked: 0,
             numeric_matched: 0,
             numeric_missing: 0,
+            details: vec![],
         };
         let out = finalize_answer_after_audit(answer, &audit);
         assert_eq!(out, "A is true [1]. B is false.");
@@ -1977,5 +2288,48 @@ mod tests {
         assert!(out.contains("Fake number 999."));
         assert!(out.ends_with(HONEST_FAILURE_NOTE_BODY));
         assert!(out.contains(&format!("\n\n{HONEST_FAILURE_NOTE_BODY}")));
+    }
+
+    #[test]
+    fn finalize_answer_after_audit_zero_cite_empty_answer_is_note_alone() {
+        let audit = CitationAudit {
+            cited: 0,
+            supported: 0,
+            weak: 0,
+            unsupported: 0,
+            unverifiable: 0,
+            unsupported_indices: vec![],
+            numeric_checked: 0,
+            numeric_matched: 0,
+            numeric_missing: 0,
+            details: vec![],
+        };
+        assert_eq!(
+            finalize_answer_after_audit("   ", &audit),
+            HONEST_FAILURE_NOTE_BODY
+        );
+    }
+
+    #[test]
+    fn truncate_chars_clips_with_ellipsis() {
+        // Direct unit coverage for the forensic claim-size bound helper.
+        assert_eq!(truncate_chars("short", 10), "short");
+        let long = "abcdefghij";
+        assert_eq!(truncate_chars(long, 5), "abcd…");
+        // Multi-byte: count by Unicode scalars, never mid-scalar.
+        assert_eq!(truncate_chars("🎉🎉🎉", 2), "🎉…");
+    }
+
+    #[test]
+    fn skip_unicode_whitespace_advances_over_nnbsp_and_stops() {
+        let nnbsp = '\u{202f}';
+        let text = format!("12{nnbsp}{nnbsp}million");
+        // Start just past "12".
+        let after = skip_unicode_whitespace(&text, 2);
+        assert_eq!(&text[after..], "million");
+        // No whitespace at pos: unchanged.
+        assert_eq!(skip_unicode_whitespace("abc", 1), 1);
+        // At end: unchanged.
+        assert_eq!(skip_unicode_whitespace("ab", 2), 2);
     }
 }
