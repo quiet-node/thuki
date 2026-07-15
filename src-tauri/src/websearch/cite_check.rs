@@ -25,11 +25,11 @@
 //! because token overlap alone cannot tell a swapped digit from a real
 //! match: a sentence can be almost entirely correct wording with one
 //! fabricated figure and still score high on lexical overlap. The guard
-//! cannot raise a citation past what the lexical score already earned; it
-//! can only cap a citation with a fabricated or absent figure down to
-//! unsupported, or float an exact numeric match that lexical overlap missed
-//! up to at least weak. See [`classify_with_numeric_guard`] for the exact
-//! combination rule.
+//! cannot raise a citation past what the lexical score already earned to
+//! "supported"; it can hard-fail when *every* claim figure is absent, demote
+//! partial matches to weak, or float an exact numeric match that lexical
+//! overlap missed up to at least weak. See [`classify_with_numeric_guard`]
+//! for the exact combination rule.
 //!
 //! A citation whose source text is too thin to check anything against (empty,
 //! or below [`CITE_UNVERIFIABLE_MIN_SOURCE_BYTES`], the live-observed shape of
@@ -1084,18 +1084,26 @@ fn numeric_guard(claim: &NumericFacts, source: &NumericFacts) -> (usize, usize) 
 }
 
 /// Combines the lexical support score's bucket with the numeric-consistency
-/// guard's verdict. A claim with no numeric content (`checked == 0`) is
-/// unaffected: the lexical bucket stands as-is. Otherwise: any claim number
-/// or date absent from the source caps the result at unsupported, since a
-/// fabricated figure must never pass on prose overlap alone; when every
-/// claim number and date is present, the result is floored at weak, so an
-/// exact numeric match can no longer be buried by token-formatting noise,
-/// but it still only reaches supported if the lexical score clears
-/// [`CITE_SUPPORTED_MIN`] on its own. The guard only ever adds a floor and a
-/// cap; it never manufactures a "supported" verdict by itself, which is the
-/// simpler of the two combination rules the design considered (the other
-/// being: also promote straight to supported when every number matches and
-/// the claim is majority-numeric).
+/// guard's verdict.
+///
+/// - No numeric content (`checked == 0`): lexical bucket stands as-is.
+/// - Every claim number/date is present (`missing == 0`): floor at weak so
+///   an exact numeric match cannot be buried by token-formatting noise; still
+///   only reaches supported if lexical clears [`CITE_SUPPORTED_MIN`].
+/// - **All** claim numbers/dates absent (`missing == checked`): cap at
+///   unsupported. A fully fabricated figure must never pass on prose overlap.
+/// - **Partial** match (`0 < missing < checked`): at least one claim number
+///   is present in the source. Floor/cap at weak (including promoting a
+///   lexically unsupported claim). Live forensics (gpt-oss multi-cite
+///   net-worth answers, 2026-07-14) showed the old rule "any missing →
+///   unsupported" false-failed good answers: one sentence cites two sources
+///   and carries both a money figure (in the source) and a date or second
+///   figure (often only in another source or outside the fetched chunk),
+///   which then failed every `[n]` and burned full repair rounds for a guilt
+///   footer. Partial numeric support is not fabrication; weak is the honest
+///   middle ground.
+///
+/// The guard never manufactures a "supported" verdict by itself.
 fn classify_with_numeric_guard(
     lexical_class: CiteClass,
     checked: usize,
@@ -1104,13 +1112,18 @@ fn classify_with_numeric_guard(
     if checked == 0 {
         return lexical_class;
     }
-    if missing > 0 {
+    if missing == checked {
+        // Nothing matched: hard fail (fabricated or wholly absent figures).
         return CiteClass::Unsupported;
     }
-    match lexical_class {
-        CiteClass::Unsupported => CiteClass::Weak,
-        other => other,
+    if missing == 0 {
+        return match lexical_class {
+            CiteClass::Unsupported => CiteClass::Weak,
+            other => other,
+        };
     }
+    // Partial match: at least one number present → weak, never total fail.
+    CiteClass::Weak
 }
 
 #[cfg(test)]
@@ -1663,10 +1676,26 @@ mod tests {
             classify_with_numeric_guard(CiteClass::Supported, 0, 0),
             CiteClass::Supported
         );
-        // Any missing number caps at unsupported, even from supported.
+        // All claim numbers absent: hard-fail even from supported.
+        assert_eq!(
+            classify_with_numeric_guard(CiteClass::Supported, 2, 2),
+            CiteClass::Unsupported
+        );
+        // Partial match (some present, some missing): demote supported → weak,
+        // do not hard-fail (multi-cite / chunk-miss false positive fix).
         assert_eq!(
             classify_with_numeric_guard(CiteClass::Supported, 2, 1),
-            CiteClass::Unsupported
+            CiteClass::Weak
+        );
+        assert_eq!(
+            classify_with_numeric_guard(CiteClass::Weak, 3, 1),
+            CiteClass::Weak
+        );
+        // Partial still floors a lexically unsupported claim up to weak when
+        // at least one claim number is present in the source.
+        assert_eq!(
+            classify_with_numeric_guard(CiteClass::Unsupported, 2, 1),
+            CiteClass::Weak
         );
         // All present floors an unsupported lexical score up to weak.
         assert_eq!(
@@ -1682,6 +1711,36 @@ mod tests {
             classify_with_numeric_guard(CiteClass::Supported, 1, 0),
             CiteClass::Supported
         );
+    }
+
+    #[test]
+    fn multi_cite_sentence_with_partial_numeric_is_not_total_failure() {
+        // Live shape (Marco Rubio net-worth, gpt-oss): one sentence cites two
+        // sources; money figure is in both sources; a year/date may only be in
+        // one chunk. Old rule: any missing number → every [n] unsupported →
+        // total-failure note + two repair rounds. Now: partial numeric → weak,
+        // so no honest_failure_note.
+        let s2 = source(
+            2,
+            "Forbes and financial disclosures put Marco Rubio net worth \
+             at more than $1 million as of recent reporting.",
+        );
+        let s7 = source(
+            7,
+            "South Hill Enterprise notes Rubio net worth around $1 million \
+             based on financial disclosures.",
+        );
+        let answer = "Marco Rubio's net worth is estimated at just over $1 million \
+            – the most recent public disclosure from August 2024 puts his wealth \
+            well above the $1 million mark [2][7].";
+        let audit = audit_citations(answer, &[s2, s7]);
+        assert!(
+            !is_total_citation_failure(&audit),
+            "expected weak/supported path, got {audit:?}"
+        );
+        assert_eq!(audit.unsupported, 0, "{audit:?}");
+        assert_eq!(audit.weak + audit.supported, audit.cited, "{audit:?}");
+        assert!(honest_failure_note(&audit).is_none());
     }
 
     #[test]

@@ -1325,14 +1325,15 @@ pub const CITE_WEAK_MIN: f64 = 0.3;
 pub const CITE_AUDIT_MAX_ANSWER_BYTES: usize = 262_144;
 
 /// Maximum number of targeted writer repair rounds after a citation audit
-/// finds unsupported claims. Each round is one extra LLM call with a critique
-/// of the failed `[n]` indices; 0 means never repair (strip-only path). Cap
-/// is small on purpose: repairs cost latency and KV, and after this many tries
-/// Thuki falls back to deterministic strip / total-failure wording instead of
-/// looping forever.
+/// finds unsupported claims. Each round is one extra full writer stream
+/// (costly on reasoning models: multi-second thinking before any rewrite).
+/// 0 means never repair (strip-only path). Cap is 1 on purpose: a second
+/// repair rarely recovers total-failure cases (live gpt-oss traces still
+/// failed after two) while adding ~5–15s of "Verifying" UX; one attempt plus
+/// strip / honest note is enough.
 ///
 /// Not user-tunable: fixed product budget for the grounded-answer repair loop.
-pub const CITE_REPAIR_MAX_ATTEMPTS: u32 = 2;
+pub const CITE_REPAIR_MAX_ATTEMPTS: u32 = 1;
 
 /// Minimum byte length a cited source's fetched text must reach before the
 /// post-generation citation audit will score a claim against it. Below this
