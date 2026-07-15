@@ -21,9 +21,15 @@
 //! percentages, and dates from the claim and checks each one against the
 //! cited source's own numeric mentions, normalizing formatting differences
 //! ("$615B" and "615 billion" and "615,000,000,000" all read as the same
-//! value) so a real match is never missed on formatting alone. This exists
-//! because token overlap alone cannot tell a swapped digit from a real
-//! match: a sentence can be almost entirely correct wording with one
+//! value; Vietnamese `144.500.000` and English `144,500,000` likewise) so a
+//! real match is never missed on formatting alone. Magnitude words include
+//! Vietnamese scale (`triệu`, `tỷ`, …) so a double-count cannot pass. Each
+//! figure may also bind a nearby unit (`/lượng`, `/kg`, `°C`); a claim unit
+//! that conflicts with the source unit at the same value is treated as
+//! missing. Percentages outside `[0, 100]` are rejected as physically
+//! impossible even when the source repeats the same junk. This exists
+//! because token overlap alone cannot tell a swapped digit or unit from a
+//! real match: a sentence can be almost entirely correct wording with one
 //! fabricated figure and still score high on lexical overlap. The guard
 //! cannot raise a citation past what the lexical score already earned to
 //! "supported"; it can hard-fail when *every* claim figure is absent, demote
@@ -47,7 +53,7 @@
 
 use crate::config::defaults::{
     CITE_FULLWIDTH_DIGITS, CITE_MAGNITUDE_ABBREVIATIONS, CITE_MAGNITUDE_WORDS, CITE_MONTH_NAMES,
-    CITE_SUPPORTED_MIN, CITE_UNVERIFIABLE_MIN_SOURCE_BYTES, CITE_WEAK_MIN,
+    CITE_SUPPORTED_MIN, CITE_UNIT_SUFFIXES, CITE_UNVERIFIABLE_MIN_SOURCE_BYTES, CITE_WEAK_MIN,
     TRACE_AUDIT_CLAIM_MAX_CHARS,
 };
 use crate::websearch::assemble::SourceBlock;
@@ -796,11 +802,12 @@ fn is_digit_like(c: char) -> bool {
 
 /// The numeric and date mentions extracted from a span of text: money
 /// figures, plain numbers, percentages, and magnitude-suffixed forms are all
-/// normalized into `numbers`; calendar dates (ISO, `M/D/YYYY`, or an English
-/// month name) are normalized into `dates`. Used by the numeric-consistency
-/// guard in [`audit_citations`] to check a claim's figures against its cited
-/// source without relying on lexical token overlap, which cannot tell a
-/// swapped digit from a real match.
+/// normalized into `numbers` with a parallel `units` entry per figure;
+/// calendar dates (ISO, `M/D/YYYY`, or an English month name) are normalized
+/// into `dates`. Used by the numeric-consistency guard in [`audit_citations`]
+/// to check a claim's figures against its cited source without relying on
+/// lexical token overlap, which cannot tell a swapped digit or unit from a
+/// real match.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NumericFacts {
     /// Canonical value strings for every number, money, or percentage
@@ -808,6 +815,10 @@ struct NumericFacts {
     /// trailing `%` so it never collides with a plain number of the same
     /// magnitude.
     numbers: Vec<String>,
+    /// Unit id bound to the figure at the same index in `numbers`, or `None`
+    /// when no known unit token followed the digit run. Length always equals
+    /// `numbers.len()`.
+    units: Vec<Option<&'static str>>,
     /// Canonical `YYYY-MM-DD` strings for every date mention, in first-seen
     /// order.
     dates: Vec<String>,
@@ -830,9 +841,13 @@ fn extract_numeric_facts(text: &str) -> NumericFacts {
     let date_spans = find_date_spans(text, bytes);
     let mut exclude = marker_spans;
     exclude.extend(date_spans.iter().map(|&(s, e, _)| (s, e)));
-    let numbers = find_number_spans(text, bytes, &exclude);
+    let (numbers, units) = find_number_spans(text, bytes, &exclude);
     let dates = date_spans.into_iter().map(|(_, _, canon)| canon).collect();
-    NumericFacts { numbers, dates }
+    NumericFacts {
+        numbers,
+        units,
+        dates,
+    }
 }
 
 /// True if byte offset `i` falls inside any of `spans` (half-open ranges).
@@ -1012,9 +1027,15 @@ fn try_month_name_date(text: &str, bytes: &[u8], start: usize) -> Option<(usize,
 /// `exclude` (citation-marker spans and already-matched date spans, so a
 /// date's day and year are never double-counted as separate bare numbers
 /// and a marker's digits are never read as content). Returns each mention's
-/// canonical value string, in first-seen order.
-fn find_number_spans(text: &str, bytes: &[u8], exclude: &[(usize, usize)]) -> Vec<String> {
+/// canonical value string and optional unit id, in first-seen order, as
+/// parallel vectors of equal length.
+fn find_number_spans(
+    text: &str,
+    bytes: &[u8],
+    exclude: &[(usize, usize)],
+) -> (Vec<String>, Vec<Option<&'static str>>) {
     let mut numbers = Vec::new();
+    let mut units = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
         if in_excluded(i, exclude) {
@@ -1026,30 +1047,33 @@ fn find_number_spans(text: &str, bytes: &[u8], exclude: &[(usize, usize)]) -> Ve
             && bytes[i + 1].is_ascii_digit()
             && !in_excluded(i + 1, exclude)
         {
-            let (end, canon) = parse_number_literal(text, bytes, i + 1);
+            let (end, canon, unit) = parse_number_literal(text, bytes, i + 1);
             numbers.push(canon);
+            units.push(unit);
             i = end;
             continue;
         }
         if bytes[i].is_ascii_digit() && (i == 0 || !bytes[i - 1].is_ascii_digit()) {
-            let (end, canon) = parse_number_literal(text, bytes, i);
+            let (end, canon, unit) = parse_number_literal(text, bytes, i);
             numbers.push(canon);
+            units.push(unit);
             i = end;
             continue;
         }
         i += 1;
     }
-    numbers
+    (numbers, units)
 }
 
 /// Reads a numeric literal's digits starting at `start`: a required leading
-/// digit group, any number of comma-grouped digit groups immediately
-/// following (a comma is only consumed when a digit follows it directly, so
-/// a sentence comma like "3, 2, 1" is never pulled into the number), and an
-/// optional decimal point plus digit group. Returns the byte offset just
-/// past the literal, the digits with the commas and point removed, and how
-/// many of those digits belong to the integer part (so the caller can
-/// reinsert the point after a magnitude shift).
+/// digit group, then zero or more comma- or dot-separated groups. Multi-dot
+/// runs whose every group after the first has length 3 (`144.500.000`) are
+/// Vietnamese/European thousands separators and fold to a pure integer.
+/// A single `.` stays a decimal (`1.053`, `3.4`) so English figures do not
+/// flip. US comma thousands (`615,000,000`) and mixed `1,234.56` keep working.
+/// Returns the byte offset just past the literal, the digits with separators
+/// removed, and how many of those digits belong to the integer part (so the
+/// caller can reinsert the point after a magnitude shift).
 ///
 /// Precondition: `bytes[start]` is an ASCII digit. Both call sites (via
 /// [`parse_number_literal`]) only ever invoke this after already checking
@@ -1062,53 +1086,138 @@ fn parse_digits(bytes: &[u8], start: usize) -> (usize, String, usize) {
         i += 1;
     }
     // The run is ASCII digits only, so this is always valid UTF-8.
-    let mut digits = std::str::from_utf8(&bytes[start..i]).unwrap().to_string();
-    while i < bytes.len()
-        && bytes[i] == b','
-        && i + 1 < bytes.len()
-        && bytes[i + 1].is_ascii_digit()
-    {
-        let group_start = i + 1;
-        let mut j = group_start;
-        while j < bytes.len() && bytes[j].is_ascii_digit() {
-            j += 1;
+    let first = std::str::from_utf8(&bytes[start..i]).unwrap();
+
+    // Collect (separator, group) pairs while the next byte is `.` or `,`
+    // immediately followed by a digit. A sentence comma ("3, 2") stops
+    // because of the space after the comma.
+    let mut groups: Vec<(u8, &str)> = Vec::new();
+    let mut j = i;
+    while j < bytes.len() {
+        let sep = bytes[j];
+        if sep != b'.' && sep != b',' {
+            break;
         }
-        digits.push_str(std::str::from_utf8(&bytes[group_start..j]).unwrap());
-        i = j;
-    }
-    let point_at = digits.len();
-    if i < bytes.len() && bytes[i] == b'.' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
-        let frac_start = i + 1;
-        let mut j = frac_start;
-        while j < bytes.len() && bytes[j].is_ascii_digit() {
-            j += 1;
+        if j + 1 >= bytes.len() || !bytes[j + 1].is_ascii_digit() {
+            break;
         }
-        digits.push_str(std::str::from_utf8(&bytes[frac_start..j]).unwrap());
-        i = j;
+        let group_start = j + 1;
+        let mut group_end = group_start;
+        while group_end < bytes.len() && bytes[group_end].is_ascii_digit() {
+            group_end += 1;
+        }
+        groups.push((
+            sep,
+            std::str::from_utf8(&bytes[group_start..group_end]).unwrap(),
+        ));
+        j = group_end;
     }
-    (i, digits, point_at)
+
+    if groups.is_empty() {
+        return (i, first.to_string(), first.len());
+    }
+
+    // Vietnamese / European integer: two or more `.`-separated groups, each
+    // exactly three digits (144.500.000 → 144500000). A single `.` group is
+    // never treated as thousands so English "1.053 trillion" stays 1.053.
+    if groups.len() >= 2 && groups.iter().all(|&(sep, g)| sep == b'.' && g.len() == 3) {
+        let mut digits = first.to_string();
+        for &(_, g) in &groups {
+            digits.push_str(g);
+        }
+        let point_at = digits.len();
+        return (j, digits, point_at);
+    }
+
+    // US integer: only commas, every group length 3 (615,000,000,000).
+    if groups.iter().all(|&(sep, g)| sep == b',' && g.len() == 3) {
+        let mut digits = first.to_string();
+        for &(_, g) in &groups {
+            digits.push_str(g);
+        }
+        let point_at = digits.len();
+        return (j, digits, point_at);
+    }
+
+    // `groups` is non-empty past the early returns above; index the last
+    // group directly so the empty-Option branch of `if let` is not dead code
+    // that coverage tools still flag.
+    let (last_sep, last_g) = groups[groups.len() - 1];
+
+    // European decimal: dots as thousands, final comma as fraction (1.234,56).
+    if last_sep == b',' {
+        let head = &groups[..groups.len() - 1];
+        if head.iter().all(|&(sep, g)| sep == b'.' && g.len() == 3) {
+            let mut int_part = first.to_string();
+            for &(_, g) in head {
+                int_part.push_str(g);
+            }
+            let point_at = int_part.len();
+            int_part.push_str(last_g);
+            return (j, int_part, point_at);
+        }
+    }
+
+    // US / plain decimal: optional comma thousands then a final `.` fraction
+    // (1,234.56 or 3.4 or 1.053). Head groups, when present, must be commas
+    // of length 3.
+    if last_sep == b'.' {
+        let head = &groups[..groups.len() - 1];
+        if head.iter().all(|&(sep, g)| sep == b',' && g.len() == 3) {
+            let mut int_part = first.to_string();
+            for &(_, g) in head {
+                int_part.push_str(g);
+            }
+            let point_at = int_part.len();
+            int_part.push_str(last_g);
+            return (j, int_part, point_at);
+        }
+    }
+
+    // Fallback: only commas with mixed group lengths (legacy join), else
+    // stop after the first group so a pathological separator run cannot
+    // invent a value.
+    if groups.iter().all(|&(sep, _)| sep == b',') {
+        let mut digits = first.to_string();
+        for &(_, g) in &groups {
+            digits.push_str(g);
+        }
+        let point_at = digits.len();
+        return (j, digits, point_at);
+    }
+
+    (i, first.to_string(), first.len())
 }
 
 /// Parses one numeric literal starting at `start` (an ASCII digit, the same
 /// precondition as [`parse_digits`]) via `parse_digits`, then looks for, in
-/// order, an attached letter suffix (`B`, `bn`, ...), a trailing `%`, or a
-/// following word suffix (`billion`, ...), folding whichever is found into
-/// the canonical value via [`shift_point`]. Returns the byte offset just
-/// past the full match (literal plus any suffix) and the canonical value
-/// string.
-fn parse_number_literal(text: &str, bytes: &[u8], start: usize) -> (usize, String) {
-    let (mut end, digits, point_at) = parse_digits(bytes, start);
+/// order, an attached letter suffix (`B`, `bn`, ...), a trailing `%`, a
+/// following magnitude word (`billion`, `triệu`, ...), then an optional unit
+/// token (`/lượng`, `kg`, ...). Magnitude folds into the canonical value via
+/// [`shift_point`]. Returns the byte offset just past the full match, the
+/// canonical value string, and any bound unit id.
+fn parse_number_literal(
+    text: &str,
+    bytes: &[u8],
+    start: usize,
+) -> (usize, String, Option<&'static str>) {
+    let (end, digits, point_at) = parse_digits(bytes, start);
     if let Some((sfx_end, exp)) = match_magnitude_abbrev(bytes, end) {
-        return (sfx_end, shift_point(&digits, point_at, exp));
+        let (u_end, unit) = match_unit_suffix(text, bytes, sfx_end);
+        return (u_end, shift_point(&digits, point_at, exp), unit);
     }
-    if bytes.get(end) == Some(&b'%') {
-        end += 1;
-        return (end, format!("{}%", shift_point(&digits, point_at, 0)));
+    // Allow optional whitespace before `%` so "108 %" still counts as percent.
+    let after_ws = skip_unicode_whitespace(text, end);
+    if bytes.get(after_ws) == Some(&b'%') {
+        let canon = format!("{}%", shift_point(&digits, point_at, 0));
+        return (after_ws + 1, canon, Some("percent"));
     }
     if let Some((w_end, exp)) = match_word_magnitude(text, bytes, end) {
-        return (w_end, shift_point(&digits, point_at, exp));
+        let (u_end, unit) = match_unit_suffix(text, bytes, w_end);
+        return (u_end, shift_point(&digits, point_at, exp), unit);
     }
-    (end, shift_point(&digits, point_at, 0))
+    let (u_end, unit) = match_unit_suffix(text, bytes, end);
+    (u_end, shift_point(&digits, point_at, 0), unit)
 }
 
 /// Matches an attached magnitude-abbreviation letter suffix (`B`, `bn`, `M`,
@@ -1136,29 +1245,111 @@ fn match_magnitude_abbrev(bytes: &[u8], pos: usize) -> Option<(usize, u32)> {
 }
 
 /// Matches a following word-form magnitude suffix (`thousand`, `million`,
-/// `billion`, `trillion`) at `pos`: at least one Unicode whitespace character
-/// (ASCII space/tab **or** NNBSP U+202F / NBSP, as gpt-oss emits in
-/// `$12 million`), then a case-insensitive whole-word match against
-/// [`CITE_MAGNITUDE_WORDS`]. Returns the byte offset just past the matched
-/// word and its exponent, or `None` if there is no leading whitespace or the
-/// following word does not match (caller leaves `pos` untouched).
-fn match_word_magnitude(text: &str, bytes: &[u8], pos: usize) -> Option<(usize, u32)> {
+/// `triệu`, …) at `pos`: at least one Unicode whitespace character (ASCII
+/// space/tab **or** NNBSP U+202F / NBSP, as gpt-oss emits in `$12 million`),
+/// then a case-insensitive whole-word match against [`CITE_MAGNITUDE_WORDS`].
+/// Word characters are Unicode alphabetic so Vietnamese scale words match.
+/// Returns the byte offset just past the matched word and its exponent, or
+/// `None` if there is no leading whitespace or the following word does not
+/// match (caller leaves `pos` untouched).
+fn match_word_magnitude(text: &str, _bytes: &[u8], pos: usize) -> Option<(usize, u32)> {
     let word_start = skip_unicode_whitespace(text, pos);
     if word_start == pos {
         return None;
     }
-    let mut word_end = word_start;
-    while word_end < bytes.len() && bytes[word_end].is_ascii_alphabetic() {
-        word_end += 1;
+    let rest = &text[word_start..];
+    let mut word_len = 0usize;
+    for (idx, c) in rest.char_indices() {
+        if c.is_alphabetic() {
+            word_len = idx + c.len_utf8();
+        } else {
+            break;
+        }
     }
-    if word_end == word_start {
+    if word_len == 0 {
         return None;
     }
-    let word = text[word_start..word_end].to_ascii_lowercase();
+    let word_end = word_start + word_len;
+    let word = rest[..word_len].to_lowercase();
     CITE_MAGNITUDE_WORDS
         .iter()
         .find(|entry| entry.0 == word)
         .map(|entry| (word_end, entry.1))
+}
+
+/// Matches a known unit suffix at `pos` after optional Unicode whitespace,
+/// against [`CITE_UNIT_SUFFIXES`] (longest patterns first). Returns the byte
+/// offset past the unit and its interned unit id, or (`pos`, `None`) when no
+/// unit is present so the caller keeps the number span unchanged.
+fn match_unit_suffix(text: &str, bytes: &[u8], pos: usize) -> (usize, Option<&'static str>) {
+    let start = skip_unicode_whitespace(text, pos);
+    if start >= text.len() {
+        return (pos, None);
+    }
+    let rest = &text[start..];
+    let rest_lower = rest.to_lowercase();
+    for &(pattern, unit_id) in CITE_UNIT_SUFFIXES.iter() {
+        if rest_lower.starts_with(pattern) {
+            let after = start + pattern.len();
+            // Boundary: next char must not extend an alphanumeric token so
+            // "kg" does not steal the prefix of "kgsomething".
+            let boundary_ok = after >= bytes.len()
+                || (!bytes[after].is_ascii_alphanumeric()
+                    && !text[after..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_alphabetic()));
+            if boundary_ok {
+                return (after, Some(unit_id));
+            }
+        }
+    }
+    (pos, None)
+}
+
+/// True when a claim percentage is outside the closed interval `[0, 100]`.
+/// Relative humidity and other percent claims above 100 (or below 0) are
+/// physically impossible; the guard rejects them even if a junk source
+/// repeats the same figure. Non-percent canonical values always return false.
+fn percent_out_of_range(canon: &str) -> bool {
+    let Some(raw) = canon.strip_suffix('%') else {
+        return false;
+    };
+    if raw.is_empty() {
+        return false;
+    }
+    if raw.starts_with('-') {
+        return true;
+    }
+    if raw.bytes().all(|b| b.is_ascii_digit()) {
+        // Equal-length digit strings compare lexicographically as integers.
+        return match raw.len() {
+            0..=2 => false,
+            3 => raw > "100",
+            _ => true,
+        };
+    }
+    // Decimal percents such as 99.5 stay in range; 100.1 does not.
+    raw.parse::<f64>()
+        .map(|v| !(0.0..=100.0).contains(&v))
+        .unwrap_or(false)
+}
+
+/// True when a claim unit and a source unit are compatible for the same
+/// canonical value.
+///
+/// - Bare claim (`None`) matches any source unit: the claim did not assert a
+///   unit, so a source that labels one is still evidence for the figure.
+/// - Claim with a unit requires the **same** unit on the source. A bare
+///   source value is not enough: that is how "1 lượng" hitchhiked on a
+///   source's "1L" and soft-landed a `144500 triệu` double-count as weak.
+/// - Two present but different unit ids always conflict (`kg` vs `luong`).
+fn units_compatible(claim: Option<&str>, source: Option<&str>) -> bool {
+    match (claim, source) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(c), Some(s)) => c == s,
+    }
 }
 
 /// Moves the decimal point in `digits` (a string of decimal digits with no
@@ -1208,23 +1399,26 @@ fn shift_point(digits: &str, point_at: usize, exp: u32) -> String {
 /// than the year as its own standalone token; keeping this fold one-directional,
 /// source dates into the number set rather than trying to match a claim's
 /// bare year against a source date's substring directly, keeps the check a
-/// simple set-membership test). Returns how many claim mentions were checked
-/// in total and how many of those were absent from the source. A claim with
-/// no numeric or date content is reported as nothing to check.
+/// simple set-membership test). A claim figure also requires a compatible
+/// unit when both sides bound one, and percentages outside `[0, 100]` always
+/// count as missing. Returns how many claim mentions were checked in total
+/// and how many of those were absent from the source. A claim with no
+/// numeric or date content is reported as nothing to check.
 fn numeric_guard(claim: &NumericFacts, source: &NumericFacts) -> (usize, usize) {
     if claim.numbers.is_empty() && claim.dates.is_empty() {
         return (0, 0);
     }
-    let mut source_numbers: HashSet<&str> = source.numbers.iter().map(String::as_str).collect();
     let source_dates: HashSet<&str> = source.dates.iter().map(String::as_str).collect();
     let source_years: Vec<String> = source.dates.iter().map(|d| d[..4].to_string()).collect();
-    for y in &source_years {
-        source_numbers.insert(y.as_str());
-    }
+    let source_year_set: HashSet<&str> = source_years.iter().map(String::as_str).collect();
+
     let missing_numbers = claim
         .numbers
         .iter()
-        .filter(|n| !source_numbers.contains(n.as_str()))
+        .zip(claim.units.iter())
+        .filter(|(value, unit)| {
+            !claim_number_present(value, unit.as_deref(), source, &source_year_set)
+        })
         .count();
     let missing_dates = claim
         .dates
@@ -1233,6 +1427,29 @@ fn numeric_guard(claim: &NumericFacts, source: &NumericFacts) -> (usize, usize) 
         .count();
     let checked = claim.numbers.len() + claim.dates.len();
     (checked, missing_numbers + missing_dates)
+}
+
+/// True when one claim figure is backed by the source: not an impossible
+/// percent, and either a source figure with the same canonical value and a
+/// compatible unit, or a bare year that appears in a source date.
+fn claim_number_present(
+    value: &str,
+    claim_unit: Option<&str>,
+    source: &NumericFacts,
+    source_years: &HashSet<&str>,
+) -> bool {
+    if percent_out_of_range(value) {
+        return false;
+    }
+    if source
+        .numbers
+        .iter()
+        .zip(source.units.iter())
+        .any(|(s_val, s_unit)| s_val == value && units_compatible(claim_unit, s_unit.as_deref()))
+    {
+        return true;
+    }
+    claim_unit.is_none() && source_years.contains(value)
 }
 
 /// Combines the lexical support score's bucket with the numeric-consistency
@@ -1814,6 +2031,204 @@ mod tests {
     }
 
     #[test]
+    fn vietnamese_dot_thousands_fold_to_integer() {
+        // Live SJC / gold tables use `.` as the thousands separator.
+        assert_eq!(numbers_in("144.500.000"), vec!["144500000"]);
+        assert_eq!(numbers_in("14.350.000"), vec!["14350000"]);
+        // Single-dot English decimals must not flip to thousands.
+        assert_eq!(numbers_in("1.053"), vec!["1.053"]);
+        assert_eq!(numbers_in("3.4"), vec!["3.4"]);
+    }
+
+    #[test]
+    fn european_and_us_mixed_decimal_forms() {
+        // European: dots thousands, comma decimal.
+        assert_eq!(numbers_in("1.234,56"), vec!["1234.56"]);
+        // Multi-group European thousands then comma decimal.
+        assert_eq!(numbers_in("1.234.567,89"), vec!["1234567.89"]);
+        // US mixed: commas thousands, dot decimal (already partly covered
+        // by the matrix; pin the head+fraction path explicitly).
+        assert_eq!(numbers_in("1,234.56"), vec!["1234.56"]);
+        // Trailing separator with no digits must not hang or invent a group.
+        assert_eq!(numbers_in("12."), vec!["12"]);
+        assert_eq!(numbers_in("12,"), vec!["12"]);
+        // Lone comma group with non-3 fraction digits is European decimal.
+        assert_eq!(numbers_in("1,23"), vec!["1.23"]);
+        // Ambiguous multi-dot non-thousands keeps only the leading group;
+        // the scanner resumes and may read a following decimal ("2.3").
+        assert_eq!(numbers_in("1.2.3"), vec!["1", "2.3"]);
+        // Multi comma groups of length 3 stay US integer thousands.
+        assert_eq!(numbers_in("12,345,678"), vec!["12345678"]);
+        // Comma groups that are not clean US thousands and not European
+        // (head is commas, not dots) fall through to the legacy join.
+        assert_eq!(numbers_in("1,234,56"), vec!["123456"]);
+        // European rejects a short non-3 head group before a comma fraction
+        // on the first parse; the scanner resumes and may read a following
+        // European decimal from the leftovers.
+        assert_eq!(numbers_in("1.23,45"), vec!["1", "23.45"]);
+    }
+
+    #[test]
+    fn percent_allows_whitespace_before_sign() {
+        assert_eq!(numbers_in("12 %"), vec!["12%"]);
+        let facts = extract_numeric_facts("12 %");
+        assert_eq!(facts.units, vec![Some("percent")]);
+    }
+
+    #[test]
+    fn match_unit_suffix_rejects_prefix_of_longer_word() {
+        // "kg" must not steal the prefix of an alphanumeric continuation.
+        let facts = extract_numeric_facts("5 kgsomething");
+        assert_eq!(facts.numbers, vec!["5".to_string()]);
+        assert_eq!(facts.units, vec![None]);
+    }
+
+    #[test]
+    fn match_unit_suffix_at_end_of_text() {
+        let facts = extract_numeric_facts("5kg");
+        assert_eq!(facts.numbers, vec!["5".to_string()]);
+        assert_eq!(facts.units, vec![Some("kg")]);
+    }
+
+    #[test]
+    fn claim_with_unit_does_not_match_bare_source_value() {
+        // Strict unit rule: claim kg vs bare source digits is missing.
+        let claim = NumericFacts {
+            numbers: vec!["14350000".to_string()],
+            units: vec![Some("kg")],
+            dates: vec![],
+        };
+        let source = NumericFacts {
+            numbers: vec!["14350000".to_string()],
+            units: vec![None],
+            dates: vec![],
+        };
+        assert_eq!(numeric_guard(&claim, &source), (1, 1));
+    }
+
+    #[test]
+    fn magnitude_abbrev_then_unit_binds() {
+        // "$1.2mn/kg" is unusual but exercises abbrev → unit chain.
+        let facts = extract_numeric_facts("$1.2mn/kg");
+        assert_eq!(facts.numbers, vec!["1200000".to_string()]);
+        assert_eq!(facts.units, vec![Some("kg")]);
+    }
+
+    #[test]
+    fn vietnamese_trieu_magnitude_folds() {
+        // 144.5 triệu = 144_500_000; 144500 triệu is a double-count.
+        assert_eq!(numbers_in("144.5 triệu"), vec!["144500000"]);
+        assert_eq!(numbers_in("144500 triệu"), vec!["144500000000"]);
+    }
+
+    #[test]
+    fn unit_suffix_binds_luong_and_kg() {
+        let facts = extract_numeric_facts("14.350.000 đ/lượng");
+        assert_eq!(facts.numbers, vec!["14350000".to_string()]);
+        assert_eq!(facts.units, vec![Some("luong")]);
+        let facts_kg = extract_numeric_facts("14.350.000 đ/kg");
+        assert_eq!(facts_kg.numbers, vec!["14350000".to_string()]);
+        assert_eq!(facts_kg.units, vec![Some("kg")]);
+    }
+
+    #[test]
+    fn smoke_trieu_double_count_is_unsupported() {
+        // Live fail e1cf3738: model wrote "144 500 triệu" against a source
+        // table "144.500.000". Digits alone must not pass.
+        let src = source(
+            3,
+            "Vàng SJC 1L, 10L, 1KG 144.500.000 147.500.000 Nữ trang 41,7%",
+        );
+        let answer = "Giá vàng SJC (1 lượng) hôm nay: mua vào 144500 triệu đồng, \
+             bán ra 147500 triệu đồng [3].";
+        let audit = audit_citations(answer, &[src]);
+        assert_eq!(audit.unsupported, 1, "{audit:?}");
+        assert_eq!(audit.supported, 0, "{audit:?}");
+    }
+
+    #[test]
+    fn smoke_unit_kg_vs_luong_is_unsupported() {
+        // Live fail 830960fb: same digits as jewelry tier, wrong unit (/kg
+        // vs /lượng) for an SJC bar quote.
+        let src = source(
+            12,
+            "Cập nhật giá VÀNG MIẾNG SJC hôm nay: Mua vào 14.350.000 đ/lượng, \
+             Bán ra 14.850.000 đ/lượng.",
+        );
+        let answer = "Giá vàng SJC hiện tại là 14.350.000 đồng/kg (giá mua) và \
+             14.850.000 đồng/kg (giá bán) [12].";
+        let audit = audit_citations(answer, &[src]);
+        assert_eq!(audit.unsupported, 1, "{audit:?}");
+        assert_eq!(audit.supported, 0, "{audit:?}");
+    }
+
+    #[test]
+    fn smoke_matching_vn_gold_figure_stays_supported() {
+        // Honest path: full figure with matching unit must still pass.
+        let src = source(
+            1,
+            "Giá vàng SJC hôm nay mua vào 144.500.000 đ/lượng bán ra 147.500.000 đ/lượng.",
+        );
+        let answer = "Giá vàng SJC mua vào 144.500.000 đ/lượng và bán ra \
+             147.500.000 đ/lượng [1].";
+        let audit = audit_citations(answer, &[src]);
+        assert_eq!(audit.unsupported, 0, "{audit:?}");
+        assert!(
+            audit.supported + audit.weak >= 1,
+            "expected grounded gold quote, got {audit:?}"
+        );
+    }
+
+    #[test]
+    fn humidity_over_one_hundred_is_unsupported_even_if_source_matches() {
+        // Live fail 5e2e1745: SEO widget humidity 106/108. Physically
+        // impossible percent must not ship as supported, even when the
+        // cited junk source repeats it.
+        let src = source(
+            2,
+            "Thời tiết Hà Nội Hôm nay 33oC Nhiều mây 60% 106% Độ ẩm 108 Ozone",
+        );
+        let answer = "Hôm nay Hà Nội: nhiệt độ 33°C, độ ẩm dao động từ 98% tới 108% [2].";
+        let audit = audit_citations(answer, &[src]);
+        // 108% is impossible → that figure is missing. 98% is in range and
+        // may or may not be in the source; 33 may match. Partial/all-missing
+        // both must avoid a clean Supported on the impossible claim.
+        assert_ne!(
+            audit.supported, 1,
+            "impossible humidity must not be Supported: {audit:?}"
+        );
+        assert!(
+            audit.unsupported == 1 || audit.weak == 1,
+            "expected weak or unsupported, got {audit:?}"
+        );
+    }
+
+    #[test]
+    fn percent_out_of_range_helper_bounds() {
+        assert!(!percent_out_of_range("12%"));
+        assert!(!percent_out_of_range("100%"));
+        assert!(!percent_out_of_range("0%"));
+        assert!(percent_out_of_range("101%"));
+        assert!(percent_out_of_range("108%"));
+        assert!(percent_out_of_range("-1%"));
+        assert!(!percent_out_of_range("99.5%"));
+        assert!(percent_out_of_range("100.1%"));
+        assert!(!percent_out_of_range("50")); // not a percent
+        assert!(!percent_out_of_range("%")); // empty raw after strip
+        assert!(!percent_out_of_range("nope%")); // non-numeric raw
+        assert!(percent_out_of_range("1000%")); // >3 digit integer
+    }
+
+    #[test]
+    fn units_compatible_requires_source_unit_when_claim_has_one() {
+        assert!(units_compatible(None, Some("kg")));
+        assert!(units_compatible(None, None));
+        assert!(!units_compatible(Some("kg"), None));
+        assert!(units_compatible(Some("kg"), Some("kg")));
+        assert!(!units_compatible(Some("kg"), Some("luong")));
+    }
+
+    #[test]
     fn date_normalization_matches_across_formats() {
         assert_eq!(dates_in("2026-07-09"), vec!["2026-07-09"]);
         assert_eq!(dates_in("7/9/2026"), vec!["2026-07-09"]);
@@ -1892,44 +2307,45 @@ mod tests {
         assert_eq!(try_month_name_date(text, text.as_bytes(), 0), None);
     }
 
+    /// Builds [`NumericFacts`] with bare (unit-less) numbers for unit tests.
+    fn facts_nums(nums: &[&str]) -> NumericFacts {
+        NumericFacts {
+            numbers: nums.iter().map(|s| (*s).to_string()).collect(),
+            units: nums.iter().map(|_| None).collect(),
+            dates: vec![],
+        }
+    }
+
+    /// Builds [`NumericFacts`] with dates only.
+    fn facts_dates(dates: &[&str]) -> NumericFacts {
+        NumericFacts {
+            numbers: vec![],
+            units: vec![],
+            dates: dates.iter().map(|s| (*s).to_string()).collect(),
+        }
+    }
+
     #[test]
     fn numeric_guard_folds_source_date_year_for_bare_year_claims() {
         // A bare year in the claim counts as present when the source only
         // carries a full date containing that year.
-        let claim = NumericFacts {
-            numbers: vec!["2026".to_string()],
-            dates: vec![],
-        };
-        let source = NumericFacts {
-            numbers: vec![],
-            dates: vec!["2026-07-09".to_string()],
-        };
+        let claim = facts_nums(&["2026"]);
+        let source = facts_dates(&["2026-07-09"]);
         assert_eq!(numeric_guard(&claim, &source), (1, 0));
     }
 
     #[test]
     fn numeric_guard_flags_bare_year_absent_from_source() {
-        let claim = NumericFacts {
-            numbers: vec!["2030".to_string()],
-            dates: vec![],
-        };
-        let source = NumericFacts {
-            numbers: vec![],
-            dates: vec!["2026-07-09".to_string()],
-        };
+        let claim = facts_nums(&["2030"]);
+        let source = facts_dates(&["2026-07-09"]);
         assert_eq!(numeric_guard(&claim, &source), (1, 1));
     }
 
     #[test]
     fn numeric_guard_no_claim_numbers_is_nothing_to_check() {
-        let claim = NumericFacts {
-            numbers: vec![],
-            dates: vec![],
-        };
-        let source = NumericFacts {
-            numbers: vec!["1".to_string()],
-            dates: vec![],
-        };
+        let claim = facts_nums(&[]);
+        let mut source = facts_nums(&["1"]);
+        source.dates = vec![];
         assert_eq!(numeric_guard(&claim, &source), (0, 0));
     }
 

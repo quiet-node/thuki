@@ -1623,16 +1623,60 @@ pub const CITE_MAGNITUDE_ABBREVIATIONS: [(&str, u32); 7] = [
 ];
 
 /// Spelled-out magnitude words the citation audit's numeric-consistency guard
-/// recognizes after a digit run and whitespace (`615 billion`), paired with
-/// the power-of-ten exponent each one adds.
+/// recognizes after a digit run and whitespace (`615 billion`, `144500 triệu`),
+/// paired with the power-of-ten exponent each one adds. Includes Vietnamese
+/// scale words so a model double-count (`144500 triệu` against a source
+/// `144.500.000`) cannot pass as a digit match.
 ///
-/// Not user-tunable: fixed English magnitude vocabulary for a parsing guard,
-/// same rationale as [`CITE_MAGNITUDE_ABBREVIATIONS`].
-pub const CITE_MAGNITUDE_WORDS: [(&str, u32); 4] = [
+/// Not user-tunable: fixed multi-locale magnitude vocabulary for a parsing
+/// guard, same rationale as [`CITE_MAGNITUDE_ABBREVIATIONS`].
+pub const CITE_MAGNITUDE_WORDS: [(&str, u32); 10] = [
     ("thousand", 3),
     ("million", 6),
     ("billion", 9),
     ("trillion", 12),
+    ("triệu", 6),
+    ("trieu", 6),
+    ("tỷ", 9),
+    ("nghìn", 3),
+    ("ngàn", 3),
+    ("trăm", 2),
+];
+
+/// Unit suffixes the citation audit binds to a number after the digit run
+/// (optional whitespace). Longer patterns must appear before shorter ones that
+/// share a prefix (`/lượng` before `lượng`, `kilogram` before `kg`). Keys are
+/// interned unit ids used only for equality inside the guard.
+///
+/// Not user-tunable: fixed unit vocabulary for grounding, not a preference.
+/// Kept minimal to the units that live smoke already proved can ship wrong
+/// (money mass units, percent, temperature).
+pub const CITE_UNIT_SUFFIXES: [(&str, &str); 23] = [
+    // Compound currency+mass first so "đồng/kg" does not bind only "đồng".
+    ("đồng/lượng", "luong"),
+    ("dong/luong", "luong"),
+    ("đồng/kg", "kg"),
+    ("dong/kg", "kg"),
+    ("đ/lượng", "luong"),
+    ("đ/luong", "luong"),
+    ("/lượng", "luong"),
+    ("/luong", "luong"),
+    ("lượng", "luong"),
+    ("luong", "luong"),
+    ("đ/kg", "kg"),
+    ("/kg", "kg"),
+    ("kilogram", "kg"),
+    ("kg", "kg"),
+    ("°c", "celsius"),
+    ("℃", "celsius"),
+    // SEO widgets often write "33oC" without the degree sign.
+    ("oc", "celsius"),
+    ("đồng", "vnd"),
+    ("dong", "vnd"),
+    ("vnd", "vnd"),
+    ("ounce", "ounce"),
+    ("oz", "ounce"),
+    ("%", "percent"),
 ];
 
 /// English month names, lowercase, paired with their calendar month number.
