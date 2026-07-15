@@ -1,6 +1,7 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { formatQuotedText } from '../utils/formatQuote';
 import { LexicalAskBarInput } from './askbar/LexicalAskBarInput';
 import type { AskBarKeyHandlers } from './askbar/LexicalAskBarInput';
@@ -15,6 +16,11 @@ import type { DownloadStripStatus } from '../components/DownloadStatusStrip';
 import { AutoPrimeSkippedStrip } from '../components/AutoPrimeSkippedStrip';
 import type { AutoPrimeSkippedStripProps } from '../components/AutoPrimeSkippedStrip';
 import type { CapabilityMismatchMessage } from '../components/CapabilityMismatchStrip';
+import { VersionAnnouncement } from '../components/VersionAnnouncement';
+import {
+  V016_AUTO_SEARCH_ANNOUNCEMENT,
+  v016AutoSearchSettingsCta,
+} from '../config/versionAnnouncements';
 import type { AttachedImage } from '../types/image';
 import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
 import { COMMANDS } from '../config/commands';
@@ -250,6 +256,11 @@ interface AskBarViewProps {
 /**
  * Renders the persistent bottom input bar of the application.
  *
+ * Also hosts the first-use Auto search trust notice (elevated panel above the
+ * logo/input row). It shows until acknowledged, independent of
+ * `behavior.auto_search`; only the CTA label adapts to the toggle (Turn on vs
+ * Turn off in Settings). Notice is non-blocking: compose and send stay enabled.
+ *
  * Window dragging is handled by the application root container via event
  * bubbling - mousedown events from this component propagate up naturally.
  */
@@ -280,8 +291,45 @@ export function AskBarView({
   maxImages,
   onFirstKeystroke,
 }: AskBarViewProps) {
-  /** Quote display limits resolved from the managed AppConfig. */
-  const quote = useConfig().quote;
+  /** Quote limits + behavior flags from managed AppConfig. */
+  const { quote, behavior } = useConfig();
+
+  /**
+   * Local hide after Acknowledge so the card drops before config reload lands.
+   * Session-only; next mount re-reads `searchNoticeAcknowledged` from config.
+   */
+  const [noticeDismissedLocally, setNoticeDismissedLocally] = useState(false);
+
+  /**
+   * v0.16 version announcement: until acknowledged (or locally dismissed).
+   * CTA label adapts to current Auto search on/off; never silent-toggles.
+   */
+  const showVersionAnnouncement =
+    !behavior.searchNoticeAcknowledged && !noticeDismissedLocally;
+
+  /**
+   * Persist announcement dismiss (`search_notice_acknowledged`) and hide now.
+   */
+  const acknowledgeVersionAnnouncement = useCallback(() => {
+    setNoticeDismissedLocally(true);
+    void invoke('set_config_field', {
+      section: 'behavior',
+      key: 'search_notice_acknowledged',
+      value: true,
+    }).catch(() => {
+      // Write failed: roll back the optimistic hide so the acknowledgement is
+      // not silently lost. The notice returns and the user can retry.
+      setNoticeDismissedLocally(false);
+    });
+  }, []);
+
+  /**
+   * Open Settings → Behavior (Auto search highlighted). Does not flip
+   * auto_search; user must toggle there deliberately.
+   */
+  const openAnnouncementSettings = useCallback(() => {
+    void invoke('open_settings_to_behavior');
+  }, []);
 
   /** True when the UI should be locked - either generating or waiting for images. */
   const isBusy = isGenerating || isSubmitPending;
@@ -718,6 +766,49 @@ export function AskBarView({
           </motion.button>
         </div>
       </motion.div>
+      {/* Version announcement footer under the input row (design D slot). */}
+      <AnimatePresence initial={false}>
+        {showVersionAnnouncement ? (
+          <motion.div
+            key="version-announcement"
+            data-testid="version-announcement-slot"
+            className="border-t border-white/[0.05] bg-black/[0.15] px-3.5 py-2.5 overflow-hidden"
+            initial={false}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{
+              height: 0,
+              opacity: 0,
+              transition: {
+                height: { duration: 0.28, ease: [0.16, 1, 0.3, 1] },
+                opacity: { duration: 0.2, ease: 'easeOut' },
+              },
+            }}
+          >
+            <VersionAnnouncement
+              title={V016_AUTO_SEARCH_ANNOUNCEMENT.title}
+              body={V016_AUTO_SEARCH_ANNOUNCEMENT.body}
+              learn={{
+                ...V016_AUTO_SEARCH_ANNOUNCEMENT.learn,
+                testId: 'version-announcement-learn',
+              }}
+              actions={[
+                {
+                  label: 'Acknowledge',
+                  onClick: acknowledgeVersionAnnouncement,
+                  variant: 'primary',
+                  testId: 'version-announcement-primary',
+                },
+                {
+                  label: v016AutoSearchSettingsCta(behavior.autoSearch),
+                  onClick: openAnnouncementSettings,
+                  variant: 'secondary',
+                  testId: 'version-announcement-secondary',
+                },
+              ]}
+            />
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
 }

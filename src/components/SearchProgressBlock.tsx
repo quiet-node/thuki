@@ -44,6 +44,18 @@ export interface SearchProgressBlockProps {
    * isolation tests, where an unconditional pin is the intended behavior.
    */
   shouldAutoScroll?: () => boolean;
+  /**
+   * Auto-expand the source list while reading. When false (e.g. answer tokens
+   * started streaming), auto policy collapses the list to free room; the strip
+   * stays mounted and the user can re-expand via the chevron.
+   */
+  preferSourcesExpanded?: boolean;
+  /**
+   * After reasoning, answer-stream phases use inventory copy `Sources (N)`
+   * instead of replaying "Reading sources" / "Composing answer". Verify still
+   * uses the live verifying stage label. Three-dot strip stays either way.
+   */
+  postReasoningSourcesLabel?: boolean;
 }
 
 /**
@@ -74,12 +86,27 @@ export function liveSearchStageLabel(stage: SearchStage): string {
 /**
  * Builds the progress header: live stage copy, with `(N)` when sources exist.
  * Expand/collapse never rewrites this string; only stage advances do.
+ *
+ * During the verify stage the footer C3 pill owns the "Verifying sources..."
+ * copy, so the strip shows the neutral inventory `Sources (N)` instead to avoid
+ * repeating it, EXCEPT on a reasoned turn where the restored strip under
+ * Reasoning keeps the live verify label (deliberate; a handoff test locks it).
+ * Off verify, inventory is used only after reasoning so the restored strip does
+ * not re-claim "Reading sources" during the answer stream.
+ *
+ * @param stage - Live pipeline stage.
+ * @param sourceCount - Number of sources for the `(N)` suffix.
+ * @param postReasoning - Marks a reasoned turn's restored strip.
+ * @returns Header string for the strip toggle.
  */
-function searchProgressHeaderLabel(
+export function searchProgressHeaderLabel(
   stage: SearchStage,
   sourceCount: number,
+  postReasoning = false,
 ): string {
-  const stageLabel = liveSearchStageLabel(stage);
+  const isVerifying = Boolean(stage && stage.kind === 'verifying_sources');
+  const useInventory = isVerifying ? !postReasoning : postReasoning;
+  const stageLabel = useInventory ? 'Sources' : liveSearchStageLabel(stage);
   return sourceCount > 0 ? `${stageLabel} (${sourceCount})` : stageLabel;
 }
 
@@ -98,6 +125,8 @@ export function SearchProgressBlock({
   isSearching,
   isExiting = false,
   shouldAutoScroll,
+  preferSourcesExpanded = true,
+  postReasoningSourcesLabel = false,
 }: SearchProgressBlockProps) {
   const panelId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -108,11 +137,12 @@ export function SearchProgressBlock({
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
 
   /**
-   * Auto policy: expand when searching with sources. Collapse when no
-   * sources yet. User toggle wins until sources go empty or the turn resets.
+   * Auto policy: expand while searching with sources and the parent still
+   * prefers expansion (reading phase). Collapse when answer streaming starts
+   * (`preferSourcesExpanded` false) so the answer has room; user can re-open.
    * Handoff exit always forces collapsed so body AnimatePresence can run.
    */
-  const autoExpanded = isSearching && hasSources;
+  const autoExpanded = isSearching && hasSources && preferSourcesExpanded;
 
   // When a live search first gains sources (enters the auto-expand state),
   // drop any user override so the fresh batch re-opens the list. Done as a
@@ -120,11 +150,22 @@ export function SearchProgressBlock({
   // rather than a state-in-effect, so it lands in the same commit and never a
   // frame late. React bails out once the condition stops changing; the
   // `userExpanded !== null` guard keeps the setState converging.
-  const autoExpandActive = isSearching && !isExiting && hasSources;
+  const autoExpandActive =
+    isSearching && !isExiting && hasSources && preferSourcesExpanded;
   const prevAutoExpandActiveRef = useRef(autoExpandActive);
   if (prevAutoExpandActiveRef.current !== autoExpandActive) {
     prevAutoExpandActiveRef.current = autoExpandActive;
     if (autoExpandActive && userExpanded !== null) {
+      setUserExpanded(null);
+    }
+  }
+
+  // Answer started: clear any user-expanded override so the list auto-collapses
+  // for room; user can still re-expand via the chevron afterward.
+  const prevPreferExpandedRef = useRef(preferSourcesExpanded);
+  if (prevPreferExpandedRef.current !== preferSourcesExpanded) {
+    prevPreferExpandedRef.current = preferSourcesExpanded;
+    if (!preferSourcesExpanded && userExpanded !== null) {
       setUserExpanded(null);
     }
   }
@@ -148,8 +189,10 @@ export function SearchProgressBlock({
    */
   const pinProgressInView = useCallback((): void => {
     // Exit / collapse can still fire onAnimationComplete; skip pin then.
-    /* v8 ignore next -- defensive guard; expand path always has both true */
+    // Defensive guard; expand path always has both true.
+    /* v8 ignore start */
     if (!expandedRef.current || isExitingRef.current) return;
+    /* v8 ignore stop */
     // Honor ConversationView's manual-scroll gate: never yank a user who
     // scrolled up to read history back to the bottom. Absent gate (isolation
     // tests) pins unconditionally, preserving follow-live-output behavior.
@@ -175,7 +218,12 @@ export function SearchProgressBlock({
   }
 
   // Stage label always; count parens when sources exist. Collapse never swaps copy.
-  const headerLabel = searchProgressHeaderLabel(stage, sourceCount);
+  // Post-reasoning answer stream: "Sources (N)"; verify keeps stage copy.
+  const headerLabel = searchProgressHeaderLabel(
+    stage,
+    sourceCount,
+    postReasoningSourcesLabel,
+  );
 
   /**
    * Toggles expand/collapse. Only wired on the sources toggle button, which

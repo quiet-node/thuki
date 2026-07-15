@@ -15,6 +15,11 @@ import {
 } from 'lexical';
 import { AskBarView } from '../AskBarView';
 import type { AttachedImage } from '../../types/image';
+import {
+  ConfigProviderForTest,
+  DEFAULT_CONFIG,
+} from '../../contexts/ConfigContext';
+import { invoke } from '../../testUtils/mocks/tauri';
 
 function makeRef(): React.RefObject<HTMLDivElement | null> {
   return { current: null };
@@ -1978,6 +1983,145 @@ describe('AskBarView', () => {
       );
       typeText('h');
       await waitFor(() => expect(setQuery).toHaveBeenCalledWith('h'));
+    });
+  });
+
+  describe('search trust notice', () => {
+    beforeEach(() => {
+      invoke.mockClear();
+    });
+
+    /**
+     * Renders AskBarView with DEFAULT_CONFIG-style behavior overrides.
+     */
+    function renderWithBehavior(
+      behavior: Partial<(typeof DEFAULT_CONFIG)['behavior']>,
+      props: Partial<React.ComponentProps<typeof AskBarView>> = {},
+    ) {
+      return render(
+        <ConfigProviderForTest
+          value={{
+            ...DEFAULT_CONFIG,
+            behavior: {
+              ...DEFAULT_CONFIG.behavior,
+              ...behavior,
+            },
+          }}
+        >
+          <AskBarView
+            {...IMAGE_DEFAULTS}
+            query=""
+            setQuery={vi.fn()}
+            isChatMode={false}
+            isGenerating={false}
+            onSubmit={vi.fn()}
+            onCancel={vi.fn()}
+            inputRef={makeRef()}
+            {...props}
+          />
+        </ConfigProviderForTest>,
+      );
+    }
+
+    it('shows footer notice below the input row when autoSearch on and not acknowledged', () => {
+      renderWithBehavior({
+        autoSearch: true,
+        searchNoticeAcknowledged: false,
+      });
+      const notice = screen.getByTestId('version-announcement');
+      expect(notice).toBeInTheDocument();
+      expect(
+        screen.getByTestId('version-announcement-slot'),
+      ).toBeInTheDocument();
+      // Design D: below the logo/input row in DOM order.
+      const row = screen.getByTestId('ask-bar-row');
+      expect(
+        row.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    it('shows notice in chat mode when ask bar still mounts', () => {
+      renderWithBehavior(
+        { autoSearch: true, searchNoticeAcknowledged: false },
+        { isChatMode: true },
+      );
+      expect(screen.getByTestId('version-announcement')).toBeInTheDocument();
+    });
+
+    it('hides notice when searchNoticeAcknowledged is true', () => {
+      renderWithBehavior({
+        autoSearch: true,
+        searchNoticeAcknowledged: true,
+      });
+      expect(screen.queryByTestId('version-announcement')).toBeNull();
+    });
+
+    it('shows notice when autoSearch is false with Turn on in Settings CTA', () => {
+      renderWithBehavior({
+        autoSearch: false,
+        searchNoticeAcknowledged: false,
+      });
+      expect(screen.getByTestId('version-announcement')).toBeInTheDocument();
+      expect(screen.getByText('Turn on in Settings')).toBeInTheDocument();
+      expect(screen.queryByText('Turn off in Settings')).toBeNull();
+    });
+
+    it('Acknowledge persists search_notice_acknowledged and hides the notice', () => {
+      renderWithBehavior({
+        autoSearch: true,
+        searchNoticeAcknowledged: false,
+      });
+      fireEvent.click(screen.getByTestId('version-announcement-primary'));
+      expect(invoke).toHaveBeenCalledWith('set_config_field', {
+        section: 'behavior',
+        key: 'search_notice_acknowledged',
+        value: true,
+      });
+      expect(screen.queryByTestId('version-announcement')).toBeNull();
+    });
+
+    it('restores the notice when the acknowledgement write fails', async () => {
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'set_config_field') {
+          throw new Error('write failed');
+        }
+        return undefined;
+      });
+      renderWithBehavior({
+        autoSearch: true,
+        searchNoticeAcknowledged: false,
+      });
+      fireEvent.click(screen.getByTestId('version-announcement-primary'));
+      // The optimistic hide must roll back so the acknowledgement is not lost.
+      await waitFor(() =>
+        expect(screen.getByTestId('version-announcement')).toBeInTheDocument(),
+      );
+    });
+
+    it('Turn off in Settings opens Behavior deep-link without flipping auto_search', () => {
+      renderWithBehavior({
+        autoSearch: true,
+        searchNoticeAcknowledged: false,
+      });
+      fireEvent.click(screen.getByTestId('version-announcement-secondary'));
+      expect(invoke).toHaveBeenCalledWith('open_settings_to_behavior');
+      expect(invoke).not.toHaveBeenCalledWith(
+        'set_config_field',
+        expect.objectContaining({ key: 'auto_search' }),
+      );
+    });
+
+    it('does not disable compose or send while notice is visible', () => {
+      renderWithBehavior(
+        { autoSearch: true, searchNoticeAcknowledged: false },
+        { query: 'hello' },
+      );
+      expect(screen.getByTestId('version-announcement')).toBeInTheDocument();
+      const input = getInput();
+      expect(input.getAttribute('contenteditable')).toBe('true');
+      expect(
+        screen.getByRole('button', { name: 'Send message' }),
+      ).not.toBeDisabled();
     });
   });
 });

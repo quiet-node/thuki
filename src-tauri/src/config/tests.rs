@@ -17,11 +17,11 @@ use super::defaults::{
     DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT,
     DEFAULT_MAX_IMAGES, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
     DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
-    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX,
-    DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT,
-    DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL, PROVIDER_ID_BUILTIN,
-    PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
-    SLASH_COMMAND_PROMPT_APPENDIX,
+    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_SEARCH_NOTICE_ACKNOWLEDGED,
+    DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX, DEFAULT_TEXT_FONT_WEIGHT,
+    DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS,
+    DEFAULT_UPDATER_MANIFEST_URL, PROVIDER_ID_BUILTIN, PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN,
+    PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI, SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
 use super::loader::{compose_system_prompt, load_from_path, resolve};
@@ -1139,6 +1139,10 @@ fn behavior_section_default_matches_compiled_defaults() {
     assert_eq!(b.auto_replace, DEFAULT_AUTO_REPLACE);
     assert_eq!(b.auto_close, DEFAULT_AUTO_CLOSE);
     assert_eq!(b.auto_search, DEFAULT_AUTO_SEARCH);
+    assert_eq!(
+        b.search_notice_acknowledged,
+        DEFAULT_SEARCH_NOTICE_ACKNOWLEDGED
+    );
 }
 
 #[test]
@@ -1147,6 +1151,10 @@ fn app_config_default_includes_behavior_section_with_compiled_defaults() {
     assert_eq!(c.behavior.auto_replace, DEFAULT_AUTO_REPLACE);
     assert_eq!(c.behavior.auto_close, DEFAULT_AUTO_CLOSE);
     assert_eq!(c.behavior.auto_search, DEFAULT_AUTO_SEARCH);
+    assert_eq!(
+        c.behavior.search_notice_acknowledged,
+        DEFAULT_SEARCH_NOTICE_ACKNOWLEDGED
+    );
 }
 
 #[test]
@@ -1177,6 +1185,15 @@ fn behavior_auto_search_round_trips_through_load() {
 }
 
 #[test]
+fn behavior_search_notice_acknowledged_round_trips_through_load() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[behavior]\nsearch_notice_acknowledged = true\n").unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert!(loaded.behavior.search_notice_acknowledged);
+}
+
+#[test]
 fn toml_without_behavior_section_deserializes_to_defaults() {
     let dir = fresh_temp_dir();
     let path = config_path_in(&dir);
@@ -1197,6 +1214,10 @@ fn toml_without_behavior_section_deserializes_to_defaults() {
     assert_eq!(
         loaded.behavior.auto_search, DEFAULT_AUTO_SEARCH,
         "missing [behavior] section must deserialize to defaults via #[serde(default)]"
+    );
+    assert_eq!(
+        loaded.behavior.search_notice_acknowledged, DEFAULT_SEARCH_NOTICE_ACKNOWLEDGED,
+        "missing search_notice_acknowledged must default false"
     );
 }
 

@@ -94,13 +94,48 @@ describe('SearchProgressBlock', () => {
     );
   });
 
-  it('maps verifying_sources to the C3 label', () => {
+  it('uses the neutral inventory label during verify without postReasoning', () => {
+    // Non-reasoned verify: the footer C3 pill owns "Verifying sources...", so
+    // the strip shows the neutral inventory copy to avoid duplicating it.
     render(
       <SearchProgressBlock stage={{ kind: 'verifying_sources' }} isSearching />,
     );
     expect(screen.getByTestId('loading-label')).toHaveAttribute(
       'data-label',
-      'Verifying sources...',
+      'Sources',
+    );
+  });
+
+  it('uses Sources (N) with three-dot strip when postReasoningSourcesLabel is set', () => {
+    render(
+      <SearchProgressBlock
+        stage={{ kind: 'composing' }}
+        isSearching
+        sources={SOURCES}
+        preferSourcesExpanded={false}
+        postReasoningSourcesLabel
+      />,
+    );
+    expect(screen.getByTestId('request-status-strip')).toBeInTheDocument();
+    expect(screen.getByTestId('loading-label')).toHaveAttribute(
+      'data-label',
+      'Sources (3)',
+    );
+  });
+
+  it('keeps Verifying sources label when postReasoning and stage is verifying', () => {
+    render(
+      <SearchProgressBlock
+        stage={{ kind: 'verifying_sources' }}
+        isSearching
+        sources={SOURCES}
+        preferSourcesExpanded={false}
+        postReasoningSourcesLabel
+      />,
+    );
+    expect(screen.getByTestId('loading-label')).toHaveAttribute(
+      'data-label',
+      'Verifying sources... (3)',
     );
   });
 
@@ -136,6 +171,70 @@ describe('SearchProgressBlock', () => {
       'loading-stage-title',
     );
     expect(chevron).toHaveStyle({ transform: 'rotate(180deg)' });
+  });
+
+  it('auto-collapses the source list when preferSourcesExpanded is false', () => {
+    const { rerender } = render(
+      <SearchProgressBlock
+        stage={{ kind: 'reading_sources' }}
+        isSearching
+        sources={SOURCES}
+        preferSourcesExpanded
+      />,
+    );
+    expect(screen.getByTestId('search-progress-body')).toBeInTheDocument();
+
+    rerender(
+      <SearchProgressBlock
+        stage={{ kind: 'composing' }}
+        isSearching
+        sources={SOURCES}
+        preferSourcesExpanded={false}
+      />,
+    );
+    // Strip stays; list collapses so answer streaming has room.
+    expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('search-progress-body'),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId('search-progress-toggle')).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  });
+
+  it('clears a user-expanded override when preferSourcesExpanded flips to false', () => {
+    const { rerender } = render(
+      <SearchProgressBlock
+        stage={{ kind: 'reading_sources' }}
+        isSearching
+        sources={SOURCES}
+        preferSourcesExpanded
+      />,
+    );
+    expect(screen.getByTestId('search-progress-body')).toBeInTheDocument();
+
+    // Collapse then re-expand so userExpanded is non-null (true), not only
+    // auto-expanded. Prefer true→false must clear that override without
+    // going through the autoExpandActive path that also nulls userExpanded.
+    fireEvent.click(screen.getByTestId('search-progress-toggle'));
+    expect(
+      screen.queryByTestId('search-progress-body'),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('search-progress-toggle'));
+    expect(screen.getByTestId('search-progress-body')).toBeInTheDocument();
+
+    rerender(
+      <SearchProgressBlock
+        stage={{ kind: 'composing' }}
+        isSearching
+        sources={SOURCES}
+        preferSourcesExpanded={false}
+      />,
+    );
+    expect(
+      screen.queryByTestId('search-progress-body'),
+    ).not.toBeInTheDocument();
   });
 
   it('caps the sources list with max-height and inner overflow scroll', () => {

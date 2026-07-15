@@ -168,6 +168,12 @@ export function SettingsWindow() {
     () => setPendingModelsView(null),
     [],
   );
+  /**
+   * Behavior deep-link highlight counter. 0 = idle; each deep-link bumps so
+   * PointingWiggle remounts even when still "highlighting" (true→true no-op
+   * was skipping the animation on repeat Turn on/off in Settings clicks).
+   */
+  const [autoSearchHighlightNonce, setAutoSearchHighlightNonce] = useState(0);
   const [savedVisible, setSavedVisible] = useState(false);
   const [marker, setMarker] = useState<CorruptMarker | null>(null);
   const [markerDismissed, setMarkerDismissed] = useState(false);
@@ -238,6 +244,18 @@ export function SettingsWindow() {
     const unlistenPromise = listen('thuki://settings-show-providers', () => {
       setActiveTab('general');
       setPendingModelsView('providers');
+    });
+    return () => {
+      void unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
+
+  // Version announcement Settings CTA opens Behavior and restarts the Auto
+  // search PointingWiggle (nonce bump forces a fresh animation every click).
+  useEffect(() => {
+    const unlistenPromise = listen('thuki://settings-show-behavior', () => {
+      setActiveTab('behavior');
+      setAutoSearchHighlightNonce((n) => n + 1);
     });
     return () => {
       void unlistenPromise.then((unlisten) => unlisten());
@@ -448,6 +466,10 @@ export function SettingsWindow() {
                     config={config}
                     resyncToken={resyncToken}
                     onSaved={handleSaved}
+                    highlightAutoSearchNonce={autoSearchHighlightNonce}
+                    onHighlightAutoSearchDone={() =>
+                      setAutoSearchHighlightNonce(0)
+                    }
                   />
                 ) : null}
                 {activeTab === 'display' ? (

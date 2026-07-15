@@ -49,7 +49,12 @@ function buildConfig(
       max_display_chars: 200,
       max_context_length: 4000,
     },
-    behavior: { auto_replace: false, auto_close: false, auto_search: true },
+    behavior: {
+      auto_replace: false,
+      auto_close: false,
+      auto_search: true,
+      search_notice_acknowledged: false,
+    },
     debug: { trace_enabled: false },
   };
 }

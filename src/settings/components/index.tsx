@@ -57,6 +57,7 @@ export function Section({
 
 export function SettingRow({
   label,
+  labelAccessory,
   helper,
   error,
   vertical = false,
@@ -65,6 +66,11 @@ export function SettingRow({
   children,
 }: {
   label: string;
+  /**
+   * Optional decoration rendered after the label text inside the label
+   * element (e.g. animated underline). Not part of the accessible name.
+   */
+  labelAccessory?: ReactNode;
   /** Long-form description rendered in a `?` tooltip next to the label. */
   helper?: string;
   error?: ConfigError | null;
@@ -84,7 +90,10 @@ export function SettingRow({
     >
       <div className={styles.rowLabelGroup}>
         <label id={labelId} className={styles.rowLabel}>
-          {label}
+          <span className={styles.rowLabelText}>
+            {label}
+            {labelAccessory}
+          </span>
         </label>
         {helper ? (
           <Tooltip label={helper} multiline placement={tooltipPlacement}>

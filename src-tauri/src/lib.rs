@@ -290,6 +290,11 @@ const SETTINGS_SHOW_DISCOVER_EVENT: &str = "thuki://settings-show-discover";
 /// active provider back to the built-in engine.
 const SETTINGS_SHOW_PROVIDERS_EVENT: &str = "thuki://settings-show-providers";
 
+/// Frontend event that asks the Settings window to jump to the Behavior tab
+/// and briefly highlight the Auto search row. Emitted by
+/// `open_settings_to_behavior` from the first-use web-search notice.
+const SETTINGS_SHOW_BEHAVIOR_EVENT: &str = "thuki://settings-show-behavior";
+
 /// Logical dimensions of the onboarding window (centered). The permission
 /// and intro steps use the compact base size; the model-picker step widens
 /// to fit the three-column comparison matrix. Steps smaller than the frame
@@ -802,12 +807,14 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
 }
 
 /// Centers the settings window dead-center on its monitor (horizontally and
-/// vertically). Called every time the settings window is shown so it spawns at
-/// the center regardless of the OS-default spawn position or where a previous
-/// session left it; it is not called again while open, so the user can drag it
-/// freely without it snapping back.
+/// vertically). No-op when Settings is already visible so a fresh open spawns
+/// centered; re-open / deep-link while already shown preserves wherever the
+/// user dragged the panel.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn position_settings_window(window: &tauri::WebviewWindow) {
+    if window.is_visible().unwrap_or(false) {
+        return;
+    }
     const SETTINGS_WIDTH: f64 = 760.0;
 
     let monitor = window
@@ -904,6 +911,8 @@ fn activate_app() {
 ///
 /// Idempotent: invoking while Settings is already visible re-focuses without
 /// double-mounting the React tree (close handler hides instead of destroying).
+/// When already visible, the window is **not** re-centered so a user who
+/// dragged Settings keeps their placement; only a fresh show is centered.
 ///
 /// Falls back to raw WebviewWindow show/focus if the panel handle is
 /// unavailable (e.g., if init_settings_panel failed at startup).
@@ -920,6 +929,8 @@ fn show_settings_window(app_handle: &tauri::AppHandle) {
             Ok(panel) => {
                 let _ = app_handle.run_on_main_thread(move || {
                     if let Some(win) = window {
+                        // No-op when already open (deep-link from notice
+                        // should not snap the dragged panel back to center).
                         position_settings_window(&win);
                     }
                     panel.show_and_make_key();
@@ -962,6 +973,15 @@ fn open_settings_window(app_handle: tauri::AppHandle) {
 fn open_settings_to_providers(app_handle: tauri::AppHandle) {
     show_settings_window(&app_handle);
     let _ = app_handle.emit(SETTINGS_SHOW_PROVIDERS_EVENT, ());
+}
+
+/// Opens Settings on the Behavior tab and asks the UI to flash the Auto search
+/// row. Called from the first-use search trust notice ("Turn off in Settings").
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn open_settings_to_behavior(app_handle: tauri::AppHandle) {
+    show_settings_window(&app_handle);
+    let _ = app_handle.emit(SETTINGS_SHOW_BEHAVIOR_EVENT, ());
 }
 
 /// Closes (hides) the Settings window from the frontend and drops the Dock icon.
@@ -3093,6 +3113,7 @@ pub fn run() {
             is_builtin_announced,
             open_settings_window,
             open_settings_to_providers,
+            open_settings_to_behavior,
             hide_settings_window,
             #[cfg(not(coverage))]
             warmup::warm_up_model,

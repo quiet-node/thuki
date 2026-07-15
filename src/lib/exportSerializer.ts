@@ -244,6 +244,10 @@ function renderSources(message: Message): string | null {
   sources.forEach((source, index) => {
     const title = source.title || source.url;
     lines.push(formatMarkdownSourceLine(index + 1, title, source.url));
+    // Licence / provider credit (Open-Meteo, Wikipedia) under that source row.
+    if (source.attribution) {
+      lines.push(`   ${source.attribution}`);
+    }
   });
   return lines.join('\n');
 }

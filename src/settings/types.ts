@@ -52,6 +52,8 @@ export interface RawAppConfig {
     auto_close: boolean;
     /** When true, built-in auto-search may open the web on plain turns. */
     auto_search: boolean;
+    /** When true, first-use web-search notice has been dismissed forever. */
+    search_notice_acknowledged: boolean;
   };
   debug: {
     trace_enabled: boolean;

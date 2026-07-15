@@ -66,6 +66,33 @@ describe('splitHonestFailureNote', () => {
       note: HONEST_FAILURE_NOTE_BODY,
     });
   });
+
+  const LEGACY_NOTE_BODY =
+    "Thuki found sources but could not verify the answer's citations against the page text. Treat specific claims carefully, or try rephrasing or a larger model in Settings.";
+
+  it('accepts the pre-shortening legacy body, restyled with the current note', () => {
+    const content = `Fake number 999.\n\n${LEGACY_NOTE_BODY}`;
+    expect(splitHonestFailureNote(content)).toEqual({
+      body: 'Fake number 999.',
+      note: HONEST_FAILURE_NOTE_BODY,
+    });
+  });
+
+  it('returns note-only for pre-shortening legacy-only content', () => {
+    expect(splitHonestFailureNote(LEGACY_NOTE_BODY)).toEqual({
+      body: '',
+      note: HONEST_FAILURE_NOTE_BODY,
+    });
+  });
+
+  it('accepts the pre-shortening legacy body wrapped in markdown italics', () => {
+    const wrapped = `*${LEGACY_NOTE_BODY}*`;
+    const content = `Claim text.\n\n${wrapped}`;
+    expect(splitHonestFailureNote(content)).toEqual({
+      body: 'Claim text.',
+      note: HONEST_FAILURE_NOTE_BODY,
+    });
+  });
 });
 
 describe('searchFailNoteBody', () => {

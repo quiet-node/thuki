@@ -13,6 +13,7 @@ import { COMMANDS, SCREEN_CAPTURE_PLACEHOLDER } from '../config/commands';
 import type { EngineErrorKind, SearchFailReason } from '../hooks/useModel';
 import type { SearchResultPreview, SearchStage } from '../types/search';
 import { SearchProgressBlock } from './SearchProgressBlock';
+import { SourceAttribution } from './SourceAttribution';
 import { avatarColor, domainOf } from '../utils/domainAvatar';
 import { cleanForRender } from '../utils/sanitizeAssistantContent';
 import {
@@ -270,7 +271,7 @@ export function ChatBubble({
   const isUser = role === 'user';
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const reduceMotion = useReducedMotion();
-  const quote = useConfig().quote;
+  const { quote } = useConfig();
   // Render-time defense for legacy assistant content that may carry
   // special turn-boundary tokens leaked by older Ollama versions or
   // mis-tuned models. Backend now strips these on write, so the scrub is
@@ -288,19 +289,33 @@ export function ChatBubble({
   const isVerifyingSources = searchStage?.kind === 'verifying_sources';
   const hasSearchSources = Boolean(searchSources && searchSources.length > 0);
   /**
-   * Reasoning or answer body has started. Triggers sequential handoff:
-   * search chrome exits, then Reasoning (if any) enters. After exit
-   * completes, search stays gone (Option D). Sources remain via footer.
+   * Live reasoning only (pending or streaming think tokens). Not residual
+   * `thinkingContent` after thinking ends.
    */
-  const handedOffFromSearch = Boolean(
-    thinkingContent || isThinkingPending || displayContent,
-  );
+  const reasoningLive = Boolean(isThinkingPending || isThinking);
   /**
-   * Pure search only: retrieve/read/compose while no reasoning/answer yet.
-   * False during verifying (C3 pill) and after handoff signal.
+   * This turn produced (or is producing) reasoning chrome. Used to stack
+   * restored search under Reasoning and to prefer inventory "Sources (N)"
+   * during answer stream (verify keeps live verifying label).
    */
-  const showLiveSearch =
-    isSearching && !isVerifyingSources && !handedOffFromSearch;
+  const hadReasoning = Boolean(thinkingContent || isThinkingPending);
+  /**
+   * Exit retention: gen ended with sources, or temporary demotion while
+   * reasoning is live. Sources strip stays mounted through verify so the
+   * list is available until footer chips take over at Done.
+   */
+  const handedOffFromSearch =
+    hasSearchSources && (!isSearching || reasoningLive);
+  /**
+   * Live search while generating, except during live reasoning (chip under
+   * Reasoning). Restores after thinking for answer stream and verify.
+   */
+  const showLiveSearch = isSearching && !reasoningLive;
+  /**
+   * After reasoning ends, answer-stream header is `Sources (N)` with dots.
+   * Verify still uses the normal verifying stage label.
+   */
+  const postReasoningSourcesLabel = hadReasoning && !reasoningLive;
 
   /**
    * Exit-retention phase. `exiting` holds until outer fade finishes
@@ -327,9 +342,14 @@ export function ChatBubble({
   // unmount so outer fade can run (AnimatePresence only exits removed kids).
   const renderSearchProgress =
     phase === 'live' || (phase === 'exiting' && !exitUnmount);
-  /** Delay Reasoning until search exit finishes when we were showing search. */
+  /**
+   * Show reasoning whenever think chrome exists. Only delay enter while search
+   * is exiting *into* live reasoning (demotion). Never hide a finished
+   * Reasoning block during the final search→footer handoff (that flicker).
+   */
   const showReasoning =
-    Boolean(thinkingContent || isThinkingPending) && phase !== 'exiting';
+    Boolean(thinkingContent || isThinkingPending) &&
+    !(phase === 'exiting' && reasoningLive);
 
   const handoffFadeS = reduceMotion ? 0.01 : SEARCH_HANDOFF_FADE_S;
   const reasoningEnterS = reduceMotion ? 0.01 : REASONING_HANDOFF_ENTER_S;
@@ -517,6 +537,76 @@ export function ChatBubble({
     void invoke('open_url', { url: target.getAttribute('data-url')! });
   };
 
+  /**
+   * Motion-wrapped search progress for AnimatePresence. Rendered above the
+   * answer when the turn never reasoned; under Reasoning when it did.
+   */
+  const searchProgressSlot = renderSearchProgress ? (
+    <motion.div
+      key="search-progress"
+      data-testid="search-progress-exit-wrap"
+      initial={false}
+      animate={{ opacity: 1 }}
+      exit={{
+        opacity: 0,
+        transition: { duration: handoffFadeS, ease: 'easeOut' },
+      }}
+    >
+      <SearchProgressBlock
+        stage={searchStage}
+        sources={searchSources}
+        isSearching={isSearching || phase === 'exiting'}
+        isExiting={phase === 'exiting'}
+        shouldAutoScroll={shouldAutoScroll}
+        // Expand while reading; collapse when answer tokens start so the
+        // stream has room. Strip stays until generation ends.
+        preferSourcesExpanded={!displayContent}
+        postReasoningSourcesLabel={postReasoningSourcesLabel}
+      />
+    </motion.div>
+  ) : null;
+
+  /**
+   * AnimatePresence host for the search slot. Shared exit-complete path
+   * regardless of stack position (above vs below Reasoning).
+   *
+   * @returns Presence tree, empty when the slot is null and no exit pending.
+   */
+  const searchProgressPresence = (
+    <AnimatePresence initial={false} onExitComplete={onSearchExitComplete}>
+      {searchProgressSlot}
+    </AnimatePresence>
+  );
+
+  /**
+   * Reasoning handoff enter animation when think chrome is visible.
+   *
+   * @returns Motion-wrapped ReasoningBlock, or null.
+   */
+  const reasoningSlot = showReasoning ? (
+    <motion.div
+      key="reasoning-handoff"
+      data-testid="reasoning-handoff-enter"
+      initial={{ opacity: 0, y: 4 }}
+      animate={{
+        opacity: 1,
+        y: 0,
+        transition: {
+          duration: reasoningEnterS,
+          ease: [0.33, 1, 0.68, 1],
+        },
+      }}
+    >
+      <ReasoningBlock
+        thinkingContent={thinkingContent}
+        isPending={isThinkingPending ?? false}
+        pendingLabel={pendingLabel}
+        isThinking={isThinking ?? false}
+        searchSources={hasSearchSources ? searchSources : undefined}
+      />
+    </motion.div>
+  ) : null;
+
   return (
     <motion.div
       variants={bubbleVariants}
@@ -581,53 +671,10 @@ export function ChatBubble({
           onClick={onAnswerClick}
         >
           <div className="text-sm leading-relaxed select-text py-1">
-            <AnimatePresence
-              initial={false}
-              onExitComplete={onSearchExitComplete}
-            >
-              {renderSearchProgress ? (
-                <motion.div
-                  key="search-progress"
-                  data-testid="search-progress-exit-wrap"
-                  initial={false}
-                  animate={{ opacity: 1 }}
-                  exit={{
-                    opacity: 0,
-                    transition: { duration: handoffFadeS, ease: 'easeOut' },
-                  }}
-                >
-                  <SearchProgressBlock
-                    stage={searchStage}
-                    sources={searchSources}
-                    isSearching={isSearching || phase === 'exiting'}
-                    isExiting={phase === 'exiting'}
-                    shouldAutoScroll={shouldAutoScroll}
-                  />
-                </motion.div>
-              ) : null}
-            </AnimatePresence>
-            {showReasoning ? (
-              <motion.div
-                key="reasoning-handoff"
-                data-testid="reasoning-handoff-enter"
-                initial={{ opacity: 0, y: 4 }}
-                animate={{
-                  opacity: 1,
-                  y: 0,
-                  transition: {
-                    duration: reasoningEnterS,
-                    ease: [0.33, 1, 0.68, 1],
-                  },
-                }}
-              >
-                <ReasoningBlock
-                  thinkingContent={thinkingContent}
-                  isPending={isThinkingPending ?? false}
-                  pendingLabel={pendingLabel}
-                  isThinking={isThinking ?? false}
-                />
-              </motion.div>
-            ) : null}
+            {/* Timeline: pure search on top; reasoned turns put search under Reasoning. */}
+            {!hadReasoning ? searchProgressPresence : null}
+            {reasoningSlot}
+            {hadReasoning ? searchProgressPresence : null}
             {errorKind ? (
               <ErrorCard
                 kind={errorKind}
@@ -684,33 +731,49 @@ export function ChatBubble({
                     <p className="text-[10px] text-white/25 uppercase tracking-wider mb-1.5">
                       Sources
                     </p>
-                    <div className="flex flex-col gap-0.5">
+                    <div className="flex flex-col gap-1">
                       {searchSources!.map((src, i) => {
                         const n = i + 1;
+                        const domain = domainOf(src.url);
+                        /* v8 ignore start */
+                        const letter = (domain[0] ?? '?').toUpperCase();
+                        /* v8 ignore stop */
+                        const bg = avatarColor(domain);
                         return (
-                          <button
-                            key={src.url}
-                            type="button"
-                            title={src.title || src.url}
-                            data-citation={n}
-                            data-url={src.url}
-                            onMouseEnter={() => activateCitation(String(n))}
-                            onMouseLeave={() => activateCitation(null)}
-                            onClick={() =>
-                              void invoke('open_url', { url: src.url })
-                            }
-                            className="source-row flex items-baseline gap-3 w-full text-left cursor-pointer py-0.5 group"
-                          >
-                            <span className="source-row-num shrink-0 w-5 text-xs text-white/25 tabular-nums">
-                              {n}.
-                            </span>
-                            <span className="source-row-title flex-1 min-w-0 truncate text-sm text-white/60">
-                              {src.title || src.url}
-                            </span>
-                            <span className="source-row-domain shrink-0 text-xs text-white/30 truncate max-w-[45%]">
-                              {domainOf(src.url)}
-                            </span>
-                          </button>
+                          <div key={src.url} className="flex flex-col gap-0.5">
+                            <button
+                              type="button"
+                              title={src.title || src.url}
+                              data-citation={n}
+                              data-url={src.url}
+                              onMouseEnter={() => activateCitation(String(n))}
+                              onMouseLeave={() => activateCitation(null)}
+                              onClick={() =>
+                                void invoke('open_url', { url: src.url })
+                              }
+                              className="source-row flex items-center gap-2 w-full text-left cursor-pointer py-0.5 group"
+                            >
+                              <span className="source-row-num shrink-0 w-5 text-xs text-white/25 tabular-nums">
+                                {n}.
+                              </span>
+                              <span
+                                aria-hidden
+                                className="source-row-avatar shrink-0 h-4.5 w-4.5 rounded-full inline-flex items-center justify-center text-[9px] font-semibold text-white/90"
+                                style={{ background: bg }}
+                              >
+                                {letter}
+                              </span>
+                              <span className="source-row-title flex-1 min-w-0 truncate text-sm text-white/60 group-hover:text-white/85">
+                                {src.title || src.url}
+                              </span>
+                              <span className="source-row-domain shrink-0 text-xs text-white/30 truncate max-w-[45%]">
+                                {domain}
+                              </span>
+                            </button>
+                            {src.attribution ? (
+                              <SourceAttribution markdown={src.attribution} />
+                            ) : null}
+                          </div>
                         );
                       })}
                     </div>

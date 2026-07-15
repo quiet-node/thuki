@@ -24,6 +24,7 @@
 use crate::config::defaults::{SPORTS_LEAGUE_MAP, SPORTS_SCHEDULE_WINDOW_DAYS};
 use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
 use crate::websearch::assemble::SourceBlock;
+use crate::websearch::THUKI_USER_AGENT;
 
 /// ESPN's public (unofficial, keyless) scoreboard API base. Path segments are
 /// `{sport}/{league}` per [`SPORTS_LEAGUE_MAP`], e.g.
@@ -115,7 +116,7 @@ pub(crate) fn scoreboard_request(sport: &str, league: &str, today: &str) -> Http
     HttpRequest {
         method: HttpMethod::Get,
         url,
-        headers: Vec::new(),
+        headers: vec![("User-Agent".to_string(), THUKI_USER_AGENT.to_string())],
         form: Vec::new(),
     }
 }
@@ -283,6 +284,10 @@ fn format_event(
     local_zone: Option<&str>,
 ) -> Option<String> {
     let name = event.get("name")?.as_str()?.to_string();
+    // Hostile score shapes (object/array) must not half-parse to "-".
+    if event_has_hostile_score(event) {
+        return None;
+    }
     let competitors = event
         .get("competitions")?
         .get(0)?
@@ -325,11 +330,47 @@ fn format_event(
     Some(format!("{name}: {scoreline} ({detail}){date_suffix}"))
 }
 
+/// Whether `json` has the critical top-level ESPN scoreboard shape: an object
+/// with an `events` array. Per-event drift is skipped by [`format_event`]
+/// (lossless), so a single non-object element does not fail the whole
+/// scoreboard. An empty array is accepted (a valid off-season shape); a
+/// non-empty array with no object elements at all is treated as a clean miss
+/// so we never half-parse a non-scoreboard body.
+pub(crate) fn scoreboard_shape_ok(json: &serde_json::Value) -> bool {
+    let Some(events) = json.get("events") else {
+        return false;
+    };
+    let Some(arr) = events.as_array() else {
+        return false;
+    };
+    arr.is_empty() || arr.iter().any(|event| event.is_object())
+}
+
+/// True when any competitor score on this event is a hostile type (object or
+/// array). Those would previously collapse to `"-"` and look like a real
+/// missing pre-game score; the event is skipped instead.
+fn event_has_hostile_score(event: &serde_json::Value) -> bool {
+    let Some(comps) = event
+        .get("competitions")
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+        .and_then(|c| c.get("competitors"))
+        .and_then(|c| c.as_array())
+    else {
+        return false;
+    };
+    comps.iter().any(|row| {
+        row.get("score")
+            .is_some_and(|s| !(s.is_string() || s.is_number() || s.is_null()))
+    })
+}
+
 /// Parses a scoreboard response body into the league's display label (name,
 /// plus the season year when present) and the block's formatted lines. Returns
-/// `None` only when the body is not JSON or carries no `events` field at all; an
-/// `events` array that parses to zero usable lines (e.g. an off-season slate)
-/// returns `Some((label, vec![]))`, which the caller treats as a miss.
+/// `None` when the body is not JSON, fails the shape assert, or carries no
+/// `events` field at all; an `events` array that parses to zero usable lines
+/// (e.g. an off-season slate) returns `Some((label, vec![]))`, which the caller
+/// treats as a miss.
 ///
 /// The returned line list leads with up to two kinds of computed summary line,
 /// then the per-event listing:
@@ -358,6 +399,9 @@ pub(crate) fn parse_scoreboard(
     local_zone: Option<&str>,
 ) -> Option<(String, Vec<String>)> {
     let json: serde_json::Value = serde_json::from_str(body).ok()?;
+    if !scoreboard_shape_ok(&json) {
+        return None;
+    }
     let league_name = json
         .get("leagues")
         .and_then(|l| l.get(0))
@@ -611,6 +655,10 @@ mod tests {
             req.url,
             "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard?dates=20260710-20260717"
         );
+        assert!(req
+            .headers
+            .iter()
+            .any(|(k, v)| k == "User-Agent" && v == THUKI_USER_AGENT));
     }
 
     #[test]
@@ -996,6 +1044,72 @@ mod tests {
             None
         )
         .is_none());
+    }
+
+    #[test]
+    fn scoreboard_shape_ok_accepts_good_fixtures() {
+        let good: serde_json::Value = serde_json::from_str(WORLD_CUP_FIXTURE).unwrap();
+        assert!(scoreboard_shape_ok(&good));
+        let nfl: serde_json::Value = serde_json::from_str(NFL_SCHEDULED_FIXTURE).unwrap();
+        assert!(scoreboard_shape_ok(&nfl));
+        // Empty events array is a valid (off-season) shape.
+        assert!(scoreboard_shape_ok(&serde_json::json!({"events": []})));
+        // Per-event drift still has top-level shape (events array of objects).
+        assert!(scoreboard_shape_ok(&serde_json::json!({
+            "events": [{"name": "A at B", "competitions": {"competitors": []}}]
+        })));
+    }
+
+    #[test]
+    fn scoreboard_shape_ok_rejects_non_object_events_or_missing_events() {
+        assert!(!scoreboard_shape_ok(&serde_json::json!({})));
+        assert!(!scoreboard_shape_ok(&serde_json::json!({
+            "events": "not an array"
+        })));
+        assert!(!scoreboard_shape_ok(&serde_json::json!({
+            "events": [1, 2, 3]
+        })));
+    }
+
+    #[test]
+    fn scoreboard_shape_ok_accepts_mixed_array_with_some_non_object_events() {
+        // One drifted non-object event alongside valid ones is a shape miss
+        // for that element, not a reason to reject the whole scoreboard:
+        // format_event drops the bad element per-event during parsing.
+        assert!(scoreboard_shape_ok(&serde_json::json!({
+            "events": [{"name": "A at B"}, 1, {"name": "C at D"}]
+        })));
+    }
+
+    #[test]
+    fn parse_scoreboard_drops_single_non_object_event_from_mixed_array() {
+        let body = r#"{"leagues":[{"name":"X"}],"events":[
+            1,
+            {"name":"Good Game","status":{"type":{"state":"post","shortDetail":"Final"}},"competitions":[{"competitors":[{"team":{"displayName":"Home"},"score":"1"},{"team":{"displayName":"Away"},"score":"0"}]}]}
+        ]}"#;
+        let (league, lines) = parse_scoreboard(body, None).unwrap();
+        assert_eq!(league, "X");
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("Good Game"));
+    }
+
+    #[test]
+    fn parse_scoreboard_skips_hostile_score_shape_not_half_parsed() {
+        // Hostile score object on one event: that event is skipped; a clean
+        // sibling event still surfaces (never a "-" standing in for a score).
+        let body = r#"{"leagues":[{"name":"X"}],"events":[
+            {"name":"Bad Score","status":{"type":{"state":"post","shortDetail":"Final"}},"competitions":[{"competitors":[{"team":{"displayName":"A"},"score":{"value":2}},{"team":{"displayName":"B"},"score":"0"}]}]},
+            {"name":"Good Game","status":{"type":{"state":"post","shortDetail":"Final"}},"competitions":[{"competitors":[{"team":{"displayName":"Home"},"score":"1"},{"team":{"displayName":"Away"},"score":"0"}]}]}
+        ]}"#;
+        let (league, lines) = parse_scoreboard(body, None).unwrap();
+        assert_eq!(league, "X");
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("Good Game"));
+        assert!(!lines[0].contains("Bad Score"));
+        // All-hostile board → empty lines (caller treats as miss).
+        let only_bad = r#"{"leagues":[{"name":"X"}],"events":[{"name":"Bad","status":{"type":{"state":"post","shortDetail":"Final"}},"competitions":[{"competitors":[{"team":{"displayName":"A"},"score":{"value":2}},{"team":{"displayName":"B"},"score":"0"}]}]}]}"#;
+        let (_, empty) = parse_scoreboard(only_bad, None).unwrap();
+        assert!(empty.is_empty());
     }
 
     #[test]

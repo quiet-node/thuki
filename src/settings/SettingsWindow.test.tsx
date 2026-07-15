@@ -59,6 +59,7 @@ const SAMPLE: RawAppConfig = {
     auto_replace: false,
     auto_close: false,
     auto_search: true,
+    search_notice_acknowledged: false,
   },
   debug: {
     trace_enabled: false,
@@ -155,6 +156,53 @@ describe('SettingsWindow', () => {
     ).toBeInTheDocument();
 
     unmount();
+    await act(async () => {
+      await Promise.resolve();
+    });
+  });
+
+  it('jumps to Behavior and highlights Auto search on show-behavior event', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { unmount } = render(<SettingsWindow />);
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: /Models/ })).toBeInTheDocument(),
+    );
+
+    await act(async () => {
+      emitTauriEvent('thuki://settings-show-behavior', undefined);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole('tab', { name: /Behavior/ })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    const row = screen.getByTestId('auto-search-row');
+    expect(row).toHaveAttribute('data-highlight', 'true');
+    expect(screen.getByText('Auto search')).toBeInTheDocument();
+
+    // Highlight auto-clears after POINTING_WIGGLE_MS (~7.2s).
+    expect(screen.getByTestId('auto-search-wiggle')).toBeInTheDocument();
+    await act(async () => {
+      vi.advanceTimersByTime(7500);
+    });
+    expect(screen.getByTestId('auto-search-row')).not.toHaveAttribute(
+      'data-highlight',
+    );
+
+    // Second deep-link while still on Behavior restarts the wiggle (nonce bump).
+    await act(async () => {
+      emitTauriEvent('thuki://settings-show-behavior', undefined);
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('auto-search-wiggle')).toBeInTheDocument();
+    expect(screen.getByTestId('auto-search-row')).toHaveAttribute(
+      'data-highlight',
+      'true',
+    );
+
+    unmount();
+    vi.useRealTimers();
     await act(async () => {
       await Promise.resolve();
     });

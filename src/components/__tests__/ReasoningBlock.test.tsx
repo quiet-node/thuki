@@ -296,4 +296,73 @@ describe('ReasoningBlock', () => {
     const textContainer = screen.getByText(/Normal text/).closest('div');
     expect(textContainer?.className).not.toContain('text-text-secondary');
   });
+
+  it('renders a sources chip under the summary when searchSources is non-empty', () => {
+    render(
+      <ReasoningBlock
+        thinkingContent="Using the web"
+        isThinking
+        searchSources={[{ title: 'ESPN', url: 'https://espn.com/score' }]}
+      />,
+    );
+    expect(screen.getByTestId('reasoning-sources-chip')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('reasoning-sources-chip-label'),
+    ).toHaveTextContent('1 source');
+    expect(screen.getByLabelText('1 source')).toBeInTheDocument();
+  });
+
+  it('uses plural chip label for multiple sources while thinking', () => {
+    render(
+      <ReasoningBlock
+        thinkingContent="Using the web"
+        isThinking
+        searchSources={[
+          { title: 'A', url: 'https://a.example/x' },
+          { title: 'B', url: 'https://b.example/y' },
+        ]}
+      />,
+    );
+    expect(
+      screen.getByTestId('reasoning-sources-chip-label'),
+    ).toHaveTextContent('2 sources');
+  });
+
+  it('hides the sources chip once reasoning is done (footer owns sources)', () => {
+    render(
+      <ReasoningBlock
+        thinkingContent="Using the web"
+        isThinking={false}
+        searchSources={[{ title: 'A', url: 'https://a.example/x' }]}
+      />,
+    );
+    expect(screen.queryByTestId('reasoning-sources-chip')).toBeNull();
+  });
+
+  it('omits the sources chip when searchSources is empty or missing', () => {
+    const { rerender } = render(
+      <ReasoningBlock thinkingContent="No web" isThinking />,
+    );
+    expect(screen.queryByTestId('reasoning-sources-chip')).toBeNull();
+
+    rerender(
+      <ReasoningBlock thinkingContent="No web" isThinking searchSources={[]} />,
+    );
+    expect(screen.queryByTestId('reasoning-sources-chip')).toBeNull();
+  });
+
+  it('shows the sources chip while pending when sources are already known', () => {
+    render(
+      <ReasoningBlock
+        isThinking={false}
+        isPending
+        pendingLabel="Starting…"
+        searchSources={[{ title: 'A', url: 'https://example.com/a' }]}
+      />,
+    );
+    expect(screen.getByTestId('reasoning-pending')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('reasoning-sources-chip-label'),
+    ).toHaveTextContent('1 source');
+  });
 });

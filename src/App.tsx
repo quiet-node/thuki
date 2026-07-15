@@ -1496,11 +1496,13 @@ function App() {
     // `morphPhase` from 'expanding' to 'collapsing' while that expand's pending
     // async window-frame write is still in flight, desyncing window geometry.
     // Mirrors handleRestore's `!== 'minimized'` guard.
-    /* v8 ignore next -- unreachable in the jsdom harness: the framer-motion
-       mock fires onAnimationComplete on mount, so the morph never lingers in a
-       non-idle, non-minimized phase for a click to land on. Real in the
-       browser, where the ~360ms expand tween runs with the button mounted. */
+    // Unreachable in the jsdom harness: the framer-motion mock fires
+    // onAnimationComplete on mount, so the morph never lingers in a non-idle,
+    // non-minimized phase for a click to land on. Real in the browser, where
+    // the ~360ms expand tween runs with the button mounted.
+    /* v8 ignore start */
     if (morphPhaseRef.current !== 'idle') return;
+    /* v8 ignore stop */
     growsUpwardRef.current = false;
     setGrowsUpward(false);
     // Dismiss any open chat-header popovers before collapsing — they

@@ -7,8 +7,11 @@
  */
 
 /**
- * Extracts a bare hostname from a URL for source rows. Strips a leading
- * `www.` prefix; falls back to the raw input if URL parsing fails.
+ * Extracts a bare hostname from a URL for source rows in ASCII / Punycode
+ * form (`xn--…` for IDN hosts). The URL constructor IDNA-encodes the host, so
+ * internationalized labels never render as lookalike Unicode in citation
+ * chrome. Strips a leading `www.` prefix; falls back to the raw input if URL
+ * parsing fails.
  */
 export function domainOf(url: string): string {
   try {

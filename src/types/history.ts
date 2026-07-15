@@ -61,7 +61,14 @@ export interface SaveMessagePayload {
   quoted_text: string | null;
   image_paths: string[] | null;
   thinking_content: string | null;
-  search_sources: { title: string; url: string }[] | null;
+  search_sources:
+    | {
+        title: string;
+        url: string;
+        /** Optional licence / provider credit; mirrors `SearchResultPreview`. */
+        attribution?: string;
+      }[]
+    | null;
   /** Ollama model slug that produced this response. Null for user messages
    *  and messages from pre-migration conversations. */
   model_name: string | null;

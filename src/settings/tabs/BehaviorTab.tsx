@@ -6,6 +6,11 @@
  * always available regardless of those toggles.
  */
 
+import { useEffect } from 'react';
+import {
+  PointingWiggle,
+  POINTING_WIGGLE_MS,
+} from '../../components/PointingWiggle';
 import { Section, Toggle } from '../components';
 import { SaveField } from '../components/SaveField';
 import { configHelp } from '../configHelpers';
@@ -15,6 +20,14 @@ interface BehaviorTabProps {
   config: RawAppConfig;
   resyncToken: number;
   onSaved: (next: RawAppConfig) => void;
+  /**
+   * Deep-link highlight generation. 0 = no wiggle; any positive value shows
+   * PointingWiggle keyed by this nonce so each deep-link restarts the CSS
+   * animation even if a previous highlight had not finished.
+   */
+  highlightAutoSearchNonce?: number;
+  /** Called after the highlight animation completes so the parent can clear. */
+  onHighlightAutoSearchDone?: () => void;
 }
 
 /**
@@ -31,35 +44,61 @@ const TEXT_REPLACEMENT_HELP =
  * @param config Current raw app config from the Settings host.
  * @param resyncToken Bumps when the host reloads config from disk so fields re-seed.
  * @param onSaved Called with the resolved config after a successful field write.
+ * @param highlightAutoSearchNonce Deep-link generation; 0 off, else wiggle + key.
+ * @param onHighlightAutoSearchDone Fired when the highlight timeline ends.
  */
 export function BehaviorTab({
   config,
   resyncToken,
   onSaved,
+  highlightAutoSearchNonce = 0,
+  onHighlightAutoSearchDone,
 }: BehaviorTabProps) {
+  const highlightActive = highlightAutoSearchNonce > 0;
+
+  useEffect(() => {
+    if (!highlightActive) return;
+    const t = window.setTimeout(() => {
+      onHighlightAutoSearchDone?.();
+    }, POINTING_WIGGLE_MS);
+    return () => window.clearTimeout(t);
+  }, [highlightAutoSearchNonce, highlightActive, onHighlightAutoSearchDone]);
+
   return (
     <>
       <Section heading="Web search">
-        <SaveField
-          section="behavior"
-          fieldKey="auto_search"
-          label="Auto search"
-          helper={configHelp('behavior', 'auto_search')}
-          initialValue={config.behavior.auto_search}
-          resyncToken={resyncToken}
-          onSaved={onSaved}
-          rightAlign
-          // Top of the panel: open the help below the "?" so it is not clipped
-          // by the traffic-lights / window edge (Text Replacement uses "top").
-          tooltipPlacement="bottom"
-          render={(value, setValue) => (
-            <Toggle
-              checked={value}
-              onChange={setValue}
-              ariaLabel="Auto search the web when needed without /search"
-            />
-          )}
-        />
+        <div
+          data-testid="auto-search-row"
+          data-highlight={highlightActive ? 'true' : undefined}
+        >
+          <SaveField
+            section="behavior"
+            fieldKey="auto_search"
+            label="Auto search"
+            labelAccessory={
+              <PointingWiggle
+                key={highlightAutoSearchNonce}
+                active={highlightActive}
+                testId="auto-search-wiggle"
+              />
+            }
+            helper={configHelp('behavior', 'auto_search')}
+            initialValue={config.behavior.auto_search}
+            resyncToken={resyncToken}
+            onSaved={onSaved}
+            rightAlign
+            // Top of the panel: open the help below the "?" so it is not clipped
+            // by the traffic-lights / window edge (Text Replacement uses "top").
+            tooltipPlacement="bottom"
+            render={(value, setValue) => (
+              <Toggle
+                checked={value}
+                onChange={setValue}
+                ariaLabel="Auto search the web when needed without /search"
+              />
+            )}
+          />
+        </div>
       </Section>
 
       <Section heading="Text Replacement" helper={TEXT_REPLACEMENT_HELP}>

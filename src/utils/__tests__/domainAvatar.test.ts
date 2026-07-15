@@ -20,6 +20,18 @@ describe('domainOf', () => {
   it('falls back to the raw input when URL parsing fails', () => {
     expect(domainOf('not-a-url')).toBe('not-a-url');
   });
+
+  it('returns Punycode (xn--) for IDN hosts so homographs cannot look latin', () => {
+    expect(domainOf('https://münchen.example/path')).toBe(
+      'xn--mnchen-3ya.example',
+    );
+    expect(domainOf('https://xn--mnchen-3ya.example/')).toBe(
+      'xn--mnchen-3ya.example',
+    );
+    const cyrillic = domainOf('https://аррle.com/x');
+    expect(cyrillic.startsWith('xn--')).toBe(true);
+    expect(cyrillic).not.toBe('apple.com');
+  });
 });
 
 describe('domainHue', () => {

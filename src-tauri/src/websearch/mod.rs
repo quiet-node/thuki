@@ -56,9 +56,31 @@ pub mod sports;
 pub mod weather;
 pub mod writer;
 
-/// The registration host of a URL, or an empty string when it does not parse.
-/// Shared by the engine's per-domain result cap and the writer's per-source
-/// trust label.
+/// Honest product User-Agent for keyless API verticals (weather, news, sports).
+/// Identifies Thuki with version + homepage so operators can contact us. Not used
+/// on SERP scrapers: DuckDuckGo/Mojeek block non-browser UAs on `/html` instantly
+/// (browser UA stays deliberate there; see `engine::BROWSER_USER_AGENT`).
+pub(crate) const THUKI_USER_AGENT: &str =
+    concat!("Thuki/", env!("CARGO_PKG_VERSION"), " (+https://thuki.app)");
+
+/// Attribution required by Open-Meteo's CC BY 4.0 licence. Markdown link so the
+/// "Weather data by Open-Meteo.com" hyperlink is present. Single source of
+/// truth: the weather vertical embeds it in the writer context and the UI
+/// attribution projection ([`crate::commands::source_attribution_for_url`])
+/// renders the same link for open-meteo source URLs in the Sources footer.
+pub(crate) const OPEN_METEO_ATTRIBUTION: &str =
+    "[Weather data by Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0)";
+
+/// Attribution required by Wikipedia's CC BY-SA 4.0 licence, with a hyperlink to
+/// the licence text. Single source of truth shared by the encyclopedia
+/// vertical's writer context and the UI attribution projection.
+pub(crate) const WIKIPEDIA_ATTRIBUTION: &str =
+    "Source: Wikipedia ([CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/))";
+
+/// The registration host of a URL in ASCII / Punycode form (`xn--…`), or an
+/// empty string when it does not parse. The `url` crate IDNA-encodes domain
+/// hosts on parse, so internationalized labels never surface as lookalike
+/// Unicode in citation trust labels, credibility matching, or per-domain caps.
 pub(crate) fn domain_of(url: &str) -> String {
     url::Url::parse(url)
         .ok()
@@ -103,6 +125,31 @@ mod tests {
             "sub.example.com"
         );
         assert_eq!(super::domain_of("not a url"), "");
+    }
+
+    #[test]
+    fn domain_of_returns_punycode_for_idn_hosts() {
+        // Unicode IDN labels must surface as ASCII xn-- form so a homograph
+        // cannot look like a trusted latin domain in citation chrome.
+        assert_eq!(
+            super::domain_of("https://münchen.example/path"),
+            "xn--mnchen-3ya.example"
+        );
+        assert_eq!(
+            super::domain_of("https://xn--mnchen-3ya.example/"),
+            "xn--mnchen-3ya.example"
+        );
+        // Cyrillic lookalike host → punycode, never latin "apple.com".
+        let host = super::domain_of("https://аррle.com/x");
+        assert!(host.starts_with("xn--"), "got {host}");
+        assert_ne!(host, "apple.com");
+    }
+
+    #[test]
+    fn thuki_user_agent_identifies_product_with_version_and_contact() {
+        assert!(super::THUKI_USER_AGENT.starts_with("Thuki/"));
+        assert!(super::THUKI_USER_AGENT.contains("(+https://thuki.app)"));
+        assert!(super::THUKI_USER_AGENT.contains(env!("CARGO_PKG_VERSION")));
     }
 
     #[test]

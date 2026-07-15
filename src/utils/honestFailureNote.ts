@@ -7,6 +7,15 @@ import type { SearchFailReason } from '../hooks/useModel';
  * peels it off and styles it as the L3 hairline rail.
  */
 export const HONEST_FAILURE_NOTE_BODY =
+  "Thuki found sources but could not verify the answer's citations against the page text. Treat specific claims carefully.";
+
+/**
+ * Pre-shortening variant of {@link HONEST_FAILURE_NOTE_BODY}, persisted in
+ * message content written by older backend builds. Recognized so those
+ * messages still split and style as the L3 hairline rail; re-styled with the
+ * current body text once matched.
+ */
+const LEGACY_HONEST_FAILURE_NOTE_BODY =
   "Thuki found sources but could not verify the answer's citations against the page text. Treat specific claims carefully, or try rephrasing or a larger model in Settings.";
 
 /**
@@ -55,8 +64,14 @@ export function splitHonestFailureNote(
   }
 
   const trimmed = content.trimEnd();
-  // Current backend: plain body. Legacy: markdown italic wrappers.
-  const suffixes = [HONEST_FAILURE_NOTE_BODY, `*${HONEST_FAILURE_NOTE_BODY}*`];
+  // Current backend: plain body. Legacy: markdown italic wrappers, plus the
+  // pre-shortening body text (also in both plain and wrapped form).
+  const suffixes = [
+    HONEST_FAILURE_NOTE_BODY,
+    `*${HONEST_FAILURE_NOTE_BODY}*`,
+    LEGACY_HONEST_FAILURE_NOTE_BODY,
+    `*${LEGACY_HONEST_FAILURE_NOTE_BODY}*`,
+  ];
 
   for (const suffix of suffixes) {
     if (trimmed === suffix) {

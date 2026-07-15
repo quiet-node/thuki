@@ -24,6 +24,12 @@ interface SaveFieldProps<TValue extends Primitive> {
   section: string;
   fieldKey: string;
   label: string;
+  /**
+   * Optional decoration after the label text (e.g. deep-link highlight
+   * squiggle under Auto search). Kept outside the plain string label so
+   * aria-labels stay readable.
+   */
+  labelAccessory?: ReactNode;
   /** Long-form description shown in the `?` tooltip next to the label. */
   helper?: string;
   vertical?: boolean;
@@ -49,6 +55,7 @@ export function SaveField<TValue extends Primitive>({
   section,
   fieldKey,
   label,
+  labelAccessory,
   helper,
   vertical,
   tooltipPlacement,
@@ -78,6 +85,7 @@ export function SaveField<TValue extends Primitive>({
   return (
     <SettingRow
       label={label}
+      labelAccessory={labelAccessory}
       helper={helper}
       vertical={vertical}
       tooltipPlacement={tooltipPlacement}

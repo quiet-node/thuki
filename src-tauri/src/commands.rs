@@ -1640,13 +1640,30 @@ pub enum StreamChunk {
 
 /// Citation metadata for one resolved web source, sent to the frontend to
 /// render the numbered sources list. The source's extracted text stays
-/// server-side (it lives only in the writer prompt), so only the citation index
-/// and its origin cross the IPC boundary.
+/// server-side (it lives only in the writer prompt), so only the citation index,
+/// origin, and any required licence attribution cross the IPC boundary.
 #[derive(Clone, Serialize)]
 pub struct SourceMeta {
     pub index: usize,
     pub url: String,
     pub title: String,
+    /// Optional markdown attribution line (licence / provider credit). Present
+    /// for verticals that require a user-visible hyperlink (Open-Meteo, Wikipedia).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<String>,
+}
+
+/// Licence / provider credit for known attribution-required verticals, keyed by
+/// registration host. Markdown so the Sources footer can render real hyperlinks.
+pub(crate) fn source_attribution_for_url(url: &str) -> Option<String> {
+    let domain = crate::websearch::domain_of(url);
+    if domain == "open-meteo.com" || domain.ends_with(".open-meteo.com") {
+        return Some(crate::websearch::OPEN_METEO_ATTRIBUTION.to_string());
+    }
+    if domain == "wikipedia.org" || domain.ends_with(".wikipedia.org") {
+        return Some(crate::websearch::WIKIPEDIA_ATTRIBUTION.to_string());
+    }
+    None
 }
 
 /// Projects the assembled source blocks to the citation metadata the UI needs.
@@ -1657,6 +1674,7 @@ pub(crate) fn source_metas(blocks: &[crate::websearch::assemble::SourceBlock]) -
             index: block.index,
             url: block.url.clone(),
             title: block.title.clone(),
+            attribution: source_attribution_for_url(&block.url),
         })
         .collect()
 }
@@ -2866,6 +2884,32 @@ mod tests {
         assert_eq!(metas[0].index, 1);
         assert_eq!(metas[0].url, "https://a/");
         assert_eq!(metas[1].title, "B");
+        assert!(metas[0].attribution.is_none());
+    }
+
+    #[test]
+    fn source_metas_includes_required_attribution_for_weather_and_wiki() {
+        let blocks = vec![
+            crate::websearch::assemble::SourceBlock {
+                index: 1,
+                url: "https://open-meteo.com/".into(),
+                title: "Weather".into(),
+                text: "report".into(),
+            },
+            crate::websearch::assemble::SourceBlock {
+                index: 2,
+                url: "https://en.wikipedia.org/wiki/Photosynthesis".into(),
+                title: "Photosynthesis".into(),
+                text: "extract".into(),
+            },
+        ];
+        let metas = source_metas(&blocks);
+        let weather = metas[0].attribution.as_deref().unwrap();
+        assert!(weather.contains("Weather data by Open-Meteo.com"));
+        assert!(weather.contains("https://open-meteo.com/"));
+        let wiki = metas[1].attribution.as_deref().unwrap();
+        assert!(wiki.contains("CC BY-SA 4.0"));
+        assert!(wiki.contains("creativecommons.org/licenses/by-sa/4.0"));
     }
 
     fn collect_chunks() -> (Arc<StdMutex<Vec<StreamChunk>>>, impl Fn(StreamChunk)) {

@@ -68,7 +68,12 @@ const BASE_CONFIG: RawAppConfig = {
     max_display_chars: 300,
     max_context_length: 4096,
   },
-  behavior: { auto_replace: false, auto_close: false, auto_search: true },
+  behavior: {
+    auto_replace: false,
+    auto_close: false,
+    auto_search: true,
+    search_notice_acknowledged: false,
+  },
   debug: { trace_enabled: false },
 };
 

@@ -74,6 +74,7 @@ const CONFIG: RawAppConfig = {
     auto_replace: false,
     auto_close: false,
     auto_search: true,
+    search_notice_acknowledged: false,
   },
   debug: {
     trace_enabled: false,
@@ -541,6 +542,7 @@ describe('BehaviorTab', () => {
             auto_replace: false,
             auto_close: false,
             auto_search: false,
+            search_notice_acknowledged: false,
           },
         }}
         resyncToken={0}
@@ -550,6 +552,54 @@ describe('BehaviorTab', () => {
     expect(
       screen.getByRole('switch', { name: AUTO_SEARCH_NAME }),
     ).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('highlights Auto search with wiggle then clears via timeout callback', () => {
+    vi.useFakeTimers();
+    const onDone = vi.fn();
+    const { unmount, rerender } = render(
+      <BehaviorTab
+        config={CONFIG}
+        resyncToken={0}
+        onSaved={() => {}}
+        highlightAutoSearchNonce={1}
+        onHighlightAutoSearchDone={onDone}
+      />,
+    );
+    expect(screen.getByTestId('auto-search-row')).toHaveAttribute(
+      'data-highlight',
+      'true',
+    );
+    expect(screen.getByTestId('auto-search-wiggle')).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(7200);
+    });
+    expect(onDone).toHaveBeenCalledTimes(1);
+    // Nonce bump restarts highlight without needing false first.
+    rerender(
+      <BehaviorTab
+        config={CONFIG}
+        resyncToken={0}
+        onSaved={() => {}}
+        highlightAutoSearchNonce={2}
+        onHighlightAutoSearchDone={onDone}
+      />,
+    );
+    expect(screen.getByTestId('auto-search-wiggle')).toBeInTheDocument();
+    // Optional callback absent: timeout still safe.
+    unmount();
+    render(
+      <BehaviorTab
+        config={CONFIG}
+        resyncToken={0}
+        onSaved={() => {}}
+        highlightAutoSearchNonce={1}
+      />,
+    );
+    act(() => {
+      vi.advanceTimersByTime(7200);
+    });
+    vi.useRealTimers();
   });
 
   it('renders the Text Replacement section with the Auto-replace toggle', () => {
@@ -572,6 +622,7 @@ describe('BehaviorTab', () => {
             auto_replace: true,
             auto_close: false,
             auto_search: true,
+            search_notice_acknowledged: false,
           },
         }}
         resyncToken={0}
@@ -604,6 +655,7 @@ describe('BehaviorTab', () => {
             auto_replace: false,
             auto_close: true,
             auto_search: true,
+            search_notice_acknowledged: false,
           },
         }}
         resyncToken={0}

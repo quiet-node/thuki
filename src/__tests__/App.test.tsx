@@ -4,6 +4,7 @@ import {
   fireEvent,
   act,
   waitFor,
+  within,
 } from '@testing-library/react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import App from '../App';
@@ -1995,7 +1996,12 @@ describe('App', () => {
       <ConfigProviderForTest
         value={{
           ...DEFAULT_CONFIG,
-          behavior: { autoReplace: true, autoClose: false, autoSearch: true },
+          behavior: {
+            autoReplace: true,
+            autoClose: false,
+            autoSearch: true,
+            searchNoticeAcknowledged: false,
+          },
         }}
       >
         <App />
@@ -2048,7 +2054,12 @@ describe('App', () => {
       <ConfigProviderForTest
         value={{
           ...DEFAULT_CONFIG,
-          behavior: { autoReplace: true, autoClose: false, autoSearch: true },
+          behavior: {
+            autoReplace: true,
+            autoClose: false,
+            autoSearch: true,
+            searchNoticeAcknowledged: false,
+          },
         }}
       >
         <App />
@@ -2097,7 +2108,12 @@ describe('App', () => {
       <ConfigProviderForTest
         value={{
           ...DEFAULT_CONFIG,
-          behavior: { autoReplace: true, autoClose: true, autoSearch: true },
+          behavior: {
+            autoReplace: true,
+            autoClose: true,
+            autoSearch: true,
+            searchNoticeAcknowledged: false,
+          },
         }}
       >
         <App />
@@ -2147,7 +2163,12 @@ describe('App', () => {
       <ConfigProviderForTest
         value={{
           ...DEFAULT_CONFIG,
-          behavior: { autoReplace: true, autoClose: true, autoSearch: true },
+          behavior: {
+            autoReplace: true,
+            autoClose: true,
+            autoSearch: true,
+            searchNoticeAcknowledged: false,
+          },
         }}
       >
         <App />
@@ -2195,7 +2216,12 @@ describe('App', () => {
       <ConfigProviderForTest
         value={{
           ...DEFAULT_CONFIG,
-          behavior: { autoReplace: false, autoClose: false, autoSearch: true },
+          behavior: {
+            autoReplace: false,
+            autoClose: false,
+            autoSearch: true,
+            searchNoticeAcknowledged: false,
+          },
         }}
       >
         <App />
@@ -2263,7 +2289,12 @@ describe('App', () => {
       <ConfigProviderForTest
         value={{
           ...DEFAULT_CONFIG,
-          behavior: { autoReplace: false, autoClose: false, autoSearch: true },
+          behavior: {
+            autoReplace: false,
+            autoClose: false,
+            autoSearch: true,
+            searchNoticeAcknowledged: false,
+          },
         }}
       >
         <App />
@@ -10801,8 +10832,12 @@ describe('App', () => {
 
       // Stage 2: the confirmed "Acknowledge" click clears the strip
       // synchronously (asserted WITHOUT awaiting the invoke round trip) and
-      // fires the force-prime.
-      fireEvent.click(screen.getByRole('button', { name: 'Acknowledge' }));
+      // fires the force-prime. Scope to the strip: VersionAnnouncement also
+      // ships an "Acknowledge" primary CTA on first paint.
+      const strip = screen.getByTestId('auto-prime-skipped-strip');
+      fireEvent.click(
+        within(strip).getByRole('button', { name: 'Acknowledge' }),
+      );
       expect(
         screen.queryByTestId('auto-prime-skipped-strip'),
       ).not.toBeInTheDocument();

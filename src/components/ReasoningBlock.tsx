@@ -1,7 +1,14 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { RequestStatusStrip } from './RequestStatusStrip';
+import { avatarColor, domainOf } from '../utils/domainAvatar';
+
+/** Minimal source shape for the under-reasoning chip (url drives avatar). */
+export interface ReasoningSourceChipItem {
+  title: string;
+  url: string;
+}
 
 export interface ReasoningBlockProps {
   thinkingContent?: string;
@@ -14,6 +21,12 @@ export interface ReasoningBlockProps {
    * this component has no cue of its own.
    */
   pendingLabel?: string | null;
+  /**
+   * Web sources handed off from the search strip (design D). When non-empty,
+   * a compact count chip with domain avatars sits under the reasoning summary
+   * so dual live strips never stack. Full list stays in the message footer.
+   */
+  searchSources?: ReasoningSourceChipItem[];
 }
 
 const REASONING_LABEL = 'Reasoning...';
@@ -27,20 +40,77 @@ const REASONING_LABEL = 'Reasoning...';
 const SUMMARY_ROW_CLASS = 'flex items-center gap-2 p-0 text-left w-full';
 
 /**
+ * Compact sources chip under the reasoning summary after search demotes.
+ * Caller only mounts this when `sources` is non-empty.
+ *
+ * @param sources - Search hits to summarize (count + up to 3 domain avatars).
+ * @returns Chip node with avatars and a count label.
+ */
+function ReasoningSourcesChip({
+  sources,
+}: {
+  sources: ReasoningSourceChipItem[];
+}): ReactNode {
+  const count = sources.length;
+  const label = count === 1 ? '1 source' : `${count} sources`;
+  return (
+    <div
+      data-testid="reasoning-sources-chip"
+      className="mt-1 ml-[22px] inline-flex items-center gap-1.5 text-[11px] text-text-secondary/50"
+      aria-label={label}
+    >
+      <span aria-hidden className="inline-flex items-center">
+        {sources.slice(0, 3).map((src, i) => {
+          const domain = domainOf(src.url);
+          /* v8 ignore start */
+          const letter = (domain[0] ?? '?').toUpperCase();
+          /* v8 ignore stop */
+          const bg = avatarColor(domain);
+          return (
+            <span
+              key={src.url}
+              className="shrink-0 h-4 w-4 rounded-full inline-flex items-center justify-center text-[8px] font-semibold text-white/90"
+              style={{
+                background: bg,
+                border: '1.5px solid var(--avatar-ring, rgba(26,26,26,1))',
+                marginLeft: i === 0 ? 0 : -5,
+              }}
+            >
+              {letter}
+            </span>
+          );
+        })}
+      </span>
+      <span data-testid="reasoning-sources-chip-label">{label}</span>
+    </div>
+  );
+}
+
+/**
  * Collapsible reasoning section rendered above an AI response.
  *
  * While `isThinking` is true the block shows an animated "Reasoning..." label.
  * When reasoning completes the label changes to "Reasoning". The user
  * can click to toggle expansion at any time to see the reasoning content.
+ * Optional `searchSources` render a quiet chip under the summary (design D).
  */
 export function ReasoningBlock({
   thinkingContent,
   isThinking,
   isPending = false,
   pendingLabel = null,
+  searchSources,
 }: ReasoningBlockProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const hasThinkingContent = Boolean(thinkingContent?.trim());
+  /**
+   * Chip only while reasoning is the live strip (pending or streaming).
+   * Once done, the message footer owns source chips; keep the summary quiet.
+   */
+  const sourcesForChip =
+    (isThinking || isPending) && searchSources && searchSources.length > 0
+      ? searchSources
+      : null;
 
   if (!hasThinkingContent && !isPending) return null;
 
@@ -66,6 +136,9 @@ export function ReasoningBlock({
         <div data-testid="reasoning-pending" className={SUMMARY_ROW_CLASS}>
           <RequestStatusStrip label={pendingLabel} accessory={chevronSpacer} />
         </div>
+        {sourcesForChip ? (
+          <ReasoningSourcesChip sources={sourcesForChip} />
+        ) : null}
       </div>
     );
   }
@@ -112,6 +185,9 @@ export function ReasoningBlock({
           </>
         )}
       </button>
+      {sourcesForChip ? (
+        <ReasoningSourcesChip sources={sourcesForChip} />
+      ) : null}
 
       {/* Expandable content */}
       <AnimatePresence>

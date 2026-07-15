@@ -668,6 +668,12 @@
   font-weight: 500;
   color: var(--t1);
 }
+/* Inline label text + optional PointingWiggle labelAccessory. */
+.rowLabelText {
+  position: relative;
+  display: inline-block;
+  padding-bottom: 6px;
+}
 .infoBtn {
   display: inline-flex;
   align-items: center;

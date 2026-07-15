@@ -892,9 +892,13 @@ describe('ChatBubble', () => {
       const el = screen.getByTestId('search-sources');
       const buttons = el.querySelectorAll('button');
       expect(buttons).toHaveLength(2);
-      // Row numbers [1.] [2.]
+      // Citation index + domain letter avatar (maps to [n] in the answer).
       expect(buttons[0].textContent).toContain('1.');
       expect(buttons[1].textContent).toContain('2.');
+      expect(buttons[0].querySelector('.source-row-avatar')?.textContent).toBe(
+        'D',
+      );
+      expect(buttons[1].querySelector('.source-row-avatar')).toBeTruthy();
       expect(buttons[0].textContent).toContain('Rust Docs');
       expect(buttons[1].textContent).toContain('Tokio');
       // Hover tooltip via `title` attribute shows title only (not domain)
@@ -1350,9 +1354,10 @@ describe('ChatBubble', () => {
       expect(
         screen.queryByTestId('search-progress-block'),
       ).not.toBeInTheDocument();
+      // No search turn: idle (done is only after a completed search handoff).
       expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
         'data-search-handoff-phase',
-        'done',
+        'idle',
       );
     });
 
@@ -1373,9 +1378,7 @@ describe('ChatBubble', () => {
       );
     });
 
-    it('skips exit when thinking mounts without a prior live search (Option D)', () => {
-      // First paint already handed off: never entered `live`, so no exit
-      // retention and Reasoning shows immediately.
+    it('never mounts search trust notice on the bubble (ask bar owns it)', () => {
       render(
         <ChatBubble
           role="assistant"
@@ -1383,61 +1386,61 @@ describe('ChatBubble', () => {
           index={0}
           isSearching
           searchStage={{ kind: 'searching' }}
-          thinkingContent="thoughts"
-          isThinking={false}
         />,
       );
-      expect(
-        screen.queryByTestId('search-progress-block'),
-      ).not.toBeInTheDocument();
-      expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
-      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
-        'data-search-handoff-phase',
-        'done',
-      );
+      expect(screen.queryByTestId('version-announcement')).toBeNull();
+      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
     });
 
-    it('skips exit when isThinkingPending mounts without prior live search', () => {
+    it('still omits search trust notice after search finishes with sources', () => {
       render(
         <ChatBubble
           role="assistant"
-          content=""
+          content="It is sunny in Tokyo [1]"
           index={0}
-          isSearching
-          searchStage={{ kind: 'composing' }}
-          isThinkingPending
+          isSearching={false}
+          searchSources={[
+            {
+              title: 'Weather for Tokyo',
+              url: 'https://open-meteo.com/',
+            },
+          ]}
         />,
       );
-      expect(
-        screen.queryByTestId('search-progress-block'),
-      ).not.toBeInTheDocument();
-      expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
-      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
-        'data-search-handoff-phase',
-        'done',
-      );
+      expect(screen.queryByTestId('version-announcement')).toBeNull();
+      expect(screen.queryByTestId('search-progress-block')).toBeNull();
     });
 
-    it('skips exit when answer mounts without prior live search', () => {
-      render(
+    it('renders source attribution links in the Sources footer', () => {
+      const { container } = render(
         <ChatBubble
           role="assistant"
-          content="Partial answer"
+          content="Weather is fine [1]"
           index={0}
-          isSearching
-          searchStage={{ kind: 'composing' }}
+          searchSources={[
+            {
+              title: 'Weather for Tokyo',
+              url: 'https://open-meteo.com/',
+              attribution:
+                '[Weather data by Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0)',
+            },
+          ]}
         />,
       );
-      expect(
-        screen.queryByTestId('search-progress-block'),
-      ).not.toBeInTheDocument();
-      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
-        'data-search-handoff-phase',
-        'done',
+      openSources(container);
+      expect(screen.getByTestId('source-attribution').textContent).toContain(
+        'Weather data by Open-Meteo.com',
       );
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Weather data by Open-Meteo.com' }),
+      );
+      expect(invoke).toHaveBeenCalledWith('open_url', {
+        url: 'https://open-meteo.com/',
+      });
     });
 
-    it('keeps SearchProgress with isExiting and defers Reasoning mid-handoff', () => {
+    it('demotes SearchProgress when thinking starts and shows sources chip under Reasoning', () => {
+      const sources = [{ title: 'A', url: 'https://example.com/a' }];
       const { rerender } = render(
         <ChatBubble
           role="assistant"
@@ -1445,8 +1448,10 @@ describe('ChatBubble', () => {
           index={0}
           isSearching
           searchStage={{ kind: 'searching' }}
+          searchSources={sources}
         />,
       );
+      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
       expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
         'data-search-handoff-phase',
         'live',
@@ -1458,34 +1463,13 @@ describe('ChatBubble', () => {
           content=""
           index={0}
           isSearching
-          searchStage={{ kind: 'searching' }}
+          searchStage={{ kind: 'composing' }}
           thinkingContent="thoughts"
           isThinking
+          searchSources={sources}
         />,
       );
-
-      // Collapse window: search retained with isExiting, Reasoning deferred.
-      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
-        'data-search-handoff-phase',
-        'exiting',
-      );
-      const progress = screen.getByTestId('search-progress-block');
-      expect(progress).toHaveAttribute('data-exiting', 'true');
-      expect(progress).toHaveAttribute('aria-busy', 'true');
-      expect(screen.queryByTestId('reasoning-block')).not.toBeInTheDocument();
-
-      // isSearching may flip off mid-handoff; still force-mount for exit.
-      rerender(
-        <ChatBubble
-          role="assistant"
-          content=""
-          index={0}
-          isSearching={false}
-          searchStage={null}
-          thinkingContent="thoughts"
-          isThinking
-        />,
-      );
+      // Design D: search exits; reasoning owns the strip with a quiet sources chip.
       expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
         'data-search-handoff-phase',
         'exiting',
@@ -1494,18 +1478,25 @@ describe('ChatBubble', () => {
         'data-exiting',
         'true',
       );
+      // Reasoning waits for search exit animation (phase !== exiting).
+      expect(screen.queryByTestId('reasoning-block')).toBeNull();
     });
 
-    it('unmounts search after collapse lead then completes via onExitComplete', async () => {
+    it('shows Reasoning with sources chip after search handoff exit completes', async () => {
       vi.useFakeTimers();
       try {
+        const sources = [
+          { title: 'A', url: 'https://example.com/a' },
+          { title: 'B', url: 'https://other.com/b' },
+        ];
         const { rerender } = render(
           <ChatBubble
             role="assistant"
             content=""
             index={0}
             isSearching
-            searchStage={{ kind: 'searching' }}
+            searchStage={{ kind: 'composing' }}
+            searchSources={sources}
           />,
         );
 
@@ -1515,17 +1506,17 @@ describe('ChatBubble', () => {
             content=""
             index={0}
             isSearching
-            searchStage={{ kind: 'searching' }}
-            isThinkingPending
+            searchStage={{ kind: 'composing' }}
+            thinkingContent="thoughts"
+            isThinking
+            searchSources={sources}
           />,
         );
-        expect(screen.getByTestId('search-progress-block')).toHaveAttribute(
-          'data-exiting',
-          'true',
+        expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+          'data-search-handoff-phase',
+          'exiting',
         );
-        expect(screen.queryByTestId('reasoning-block')).not.toBeInTheDocument();
 
-        // Collapse lead elapses → outer unmount → mock onExitComplete → done.
         await act(async () => {
           vi.advanceTimersByTime(SEARCH_HANDOFF_COLLAPSE_LEAD_MS);
         });
@@ -1539,8 +1530,254 @@ describe('ChatBubble', () => {
         ).not.toBeInTheDocument();
         expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
         expect(
-          screen.getByTestId('reasoning-handoff-enter'),
+          screen.getByTestId('reasoning-sources-chip'),
         ).toBeInTheDocument();
+        expect(
+          screen.getByTestId('reasoning-sources-chip-label'),
+        ).toHaveTextContent('2 sources');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('restores top SearchProgress after reasoning finishes while still searching', async () => {
+      vi.useFakeTimers();
+      try {
+        const sources = [{ title: 'A', url: 'https://example.com/a' }];
+        const { rerender } = render(
+          <ChatBubble
+            role="assistant"
+            content=""
+            index={0}
+            isSearching
+            searchStage={{ kind: 'composing' }}
+            searchSources={sources}
+          />,
+        );
+
+        rerender(
+          <ChatBubble
+            role="assistant"
+            content=""
+            index={0}
+            isSearching
+            searchStage={{ kind: 'composing' }}
+            thinkingContent="thoughts"
+            isThinking
+            searchSources={sources}
+          />,
+        );
+        await act(async () => {
+          vi.advanceTimersByTime(SEARCH_HANDOFF_COLLAPSE_LEAD_MS);
+        });
+        expect(
+          screen.queryByTestId('search-progress-block'),
+        ).not.toBeInTheDocument();
+        expect(
+          screen.getByTestId('reasoning-sources-chip'),
+        ).toBeInTheDocument();
+
+        // Answer stream: thinking done, still generating → sources return under Reasoning.
+        rerender(
+          <ChatBubble
+            role="assistant"
+            content="Partial answer with [1]"
+            index={0}
+            isStreaming
+            isSearching
+            searchStage={{ kind: 'composing' }}
+            thinkingContent="thoughts"
+            isThinking={false}
+            searchSources={sources}
+          />,
+        );
+        expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+          'data-search-handoff-phase',
+          'live',
+        );
+        expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+        expect(screen.getByTestId('loading-label')).toHaveAttribute(
+          'data-label',
+          'Sources (1)',
+        );
+        expect(screen.getByTestId('request-status-strip')).toBeInTheDocument();
+        expect(
+          screen.queryByTestId('reasoning-sources-chip'),
+        ).not.toBeInTheDocument();
+        const reasoning = screen.getByTestId('reasoning-block');
+        const search = screen.getByTestId('search-progress-block');
+        expect(
+          reasoning.compareDocumentPosition(search) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+
+        // Verify: keep strip + live verifying label + reasoning + C3 pill.
+        rerender(
+          <ChatBubble
+            role="assistant"
+            content="Partial answer with [1]"
+            index={0}
+            isStreaming
+            isSearching
+            searchStage={{ kind: 'verifying_sources' }}
+            thinkingContent="thoughts"
+            isThinking={false}
+            searchSources={sources}
+          />,
+        );
+        expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+          'data-search-handoff-phase',
+          'live',
+        );
+        expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+        expect(screen.getByTestId('loading-label')).toHaveAttribute(
+          'data-label',
+          'Verifying sources... (1)',
+        );
+        expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
+        expect(
+          screen.getByTestId('sources-verifying-pill'),
+        ).toBeInTheDocument();
+
+        // Done verifying: search exits for footer; Reasoning must not flicker off.
+        rerender(
+          <ChatBubble
+            role="assistant"
+            content="Partial answer with [1]"
+            index={0}
+            isStreaming={false}
+            isSearching={false}
+            searchStage={null}
+            thinkingContent="thoughts"
+            isThinking={false}
+            searchSources={sources}
+          />,
+        );
+        expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+          'data-search-handoff-phase',
+          'exiting',
+        );
+        expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('keeps SearchProgress while answer streams but collapses the source list', () => {
+      const { rerender } = render(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching
+          searchStage={{ kind: 'reading_sources' }}
+          searchSources={[{ title: 'A', url: 'https://example.com/a' }]}
+        />,
+      );
+      expect(screen.getByTestId('search-progress-body')).toBeInTheDocument();
+
+      rerender(
+        <ChatBubble
+          role="assistant"
+          content="Partial answer"
+          index={0}
+          isSearching
+          searchStage={{ kind: 'composing' }}
+          searchSources={[{ title: 'A', url: 'https://example.com/a' }]}
+        />,
+      );
+      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+      expect(
+        screen.queryByTestId('search-progress-body'),
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'live',
+      );
+    });
+
+    it('exits SearchProgress when search generation ends with sources', () => {
+      const { rerender } = render(
+        <ChatBubble
+          role="assistant"
+          content=""
+          index={0}
+          isSearching
+          searchStage={{ kind: 'searching' }}
+          searchSources={[{ title: 'A', url: 'https://example.com/a' }]}
+        />,
+      );
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'live',
+      );
+
+      rerender(
+        <ChatBubble
+          role="assistant"
+          content="Done"
+          index={0}
+          isSearching={false}
+          searchSources={[{ title: 'A', url: 'https://example.com/a' }]}
+        />,
+      );
+
+      // Generation ended: top progress exits so footer sources can own the list.
+      expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+        'data-search-handoff-phase',
+        'exiting',
+      );
+      const progress = screen.getByTestId('search-progress-block');
+      expect(progress).toHaveAttribute('data-exiting', 'true');
+      expect(progress).toHaveAttribute('aria-busy', 'true');
+    });
+
+    it('unmounts search after collapse lead when generation ends with sources', async () => {
+      vi.useFakeTimers();
+      try {
+        const sources = [{ title: 'A', url: 'https://example.com/a' }];
+        const { rerender } = render(
+          <ChatBubble
+            role="assistant"
+            content="streaming"
+            index={0}
+            isSearching
+            searchStage={{ kind: 'composing' }}
+            searchSources={sources}
+          />,
+        );
+        expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+        expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+          'data-search-handoff-phase',
+          'live',
+        );
+
+        rerender(
+          <ChatBubble
+            role="assistant"
+            content="final"
+            index={0}
+            isSearching={false}
+            searchSources={sources}
+          />,
+        );
+        expect(screen.getByTestId('search-progress-block')).toHaveAttribute(
+          'data-exiting',
+          'true',
+        );
+
+        // Collapse lead elapses → outer unmount → mock onExitComplete → done.
+        await act(async () => {
+          vi.advanceTimersByTime(SEARCH_HANDOFF_COLLAPSE_LEAD_MS);
+        });
+
+        expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+          'data-search-handoff-phase',
+          'done',
+        );
+        expect(
+          screen.queryByTestId('search-progress-block'),
+        ).not.toBeInTheDocument();
       } finally {
         vi.useRealTimers();
       }
@@ -1549,14 +1786,20 @@ describe('ChatBubble', () => {
     it('completes handoff via exit-fallback when exit unmount stalls', async () => {
       vi.useFakeTimers();
       try {
+        const sources = [{ title: 'A', url: 'https://example.com/a' }];
         const { rerender } = render(
           <ChatBubble
             role="assistant"
-            content=""
+            content="Partial answer"
             index={0}
             isSearching
             searchStage={{ kind: 'composing' }}
+            searchSources={sources}
           />,
+        );
+        expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
+          'data-search-handoff-phase',
+          'live',
         );
 
         rerender(
@@ -1564,8 +1807,8 @@ describe('ChatBubble', () => {
             role="assistant"
             content="Partial answer"
             index={0}
-            isSearching
-            searchStage={{ kind: 'composing' }}
+            isSearching={false}
+            searchSources={sources}
           />,
         );
 
@@ -1574,7 +1817,6 @@ describe('ChatBubble', () => {
           'exiting',
         );
         expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
-        expect(screen.queryByTestId('reasoning-block')).not.toBeInTheDocument();
         expect(screen.getByText('Partial answer')).toBeInTheDocument();
 
         // Skip past lead without flushing the unmount effect's follow-up by
@@ -1634,24 +1876,24 @@ describe('ChatBubble', () => {
       mockReducedMotion.current = true;
       vi.useFakeTimers();
       try {
+        const sources = [{ title: 'A', url: 'https://example.com/a' }];
         const { rerender } = render(
           <ChatBubble
             role="assistant"
-            content=""
+            content="streaming"
             index={0}
             isSearching
-            searchStage={{ kind: 'searching' }}
+            searchStage={{ kind: 'composing' }}
+            searchSources={sources}
           />,
         );
         rerender(
           <ChatBubble
             role="assistant"
-            content=""
+            content="final"
             index={0}
-            isSearching
-            searchStage={{ kind: 'searching' }}
-            thinkingContent="thoughts"
-            isThinking
+            isSearching={false}
+            searchSources={sources}
           />,
         );
         expect(screen.getByTestId('chat-bubble')).toHaveAttribute(
@@ -1666,14 +1908,13 @@ describe('ChatBubble', () => {
           'data-search-handoff-phase',
           'done',
         );
-        expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
       } finally {
         vi.useRealTimers();
         mockReducedMotion.current = false;
       }
     });
 
-    it('shows C3 verifying pill while streaming during citation audit', () => {
+    it('keeps progress and shows C3 verifying pill during citation audit', () => {
       const sources = [
         { title: 'Adobe', url: 'https://adobe.com' },
         { title: 'Reuters', url: 'https://reuters.com' },
@@ -1690,10 +1931,8 @@ describe('ChatBubble', () => {
           searchSources={sources}
         />,
       );
-      // Progress chrome yields to the sources-row pill during audit.
-      expect(
-        screen.queryByTestId('search-progress-block'),
-      ).not.toBeInTheDocument();
+      // Top sources stay through audit; footer shows verifying pill.
+      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
       const pill = screen.getByTestId('sources-verifying-pill');
       expect(pill).toHaveTextContent('Verifying sources...');
       expect(pill).toHaveAttribute('role', 'status');
@@ -1721,6 +1960,36 @@ describe('ChatBubble', () => {
       expect(
         screen.getByRole('button', { name: /1 source/i }),
       ).toBeInTheDocument();
+    });
+
+    it('does not duplicate the verifying label on a non-reasoning verify turn', () => {
+      // No thinkingContent: the footer C3 pill owns "Verifying sources...". The
+      // top strip stays mounted (sources list access) but must not repeat that
+      // copy, or the same text renders twice at once. Reasoned turns keep the
+      // strip verify label deliberately (see the handoff test above).
+      render(
+        <ChatBubble
+          role="assistant"
+          content="Adobe acquired Figma."
+          index={0}
+          isStreaming
+          isSearching
+          searchStage={{ kind: 'verifying_sources' }}
+          searchSources={[
+            { title: 'Adobe', url: 'https://adobe.com' },
+            { title: 'Reuters', url: 'https://reuters.com' },
+            { title: 'Figma', url: 'https://figma.com' },
+          ]}
+        />,
+      );
+      // Strip present, but relabeled to the neutral inventory copy.
+      expect(screen.getByTestId('search-progress-block')).toBeInTheDocument();
+      expect(screen.getByTestId('loading-label')).toHaveAttribute(
+        'data-label',
+        'Sources (3)',
+      );
+      // "Verifying sources..." appears exactly once (the footer pill).
+      expect(screen.getAllByText(/Verifying sources/)).toHaveLength(1);
     });
   });
 
