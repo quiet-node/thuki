@@ -1432,22 +1432,24 @@ pub const CITE_MONTH_NAMES: [(&str, u32); 12] = [
 /// After the engine tier assembles its sources for the standalone question,
 /// one additional judge call checks whether they actually answer it; on a
 /// confident insufficient verdict naming what is missing, the orchestrator
-/// requeries once with the missing phrase appended, merges the new sources in,
-/// and never judges again. The flow has no loop back into itself, so `1` is
-/// the only value that fires a requery; `0` disables the requery outright
-/// (the judge still runs and its verdict is still recorded, but an
-/// insufficient result simply commits round-one's sources) and is the gate's
-/// only other meaningful setting.
+/// fires one requery round (preferring the judge's keyword `requery_queries`,
+/// else standalone + capped `missing`), merges the new sources in, and never
+/// judges again. The flow has no loop back into itself, so `1` is the only
+/// value that fires a requery; `0` disables the requery outright (the judge
+/// still runs and its verdict is still recorded, but an insufficient result
+/// simply commits round-one's sources) and is the gate's only other
+/// meaningful setting.
 ///
 /// Not user-tunable: fixed LLM-call budget per turn is a product invariant.
 pub const ENGINE_REQUERY_MAX: usize = 1;
 
 /// Maximum characters of the sufficiency judge's `missing` phrase appended to
 /// the standalone question when `judge_and_requery` builds its one bounded
-/// requery. `missing` is free-form model prose and can run to a full
-/// sentence; a long tail of prose degrades keyless-engine SERP quality far
-/// more than a whole trailing word left out does, so the appended text is
-/// truncated at the last word boundary within this cap
+/// requery **fallback** (only when the judge omitted `requery_queries`).
+/// `missing` is free-form model prose and can run to a full sentence; a long
+/// tail of prose degrades keyless-engine SERP quality far more than a whole
+/// trailing word left out does, so the appended text is truncated at the last
+/// word boundary within this cap
 /// (`crate::websearch::orchestrator::truncate_missing`). The trace's
 /// `RecorderEvent::SearchRequeried::missing` field still carries the judge's
 /// full, uncapped phrase; only the text actually searched is capped.
@@ -1455,3 +1457,18 @@ pub const ENGINE_REQUERY_MAX: usize = 1;
 /// Not user-tunable: engine query hygiene is a pipeline-shape constant, not a
 /// preference.
 pub const REQUERY_MISSING_MAX_CHARS: usize = 80;
+
+/// Maximum number of keyword SERP queries the engine-tier requery may issue
+/// from a judge `requery_queries` list (or the single fallback concat query).
+/// Matches the early-stop fan-out budget used by the primary engine tier's
+/// multi-query loop; more than two rarely helps and doubles third-party burst.
+///
+/// Not user-tunable: fixed per-turn network budget.
+pub const REQUERY_QUERY_MAX: usize = 2;
+
+/// Maximum characters of each judge-authored requery keyword string after
+/// trim. Longer free-form strings degrade keyless SERP quality the same way
+/// an uncapped `missing` phrase does.
+///
+/// Not user-tunable: engine query hygiene is a pipeline-shape constant.
+pub const REQUERY_QUERY_MAX_CHARS: usize = 120;

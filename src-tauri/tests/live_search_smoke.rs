@@ -80,6 +80,7 @@ impl SufficiencyJudge for AlwaysSufficientJudge {
             sufficient: true,
             missing: String::new(),
             reason: InsufficiencyReason::Missing,
+            requery_queries: Vec::new(),
         })
     }
 }

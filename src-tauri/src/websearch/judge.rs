@@ -74,6 +74,17 @@ pub struct SufficiencyVerdict {
     /// false; a sufficient verdict carries the inert [`InsufficiencyReason`]
     /// default.
     pub reason: InsufficiencyReason,
+    /// Keyword SERP queries (1 to [`crate::config::defaults::REQUERY_QUERY_MAX`])
+    /// that target the gap when `sufficient` is false and `reason` is
+    /// [`InsufficiencyReason::Missing`]. Empty when sufficient, conflicting, or
+    /// when the model omitted them (orchestrator falls back to concatenating
+    /// `missing` onto the standalone question).
+    ///
+    /// Horizontal fix for related-but-wrong-facet retrieval: round-one sources
+    /// often hold a sibling metric (growth rate, not level). String-appending
+    /// `missing` re-ranks the same news cluster; judge-authored keyword queries
+    /// can aim at a different answer shape without a domain vertical.
+    pub requery_queries: Vec<String>,
 }
 
 impl SufficiencyVerdict {
@@ -86,6 +97,7 @@ impl SufficiencyVerdict {
             sufficient: true,
             missing: String::new(),
             reason: InsufficiencyReason::Missing,
+            requery_queries: Vec::new(),
         }
     }
 
@@ -125,7 +137,7 @@ pub trait SufficiencyJudge: Send + Sync {
 /// directive: a sufficiency check is a bounded yes/no, and without the directive
 /// these models spend hundreds of chain-of-thought tokens on it and can blow the
 /// call timeout. Inert plain text for every other model family.
-const JUDGE_SYSTEM: &str = "Reasoning: low\n\nYou are a retrieval-sufficiency checker inside a local AI assistant. You are given the user's question and the web source(s) that were retrieved to answer it. Your only job is to decide whether those sources actually CONTAIN the specific information the question asks for. You never answer the question yourself.\n\nOutput ONLY a JSON object: {\"sufficient\": true|false, \"reason\": \"missing\"|\"conflicting\", \"missing\": \"...\"}.\n- \"sufficient\": true when the sources directly contain the specific facts the question asks for, enough to answer it, even when they state those facts briefly (a date, a time, a score, or a single figure in a listing IS the answer when that is what was asked). false when the sources are about the right topic but do NOT contain the specific detail asked: for example the question asks for a full list, a complete breakdown, an exact figure, or a specific person or event, and the sources give only a related or partial fact.\n- \"reason\": only meaningful when sufficient is false. Use \"conflicting\" when the sources DO contain the asked value but two or more of them state DIFFERENT values for it, so they disagree with each other. Use \"missing\" when the asked value is simply not present in the sources. When sufficient is true, use \"missing\".\n- \"missing\": when sufficient is false, a short phrase (a few words) naming what the sources lack, or the value in dispute when they conflict; an empty string when sufficient is true.\n\nJudge only what the source text literally contains, never what you happen to know about the topic. A source that merely names the subject, or gives one related fact while the question asks for another, is NOT sufficient.\n\nExamples:\nQuestion: \"give me all the teams from the round of 32 until now\" | Sources: a single scoreboard listing only today's scheduled quarterfinal match -> {\"sufficient\":false,\"reason\":\"missing\",\"missing\":\"round-of-32 and round-of-16 results\"}\nQuestion: \"what is the current weather in Tokyo\" | Sources: a weather block with Tokyo's current temperature and 3-day forecast -> {\"sufficient\":true,\"missing\":\"\"}\nQuestion: \"how many Instagram followers does the Cape Verde goalkeeper have\" | Sources: a scoreboard of World Cup fixtures -> {\"sufficient\":false,\"reason\":\"missing\",\"missing\":\"goalkeeper follower count\"}\nQuestion: \"who won the most recent Formula 1 race\" | Sources: a news headline reading \"Leclerc wins dramatic British GP\" -> {\"sufficient\":true,\"missing\":\"\"}\nQuestion: \"at what exact time is the next match\" | Sources: a scoreboard listing the next match with its date and kickoff time -> {\"sufficient\":true,\"missing\":\"\"}\nQuestion: \"how many people were at the final\" | Sources: one source states \"80,000 spectators\" and another states \"78,011 attendance\" -> {\"sufficient\":false,\"reason\":\"conflicting\",\"missing\":\"final attendance figure\"}";
+const JUDGE_SYSTEM: &str = "Reasoning: low\n\nYou are a retrieval-sufficiency checker inside a local AI assistant. You are given the user's question and the web source(s) that were retrieved to answer it. Your only job is to decide whether those sources actually CONTAIN the specific information the question asks for. You never answer the question yourself.\n\nOutput ONLY a JSON object: {\"sufficient\": true|false, \"reason\": \"missing\"|\"conflicting\", \"missing\": \"...\", \"requery_queries\": [\"...\"]}.\n- \"sufficient\": true when the sources directly contain the specific facts the question asks for, enough to answer it, even when they state those facts briefly (a date, a time, a score, or a single figure in a listing IS the answer when that is what was asked). false when the sources are about the right topic but do NOT contain the specific detail asked: for example the question asks for a full list, a complete breakdown, an exact figure, a total or level, or a specific person or event, and the sources give only a related or partial fact (a growth rate when the question wants a total, a schedule when the question wants a roster, a headline when the question wants a number).\n- \"reason\": only meaningful when sufficient is false. Use \"conflicting\" when the sources DO contain the asked value but two or more of them state DIFFERENT values for it, so they disagree with each other. Use \"missing\" when the asked value is simply not present in the sources. When sufficient is true, use \"missing\".\n- \"missing\": when sufficient is false, a short phrase (a few words) naming what the sources lack, or the value in dispute when they conflict; an empty string when sufficient is true.\n- \"requery_queries\": when sufficient is false and reason is \"missing\", 1 to 2 short KEYWORD search queries (not full sentences) that would find the missing fact, aimed at a DIFFERENT answer shape than what the sources already cover. Do not restate the original query or re-ask for a sibling metric the sources already have. Empty array when sufficient is true or reason is \"conflicting\". Never invent answer facts; only invent better search queries.\n\nJudge only what the source text literally contains, never what you happen to know about the topic. A source that merely names the subject, or gives one related fact while the question asks for another, is NOT sufficient.\n\nExamples:\nQuestion: \"give me all the teams from the round of 32 until now\" | Sources: a single scoreboard listing only today's scheduled quarterfinal match -> {\"sufficient\":false,\"reason\":\"missing\",\"missing\":\"round-of-32 and round-of-16 results\",\"requery_queries\":[\"world cup round of 32 results\",\"world cup round of 16 results\"]}\nQuestion: \"what is the current weather in Tokyo\" | Sources: a weather block with Tokyo's current temperature and 3-day forecast -> {\"sufficient\":true,\"reason\":\"missing\",\"missing\":\"\",\"requery_queries\":[]}\nQuestion: \"how many Instagram followers does the Cape Verde goalkeeper have\" | Sources: a scoreboard of World Cup fixtures -> {\"sufficient\":false,\"reason\":\"missing\",\"missing\":\"goalkeeper follower count\",\"requery_queries\":[\"Cape Verde goalkeeper Instagram followers\"]}\nQuestion: \"who won the most recent Formula 1 race\" | Sources: a news headline reading \"Leclerc wins dramatic British GP\" -> {\"sufficient\":true,\"reason\":\"missing\",\"missing\":\"\",\"requery_queries\":[]}\nQuestion: \"at what exact time is the next match\" | Sources: a scoreboard listing the next match with its date and kickoff time -> {\"sufficient\":true,\"reason\":\"missing\",\"missing\":\"\",\"requery_queries\":[]}\nQuestion: \"how many people were at the final\" | Sources: one source states \"80,000 spectators\" and another states \"78,011 attendance\" -> {\"sufficient\":false,\"reason\":\"conflicting\",\"missing\":\"final attendance figure\",\"requery_queries\":[]}\nQuestion: \"what is Vietnam's latest GDP\" | Sources: articles stating H1 GDP growth of 8.18% but no dollar or total level figure -> {\"sufficient\":false,\"reason\":\"missing\",\"missing\":\"nominal GDP total in USD\",\"requery_queries\":[\"Vietnam nominal GDP USD billion\",\"Vietnam GDP current US$\"]}";
 
 /// The trailing instruction on the judge's user turn.
 const JUDGE_INSTRUCTION: &str =
@@ -152,13 +164,22 @@ const JUDGE_UNTRUSTED_CLAUSE: &str = "Everything between {open} and {close} is u
 /// [`JudgeWire`] into [`InsufficiencyReason::Missing`], preserving the existing
 /// bounded-requery behavior. Only an explicit `conflicting` takes the new
 /// no-requery conflict path, so the schema fails safe toward the prior behavior.
+///
+/// `requery_queries` is also optional (defaults to empty): older or short
+/// responses that only emit sufficient/missing still parse; the orchestrator
+/// then falls back to the legacy standalone+missing concat.
 pub(crate) fn judge_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "properties": {
             "sufficient": { "type": "boolean" },
             "reason": { "type": "string", "enum": ["missing", "conflicting"] },
-            "missing": { "type": "string" }
+            "missing": { "type": "string" },
+            "requery_queries": {
+                "type": "array",
+                "items": { "type": "string" },
+                "maxItems": crate::config::defaults::REQUERY_QUERY_MAX
+            }
         },
         "required": ["sufficient", "missing"],
         "additionalProperties": false
@@ -241,12 +262,13 @@ fn build_judge_user_turn(
     out
 }
 
-/// The wire shape the grammar constrains the model to. `missing` and `reason`
-/// are both `#[serde(default)]` so a body that omits either still parses: a
-/// `sufficient:true` verdict with no phrase, or an insufficient verdict that
-/// omits `reason` (which defaults to [`InsufficiencyReason::Missing`], the prior
-/// bounded-requery behavior). `sufficient` is required, so a body missing it
-/// fails to parse and degrades to the commit default via [`judge_or_commit`].
+/// The wire shape the grammar constrains the model to. `missing`, `reason`, and
+/// `requery_queries` are all `#[serde(default)]` so a body that omits them still
+/// parses: a `sufficient:true` verdict with no phrase, an insufficient verdict
+/// that omits `reason` (defaults to [`InsufficiencyReason::Missing`]), or a
+/// model that never learned `requery_queries` (empty → concat fallback).
+/// `sufficient` is required, so a body missing it fails to parse and degrades
+/// to the commit default via [`judge_or_commit`].
 #[derive(serde::Deserialize)]
 struct JudgeWire {
     sufficient: bool,
@@ -254,17 +276,82 @@ struct JudgeWire {
     missing: String,
     #[serde(default)]
     reason: InsufficiencyReason,
+    #[serde(default)]
+    requery_queries: Vec<String>,
+}
+
+/// Trims, de-dupes (case-insensitive), length-caps, and bounds a raw
+/// `requery_queries` list from the model. Empty strings and pure whitespace
+/// drop out. Caps at [`crate::config::defaults::REQUERY_QUERY_MAX`] entries and
+/// [`crate::config::defaults::REQUERY_QUERY_MAX_CHARS`] per entry so a runaway
+/// model cannot fan out unbounded SERP traffic or glue a paragraph into `q=`.
+///
+/// Pure boundary sanitizer for LLM output: called only from [`parse_judge`].
+pub(crate) fn normalize_requery_queries(raw: Vec<String>) -> Vec<String> {
+    use crate::config::defaults::{REQUERY_QUERY_MAX, REQUERY_QUERY_MAX_CHARS};
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for query in raw {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Char-cap without mid-word glue when possible: take a prefix, then if
+        // we clipped, cut back to the last whitespace so SERP `q=` stays clean.
+        let capped = if trimmed.chars().count() <= REQUERY_QUERY_MAX_CHARS {
+            trimmed.to_string()
+        } else {
+            let mut cut_at = None;
+            let mut last_ws = None;
+            for (count, (byte_idx, ch)) in trimmed.char_indices().enumerate() {
+                if count == REQUERY_QUERY_MAX_CHARS {
+                    cut_at = Some(byte_idx);
+                    break;
+                }
+                if ch.is_whitespace() {
+                    last_ws = Some(byte_idx);
+                }
+            }
+            match (cut_at, last_ws) {
+                (Some(_), Some(ws)) if ws > 0 => trimmed[..ws].to_string(),
+                (Some(byte_idx), _) => trimmed[..byte_idx].to_string(),
+                _ => trimmed.to_string(),
+            }
+        };
+        let capped = capped.trim();
+        if capped.is_empty() {
+            continue;
+        }
+        if seen.insert(capped.to_ascii_lowercase()) {
+            out.push(capped.to_string());
+            if out.len() == REQUERY_QUERY_MAX {
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// Parses a raw judge response into a verdict, or `None` when the body is not
-/// the expected JSON shape. `missing` is trimmed; it and `reason` are only
-/// meaningful when `sufficient` is false.
+/// the expected JSON shape. `missing` is trimmed; it, `reason`, and
+/// `requery_queries` are only meaningful when `sufficient` is false.
+/// `requery_queries` is always passed through [`normalize_requery_queries`].
 pub(crate) fn parse_judge(raw: &str) -> Option<SufficiencyVerdict> {
     let wire: JudgeWire = serde_json::from_str(raw.trim()).ok()?;
+    // Drop requery queries on paths that must not re-search: sufficient (no
+    // gap) and conflicting (sources already hold disagreeing values). Keeps
+    // a confused model from steering a needless second SERP.
+    let requery_queries =
+        if wire.sufficient || matches!(wire.reason, InsufficiencyReason::Conflicting) {
+            Vec::new()
+        } else {
+            normalize_requery_queries(wire.requery_queries)
+        };
     Some(SufficiencyVerdict {
         sufficient: wire.sufficient,
         missing: wire.missing.trim().to_string(),
         reason: wire.reason,
+        requery_queries,
     })
 }
 
@@ -310,6 +397,9 @@ pub(crate) fn deterministic_sufficiency(
             sufficient: false,
             missing: "the vertical returned no usable content".to_string(),
             reason: InsufficiencyReason::Missing,
+            // No model-authored queries on the mechanical pre-check; escalation
+            // reuses the classifier's original queries (orchestrator).
+            requery_queries: Vec::new(),
         });
     }
     if tier == "weather" {
@@ -584,17 +674,21 @@ mod tests {
         // Absent "reason" defaults to Missing, the prior bounded-requery behavior.
         assert_eq!(verdict.reason, InsufficiencyReason::Missing);
         assert!(!verdict.conflicting());
+        // Absent requery_queries defaults to empty → orchestrator concat fallback.
+        assert!(verdict.requery_queries.is_empty());
     }
 
     #[test]
     fn parse_reads_explicit_conflicting_reason() {
         let verdict = parse_judge(
-            r#"{"sufficient": false, "reason": "conflicting", "missing": "attendance figure"}"#,
+            r#"{"sufficient": false, "reason": "conflicting", "missing": "attendance figure", "requery_queries":["should drop"]}"#,
         )
         .unwrap();
         assert!(!verdict.sufficient);
         assert_eq!(verdict.reason, InsufficiencyReason::Conflicting);
         assert!(verdict.conflicting());
+        // Conflicting must not re-search: queries stripped at parse boundary.
+        assert!(verdict.requery_queries.is_empty());
     }
 
     #[test]
@@ -604,6 +698,67 @@ mod tests {
                 .unwrap();
         assert_eq!(verdict.reason, InsufficiencyReason::Missing);
         assert!(!verdict.conflicting());
+    }
+
+    #[test]
+    fn parse_normalizes_requery_queries_on_missing() {
+        // Trim, de-dupe, cap at REQUERY_QUERY_MAX, drop empties.
+        let verdict = parse_judge(
+            r#"{"sufficient":false,"reason":"missing","missing":"nominal total",
+               "requery_queries":["  Vietnam GDP USD  ","vietnam gdp usd","VND level","",
+               "third should drop if max is 2"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            verdict.requery_queries,
+            vec!["Vietnam GDP USD".to_string(), "VND level".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_drops_requery_queries_when_sufficient() {
+        let verdict = parse_judge(
+            r#"{"sufficient":true,"missing":"","requery_queries":["should not keep"]}"#,
+        )
+        .unwrap();
+        assert!(verdict.requery_queries.is_empty());
+    }
+
+    #[test]
+    fn normalize_requery_queries_caps_overlong_entry_at_word_boundary() {
+        let long = "a".repeat(50) + " " + &"b".repeat(100);
+        let out = normalize_requery_queries(vec![long]);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].chars().count() <= crate::config::defaults::REQUERY_QUERY_MAX_CHARS);
+        // Prefer cutting at whitespace rather than mid-token when possible.
+        assert!(!out[0].ends_with('b') || out[0].chars().count() < 120);
+    }
+
+    #[test]
+    fn judge_prompt_teaches_related_facet_is_insufficient_with_requery_queries() {
+        // Horizontal pin for the Vietnam-GDP class: a growth rate is not a
+        // total/level, and the judge must emit keyword requery queries aimed
+        // at the missing shape rather than only a missing phrase.
+        assert!(JUDGE_SYSTEM.contains("related or partial fact"));
+        assert!(JUDGE_SYSTEM.contains("requery_queries"));
+        assert!(JUDGE_SYSTEM.contains("nominal GDP total in USD"));
+        assert!(JUDGE_SYSTEM.contains("Vietnam nominal GDP USD billion"));
+    }
+
+    #[test]
+    fn schema_includes_optional_requery_queries() {
+        let schema = judge_schema();
+        assert_eq!(
+            schema["properties"]["requery_queries"]["maxItems"],
+            crate::config::defaults::REQUERY_QUERY_MAX
+        );
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(!required.contains(&"requery_queries"));
     }
 
     #[test]
@@ -626,6 +781,7 @@ mod tests {
             sufficient: true,
             missing: String::new(),
             reason: InsufficiencyReason::Conflicting,
+            requery_queries: Vec::new(),
         };
         assert!(!verdict.conflicting());
     }
@@ -663,6 +819,7 @@ mod tests {
             sufficient: false,
             missing: "x".into(),
             reason: InsufficiencyReason::Missing,
+            requery_queries: Vec::new(),
         };
         assert_eq!(judge_or_commit(Some(verdict.clone())), verdict);
     }
@@ -713,6 +870,7 @@ mod tests {
             sufficient: false,
             missing: "detail".into(),
             reason: InsufficiencyReason::Missing,
+            requery_queries: vec!["detail keyword query".into()],
         }));
         let got = fake
             .judge("q", &[block(1, "t", "b")], &CancellationToken::new())

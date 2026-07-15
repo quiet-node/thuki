@@ -4859,6 +4859,7 @@ mod tests {
             sufficient: false,
             missing: "the two sources report different revenue figures".into(),
             reason: InsufficiencyReason::Conflicting,
+            requery_queries: Vec::new(),
         };
         assert!(verdict.conflicting());
 

@@ -59,7 +59,9 @@ use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::ChatMessage;
-use crate::config::defaults::{SERP_EARLY_STOP_HITS, TRACE_SOURCE_TEXT_MAX_BYTES};
+use crate::config::defaults::{
+    REQUERY_MISSING_MAX_CHARS, SERP_EARLY_STOP_HITS, TRACE_SOURCE_TEXT_MAX_BYTES,
+};
 use crate::net::transport::HttpTransport;
 use crate::trace::{truncate_for_trace, BoundRecorder, EngineStat, RecorderEvent, RetrievedSource};
 use crate::websearch::assemble::{assemble_context, SourceBlock};
@@ -1392,10 +1394,19 @@ async fn commit_or_escalate(
             false,
         );
     }
+    // Prefer judge-authored gap-targeted keyword queries when escalating a
+    // vertical miss: the classifier's original queries already produced the
+    // related-but-wrong block; reusing them only re-ranks the same cluster.
+    // Fall back to the classifier queries when the judge omitted requery_queries.
+    let escalation_queries: Vec<String> = if !verdict.requery_queries.is_empty() {
+        verdict.requery_queries.clone()
+    } else {
+        queries.to_vec()
+    };
     match run_engine_tier(
         deps,
         standalone_question,
-        queries,
+        &escalation_queries,
         num_ctx,
         freshness,
         // A judge-driven escalation is not a user distrust signal (the user
@@ -1426,7 +1437,7 @@ async fn commit_or_escalate(
             deps.recorder.record(RecorderEvent::SearchEscalated {
                 from_tier: tier.to_string(),
                 sufficient: false,
-                missing: verdict.missing,
+                missing: verdict.missing.clone(),
                 escalated: true,
                 escalation_hit: true,
             });
@@ -1676,6 +1687,38 @@ fn truncate_missing(missing: &str, max_chars: usize) -> &str {
     }
 }
 
+/// Resolves the keyword SERP string(s) for the one bounded engine-tier requery.
+///
+/// Prefers the judge's already-normalized [`SufficiencyVerdict::requery_queries`]
+/// when non-empty (horizontal: gap-targeted keywords, not a prose concat that
+/// re-ranks the same related-facet cluster). Falls back to the legacy
+/// `{standalone_question} {capped_missing}` single query so a model that omits
+/// `requery_queries` still requeries.
+///
+/// Always returns at least one non-empty query when `missing` or `standalone`
+/// has content; callers only invoke this on the insufficient-missing path.
+fn resolve_requery_search_queries(
+    standalone_question: &str,
+    missing: &str,
+    judge_queries: &[String],
+) -> Vec<String> {
+    if !judge_queries.is_empty() {
+        return judge_queries.to_vec();
+    }
+    let standalone = standalone_question.trim();
+    let missing_capped = truncate_missing(missing, REQUERY_MISSING_MAX_CHARS);
+    if missing_capped.is_empty() {
+        if standalone.is_empty() {
+            return Vec::new();
+        }
+        return vec![standalone.to_string()];
+    }
+    if standalone.is_empty() {
+        return vec![missing_capped.to_string()];
+    }
+    vec![format!("{standalone} {missing_capped}")]
+}
+
 /// What [`judge_and_requery`] resolved to: the user cancelling mid-judge or
 /// mid-requery, or the final source list to answer from paired with the
 /// requery's per-engine outcome summary.
@@ -1733,12 +1776,14 @@ struct RequeryRerank {
 ///
 /// On a confident insufficient verdict naming what is missing, this records
 /// `sources` as a round-one [`RecorderEvent::SearchRetrieved`] (`round:
-/// Some(1)`, see its docs) before firing exactly one requery: the standalone
-/// question with the missing phrase appended (capped to
-/// [`crate::config::defaults::REQUERY_MISSING_MAX_CHARS`] at a word boundary,
-/// see [`truncate_missing`]), through the normal engine path (`web_search`
-/// then `fetch_pages`, so cache read/write and `bypass_cache` behave exactly
-/// as they do for any other engine-tier call). Its hits are deduped by URL
+/// Some(1)`, see its docs) before firing exactly one requery round: up to
+/// [`crate::config::defaults::REQUERY_QUERY_MAX`] keyword SERPs from
+/// [`resolve_requery_search_queries`] (judge `requery_queries` when present,
+/// else standalone + capped `missing`, see
+/// [`crate::config::defaults::REQUERY_MISSING_MAX_CHARS`] /
+/// [`truncate_missing`]), through the normal engine path (`web_search` then
+/// `fetch_pages`, so cache read/write and `bypass_cache` behave exactly as
+/// they do for any other engine-tier call). Its hits are deduped by URL
 /// against `sources` ([`new_urls_only`]) so only genuinely new pages are
 /// fetched and ranked. The round-one record is emitted whenever the requery
 /// fires, even when it turns up nothing new, so a trace always shows what
@@ -1849,32 +1894,50 @@ async fn judge_and_requery(
         engine_stats: Vec::new(),
         round: Some(1),
     });
-    let missing_capped = truncate_missing(
+    let requery_queries = resolve_requery_search_queries(
+        standalone_question,
         &verdict.missing,
-        crate::config::defaults::REQUERY_MISSING_MAX_CHARS,
+        &verdict.requery_queries,
     );
-    let requery = format!("{standalone_question} {missing_capped}");
+    if requery_queries.is_empty() {
+        // No searchable string at all (empty question + empty missing): commit.
+        return EngineJudgeOutcome::Sources(sources, Vec::new(), false);
+    }
+    // Forensic: first query is the primary; join extras so multi-query requeries
+    // remain readable in one field without a schema bump on SearchRequeried.
+    let requery_trace = requery_queries.join(" | ");
     eprintln!(
-        "[search] engine tier insufficient (missing: {}) -> requerying once: {requery}",
+        "[search] engine tier insufficient (missing: {}) -> requerying once: {requery_trace}",
         verdict.missing
     );
     deps.recorder.record(RecorderEvent::SearchRequeried {
         missing: verdict.missing,
-        requery: requery.clone(),
+        requery: requery_trace,
     });
-    // The requery races the keyless engines exactly as the primary query does,
-    // so it produces its own per-engine outcome summary. Carry it back to the
-    // caller regardless of whether new pages survive below, so the trace
-    // records the requery's engines even when it found no new URLs.
-    let (hits, requery_stats) = web_search(
-        deps.transport,
-        &requery,
-        deps.health,
-        freshness,
-        deps.web_cache,
-        bypass_cache,
-    )
-    .await;
+    // Multi-query requery: same fan-out shape as `run_engine_tier`'s primary
+    // loop (early-stop at SERP_EARLY_STOP_HITS). Prefer judge keyword queries
+    // so the second SERP aims at the gap, not a prose restatement of round one.
+    let mut hits: Vec<SearchHit> = Vec::new();
+    let mut requery_stats: Vec<EngineStat> = Vec::new();
+    for query in &requery_queries {
+        if cancel.is_cancelled() {
+            return EngineJudgeOutcome::Cancelled;
+        }
+        let (query_hits, query_stats) = web_search(
+            deps.transport,
+            query,
+            deps.health,
+            freshness,
+            deps.web_cache,
+            bypass_cache,
+        )
+        .await;
+        hits.extend(query_hits);
+        requery_stats.extend(query_stats);
+        if hits.len() >= SERP_EARLY_STOP_HITS {
+            break;
+        }
+    }
     let new_hits = new_urls_only(hits, &sources);
     if new_hits.is_empty() {
         return EngineJudgeOutcome::Sources(sources, requery_stats, false);
@@ -2289,6 +2352,41 @@ mod tests {
             .map(|b| crate::websearch::assemble::estimate_tokens(&b.text))
             .sum();
         assert!(spent <= budget);
+    }
+
+    // ── resolve_requery_search_queries ────────────────────────────────────────
+
+    #[test]
+    fn resolve_requery_prefers_judge_keyword_queries() {
+        // Horizontal gap-targeting: judge queries win over the legacy concat.
+        let q = resolve_requery_search_queries(
+            "what is Vietnam's total GDP in 2026",
+            "total GDP value for 2026",
+            &[
+                "Vietnam nominal GDP USD billion".into(),
+                "Vietnam GDP current US$".into(),
+            ],
+        );
+        assert_eq!(
+            q,
+            vec![
+                "Vietnam nominal GDP USD billion".to_string(),
+                "Vietnam GDP current US$".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_requery_falls_back_to_standalone_plus_capped_missing() {
+        let q = resolve_requery_search_queries(
+            "what is Vietnam's total GDP in 2026",
+            "total GDP value for 2026",
+            &[],
+        );
+        assert_eq!(
+            q,
+            vec!["what is Vietnam's total GDP in 2026 total GDP value for 2026".to_string()]
+        );
     }
 
     // ── truncate_missing ──────────────────────────────────────────────────────
@@ -4179,6 +4277,7 @@ mod tests {
             sufficient: false,
             missing: "the exact figure".into(),
             reason: InsufficiencyReason::Conflicting,
+            requery_queries: Vec::new(),
         }));
         let health = EngineHealth::new();
         let (mock, bound) = mock_recorder();
@@ -5179,6 +5278,7 @@ mod tests {
             sufficient: false,
             missing: "the treaty terms".into(),
             reason: InsufficiencyReason::Missing,
+            requery_queries: Vec::new(),
         }))
     }
 
@@ -5223,11 +5323,13 @@ mod tests {
                 sufficient: false,
                 missing: "the treaty terms".into(),
                 reason: InsufficiencyReason::Missing,
+                requery_queries: Vec::new(),
             },
             second: SufficiencyVerdict {
                 sufficient: true,
                 missing: String::new(),
                 reason: InsufficiencyReason::Missing,
+                requery_queries: Vec::new(),
             },
         }
     }
@@ -5700,6 +5802,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn judge_and_requery_uses_judge_requery_queries_not_concat() {
+        // When the judge authors keyword SERPs, the DDG `q=` must be those
+        // keywords (gap-targeted), not the legacy standalone+missing concat.
+        let prepass = dummy_prepass();
+        let transport = requery_transport();
+        let judge = FakeSufficiencyJudge::returning(Ok(SufficiencyVerdict {
+            sufficient: false,
+            missing: "nominal GDP total in USD".into(),
+            reason: InsufficiencyReason::Missing,
+            requery_queries: vec!["Vietnam nominal GDP USD billion".into()],
+        }));
+        let health = EngineHealth::new();
+        let (mock, bound) = mock_recorder();
+        let sources = round_one_sources();
+        let _ = judge_and_requery(
+            &deps_for_escalation(&prepass, &transport, &Bm25Scorer, &judge, &health, &bound),
+            REQUERY_QUESTION,
+            sources,
+            None,
+            16384,
+            false,
+            false,
+            &CancellationToken::new(),
+        )
+        .await;
+        let ddg_call = transport
+            .calls()
+            .into_iter()
+            .find(|c| c.url == DDG_ENDPOINT)
+            .expect("the requery must hit DDG");
+        assert!(
+            ddg_call
+                .form
+                .iter()
+                .any(|(k, v)| k == "q" && v == "Vietnam nominal GDP USD billion"),
+            "requery must search the judge keyword query, got {:?}",
+            ddg_call.form
+        );
+        // Must not fall back to the prose concat when judge queries exist.
+        assert!(!ddg_call
+            .form
+            .iter()
+            .any(|(k, v)| k == "q" && v.contains("nominal GDP total in USD")));
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert!(events.iter().any(|e| matches!(e,
+            RecorderEvent::SearchRequeried { missing, requery }
+            if missing == "nominal GDP total in USD"
+                && requery == "Vietnam nominal GDP USD billion")));
+    }
+
+    #[tokio::test]
     async fn judge_and_requery_caps_a_long_missing_phrase_at_a_word_boundary() {
         // The judge's `missing` can run to a full prose sentence; the text
         // actually searched must be capped to
@@ -5714,6 +5867,7 @@ mod tests {
             sufficient: false,
             missing: long_missing.into(),
             reason: InsufficiencyReason::Missing,
+            requery_queries: Vec::new(),
         }));
         let health = EngineHealth::new();
         let (mock, bound) = mock_recorder();
@@ -5848,6 +6002,7 @@ mod tests {
             sufficient: false,
             missing: "attendance figure".into(),
             reason: InsufficiencyReason::Conflicting,
+            requery_queries: Vec::new(),
         }));
         let health = EngineHealth::new();
         let (mock, bound) = mock_recorder();
@@ -6431,6 +6586,7 @@ mod tests {
                     sufficient: false,
                     missing: "the treaty terms".into(),
                     reason: InsufficiencyReason::Missing,
+                    requery_queries: Vec::new(),
                 })
             } else {
                 Err(InferenceError::Cancelled)
