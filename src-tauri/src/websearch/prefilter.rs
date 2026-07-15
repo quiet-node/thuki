@@ -1028,8 +1028,23 @@ mod tests {
     fn prefilter_deterministically_catches_most_should_search_turns() {
         // Quantifies the pre-filter's in-gate recall: a clear majority of the
         // should-search corpus is resolved to ForceWeb without any model call.
+        //
+        // Scoped to the ASCII (English) rows: every non-English row in this
+        // corpus carries at least one non-ASCII character (a diacritic or a
+        // non-Latin script), so `message.is_ascii()` is an exact partition
+        // with no hand-tagging required. This scoping is required, not
+        // cosmetic: `FORCE_WEB_WORDS`/`FORCE_WEB_PHRASES` are English word
+        // lists by design (see module docs), so they structurally cannot fire
+        // on non-English text. A non-English should-search row therefore
+        // falls through to `Ambiguous` every time, which is correct behavior
+        // (the classifier decides), not a pre-filter miss; counting it against
+        // this ratio would only dilute a real English-only signal with noise
+        // the rule was never designed to catch.
         let rows = eval_rows();
-        let search: Vec<_> = rows.iter().filter(|r| r.label == "search").collect();
+        let search: Vec<_> = rows
+            .iter()
+            .filter(|r| r.label == "search" && r.message.is_ascii())
+            .collect();
         let total = search.len();
         let forced = search
             .iter()
@@ -1039,6 +1054,35 @@ mod tests {
             forced * 10 >= total * 6,
             "only {forced}/{total} should-search turns caught deterministically"
         );
+    }
+
+    #[test]
+    fn prefilter_never_contradicts_a_non_english_labelled_row() {
+        // The invariant that DOES hold for every language, stated explicitly
+        // for the non-English slice: a should-search row is never hard-skipped
+        // (`ForceNo`) and a should-not-search row is never hard-forced
+        // (`ForceWeb`), even though the deterministic word lists cannot read
+        // the text at all. Non-English rows are free to land `Ambiguous`
+        // (the classifier's job); they may never land on the wrong side of a
+        // hard skip or a hard force. This is implied by
+        // `prefilter_never_contradicts_a_labelled_row` above (which runs over
+        // the whole corpus), but is asserted here on its own so the
+        // non-English guarantee is not just an accident of the general test.
+        let rows: Vec<_> = eval_rows()
+            .into_iter()
+            .filter(|r| !r.message.is_ascii())
+            .collect();
+        assert!(!rows.is_empty(), "expected non-English rows in the corpus");
+        for row in rows {
+            let v = prefilter(&row.message, TODAY);
+            let forbidden = if row.label == "search" {
+                PreFilterVerdict::ForceNo
+            } else {
+                PreFilterVerdict::ForceWeb
+            };
+            let msg = &row.message;
+            assert_ne!(v, forbidden, "non-English row violated its label: {msg}");
+        }
     }
 
     #[test]

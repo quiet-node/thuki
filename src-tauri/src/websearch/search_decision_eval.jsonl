@@ -101,3 +101,38 @@
 {"message": "how long ago did the company IPO", "label": "search", "category": "date_arithmetic", "route": "web", "volatility": "fast"}
 {"message": "how old is the universe", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "never"}
 {"message": "how old are the pyramids of Giza", "label": "no", "category": "stable_fact", "route": "wiki", "volatility": "never"}
+{"message": "thời tiết Hà Nội hôm nay thế nào", "label": "search", "category": "vi_weather", "route": "weather", "volatility": "fast"}
+{"message": "dự báo thời tiết Đà Nẵng ngày mai", "label": "search", "category": "vi_weather", "route": "weather", "volatility": "fast"}
+{"message": "giá vàng hôm nay bao nhiêu", "label": "search", "category": "vi_prices_shared_diacritic", "route": "web", "volatility": "fast"}
+{"message": "giá xăng hôm nay bao nhiêu", "label": "search", "category": "vi_prices_shared_diacritic", "route": "web", "volatility": "fast"}
+{"message": "hôm nay có tin gì mới không", "label": "search", "category": "vi_news_shared_diacritic", "route": "news", "volatility": "fast"}
+{"message": "tin tức mới nhất về kinh tế Việt Nam", "label": "search", "category": "vi_news", "route": "news", "volatility": "fast"}
+{"message": "kết quả bóng đá hôm qua", "label": "search", "category": "vi_sports", "route": "sports", "volatility": "fast"}
+{"message": "đội tuyển Việt Nam đá vòng loại World Cup khi nào", "label": "search", "category": "vi_sports", "route": "sports", "volatility": "fast"}
+{"message": "quang hợp là gì", "label": "no", "category": "vi_wiki", "route": "wiki", "volatility": "never"}
+{"message": "thủ đô của Pháp là gì", "label": "no", "category": "vi_wiki", "route": "wiki", "volatility": "never"}
+{"message": "dân số Việt Nam là bao nhiêu", "label": "no", "category": "vi_stable_fact", "route": "wiki", "volatility": "slow"}
+{"message": "cảm ơn bạn nhiều nhé", "label": "no", "category": "vi_greeting", "route": "web", "volatility": "never"}
+{"message": "chào buổi sáng", "label": "no", "category": "vi_greeting", "route": "web", "volatility": "never"}
+{"message": "hai cộng hai bằng mấy", "label": "no", "category": "vi_math", "route": "web", "volatility": "never"}
+{"message": "hôm nay là thứ mấy", "label": "no", "category": "vi_clock_shared_diacritic", "route": "web", "volatility": "fast"}
+{"message": "tổng thống Mỹ hiện tại là ai", "label": "search", "category": "vi_entity_attribute", "route": "web", "volatility": "slow"}
+{"message": "bạn tìm giúp tôi việc đó nhé", "label": "search", "category": "vi_explicit_search", "route": "web", "volatility": "fast"}
+{"message": "giá dầu hôm nay là bao nhiêu", "label": "search", "category": "vi_prices", "route": "web", "volatility": "fast"}
+{"message": "cảm ơn, câu trả lời trước rất hữu ích", "label": "no", "category": "vi_conversational", "route": "web", "volatility": "never"}
+{"message": "định lý Pytago là gì", "label": "no", "category": "vi_wiki", "route": "wiki", "volatility": "never"}
+{"message": "東京の今日の天気は", "label": "search", "category": "ja_weather", "route": "weather", "volatility": "fast"}
+{"message": "光合成とは何ですか", "label": "no", "category": "ja_wiki", "route": "wiki", "volatility": "never"}
+{"message": "日本の最新のニュースは何ですか", "label": "search", "category": "ja_news", "route": "news", "volatility": "fast"}
+{"message": "おはようございます", "label": "no", "category": "ja_greeting", "route": "web", "volatility": "never"}
+{"message": "ما هو الطقس اليوم في القاهرة", "label": "search", "category": "ar_weather", "route": "weather", "volatility": "fast"}
+{"message": "ما هو التمثيل الضوئي", "label": "no", "category": "ar_wiki", "route": "wiki", "volatility": "never"}
+{"message": "ما هي آخر الأخبار في مصر", "label": "search", "category": "ar_news", "route": "news", "volatility": "fast"}
+{"message": "شكرا جزيلا", "label": "no", "category": "ar_greeting", "route": "web", "volatility": "never"}
+{"message": "สภาพอากาศวันนี้ที่กรุงเทพเป็นอย่างไร", "label": "search", "category": "th_weather", "route": "weather", "volatility": "fast"}
+{"message": "การสังเคราะห์แสงคืออะไร", "label": "no", "category": "th_wiki", "route": "wiki", "volatility": "never"}
+{"message": "ข่าวล่าสุดในประเทศไทยคืออะไร", "label": "search", "category": "th_news", "route": "news", "volatility": "fast"}
+{"message": "ขอบคุณมาก", "label": "no", "category": "th_greeting", "route": "web", "volatility": "never"}
+{"message": "আজ ঢাকায় আবহাওয়া কেমন", "label": "search", "category": "bn_weather", "route": "weather", "volatility": "fast"}
+{"message": "সালোকসংশ্লেষণ কি", "label": "no", "category": "bn_wiki", "route": "wiki", "volatility": "never"}
+{"message": "অনেক ধন্যবাদ", "label": "no", "category": "bn_greeting", "route": "web", "volatility": "never"}

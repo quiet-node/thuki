@@ -9,7 +9,7 @@
 //! ## Corpus
 //!
 //! ~95 new rows across three externally sourced datasets, committed under
-//! `tests/j5_corpus/`, plus the existing 103-row in-repo decision corpus
+//! `tests/j5_corpus/`, plus the existing 138-row in-repo decision corpus
 //! (`src/websearch/search_decision_eval.jsonl`) reused for composition
 //! tracking. Full provenance (source URL, license, fetch date, filter method)
 //! lives in `docs/search-eval.md`; the short version:
@@ -21,7 +21,7 @@
 //!   time passes. Tracked, **never gates**.
 //! - `j5_corpus/seal0.jsonl` (15 rows, Apache-2.0, `vtllms/sealqa` seal_0
 //!   config): conflicting/noisy-search rows. Tracked, **never gates**.
-//! - The existing decision corpus (103 rows): carries no gold answer (it was
+//! - The existing decision corpus (138 rows): carries no gold answer (it was
 //!   built for search-routing, not answer grading; its own accuracy gate
 //!   already lives in `live_classifier_eval.rs`). Rows are counted in this
 //!   harness's composition report but always skipped from grading, never
@@ -809,6 +809,7 @@ impl PrePass for ScriptedWebPrePass {
             standalone_question: latest_user_message.to_string(),
             queries: vec![latest_user_message.to_string()],
             explicit_search: false,
+            lang: "en".to_string(),
         })
     }
 }
@@ -1366,8 +1367,8 @@ mod tests {
         assert_eq!(count(CorpusSource::SimpleqaVerified), 50);
         assert_eq!(count(CorpusSource::Freshqa), 30);
         assert_eq!(count(CorpusSource::Seal0), 15);
-        assert_eq!(count(CorpusSource::DecisionCorpus), 103);
-        assert_eq!(rows.len(), 198);
+        assert_eq!(count(CorpusSource::DecisionCorpus), 138);
+        assert_eq!(rows.len(), 233);
 
         for r in &rows {
             let should_have_gold = r.source != CorpusSource::DecisionCorpus;

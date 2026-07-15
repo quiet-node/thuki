@@ -37,11 +37,15 @@ use crate::config::defaults::{
 };
 use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
 use crate::websearch::assemble::SourceBlock;
+use crate::websearch::lang::wiki_subdomain;
 use crate::websearch::WIKIPEDIA_ATTRIBUTION;
 
-/// Wikipedia's keyless full-text search and REST summary endpoints.
-const SEARCH_ENDPOINT: &str = "https://en.wikipedia.org/w/api.php";
-const SUMMARY_ENDPOINT: &str = "https://en.wikipedia.org/api/rest_v1/page/summary";
+/// Wikipedia's keyless full-text search and REST summary endpoints, built per
+/// language edition ([`search_endpoint`], [`summary_endpoint`]): a Vietnamese
+/// question is answered from `vi.wikipedia.org`, not from the English edition.
+/// Every edition serves both endpoints with identical shapes (verified live).
+const SEARCH_PATH: &str = "/w/api.php";
+const SUMMARY_PATH: &str = "/api/rest_v1/page/summary";
 
 /// Descriptive User-Agent Wikimedia's API etiquette policy requires; a
 /// missing or generic one is rejected with `403` (verified live 2026-07-08).
@@ -59,17 +63,18 @@ pub(crate) struct WikiSummary {
 /// Whether `question` carries a freshness signal that disqualifies the
 /// Wikipedia vertical even when the classifier routed the turn to `wiki`. True
 /// when the lowercased question contains any [`WIKI_VOLATILITY_MARKERS`] token,
-/// any [`WIKI_VOLATILITY_PHRASES`] whole phrase, or a 4-digit year at or after
-/// [`WIKI_VOLATILITY_MIN_YEAR`]. Wikipedia's lead summary answers the stable
-/// subject, never its live state, so such a question must fall through to the
-/// news / engine tiers.
+/// any [`WIKI_VOLATILITY_PHRASES`] whole phrase, any
+/// [`crate::config::defaults::PRICE_INTENT_MARKERS`] token, or a 4-digit year
+/// at or after [`WIKI_VOLATILITY_MIN_YEAR`]. Wikipedia's lead summary answers
+/// the stable subject, never its live state, so such a question must fall
+/// through to the news / engine tiers.
 ///
 /// This is also the sole freshness signal for the rest of the search pipeline
 /// (see `orchestrator::run_web`'s `freshness` variable): the same `true`/`false`
-/// gates the DuckDuckGo/Google News date-bias operators and the recency-prior
-/// fusion re-ranking, not just the Wikipedia vertical. `WIKI_VOLATILITY_PHRASES`
-/// documents the age/biography patterns in detail, including which related
-/// phrasings are deliberately excluded and why.
+/// gates the DuckDuckGo/Google News date-bias operators, the recency-prior
+/// fusion re-ranking, and the evidence path-year filter, not just the Wikipedia
+/// vertical. `WIKI_VOLATILITY_PHRASES` documents the age/biography patterns in
+/// detail, including which related phrasings are deliberately excluded and why.
 pub(crate) fn is_volatile_question(question: &str) -> bool {
     let lower = question.to_lowercase();
     let tokens: Vec<&str> = lower
@@ -77,6 +82,14 @@ pub(crate) fn is_volatile_question(question: &str) -> bool {
         .filter(|t| !t.is_empty())
         .collect();
     if tokens.iter().any(|t| WIKI_VOLATILITY_MARKERS.contains(t)) {
+        return true;
+    }
+    // Live market quotes change as fast as "today" news; force the same
+    // freshness path even when the user omits an explicit "today" word.
+    if tokens
+        .iter()
+        .any(|t| crate::config::defaults::PRICE_INTENT_MARKERS.contains(t))
+    {
         return true;
     }
     if tokens
@@ -90,6 +103,19 @@ pub(crate) fn is_volatile_question(question: &str) -> bool {
     WIKI_VOLATILITY_PHRASES
         .iter()
         .any(|phrase| padded.contains(&format!(" {phrase} ")))
+}
+
+/// True when `question` is a price / market-quote ask (any
+/// [`crate::config::defaults::PRICE_INTENT_MARKERS`] token). Used by the
+/// evidence pipeline to require price-like numbers in assembled chunks and to
+/// refuse a confident answer when every surviving page is numberless marketing
+/// chrome (the 2026-07-14 gold-price regression class).
+pub(crate) fn is_price_intent_question(question: &str) -> bool {
+    let lower = question.to_lowercase();
+    lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .any(|t| crate::config::defaults::PRICE_INTENT_MARKERS.contains(&t))
 }
 
 /// Whether `question` names a 4-digit year that conflicts with the resolved
@@ -133,11 +159,35 @@ fn four_digit_years(text: &str) -> Vec<u32> {
     out
 }
 
+/// The base URL of one Wikipedia language edition, e.g. `https://vi.wikipedia.org`.
+///
+/// SECURITY: `lang` is interpolated into a HOSTNAME, so the value MUST be
+/// static and allowlisted. [`wiki_subdomain`] is the only way to obtain one: it
+/// is a lookup that returns `&'static str` and answers `en` for anything it does
+/// not recognise, so no runtime string, however it was derived, can become a
+/// host here.
+fn edition_url(lang: &str) -> String {
+    format!("https://{}.wikipedia.org", wiki_subdomain(lang))
+}
+
+/// The search endpoint of the `lang` edition. See [`edition_url`].
+fn search_endpoint(lang: &str) -> String {
+    format!("{}{SEARCH_PATH}", edition_url(lang))
+}
+
+/// The REST summary endpoint of the `lang` edition. See [`edition_url`].
+fn summary_endpoint(lang: &str) -> String {
+    format!("{}{SUMMARY_PATH}", edition_url(lang))
+}
+
 /// Builds the full-text search GET request resolving `question` to a
-/// candidate article title.
-pub(crate) fn search_request(question: &str) -> HttpRequest {
-    // SEARCH_ENDPOINT is a compile-time-valid absolute URL.
-    let mut url = url::Url::parse(SEARCH_ENDPOINT).expect("static endpoint");
+/// candidate article title, against the `lang` edition. `lang` is the turn's
+/// resolved language (see [`crate::websearch::lang::resolve_lang`]), so the whole
+/// vertical (search, summary, and the article URL the writer cites) stays on one
+/// edition.
+pub(crate) fn search_request(question: &str, lang: &str) -> HttpRequest {
+    // The edition URL is built from an allowlisted static subdomain.
+    let mut url = url::Url::parse(&search_endpoint(lang)).expect("static endpoint");
     url.query_pairs_mut()
         .append_pair("action", "query")
         .append_pair("list", "search")
@@ -160,10 +210,16 @@ pub(crate) fn parse_search_title(body: &str) -> Option<String> {
     top.get("title")?.as_str().map(str::to_string)
 }
 
-/// Builds the REST summary GET request for `title`.
-pub(crate) fn summary_request(title: &str) -> HttpRequest {
-    // SUMMARY_ENDPOINT is a compile-time-valid absolute URL.
-    let mut url = url::Url::parse(SUMMARY_ENDPOINT).expect("static endpoint");
+/// Builds the REST summary GET request for `title` on the `lang` edition.
+///
+/// `lang` is passed in rather than re-detected from `title`: the title comes
+/// back from the search above in whatever form that edition stores it, and a
+/// Vietnamese edition holds plenty of unmarked Latin titles ("Barack Obama").
+/// Re-detecting would send a Vietnamese article's title to the English edition
+/// and miss.
+pub(crate) fn summary_request(title: &str, lang: &str) -> HttpRequest {
+    // The edition URL is built from an allowlisted static subdomain.
+    let mut url = url::Url::parse(&summary_endpoint(lang)).expect("static endpoint");
     url.path_segments_mut()
         .expect("https URL has a path")
         .push(title);
@@ -177,8 +233,10 @@ pub(crate) fn summary_request(title: &str) -> HttpRequest {
 
 /// Parses a REST summary response into a [`WikiSummary`], or `None` when the
 /// page is a disambiguation page, missing, or otherwise not a plain article
-/// with a non-empty extract.
-pub(crate) fn parse_summary(body: &str) -> Option<WikiSummary> {
+/// with a non-empty extract. `lang` names the edition the response came from,
+/// so the page URL falls back to that edition rather than always to English when
+/// the response omits `content_urls`.
+pub(crate) fn parse_summary(body: &str, lang: &str) -> Option<WikiSummary> {
     let json: serde_json::Value = serde_json::from_str(body).ok()?;
     if json.get("type")?.as_str()? != "standard" {
         return None;
@@ -194,7 +252,7 @@ pub(crate) fn parse_summary(body: &str) -> Option<WikiSummary> {
         .and_then(|d| d.get("page"))
         .and_then(|p| p.as_str())
         .map(str::to_string)
-        .unwrap_or_else(|| format!("https://en.wikipedia.org/wiki/{title}"));
+        .unwrap_or_else(|| format!("{}/wiki/{title}", edition_url(lang)));
     Some(WikiSummary {
         title,
         extract,
@@ -219,6 +277,18 @@ pub(crate) fn wiki_source_block(summary: &WikiSummary) -> SourceBlock {
 /// the [`is_volatile_question`] guard before calling this. Returns `None` on any
 /// miss so the caller falls through to the scraped-engine tier.
 ///
+/// `lang` is the turn's language, resolved once by the orchestrator from the
+/// user's ORIGINAL message (see [`crate::websearch::lang::resolve_lang`]) and
+/// carried through both requests and the parse, so search, summary and the cited
+/// article URL all come from the same Wikipedia edition.
+///
+/// It must be the user's language, not the rewritten question's: the edition swap
+/// and an in-language query are CO-GATED. Verified live, the Vietnamese edition
+/// does not cross-resolve English terms (`photosynthesis` returns the article for
+/// "Plants"), so sending an English query to `vi.wikipedia` turns a correct answer
+/// into a wrong one. Both halves come from the same resolution, so they cannot
+/// come apart.
+///
 /// Coverage-excluded: thin async glue over the injectable transport
 /// delegating every decision to the pure helpers above, which are all tested
 /// directly; the glue itself is still exercised against
@@ -227,8 +297,12 @@ pub(crate) fn wiki_source_block(summary: &WikiSummary) -> SourceBlock {
 pub(crate) async fn fetch_encyclopedia(
     transport: &dyn HttpTransport,
     standalone_question: &str,
+    lang: &str,
 ) -> Option<SourceBlock> {
-    let search_response = match transport.send(&search_request(standalone_question)).await {
+    let search_response = match transport
+        .send(&search_request(standalone_question, lang))
+        .await
+    {
         Ok(response) => response,
         Err(e) => {
             eprintln!("[search] vertical=wiki search_transport_error {e}");
@@ -246,7 +320,7 @@ pub(crate) async fn fetch_encyclopedia(
         eprintln!("[search] vertical=wiki no_search_hit -> engines");
         return None;
     };
-    let summary_response = match transport.send(&summary_request(&title)).await {
+    let summary_response = match transport.send(&summary_request(&title, lang)).await {
         Ok(response) => response,
         Err(e) => {
             eprintln!("[search] vertical=wiki summary_transport_error {e}");
@@ -260,7 +334,8 @@ pub(crate) async fn fetch_encyclopedia(
         );
         return None;
     }
-    let Some(summary) = parse_summary(&String::from_utf8_lossy(&summary_response.body)) else {
+    let Some(summary) = parse_summary(&String::from_utf8_lossy(&summary_response.body), lang)
+    else {
         eprintln!("[search] vertical=wiki summary_unusable title={title:?} -> engines");
         return None;
     };
@@ -314,6 +389,15 @@ mod tests {
         assert!(is_volatile_question("what is trending right now"));
         assert!(is_volatile_question("the best phones this year"));
         assert!(is_volatile_question("what is the World Cup 2026"));
+        // Multilingual "today" (token-joined phrases) must arm freshness the
+        // same way English "today" does. Regression: 2026-07-14 gold smoke.
+        assert!(is_volatile_question("giá vàng hôm nay bao nhiêu"));
+        assert!(is_volatile_question("thời tiết Hà Nội hôm nay thế nào"));
+        // Price intent alone (no "today" word) still forces the freshness path.
+        assert!(is_volatile_question("giá vàng SJC"));
+        assert!(is_volatile_question("what is the gold price"));
+        assert!(is_price_intent_question("giá vàng hôm nay bao nhiêu"));
+        assert!(!is_price_intent_question("what is photosynthesis"));
     }
 
     #[test]
@@ -422,9 +506,9 @@ mod tests {
 
     #[test]
     fn search_request_carries_question_and_single_result() {
-        let req = search_request("what is photosynthesis");
+        let req = search_request("what is photosynthesis", "en");
         assert_eq!(req.method, HttpMethod::Get);
-        assert!(req.url.starts_with(SEARCH_ENDPOINT));
+        assert!(req.url.starts_with("https://en.wikipedia.org/w/api.php"));
         assert!(req.url.contains("srsearch=what+is+photosynthesis"));
         assert!(req.url.contains("srlimit=1"));
         // Wikimedia's API policy rejects requests with no descriptive UA.
@@ -436,7 +520,7 @@ mod tests {
 
     #[test]
     fn summary_request_percent_encodes_title_path_segment() {
-        let req = summary_request("President of France");
+        let req = summary_request("President of France", "en");
         assert!(req
             .url
             .starts_with("https://en.wikipedia.org/api/rest_v1/page/summary/President"));
@@ -445,6 +529,38 @@ mod tests {
             .headers
             .iter()
             .any(|(k, v)| k == "User-Agent" && v == WIKI_USER_AGENT));
+    }
+
+    #[test]
+    fn requests_move_to_the_resolved_language_edition() {
+        // Both endpoints of the vertical follow the language, and the User-Agent
+        // requirement holds on every edition (a UA-less request gets 403).
+        let search = search_request("thời tiết Hà Nội hôm nay", "vi");
+        assert!(search.url.starts_with("https://vi.wikipedia.org/w/api.php"));
+        let summary = summary_request("Hà Nội", "ja");
+        assert!(summary
+            .url
+            .starts_with("https://ja.wikipedia.org/api/rest_v1/page/summary/"));
+        for req in [&search, &summary] {
+            assert!(req
+                .headers
+                .iter()
+                .any(|(k, v)| k == "User-Agent" && v == WIKI_USER_AGENT));
+        }
+    }
+
+    #[test]
+    fn an_unallowlisted_language_cannot_change_the_hostname() {
+        // The subdomain is a HOST, so anything not on the allowlist, including
+        // an injection attempt, must land on `en` and nowhere else.
+        for lang in ["xx", "", "evil.com", "en.wikipedia.org.attacker.net"] {
+            let req = search_request("q", lang);
+            assert!(
+                req.url.starts_with("https://en.wikipedia.org/"),
+                "{lang} escaped the allowlist: {}",
+                req.url
+            );
+        }
     }
 
     // ── parsers ───────────────────────────────────────────────────────────────
@@ -466,7 +582,7 @@ mod tests {
 
     #[test]
     fn parse_summary_reads_standard_article() {
-        let summary = parse_summary(SUMMARY_FIXTURE).unwrap();
+        let summary = parse_summary(SUMMARY_FIXTURE, "en").unwrap();
         assert_eq!(summary.title, "Photosynthesis");
         assert!(summary.extract.starts_with("Photosynthesis is"));
         assert_eq!(
@@ -477,26 +593,30 @@ mod tests {
 
     #[test]
     fn parse_summary_none_on_disambiguation() {
-        assert!(parse_summary(DISAMBIGUATION_FIXTURE).is_none());
+        assert!(parse_summary(DISAMBIGUATION_FIXTURE, "en").is_none());
     }
 
     #[test]
     fn parse_summary_none_on_missing_or_empty_extract() {
         let no_extract = r#"{"type":"standard","title":"X"}"#;
-        assert!(parse_summary(no_extract).is_none());
+        assert!(parse_summary(no_extract, "en").is_none());
         let blank_extract = r#"{"type":"standard","title":"X","extract":"   "}"#;
-        assert!(parse_summary(blank_extract).is_none());
-        assert!(parse_summary("junk").is_none());
+        assert!(parse_summary(blank_extract, "en").is_none());
+        assert!(parse_summary("junk", "en").is_none());
     }
 
     #[test]
     fn parse_summary_falls_back_to_constructed_url_without_content_urls() {
         let body = r#"{"type":"standard","title":"Photosynthesis","extract":"Photosynthesis is a process."}"#;
-        let summary = parse_summary(body).unwrap();
+        let summary = parse_summary(body, "en").unwrap();
         assert_eq!(
             summary.page_url,
             "https://en.wikipedia.org/wiki/Photosynthesis"
         );
+        // The fallback URL follows the edition the response came from, so the
+        // writer never cites an English article for a Vietnamese answer.
+        let vi = parse_summary(body, "vi").unwrap();
+        assert_eq!(vi.page_url, "https://vi.wikipedia.org/wiki/Photosynthesis");
     }
 
     // ── source block ─────────────────────────────────────────────────────────
@@ -524,8 +644,12 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_encyclopedia_resolves_full_chain() {
-        let search_url = search_request("what is photosynthesis").url;
-        let summary_url = summary_request("Photosynthesis").url;
+        // The caller passes the edition in, so the fixtures are keyed by the same
+        // value the fetch uses and the test no longer depends on the machine's
+        // locale at all.
+        let lang = "en";
+        let search_url = search_request("what is photosynthesis", lang).url;
+        let summary_url = summary_request("Photosynthesis", lang).url;
         let transport = FakeHttpTransport::new()
             .with_response(
                 &search_url,
@@ -543,11 +667,53 @@ mod tests {
                     body: SUMMARY_FIXTURE.as_bytes().to_vec(),
                 },
             );
-        let block = fetch_encyclopedia(&transport, "what is photosynthesis")
+        let block = fetch_encyclopedia(&transport, "what is photosynthesis", lang)
             .await
             .unwrap();
         assert_eq!(block.title, "Photosynthesis");
         assert!(block.text.contains("Photosynthesis is"));
+    }
+
+    #[tokio::test]
+    async fn fetch_encyclopedia_stays_on_the_edition_the_caller_named() {
+        // The whole vertical (search, summary, cited URL) must ride the caller's
+        // language. Sending a Vietnamese question to `en.wikipedia` (or, worse, a
+        // rewritten English question to `vi.wikipedia`, which does not
+        // cross-resolve English terms) is the failure this parameter prevents.
+        let search_url = search_request("quang hợp là gì", "vi").url;
+        let summary_url = summary_request("Quang hợp", "vi").url;
+        assert!(search_url.starts_with("https://vi.wikipedia.org/"));
+        let transport = FakeHttpTransport::new()
+            .with_response(
+                &search_url,
+                HttpResponse {
+                    status: 200,
+                    final_url: search_url.clone(),
+                    body: r#"{"query":{"search":[{"title":"Quang hợp"}]}}"#
+                        .as_bytes()
+                        .to_vec(),
+                },
+            )
+            .with_response(
+                &summary_url,
+                HttpResponse {
+                    status: 200,
+                    final_url: summary_url.clone(),
+                    body: r#"{"type":"standard","title":"Quang hợp","extract":"Quang hợp là quá trình thu nhận năng lượng ánh sáng."}"#
+                        .as_bytes()
+                        .to_vec(),
+                },
+            );
+        let block = fetch_encyclopedia(&transport, "quang hợp là gì", "vi")
+            .await
+            .unwrap();
+        assert_eq!(block.title, "Quang hợp");
+        // The cited URL falls back to the same edition, never to English.
+        assert!(
+            block.url.starts_with("https://vi.wikipedia.org/"),
+            "{}",
+            block.url
+        );
     }
 
     #[tokio::test]
@@ -556,9 +722,11 @@ mod tests {
         // through. Routing/volatility gating is the orchestrator's job now, so
         // fetch_encyclopedia always issues the search request when called.
         let transport = FakeHttpTransport::new();
-        assert!(fetch_encyclopedia(&transport, "what is photosynthesis")
-            .await
-            .is_none());
+        assert!(
+            fetch_encyclopedia(&transport, "what is photosynthesis", "en")
+                .await
+                .is_none()
+        );
         assert!(transport.calls().iter().any(|c| c.url.contains("srsearch")));
     }
 
@@ -567,8 +735,9 @@ mod tests {
         // The question names 2026 but the resolved article is a 2023 edition:
         // the year-mismatch guard rejects it so the turn reaches the engines.
         let question = "what is the status of the World Cup 2026";
-        let search_url = search_request(question).url;
-        let summary_url = summary_request("2023 FIFA Women's World Cup").url;
+        let lang = "en";
+        let search_url = search_request(question, lang).url;
+        let summary_url = summary_request("2023 FIFA Women's World Cup", lang).url;
         let transport = FakeHttpTransport::new()
             .with_response(
                 &search_url,
@@ -590,13 +759,16 @@ mod tests {
                         .to_vec(),
                 },
             );
-        assert!(fetch_encyclopedia(&transport, question).await.is_none());
+        assert!(fetch_encyclopedia(&transport, question, lang)
+            .await
+            .is_none());
     }
 
     #[tokio::test]
     async fn fetch_encyclopedia_none_when_summary_is_disambiguation() {
-        let search_url = search_request("what is mercury").url;
-        let summary_url = summary_request("Mercury").url;
+        let lang = "en";
+        let search_url = search_request("what is mercury", lang).url;
+        let summary_url = summary_request("Mercury", lang).url;
         let transport = FakeHttpTransport::new()
             .with_response(
                 &search_url,
@@ -614,7 +786,7 @@ mod tests {
                     body: DISAMBIGUATION_FIXTURE.as_bytes().to_vec(),
                 },
             );
-        assert!(fetch_encyclopedia(&transport, "what is mercury")
+        assert!(fetch_encyclopedia(&transport, "what is mercury", lang)
             .await
             .is_none());
     }

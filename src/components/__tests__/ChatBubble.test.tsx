@@ -1439,6 +1439,27 @@ describe('ChatBubble', () => {
       });
     });
 
+    it('does not show bare Sources chrome for decide-only after reasoning (NoSearch flash)', () => {
+      // Classifier emitted deciding then NoSearch; reasoning finished and
+      // answer tokens start. Must not paint inventory "Sources" with dots.
+      render(
+        <ChatBubble
+          role="assistant"
+          content="Hello! How can I help?"
+          index={0}
+          isStreaming
+          isSearching
+          searchStage={{ kind: 'analyzing_query' }}
+          thinkingContent="User is greeting."
+          isThinking={false}
+        />,
+      );
+      expect(screen.queryByTestId('search-progress-block')).toBeNull();
+      expect(screen.queryByTestId('request-status-strip')).toBeNull();
+      expect(screen.queryByText(/^Sources/)).toBeNull();
+      expect(screen.getByTestId('reasoning-block')).toBeInTheDocument();
+    });
+
     it('demotes SearchProgress when thinking starts and shows sources chip under Reasoning', () => {
       const sources = [{ title: 'A', url: 'https://example.com/a' }];
       const { rerender } = render(

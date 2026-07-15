@@ -41,6 +41,7 @@ use scraper::{Html, Selector};
 use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
 use crate::trace::EngineStat;
 use crate::websearch::credibility::{classify_domain, DomainClass};
+use crate::websearch::lang::{accept_language, ddg_region, mojeek_language_bias};
 use crate::websearch::serp_cache::WebCache;
 
 /// One search-engine result row.
@@ -100,7 +101,11 @@ struct Engine {
     /// Builds the outbound request for `query`. `freshness` biases the request
     /// toward recent results when the turn's standalone question carried a
     /// freshness signal (see [`super::encyclopedia::is_volatile_question`]).
-    build: fn(&str, bool) -> HttpRequest,
+    /// `lang` is the turn's resolved language (see
+    /// [`crate::websearch::lang::resolve_lang`]), threaded in from the
+    /// orchestrator rather than derived here: `query` is a model rewrite, and its
+    /// wording is a retrieval artifact, not a language signal.
+    build: fn(&str, bool, &str) -> HttpRequest,
     /// Parses this engine's SERP HTML into result rows.
     parse: fn(&str) -> Vec<SearchHit>,
     /// How long the engine is skipped after a block (seconds). Matches the
@@ -315,6 +320,13 @@ pub(crate) fn transport_unreachable(stats: &[EngineStat]) -> bool {
 /// not) to bias results toward recent content when the turn's standalone
 /// question carried a freshness signal.
 ///
+/// `lang` is the turn's resolved language (see
+/// [`crate::websearch::lang::resolve_lang`]), forwarded to every engine's
+/// request builder and folded into the SERP cache key. It belongs in the key for
+/// exactly the reason `freshness` does: the same query string sent under two
+/// languages is two different requests with two different result sets, so one
+/// language's list must never be replayed as the other's.
+///
 /// `bypass_cache` is the read-bypass, write-through contract for an explicit
 /// user re-search ("look it up again"): the user is telling us the result we
 /// just served (possibly straight from this same cache, within its TTL) was
@@ -354,6 +366,7 @@ pub async fn web_search(
     query: &str,
     health: &EngineHealth,
     freshness: bool,
+    lang: &str,
     cache: &WebCache,
     bypass_cache: bool,
 ) -> (Vec<SearchHit>, Vec<EngineStat>) {
@@ -379,7 +392,7 @@ pub async fn web_search(
             continue;
         }
         if !bypass_cache {
-            if let Some(hits) = cache.serp_get(engine.name, query, freshness) {
+            if let Some(hits) = cache.serp_get(engine.name, query, freshness, lang) {
                 eprintln!(
                     "[search] engine={} serp cache hit hits={}",
                     engine.name,
@@ -394,7 +407,7 @@ pub async fn web_search(
                 continue;
             }
         }
-        let request = (engine.build)(query, freshness);
+        let request = (engine.build)(query, freshness, lang);
         tasks.push(async move {
             let outcome = match transport.send(&request).await {
                 Err(_) => EngineOutcome::TransportError,
@@ -449,7 +462,7 @@ pub async fn web_search(
                 hits.truncate(crate::config::defaults::SERP_MAX_RAW_HITS_PER_QUERY);
                 // Only Ok lists are cached; a repeat of this exact query within
                 // the TTL is then served from memory above.
-                cache.serp_put(name, query, freshness, hits.clone());
+                cache.serp_put(name, query, freshness, lang, hits.clone());
                 lists.push(hits);
             }
             EngineOutcome::Blocked => {
@@ -607,19 +620,26 @@ fn drop_incredible(list: Vec<SearchHit>) -> Vec<SearchHit> {
 /// via [`crate::config::defaults::DDG_FRESHNESS_DF_VALUE`], set both as a `df`
 /// form field and as a `df` cookie: the HTML endpoint honours either placement,
 /// so both are set for reliability.
-pub(crate) fn ddg_html_request(query: &str, freshness: bool) -> HttpRequest {
+///
+/// The turn's resolved `lang` drives BOTH the `kl` region and the
+/// `Accept-Language` header, and it takes both because `kl` selects a region, not
+/// a language: DuckDuckGo's HTML endpoint has no language selector, so a fixed
+/// English header would fight a non-English region and keep the results English.
+/// An unallowlisted language sends `wt-wt` (worldwide) rather than the `us-en`
+/// that was previously forced onto every query.
+pub(crate) fn ddg_html_request(query: &str, freshness: bool, lang: &str) -> HttpRequest {
     let mut headers = vec![
         ("User-Agent".to_string(), BROWSER_USER_AGENT.to_string()),
         (
             "Accept".to_string(),
             "text/html,application/xhtml+xml".to_string(),
         ),
-        ("Accept-Language".to_string(), "en-US,en;q=0.9".to_string()),
+        ("Accept-Language".to_string(), accept_language(lang)),
         ("Referer".to_string(), "https://duckduckgo.com/".to_string()),
     ];
     let mut form = vec![
         ("q".to_string(), query.to_string()),
-        ("kl".to_string(), "us-en".to_string()),
+        ("kl".to_string(), ddg_region(lang).to_string()),
         ("b".to_string(), String::new()),
     ];
     if freshness {
@@ -640,7 +660,7 @@ pub(crate) fn ddg_html_request(query: &str, freshness: bool) -> HttpRequest {
 /// destination URLs.
 ///
 /// `freshness` is accepted (matching [`ddg_html_request`]'s signature, since
-/// both engines share [`Engine::build`]'s `fn(&str, bool) -> HttpRequest`
+/// both engines share [`Engine::build`]'s `fn(&str, bool, &str) -> HttpRequest`
 /// shape) but is intentionally NOT applied to the query. This used to append
 /// a `since:week` operator, but that value is invalid: Mojeek's own
 /// documented `since:` operator accepts only `YYYYMMDD`, `day`, `month`, or
@@ -651,10 +671,21 @@ pub(crate) fn ddg_html_request(query: &str, freshness: bool) -> HttpRequest {
 /// `df=w` filter (see [`ddg_html_request`]) and Mojeek always searches the
 /// plain query, keeping it in the fusion instead of sending it a query shape
 /// it does not support.
-pub(crate) fn mojeek_request(query: &str, _freshness: bool) -> HttpRequest {
+///
+/// The turn's resolved `lang` is applied through Mojeek's documented `lb`
+/// (language) and `lbb` (bias strength) parameters, plus the matching
+/// `Accept-Language`. An English or unallowlisted language sends neither
+/// parameter: English is Mojeek's own default, so restating it would only change
+/// a request shape that already works.
+pub(crate) fn mojeek_request(query: &str, _freshness: bool, lang: &str) -> HttpRequest {
     // MOJEEK_ENDPOINT is a compile-time-valid absolute URL.
     let mut url = url::Url::parse(MOJEEK_ENDPOINT).expect("static endpoint");
     url.query_pairs_mut().append_pair("q", query);
+    if let Some((lb, lbb)) = mojeek_language_bias(lang) {
+        url.query_pairs_mut()
+            .append_pair("lb", lb)
+            .append_pair("lbb", lbb);
+    }
     HttpRequest {
         method: HttpMethod::Get,
         url: url.to_string(),
@@ -664,7 +695,7 @@ pub(crate) fn mojeek_request(query: &str, _freshness: bool) -> HttpRequest {
                 "Accept".to_string(),
                 "text/html,application/xhtml+xml".to_string(),
             ),
-            ("Accept-Language".to_string(), "en-US,en;q=0.9".to_string()),
+            ("Accept-Language".to_string(), accept_language(lang)),
         ],
         form: Vec::new(),
     }
@@ -1174,7 +1205,7 @@ mod tests {
 
     #[test]
     fn ddg_request_is_post_with_query_form() {
-        let req = ddg_html_request("rust bm25", false);
+        let req = ddg_html_request("rust bm25", false, "en");
         assert_eq!(req.method, HttpMethod::Post);
         assert_eq!(req.url, DDG_HTML_ENDPOINT);
         assert!(req.form.iter().any(|(k, v)| k == "q" && v == "rust bm25"));
@@ -1187,7 +1218,7 @@ mod tests {
 
     #[test]
     fn mojeek_request_is_get_with_query_param() {
-        let req = mojeek_request("rust version", false);
+        let req = mojeek_request("rust version", false, "en");
         assert_eq!(req.method, HttpMethod::Get);
         assert!(req.url.starts_with(MOJEEK_ENDPOINT));
         assert!(req.url.contains("q=rust+version") || req.url.contains("q=rust%20version"));
@@ -1197,18 +1228,73 @@ mod tests {
         }));
     }
 
+    // ── language parity ─────────────────────────────────────────────────────
+
+    #[test]
+    fn ddg_request_carries_the_region_and_header_of_the_request_language() {
+        // The language is the TURN's, passed in, never inferred from the query
+        // text. Vietnamese needs BOTH: `vn-en` is a region, and DuckDuckGo's HTML
+        // endpoint has no language selector, so only the header can ask for
+        // Vietnamese-language results.
+        let req = ddg_html_request("giá vàng hôm nay", false, "vi");
+        assert!(req.form.iter().any(|(k, v)| k == "kl" && v == "vn-en"));
+        assert!(req
+            .headers
+            .iter()
+            .any(|(k, v)| k == "Accept-Language" && v == "vi,en;q=0.5"));
+
+        // Including for an ENGLISH companion query the classifier may emit
+        // alongside the native one on a Vietnamese turn: it still searches the
+        // Vietnamese region, because that is where the user is.
+        let req = ddg_html_request("Hanoi gold price today", false, "vi");
+        assert!(req.form.iter().any(|(k, v)| k == "kl" && v == "vn-en"));
+
+        let req = ddg_html_request("東京の天気は", false, "ja");
+        assert!(req.form.iter().any(|(k, v)| k == "kl" && v == "jp-jp"));
+        assert!(req
+            .headers
+            .iter()
+            .any(|(k, v)| k == "Accept-Language" && v == "ja,en;q=0.5"));
+    }
+
+    #[test]
+    fn mojeek_request_carries_the_language_bias_of_the_request_language() {
+        let req = mojeek_request("giá vàng hôm nay", false, "vi");
+        assert!(req.url.contains("lb=vi"));
+        assert!(req.url.contains("lbb=100"));
+        assert!(req
+            .headers
+            .iter()
+            .any(|(k, v)| k == "Accept-Language" && v == "vi,en;q=0.5"));
+    }
+
+    #[test]
+    fn an_unallowlisted_language_cannot_reach_either_engines_request() {
+        for hostile in ["evil", "../../vi", "xx", ""] {
+            let req = ddg_html_request("q", false, hostile);
+            // The worldwide default, never the hostile string, and never `us-en`.
+            assert!(req.form.iter().any(|(k, v)| k == "kl" && v == "wt-wt"));
+            assert!(req
+                .headers
+                .iter()
+                .any(|(k, v)| k == "Accept-Language" && v == "en-US,en;q=0.9"));
+            let req = mojeek_request("q", false, hostile);
+            assert!(!req.url.contains("lb="), "{}", req.url);
+        }
+    }
+
     // ── freshness operators ──────────────────────────────────────────────────
 
     #[test]
     fn ddg_request_carries_no_freshness_operator_by_default() {
-        let req = ddg_html_request("rust bm25", false);
+        let req = ddg_html_request("rust bm25", false, "en");
         assert!(!req.form.iter().any(|(k, _)| k == "df"));
         assert!(!req.headers.iter().any(|(k, _)| k == "Cookie"));
     }
 
     #[test]
     fn ddg_request_adds_df_form_field_and_cookie_when_fresh() {
-        let req = ddg_html_request("rust bm25", true);
+        let req = ddg_html_request("rust bm25", true, "en");
         assert!(req.form.iter().any(|(k, v)| k == "df" && v == "w"));
         assert!(req
             .headers
@@ -1220,7 +1306,7 @@ mod tests {
 
     #[test]
     fn mojeek_request_carries_no_freshness_operator_by_default() {
-        let req = mojeek_request("rust version", false);
+        let req = mojeek_request("rust version", false, "en");
         assert!(!req.url.contains("since"));
     }
 
@@ -1229,8 +1315,8 @@ mod tests {
         // Mojeek's `since:` operator does not support week granularity (see
         // `mojeek_request`'s rustdoc), so freshness=true must produce the exact
         // same request as freshness=false: no operator, no query mutation.
-        let fresh = mojeek_request("rust version", true);
-        let plain = mojeek_request("rust version", false);
+        let fresh = mojeek_request("rust version", true, "en");
+        let plain = mojeek_request("rust version", false, "en");
         assert_eq!(fresh.url, plain.url);
         assert!(!fresh.url.contains("since"));
     }
@@ -1475,7 +1561,7 @@ mod tests {
         // An end-to-end check that a drop-class hit vanishes from the fused output.
         // DuckDuckGo is forced cooling so only Mojeek runs, keeping the result
         // deterministic; its list carries one hoax domain and one legitimate one.
-        let mojeek_url = mojeek_request("q", false).url;
+        let mojeek_url = mojeek_request("q", false, "en").url;
         let body = r#"
           <ul class="results-standard">
             <li><h2><a class="title" href="https://now8news.com/hoax">Hoax</a></h2></li>
@@ -1485,8 +1571,16 @@ mod tests {
         let transport = FakeHttpTransport::new().with_response(&mojeek_url, ok(&mojeek_url, body));
         let health = EngineHealth::new();
         health.mark_blocked("duckduckgo", 3600);
-        let (hits, _stats) =
-            web_search(&transport, "q", &health, false, &empty_web_cache(), false).await;
+        let (hits, _stats) = web_search(
+            &transport,
+            "q",
+            &health,
+            false,
+            "en",
+            &empty_web_cache(),
+            false,
+        )
+        .await;
         let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
         assert!(!urls.iter().any(|u| u.contains("now8news")));
         assert!(urls.contains(&"https://legit.example/real"));
@@ -1577,6 +1671,7 @@ mod tests {
             "q",
             &EngineHealth::new(),
             true,
+            "en",
             &empty_web_cache(),
             false,
         )
@@ -1597,7 +1692,7 @@ mod tests {
     async fn web_search_races_and_fuses_both_engines() {
         // Both engines answer Ok with disjoint URLs: the fused list carries hits
         // from both, and each engine got exactly one request (burst-safe).
-        let mojeek_url = mojeek_request("q", false).url;
+        let mojeek_url = mojeek_request("q", false, "en").url;
         let transport = FakeHttpTransport::new()
             .with_response(DDG_HTML_ENDPOINT, ok(DDG_HTML_ENDPOINT, DDG_HTML_FIXTURE))
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
@@ -1606,6 +1701,7 @@ mod tests {
             "q",
             &EngineHealth::new(),
             false,
+            "en",
             &empty_web_cache(),
             false,
         )
@@ -1644,7 +1740,7 @@ mod tests {
     async fn web_search_cools_blocked_engine_and_still_fuses_the_other() {
         // The live failure mode: DuckDuckGo hard-blocks (HTTP 202 challenge). It
         // is marked cooling, and Mojeek's results still come back fused.
-        let mojeek_url = mojeek_request("q", false).url;
+        let mojeek_url = mojeek_request("q", false, "en").url;
         let health = EngineHealth::new();
         let transport = FakeHttpTransport::new()
             .with_response(
@@ -1656,8 +1752,16 @@ mod tests {
                 },
             )
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let (hits, stats) =
-            web_search(&transport, "q", &health, false, &empty_web_cache(), false).await;
+        let (hits, stats) = web_search(
+            &transport,
+            "q",
+            &health,
+            false,
+            "en",
+            &empty_web_cache(),
+            false,
+        )
+        .await;
         // Blocked engine contributes no list; Mojeek's two hits survive.
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].url, "https://rust-lang.org/tools/install/");
@@ -1687,7 +1791,7 @@ mod tests {
         // One engine returns 200 with zero parsed rows (Empty): it adds no list
         // and is NOT cooled (an empty page is a bad query, not a ban), while the
         // other engine's results still come back fused.
-        let mojeek_url = mojeek_request("q", false).url;
+        let mojeek_url = mojeek_request("q", false, "en").url;
         let health = EngineHealth::new();
         let transport = FakeHttpTransport::new()
             .with_response(
@@ -1695,8 +1799,16 @@ mod tests {
                 ok(DDG_HTML_ENDPOINT, "<html><body>no results</body></html>"),
             )
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let (hits, stats) =
-            web_search(&transport, "q", &health, false, &empty_web_cache(), false).await;
+        let (hits, stats) = web_search(
+            &transport,
+            "q",
+            &health,
+            false,
+            "en",
+            &empty_web_cache(),
+            false,
+        )
+        .await;
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].url, "https://rust-lang.org/tools/install/");
         // Empty is not a block: DuckDuckGo stays available for the next query.
@@ -1721,7 +1833,7 @@ mod tests {
 
     #[tokio::test]
     async fn web_search_empty_when_all_engines_blocked() {
-        let mojeek_url = mojeek_request("q", false).url;
+        let mojeek_url = mojeek_request("q", false, "en").url;
         let blocked = |url: &str| HttpResponse {
             status: 429,
             final_url: url.into(),
@@ -1735,6 +1847,7 @@ mod tests {
             "q",
             &EngineHealth::new(),
             false,
+            "en",
             &empty_web_cache(),
             false,
         )
@@ -1752,6 +1865,7 @@ mod tests {
             "q",
             &EngineHealth::new(),
             false,
+            "en",
             &empty_web_cache(),
             false,
         )
@@ -1822,11 +1936,19 @@ mod tests {
         // Mojeek serves the query.
         let health = EngineHealth::new();
         health.mark_blocked("duckduckgo", 3600);
-        let mojeek_url = mojeek_request("q", false).url;
+        let mojeek_url = mojeek_request("q", false, "en").url;
         let transport = FakeHttpTransport::new()
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
-        let (hits, stats) =
-            web_search(&transport, "q", &health, false, &empty_web_cache(), false).await;
+        let (hits, stats) = web_search(
+            &transport,
+            "q",
+            &health,
+            false,
+            "en",
+            &empty_web_cache(),
+            false,
+        )
+        .await;
         assert_eq!(hits.len(), 2);
         // Single live engine: fusion is an identity on order, so Mojeek's own
         // ordering is preserved verbatim.
@@ -1858,7 +1980,7 @@ mod tests {
         // Second query: DuckDuckGo is skipped without a request (one DDG POST
         // total across both queries).
         let health = EngineHealth::new();
-        let mojeek_url = mojeek_request("q", false).url;
+        let mojeek_url = mojeek_request("q", false, "en").url;
         let transport = FakeHttpTransport::new()
             .with_response(
                 DDG_HTML_ENDPOINT,
@@ -1870,8 +1992,8 @@ mod tests {
             )
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
         let cache = empty_web_cache();
-        let _ = web_search(&transport, "q", &health, false, &cache, false).await;
-        let _ = web_search(&transport, "q", &health, false, &cache, false).await;
+        let _ = web_search(&transport, "q", &health, false, "en", &cache, false).await;
+        let _ = web_search(&transport, "q", &health, false, "en", &cache, false).await;
         let ddg_posts = transport
             .calls()
             .into_iter()
@@ -1888,15 +2010,21 @@ mod tests {
         // DuckDuckGo's list is already cached for this exact query: it must NOT be
         // requested, its cached list must still join the fusion, and the live
         // (uncached) Mojeek engine must still race and contribute.
-        let mojeek_url = mojeek_request("q", false).url;
+        let mojeek_url = mojeek_request("q", false, "en").url;
         let cache = empty_web_cache();
-        cache.serp_put("duckduckgo", "q", false, vec![hit("https://cached-ddg/")]);
+        cache.serp_put(
+            "duckduckgo",
+            "q",
+            false,
+            "en",
+            vec![hit("https://cached-ddg/")],
+        );
         // Only Mojeek is canned; DuckDuckGo has no response because it must never
         // be requested.
         let transport = FakeHttpTransport::new()
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
         let health = EngineHealth::new();
-        let (hits, stats) = web_search(&transport, "q", &health, false, &cache, false).await;
+        let (hits, stats) = web_search(&transport, "q", &health, false, "en", &cache, false).await;
         let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
         // Cached DuckDuckGo hit and a live Mojeek hit both survive the fusion.
         assert!(urls.contains(&"https://cached-ddg/"));
@@ -1939,8 +2067,26 @@ mod tests {
             },
         );
         let cache = empty_web_cache();
-        let _ = web_search(&transport, "q", &EngineHealth::new(), false, &cache, false).await;
-        let _ = web_search(&transport, "q", &EngineHealth::new(), false, &cache, false).await;
+        let _ = web_search(
+            &transport,
+            "q",
+            &EngineHealth::new(),
+            false,
+            "en",
+            &cache,
+            false,
+        )
+        .await;
+        let _ = web_search(
+            &transport,
+            "q",
+            &EngineHealth::new(),
+            false,
+            "en",
+            &cache,
+            false,
+        )
+        .await;
         let ddg_posts = transport
             .calls()
             .into_iter()
@@ -1960,14 +2106,20 @@ mod tests {
         // (see `web_search_serp_cache_hit_skips_request_and_still_fuses`).
         // `bypass_cache=true` must skip that read and still issue the request,
         // exactly as an explicit user re-search demands.
-        let mojeek_url = mojeek_request("q", false).url;
+        let mojeek_url = mojeek_request("q", false, "en").url;
         let cache = empty_web_cache();
-        cache.serp_put("duckduckgo", "q", false, vec![hit("https://stale-ddg/")]);
+        cache.serp_put(
+            "duckduckgo",
+            "q",
+            false,
+            "en",
+            vec![hit("https://stale-ddg/")],
+        );
         let transport = FakeHttpTransport::new()
             .with_response(DDG_HTML_ENDPOINT, ok(DDG_HTML_ENDPOINT, DDG_HTML_FIXTURE))
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
         let health = EngineHealth::new();
-        let (hits, _stats) = web_search(&transport, "q", &health, false, &cache, true).await;
+        let (hits, _stats) = web_search(&transport, "q", &health, false, "en", &cache, true).await;
         // The stale cached hit is gone; the freshly fetched DDG fixture hit is
         // there instead.
         let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
@@ -1990,19 +2142,34 @@ mod tests {
         // for the first (bypassing) call so its outcome is deterministic
         // (DuckDuckGo alone), isolating the DuckDuckGo cache-write behaviour.
         let cache = empty_web_cache();
-        cache.serp_put("duckduckgo", "q", false, vec![hit("https://stale-ddg/")]);
+        cache.serp_put(
+            "duckduckgo",
+            "q",
+            false,
+            "en",
+            vec![hit("https://stale-ddg/")],
+        );
         let health = EngineHealth::new();
         health.mark_blocked("mojeek", 3600);
         let transport = FakeHttpTransport::new()
             .with_response(DDG_HTML_ENDPOINT, ok(DDG_HTML_ENDPOINT, DDG_HTML_FIXTURE));
-        let (bypassed, _stats) = web_search(&transport, "q", &health, false, &cache, true).await;
+        let (bypassed, _stats) =
+            web_search(&transport, "q", &health, false, "en", &cache, true).await;
         assert!(bypassed.iter().any(|h| h.url == "https://example.com/a"));
         // A second, non-bypassing call with a fresh (non-cooling) health
         // registry reads the cache: DuckDuckGo must now be served from the
         // REPLACED (fresh) entry, not the original stale one, with no further
         // DuckDuckGo request.
-        let (served, _stats) =
-            web_search(&transport, "q", &EngineHealth::new(), false, &cache, false).await;
+        let (served, _stats) = web_search(
+            &transport,
+            "q",
+            &EngineHealth::new(),
+            false,
+            "en",
+            &cache,
+            false,
+        )
+        .await;
         assert!(!served.iter().any(|h| h.url == "https://stale-ddg/"));
         assert!(served.iter().any(|h| h.url == "https://example.com/a"));
         // Exactly one DuckDuckGo request total: the first (bypassing) call
@@ -2023,12 +2190,18 @@ mod tests {
         // bypass_cache=false must behave exactly like the pre-existing
         // cache-hit path: a warm entry is served with zero requests.
         let cache = empty_web_cache();
-        cache.serp_put("duckduckgo", "q", false, vec![hit("https://cached-ddg/")]);
-        let mojeek_url = mojeek_request("q", false).url;
+        cache.serp_put(
+            "duckduckgo",
+            "q",
+            false,
+            "en",
+            vec![hit("https://cached-ddg/")],
+        );
+        let mojeek_url = mojeek_request("q", false, "en").url;
         let transport = FakeHttpTransport::new()
             .with_response(&mojeek_url, ok(&mojeek_url, MOJEEK_HTML_FIXTURE));
         let health = EngineHealth::new();
-        let (hits, _stats) = web_search(&transport, "q", &health, false, &cache, false).await;
+        let (hits, _stats) = web_search(&transport, "q", &health, false, "en", &cache, false).await;
         let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
         assert!(urls.contains(&"https://cached-ddg/"));
         let calls = transport.calls();
@@ -2063,9 +2236,9 @@ mod tests {
         let health = EngineHealth::new();
         health.mark_blocked("mojeek", 3600);
         let cache = empty_web_cache();
-        let _ = web_search(&transport, "q", &health, false, &cache, false).await;
+        let _ = web_search(&transport, "q", &health, false, "en", &cache, false).await;
         let cached = cache
-            .serp_get("duckduckgo", "q", false)
+            .serp_get("duckduckgo", "q", false, "en")
             .expect("ddg list cached");
         assert_eq!(cached.len(), raw_cap);
     }
@@ -2086,9 +2259,9 @@ mod tests {
         let health = EngineHealth::new();
         health.mark_blocked("mojeek", 3600);
         let cache = empty_web_cache();
-        let _ = web_search(&transport, "q", &health, false, &cache, false).await;
+        let _ = web_search(&transport, "q", &health, false, "en", &cache, false).await;
         let cached = cache
-            .serp_get("duckduckgo", "q", false)
+            .serp_get("duckduckgo", "q", false, "en")
             .expect("ddg list cached");
         assert_eq!(cached.len(), normal_rows);
     }

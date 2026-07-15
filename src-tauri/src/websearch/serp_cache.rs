@@ -144,14 +144,20 @@ impl<K: std::hash::Hash + Eq + Clone, V: Clone> BoundedTtlMap<K, V> {
 }
 
 /// Identity of a cached SERP list. A list is only reusable for the exact engine,
-/// query, and freshness flag it was fetched under: a different freshness flag
-/// biases the request toward recent results, so it is a genuinely different
-/// query and must be a distinct cache entry.
+/// query, freshness flag, and language it was fetched under: a different
+/// freshness flag biases the request toward recent results, and a different
+/// language changes the region, the `Accept-Language` header, and the engine's
+/// language bias, so either one is a genuinely different request and must be a
+/// distinct cache entry. Language matters here in practice, not only in theory:
+/// the classifier may emit the SAME English companion query on a Vietnamese turn
+/// and on an English one, and without the language in the key the Vietnamese
+/// turn's results would be replayed to the English one.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct SerpKey {
     engine: &'static str,
     query: String,
     freshness: bool,
+    lang: String,
 }
 
 /// The built-in web search's in-memory result cache: per-engine SERP lists on
@@ -173,29 +179,33 @@ impl WebCache {
         }
     }
 
-    /// Returns the cached SERP list for `engine`/`query`/`freshness` when present
-    /// and unexpired.
+    /// Returns the cached SERP list for `engine`/`query`/`freshness`/`lang` when
+    /// present and unexpired.
     pub fn serp_get(
         &self,
         engine: &'static str,
         query: &str,
         freshness: bool,
+        lang: &str,
     ) -> Option<Vec<SearchHit>> {
         self.serp.get(&SerpKey {
             engine,
             query: query.to_string(),
             freshness,
+            lang: lang.to_string(),
         })
     }
 
-    /// Caches an engine's parsed SERP list under `engine`/`query`/`freshness`.
-    /// Only successfully-parsed (Ok) lists are stored by the caller; blocked and
-    /// empty outcomes are never cached (a block must not be replayed as truth).
+    /// Caches an engine's parsed SERP list under
+    /// `engine`/`query`/`freshness`/`lang`. Only successfully-parsed (Ok) lists
+    /// are stored by the caller; blocked and empty outcomes are never cached (a
+    /// block must not be replayed as truth).
     pub fn serp_put(
         &self,
         engine: &'static str,
         query: &str,
         freshness: bool,
+        lang: &str,
         hits: Vec<SearchHit>,
     ) {
         self.serp.insert(
@@ -203,6 +213,7 @@ impl WebCache {
                 engine,
                 query: query.to_string(),
                 freshness,
+                lang: lang.to_string(),
             },
             hits,
         );
@@ -272,14 +283,14 @@ mod tests {
 
     #[test]
     fn serp_miss_on_empty_cache() {
-        assert!(cache().serp_get("duckduckgo", "q", false).is_none());
+        assert!(cache().serp_get("duckduckgo", "q", false, "en").is_none());
     }
 
     #[test]
     fn serp_hit_within_ttl() {
         let c = cache();
-        c.serp_put("duckduckgo", "q", false, vec![hit("https://a/")]);
-        let got = c.serp_get("duckduckgo", "q", false).unwrap();
+        c.serp_put("duckduckgo", "q", false, "en", vec![hit("https://a/")]);
+        let got = c.serp_get("duckduckgo", "q", false, "en").unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].url, "https://a/");
     }
@@ -290,35 +301,40 @@ mod tests {
         // the TTL, so the entry reads as expired immediately without a real
         // sleep (the same trick `websearch::cache` uses).
         let c = WebCache::new(Duration::ZERO, Duration::from_secs(600), 8, 8);
-        c.serp_put("duckduckgo", "q", false, vec![hit("https://a/")]);
-        assert!(c.serp_get("duckduckgo", "q", false).is_none());
+        c.serp_put("duckduckgo", "q", false, "en", vec![hit("https://a/")]);
+        assert!(c.serp_get("duckduckgo", "q", false, "en").is_none());
     }
 
     #[test]
-    fn serp_key_distinguishes_engine_query_and_freshness() {
+    fn serp_key_distinguishes_engine_query_freshness_and_language() {
         let c = cache();
-        c.serp_put("duckduckgo", "q", false, vec![hit("https://ddg/")]);
-        // Same query+freshness, different engine: miss.
-        assert!(c.serp_get("mojeek", "q", false).is_none());
-        // Same engine+freshness, different query: miss.
-        assert!(c.serp_get("duckduckgo", "other", false).is_none());
-        // Same engine+query, different freshness flag: miss (a genuinely
-        // different, recency-biased request).
-        assert!(c.serp_get("duckduckgo", "q", true).is_none());
-        // Exact triple: hit.
-        assert!(c.serp_get("duckduckgo", "q", false).is_some());
+        c.serp_put("duckduckgo", "q", false, "en", vec![hit("https://ddg/")]);
+        // Same query+freshness+language, different engine: miss.
+        assert!(c.serp_get("mojeek", "q", false, "en").is_none());
+        // Same engine+freshness+language, different query: miss.
+        assert!(c.serp_get("duckduckgo", "other", false, "en").is_none());
+        // Same engine+query+language, different freshness flag: miss (a
+        // genuinely different, recency-biased request).
+        assert!(c.serp_get("duckduckgo", "q", true, "en").is_none());
+        // Same engine+query+freshness, different LANGUAGE: miss. The same query
+        // string sent under two languages is two different requests (different
+        // region, header, and engine bias), so one language's list must never be
+        // replayed as the other's.
+        assert!(c.serp_get("duckduckgo", "q", false, "vi").is_none());
+        // Exact key: hit.
+        assert!(c.serp_get("duckduckgo", "q", false, "en").is_some());
     }
 
     #[test]
     fn serp_cap_evicts_oldest_inserted() {
         let c = WebCache::new(Duration::from_secs(600), Duration::from_secs(600), 2, 8);
-        c.serp_put("duckduckgo", "q1", false, vec![hit("https://1/")]);
-        c.serp_put("duckduckgo", "q2", false, vec![hit("https://2/")]);
+        c.serp_put("duckduckgo", "q1", false, "en", vec![hit("https://1/")]);
+        c.serp_put("duckduckgo", "q2", false, "en", vec![hit("https://2/")]);
         // Third insert is over cap: the oldest (q1) is evicted, q2 and q3 remain.
-        c.serp_put("duckduckgo", "q3", false, vec![hit("https://3/")]);
-        assert!(c.serp_get("duckduckgo", "q1", false).is_none());
-        assert!(c.serp_get("duckduckgo", "q2", false).is_some());
-        assert!(c.serp_get("duckduckgo", "q3", false).is_some());
+        c.serp_put("duckduckgo", "q3", false, "en", vec![hit("https://3/")]);
+        assert!(c.serp_get("duckduckgo", "q1", false, "en").is_none());
+        assert!(c.serp_get("duckduckgo", "q2", false, "en").is_some());
+        assert!(c.serp_get("duckduckgo", "q3", false, "en").is_some());
     }
 
     #[test]
@@ -326,15 +342,15 @@ mod tests {
         // Re-putting an existing key when full must not grow the map or evict a
         // different entry: it overwrites in place.
         let c = WebCache::new(Duration::from_secs(600), Duration::from_secs(600), 2, 8);
-        c.serp_put("duckduckgo", "q1", false, vec![hit("https://1/")]);
-        c.serp_put("duckduckgo", "q2", false, vec![hit("https://2/")]);
-        c.serp_put("duckduckgo", "q1", false, vec![hit("https://1b/")]);
+        c.serp_put("duckduckgo", "q1", false, "en", vec![hit("https://1/")]);
+        c.serp_put("duckduckgo", "q2", false, "en", vec![hit("https://2/")]);
+        c.serp_put("duckduckgo", "q1", false, "en", vec![hit("https://1b/")]);
         // Both original keys still present; q1 now carries the new value.
         assert_eq!(
-            c.serp_get("duckduckgo", "q1", false).unwrap()[0].url,
+            c.serp_get("duckduckgo", "q1", false, "en").unwrap()[0].url,
             "https://1b/"
         );
-        assert!(c.serp_get("duckduckgo", "q2", false).is_some());
+        assert!(c.serp_get("duckduckgo", "q2", false, "en").is_some());
     }
 
     #[test]
@@ -345,10 +361,10 @@ mod tests {
         // entries toward the cap. Only the just-inserted key remains present as a
         // map slot (itself already expired, so it reads back as a miss).
         let c = WebCache::new(Duration::ZERO, Duration::from_secs(600), 8, 8);
-        c.serp_put("duckduckgo", "q1", false, vec![hit("https://1/")]);
-        c.serp_put("duckduckgo", "q2", false, vec![hit("https://2/")]);
-        assert!(c.serp_get("duckduckgo", "q1", false).is_none());
-        assert!(c.serp_get("duckduckgo", "q2", false).is_none());
+        c.serp_put("duckduckgo", "q1", false, "en", vec![hit("https://1/")]);
+        c.serp_put("duckduckgo", "q2", false, "en", vec![hit("https://2/")]);
+        assert!(c.serp_get("duckduckgo", "q1", false, "en").is_none());
+        assert!(c.serp_get("duckduckgo", "q2", false, "en").is_none());
     }
 
     // ── Page side ─────────────────────────────────────────────────────────────

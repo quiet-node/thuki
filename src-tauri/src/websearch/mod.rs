@@ -19,6 +19,11 @@
 //!   engine SERP lists and extracted page bodies, so a repeat scrape is served
 //!   from memory instead of re-hitting a keyless engine (cuts latency and the
 //!   engines' volume-triggered rate limits).
+//! - [`lang`] — the turn's query language, resolved from its script and the
+//!   user's locale, and the per-channel request shapes (DuckDuckGo region and
+//!   `Accept-Language`, Mojeek language bias, Google News locale triple,
+//!   Wikipedia subdomain, Open-Meteo geocoding language) it selects, behind a
+//!   static allowlist so no runtime string can reach a URL or a hostname.
 //! - [`engine`] — keyless search-engine scraping with rotation.
 //! - [`credibility`] — static, compiled-in domain-credibility list (drop /
 //!   penalize / boost) consulted by the engine tier's rank fusion.
@@ -32,6 +37,8 @@
 //! - [`recency`] — bounded published-date extraction and the recency-prior
 //!   fusion applied to the engine tier's ranked sources on a freshness-flagged
 //!   turn only.
+//! - [`evidence`] — post-rank filters for freshness path-year demotion and
+//!   price-intent numeric utility (refuse when every page is numberless).
 //! - [`assemble`] — group ranked chunks into budgeted numbered source blocks.
 //! - [`writer`] — writer prompt assembly with prompt-injection defenses.
 //! - [`orchestrator`] — the fixed pipeline tying the stages together.
@@ -43,14 +50,17 @@ pub mod clock;
 pub mod credibility;
 pub mod encyclopedia;
 pub mod engine;
+pub mod evidence;
 pub mod fetch;
 pub mod judge;
+pub mod lang;
 pub mod news;
 pub mod orchestrator;
 pub mod prefilter;
 pub mod prepass;
 pub mod rank;
 pub mod recency;
+pub mod script;
 pub mod serp_cache;
 pub mod sports;
 pub mod stage_timing;

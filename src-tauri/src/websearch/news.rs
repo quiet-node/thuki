@@ -21,6 +21,7 @@
 
 use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
 use crate::websearch::assemble::SourceBlock;
+use crate::websearch::lang::news_locale;
 use crate::websearch::THUKI_USER_AGENT;
 
 /// Words that signal a current-events question. Matched on whole tokens of the
@@ -76,7 +77,15 @@ pub(crate) fn is_news_intent(question: &str) -> bool {
 /// [`crate::config::defaults::NEWS_FRESHNESS_OPERATOR`] is appended to the
 /// query: the feed's default ordering skews stale, and the operator narrows it
 /// to recent coverage.
-pub(crate) fn news_request(query: &str, freshness: bool) -> HttpRequest {
+///
+/// The feed's locale triple (`hl`, `gl`, `ceid`) follows the turn's resolved
+/// `lang` (see [`crate::websearch::lang::resolve_lang`]) and is derived from a
+/// single allowlist row ([`news_locale`]), so the three values cannot disagree.
+/// That matters more here than anywhere else: an inconsistent triple does not
+/// error and does not return an empty feed, it silently serves the ENGLISH feed,
+/// which would surface English headlines labelled as the user's language. An
+/// unallowlisted language sends no locale parameters at all.
+pub(crate) fn news_request(query: &str, freshness: bool, lang: &str) -> HttpRequest {
     // NEWS_ENDPOINT is a compile-time-valid absolute URL.
     let mut url = url::Url::parse(NEWS_ENDPOINT).expect("static endpoint");
     let q = if freshness {
@@ -87,11 +96,13 @@ pub(crate) fn news_request(query: &str, freshness: bool) -> HttpRequest {
     } else {
         query.to_string()
     };
-    url.query_pairs_mut()
-        .append_pair("q", &q)
-        .append_pair("hl", "en-US")
-        .append_pair("gl", "US")
-        .append_pair("ceid", "US:en");
+    url.query_pairs_mut().append_pair("q", &q);
+    if let Some(locale) = news_locale(lang) {
+        url.query_pairs_mut()
+            .append_pair("hl", &locale.hl())
+            .append_pair("gl", locale.gl())
+            .append_pair("ceid", &locale.ceid());
+    }
     HttpRequest {
         method: HttpMethod::Get,
         url: url.to_string(),
@@ -185,8 +196,9 @@ pub(crate) async fn fetch_news(
     transport: &dyn HttpTransport,
     query: &str,
     freshness: bool,
+    lang: &str,
 ) -> Option<SourceBlock> {
-    let response = match transport.send(&news_request(query, freshness)).await {
+    let response = match transport.send(&news_request(query, freshness, lang)).await {
         Ok(response) => response,
         Err(_) => {
             eprintln!("[search] vertical=news transport_error -> engines");
@@ -242,7 +254,7 @@ mod tests {
 
     #[test]
     fn news_request_is_get_on_rss_search() {
-        let req = news_request("f1 race winner", false);
+        let req = news_request("f1 race winner", false, "en");
         assert_eq!(req.method, HttpMethod::Get);
         assert!(req.url.starts_with(NEWS_ENDPOINT));
         assert!(req.url.contains("q=f1+race+winner"));
@@ -253,17 +265,49 @@ mod tests {
             .any(|(k, v)| k == "User-Agent" && v == THUKI_USER_AGENT));
     }
 
+    #[test]
+    fn news_request_carries_the_locale_triple_of_the_request_language() {
+        // The language is the TURN's, passed in. All three parameters come from
+        // one row, so they cannot disagree: a disagreeing triple would silently
+        // serve the ENGLISH feed under a Vietnamese label.
+        let req = news_request("tin tức mới nhất", false, "vi");
+        assert!(req.url.contains("hl=vi-VN"), "{}", req.url);
+        assert!(req.url.contains("gl=VN"), "{}", req.url);
+        assert!(req.url.contains("ceid=VN%3Avi"), "{}", req.url);
+    }
+
+    #[test]
+    fn an_unallowlisted_language_sends_no_locale_parameters() {
+        // No row, so no triple at all, which serves the English feed honestly
+        // rather than assembling an unverified triple that would serve the
+        // English feed while claiming to be the user's language.
+        for hostile in ["evil", "../../vi", "xx", ""] {
+            let req = news_request("q", false, hostile);
+            assert!(!req.url.contains("ceid="), "{}", req.url);
+            assert!(!req.url.contains("hl="), "{}", req.url);
+        }
+    }
+
+    #[test]
+    fn news_request_on_an_english_query_keeps_the_us_feed() {
+        // The English row is exactly what this request always sent.
+        let locale = news_locale("en").expect("english has a news row");
+        assert_eq!(locale.hl(), "en-US");
+        assert_eq!(locale.gl(), "US");
+        assert_eq!(locale.ceid(), "US:en");
+    }
+
     // ── freshness operator ──────────────────────────────────────────────────
 
     #[test]
     fn news_request_carries_no_freshness_operator_by_default() {
-        let req = news_request("f1 race winner", false);
+        let req = news_request("f1 race winner", false, "en");
         assert!(!req.url.contains("when"));
     }
 
     #[test]
     fn news_request_appends_when_7d_when_fresh() {
-        let req = news_request("f1 race winner", true);
+        let req = news_request("f1 race winner", true, "en");
         assert!(
             req.url.contains("when%3A7d") || req.url.contains("when:7d"),
             "expected when:7d operator in {}",
@@ -323,7 +367,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_news_returns_block_on_ok_feed() {
-        let url = news_request("f1", false).url;
+        let url = news_request("f1", false, "en").url;
         let transport = FakeHttpTransport::new().with_response(
             &url,
             HttpResponse {
@@ -332,17 +376,17 @@ mod tests {
                 body: RSS_FIXTURE.as_bytes().to_vec(),
             },
         );
-        let block = fetch_news(&transport, "f1", false).await.unwrap();
+        let block = fetch_news(&transport, "f1", false, "en").await.unwrap();
         assert!(block.text.contains("Leclerc"));
     }
 
     #[tokio::test]
     async fn fetch_news_none_on_error_bad_status_or_empty() {
         // No canned response -> transport error -> None.
-        assert!(fetch_news(&FakeHttpTransport::new(), "f1", false)
+        assert!(fetch_news(&FakeHttpTransport::new(), "f1", false, "en")
             .await
             .is_none());
-        let url = news_request("f1", false).url;
+        let url = news_request("f1", false, "en").url;
         let bad = FakeHttpTransport::new().with_response(
             &url,
             HttpResponse {
@@ -351,7 +395,7 @@ mod tests {
                 body: Vec::new(),
             },
         );
-        assert!(fetch_news(&bad, "f1", false).await.is_none());
+        assert!(fetch_news(&bad, "f1", false, "en").await.is_none());
         let empty = FakeHttpTransport::new().with_response(
             &url,
             HttpResponse {
@@ -360,14 +404,14 @@ mod tests {
                 body: b"<rss><channel></channel></rss>".to_vec(),
             },
         );
-        assert!(fetch_news(&empty, "f1", false).await.is_none());
+        assert!(fetch_news(&empty, "f1", false, "en").await.is_none());
     }
 
     #[tokio::test]
     async fn fetch_news_forwards_freshness_to_the_request() {
         // freshness=true must reach news_request: the recorded call's URL
         // carries the when:7d operator.
-        let url = news_request("f1", true).url;
+        let url = news_request("f1", true, "en").url;
         let transport = FakeHttpTransport::new().with_response(
             &url,
             HttpResponse {
@@ -376,7 +420,7 @@ mod tests {
                 body: RSS_FIXTURE.as_bytes().to_vec(),
             },
         );
-        let block = fetch_news(&transport, "f1", true).await.unwrap();
+        let block = fetch_news(&transport, "f1", true, "en").await.unwrap();
         assert!(block.text.contains("Leclerc"));
         assert!(transport.calls().iter().any(|c| c.url == url));
     }

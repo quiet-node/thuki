@@ -18,10 +18,11 @@
 
 use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
 use crate::websearch::assemble::SourceBlock;
+use crate::websearch::lang::geocode_language;
 use crate::websearch::{OPEN_METEO_ATTRIBUTION, THUKI_USER_AGENT};
 
 /// Words that signal a weather question. Matched on whole tokens of the
-/// lowercased standalone question.
+/// lowercased standalone question (English and common single-token forms).
 const WEATHER_WORDS: &[&str] = &[
     "weather",
     "forecast",
@@ -35,6 +36,27 @@ const WEATHER_WORDS: &[&str] = &[
     "windy",
     "humidity",
     "humid",
+    // Vietnamese single tokens that appear after phrase split (see
+    // [`WEATHER_PHRASES`] for the multi-token forms that must match first).
+    "mưa",
+    "nắng",
+    "gió",
+];
+
+/// Multi-word weather phrases matched as substrings on the lowercased
+/// question. Vietnamese "thời tiết" / "độ ẩm" / "nhiệt độ" never appear as
+/// single alphanumeric tokens under the English-style splitter, so without
+/// these phrases the vertical never fired on VI weather smokes and the turn
+/// fell through to SEO widgets (humidity 108%, etc.).
+const WEATHER_PHRASES: &[&str] = &[
+    "thời tiết",
+    "thoi tiet",
+    "độ ẩm",
+    "do am",
+    "nhiệt độ",
+    "nhiet do",
+    "dự báo thời tiết",
+    "du bao thoi tiet",
 ];
 
 /// Tokens stripped from the question when isolating the location text: the
@@ -98,6 +120,98 @@ const NON_LOCATION_WORDS: &[&str] = &[
     "ll",
     "re",
     "ve",
+    // Vietnamese weather / filler tokens stripped when isolating a place name
+    // from "độ ẩm Hà Nội hôm nay" → "Hà Nội".
+    "thời",
+    "tiết",
+    "thoi",
+    "tiet",
+    "độ",
+    "ẩm",
+    "do",
+    "am",
+    "nhiệt",
+    "nhiet",
+    "mưa",
+    "nắng",
+    "gió",
+    "dự",
+    "báo",
+    "du",
+    "bao",
+    "hôm",
+    "hom",
+    "nay",
+    "thế",
+    "the",
+    "nào",
+    "nao",
+    "bao",
+    "nhiêu",
+    "nhieu",
+    "hiện",
+    "hien",
+    "tại",
+    "tai",
+    "đang",
+    "dang",
+    "ở",
+    "o",
+    "như",
+    "nhu",
+    "thế",
+    "nào",
+    // Copulas / question shells left by classifier rewrites such as
+    // "độ ẩm tại Hà Nội hiện nay là bao nhiêu" → must not geocode "Hà Nội là"
+    // (2026-07-15 smoke: Open-Meteo miss, then model invented seasonal RH).
+    "là",
+    "la",
+    "có",
+    "co",
+    "gì",
+    "gi",
+    "vậy",
+    "vay",
+    "không",
+    "khong",
+    "của",
+    "cua",
+    "và",
+    "va",
+    "với",
+    "voi",
+    "về",
+    "ve",
+    "đến",
+    "den",
+    "trong",
+    "ngoài",
+    "ngoai",
+    "khoảng",
+    "khoang",
+    "rất",
+    "rat",
+    "thì",
+    "thi",
+    "được",
+    "duoc",
+    "xin",
+    "cho",
+    "hỏi",
+    "hoi",
+    "biết",
+    "biet",
+    // English residual question shells after weather-word strip.
+    "much",
+    "many",
+    "tell",
+    "me",
+    "about",
+    "please",
+    "can",
+    "you",
+    "give",
+    "vs",
 ];
 
 /// Endpoints for Open-Meteo's keyless APIs.
@@ -119,18 +233,31 @@ pub(crate) struct GeoPlace {
     pub(crate) timezone: String,
 }
 
+/// True when `question` is recognisably a weather / humidity / temperature
+/// ask in any supported language. Used by the orchestrator to commit the
+/// Open-Meteo vertical exclusively (never answer current conditions from SEO
+/// scrapes) and by location extraction to gate geocoding.
+///
+/// Matches whole English-style weather tokens and multi-word Vietnamese
+/// phrases. Pure and total over the input string.
+pub(crate) fn is_weather_intent(question: &str) -> bool {
+    let lower = question.to_lowercase();
+    if WEATHER_PHRASES.iter().any(|p| lower.contains(p)) {
+        return true;
+    }
+    lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .any(|t| WEATHER_WORDS.contains(&t))
+}
+
 /// Extracts the location text from a weather question, or `None` when the
 /// question is not about weather or carries no location to geocode. The
 /// remaining words after stripping weather/filler tokens are taken verbatim
 /// (original casing) as the geocoding query; a question like "will it rain
-/// today" leaves nothing and correctly falls through to the engine tier.
+/// today" leaves nothing and correctly refuses rather than inventing a place.
 pub(crate) fn weather_location(question: &str) -> Option<String> {
-    let lower = question.to_lowercase();
-    let tokens: Vec<&str> = lower
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
-        .collect();
-    if !tokens.iter().any(|t| WEATHER_WORDS.contains(t)) {
+    if !is_weather_intent(question) {
         return None;
     }
     // Walk the ORIGINAL text so the location keeps its casing ("New York"),
@@ -146,14 +273,27 @@ pub(crate) fn weather_location(question: &str) -> Option<String> {
     Some(location.join(" "))
 }
 
-/// Builds the geocoding GET request resolving `location` to coordinates.
-pub(crate) fn geocode_request(location: &str) -> HttpRequest {
+/// Builds the geocoding GET request resolving `location` to coordinates, with
+/// place names localised to `lang`.
+///
+/// `lang` is the turn's resolved REQUEST language (see
+/// [`crate::websearch::lang::resolve_lang`]), passed in by the caller. It is
+/// emphatically NOT detected from `location`: "what language is the string
+/// `Hanoi`" is not a meaningful question, and it always answered English, which
+/// silently pinned this request to English place names on every non-English turn.
+/// The language of a proper noun is not the language of the person asking about
+/// it. Both callers already know the real request language: the weather vertical
+/// gets it from the orchestrator, and the clock path
+/// (`crate::websearch::clock::resolve_place_time`) resolves it from the user's own
+/// message. An unallowlisted language sends `language=en`, exactly as this request
+/// always did.
+pub(crate) fn geocode_request(location: &str, lang: &str) -> HttpRequest {
     // GEOCODE_ENDPOINT is a compile-time-valid absolute URL.
     let mut url = url::Url::parse(GEOCODE_ENDPOINT).expect("static endpoint");
     url.query_pairs_mut()
         .append_pair("name", location)
         .append_pair("count", "1")
-        .append_pair("language", "en")
+        .append_pair("language", geocode_language(lang))
         .append_pair("format", "json");
     HttpRequest {
         method: HttpMethod::Get,
@@ -293,7 +433,9 @@ pub(crate) fn weather_source_block(report: String, place: &GeoPlace) -> SourceBl
 
 /// Runs the full weather vertical for `standalone_question`: intent + location
 /// check, geocode, forecast, format. Returns `None` on any miss so the caller
-/// falls through to the scraped-engine tier.
+/// falls through to the scraped-engine tier. `lang` is the turn's resolved
+/// request language and localises the geocoder's place names (see
+/// [`geocode_request`]).
 ///
 /// Coverage-excluded: thin async glue over the injectable transport delegating
 /// every decision to the pure helpers above, which are all tested directly;
@@ -303,9 +445,13 @@ pub(crate) fn weather_source_block(report: String, place: &GeoPlace) -> SourceBl
 pub(crate) async fn fetch_weather(
     transport: &dyn HttpTransport,
     standalone_question: &str,
+    lang: &str,
 ) -> Option<SourceBlock> {
     let location = weather_location(standalone_question)?;
-    let geo_response = transport.send(&geocode_request(&location)).await.ok()?;
+    let geo_response = transport
+        .send(&geocode_request(&location, lang))
+        .await
+        .ok()?;
     let place = parse_geocode(&String::from_utf8_lossy(&geo_response.body))?;
     let forecast_response = transport.send(&forecast_request(&place)).await.ok()?;
     let report = format_forecast(&String::from_utf8_lossy(&forecast_response.body), &place)?;
@@ -357,14 +503,41 @@ mod tests {
     }
 
     #[test]
+    fn vietnamese_weather_phrases_extract_location() {
+        // 2026-07-15 smoke: VI humidity/temp never matched WEATHER_WORDS and
+        // fell through to SEO widgets with impossible RH. Phrases must fire.
+        assert!(is_weather_intent("độ ẩm Hà Nội"));
+        assert!(is_weather_intent("nhiệt độ Hà Nội hôm nay"));
+        assert!(is_weather_intent("thời tiết Đà Nẵng"));
+        assert_eq!(weather_location("độ ẩm Hà Nội").as_deref(), Some("Hà Nội"));
+        assert_eq!(
+            weather_location("nhiệt độ Hà Nội hôm nay").as_deref(),
+            Some("Hà Nội")
+        );
+        assert_eq!(
+            weather_location("thời tiết Đà Nẵng").as_deref(),
+            Some("Đà Nẵng")
+        );
+        // Classifier rewrite that used to geocode "Hà Nội là" and miss Open-Meteo.
+        assert_eq!(
+            weather_location("độ ẩm tại Hà Nội hiện nay là bao nhiêu").as_deref(),
+            Some("Hà Nội")
+        );
+    }
+
+    #[test]
     fn non_weather_questions_yield_none() {
+        assert!(!is_weather_intent("latest rust version"));
         assert_eq!(weather_location("latest rust version"), None);
         assert_eq!(weather_location("who won the F1 race"), None);
+        assert!(!is_weather_intent("SJC"));
+        assert!(!is_weather_intent("giá vàng SJC"));
     }
 
     #[test]
     fn weather_question_without_location_yields_none() {
-        // No location to geocode: falls through to the engine tier.
+        // No location to geocode: vertical refuses rather than inventing a place.
+        assert!(is_weather_intent("will it rain today"));
         assert_eq!(weather_location("will it rain today"), None);
         assert_eq!(weather_location("what's the weather like"), None);
     }
@@ -373,15 +546,33 @@ mod tests {
 
     #[test]
     fn geocode_request_carries_location_and_single_result() {
-        let req = geocode_request("New York");
+        let req = geocode_request("New York", "en");
         assert_eq!(req.method, HttpMethod::Get);
         assert!(req.url.starts_with(GEOCODE_ENDPOINT));
         assert!(req.url.contains("name=New+York"));
         assert!(req.url.contains("count=1"));
+        assert!(req.url.contains("language=en"));
         assert!(req
             .headers
             .iter()
             .any(|(k, v)| k == "User-Agent" && v == THUKI_USER_AGENT));
+    }
+
+    #[test]
+    fn geocode_request_localises_place_names_to_the_request_language() {
+        // THE regression this parameter exists for: the language follows the
+        // person asking, NOT the location name. "Hanoi" is not an English word
+        // because it is spelled in Latin script, and "北京" does not make an
+        // English speaker's question Chinese. Both used to be inferred from the
+        // location text, which asked a meaningless question and answered English
+        // every time.
+        let req = geocode_request("Hanoi", "vi");
+        assert!(req.url.contains("language=vi"), "{}", req.url);
+        let req = geocode_request("北京", "en");
+        assert!(req.url.contains("language=en"), "{}", req.url);
+        // And an unallowlisted language cannot reach the parameter at all.
+        let req = geocode_request("Hanoi", "../../xx");
+        assert!(req.url.contains("language=en"), "{}", req.url);
     }
 
     #[test]
@@ -476,7 +667,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_weather_resolves_full_chain() {
-        let geo_url = geocode_request("Tokyo").url;
+        let geo_url = geocode_request("Tokyo", "en").url;
         let fc_url = forecast_request(&tokyo()).url;
         let transport = FakeHttpTransport::new()
             .with_response(
@@ -495,7 +686,9 @@ mod tests {
                     body: FORECAST_FIXTURE.as_bytes().to_vec(),
                 },
             );
-        let block = fetch_weather(&transport, "weather in Tokyo").await.unwrap();
+        let block = fetch_weather(&transport, "weather in Tokyo", "en")
+            .await
+            .unwrap();
         assert_eq!(block.index, 1);
         assert_eq!(block.title, "Weather for Tokyo, Japan");
         assert!(block.text.contains("Current weather in Tokyo"));
@@ -505,12 +698,12 @@ mod tests {
     async fn fetch_weather_none_when_not_weather_or_geocode_fails() {
         let transport = FakeHttpTransport::new();
         // Not a weather question: no request is even sent.
-        assert!(fetch_weather(&transport, "latest rust version")
+        assert!(fetch_weather(&transport, "latest rust version", "en")
             .await
             .is_none());
         assert!(transport.calls().is_empty());
         // Weather question but geocode transport error: falls through.
-        assert!(fetch_weather(&transport, "weather in Tokyo")
+        assert!(fetch_weather(&transport, "weather in Tokyo", "en")
             .await
             .is_none());
     }

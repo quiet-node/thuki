@@ -5,6 +5,8 @@
 //! Changing a default here propagates to a fresh first-run config file and to
 //! any field a user has left unset or left empty in their existing file.
 
+use std::ops::RangeInclusive;
+
 /// Default Ollama HTTP endpoint (loopback, standard port). Seed value for the
 /// Ollama provider's `base_url` on a fresh install or after a migration.
 pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
@@ -849,6 +851,20 @@ pub const WIKI_VOLATILITY_MARKERS: &[&str] = &[
     "recent",
     "upcoming",
     "anniversary",
+    // Non-English single-token "today/now" forms. Multi-word forms live in
+    // [`WIKI_VOLATILITY_PHRASES`] (e.g. "hôm nay", "aujourd hui"). Without
+    // these, non-English "today" questions never arm DDG date bias or recency
+    // fusion (2026-07-14 gold-price smoke: VI "hôm nay" was invisible).
+    "heute",
+    "hoje",
+    "hoy",
+    "oggi",
+    "vandaag",
+    "сегодня",
+    "今日",
+    "今天",
+    "오늘",
+    "วันนี้",
 ];
 
 /// Multi-word freshness phrases that disqualify the Wikipedia vertical, matched
@@ -901,7 +917,91 @@ pub const WIKI_VOLATILITY_PHRASES: &[&str] = &[
     "what age is",
     "s age",
     "how long ago",
+    // Multilingual "today / right now / latest" (token-joined phrases).
+    "hôm nay",
+    "mới nhất",
+    "hiện nay",
+    "bây giờ",
+    "hari ini",
+    "maintenant",
+    "ahora mismo",
+    // "aujourd'hui" splits on the apostrophe into these two tokens.
+    "aujourd hui",
 ];
+
+/// Tokens that mark a **price / market-quote** question. Any one present forces
+/// the same freshness path as [`WIKI_VOLATILITY_MARKERS`] (DDG date bias,
+/// recency fusion) and enables the price-intent evidence filters (numeric
+/// utility, stale path-year drop). Without this, "giá vàng" with no "today"
+/// word would skip temporal ranking and lose to number-bearing SEO scrapes.
+///
+/// Not user-tunable: a routing/evidence-contract list, same rationale as the
+/// volatility markers.
+pub const PRICE_INTENT_MARKERS: &[&str] = &[
+    "price",
+    "prices",
+    "pricing",
+    "cost",
+    "costs",
+    "rate",
+    "rates",
+    "quote",
+    "spot",
+    "ticker",
+    // Vietnamese
+    "giá",
+    // Other supported-lang common forms (single token after lowercasing).
+    "precio",
+    "precios",
+    "prix",
+    "preis",
+    "preço",
+    "preco",
+    "prezzo",
+    "цена",
+    "价格",
+    "價錢",
+    "价钱",
+    "値段",
+    "価格",
+    "가격",
+    "ราคา",
+    "harga",
+];
+
+/// Path-year lag for freshness-gated stale URL demotion: a URL path segment
+/// `/YYYY/` with `YYYY <= now_year - STALE_PATH_YEAR_LAG` is treated as
+/// multi-year stale evidence on a live-price/freshness turn (e.g. `/2020/` in
+/// 2026). Lag `2` keeps last calendar year eligible while dropping older
+/// archive paths that SEO scrapes love for "today" price queries.
+///
+/// Not user-tunable: an evidence-pipeline constant tied to the freshness
+/// contract, not a user preference.
+pub const STALE_PATH_YEAR_LAG: u32 = 2;
+
+/// Minimum consecutive ASCII digits that count as a price-like figure in a
+/// chunk when applying the price-intent numeric utility filter. `2` admits
+/// "80" (triệu) and "45" while rejecting lone list indices; independent of
+/// [`STATISTIC_MIN_DIGIT_RUN`] (which is the GEO nudge threshold on boosted
+/// domains only).
+///
+/// Not user-tunable: a ranking-algorithm heuristic bound.
+pub const PRICE_LIKE_MIN_DIGIT_RUN: usize = 2;
+
+/// Minimum primary quote value (after grouping-separator strip) that enters
+/// the price-magnitude consensus filter. `10_000` keeps bullion / retail
+/// quotes (VND and major fiat) while ignoring tiny list indices and percents.
+///
+/// Not user-tunable: evidence-pipeline bound for cross-source outlier drop.
+pub const PRICE_MAGNITUDE_MIN_PRIMARY: f64 = 10_000.0;
+
+/// Minimum max/min primary-price ratio across numeric chunks before the
+/// magnitude-consensus filter drops the minority order-of-magnitude cluster.
+/// `5.0` catches the 14.35M-vs-145.5M SJC miếng class (≈10×) without splitting
+/// normal bid/ask spreads (~1.02×).
+///
+/// Not user-tunable: evidence-pipeline bound for cross-source outlier drop.
+pub const PRICE_MAGNITUDE_RATIO: f64 = 5.0;
 
 /// Earliest 4-digit year that reads as a present/future freshness signal in a
 /// standalone question, disqualifying the Wikipedia vertical. A year at or above
@@ -1035,6 +1135,79 @@ pub const DDG_FRESHNESS_DF_VALUE: &str = "w";
 ///
 /// Not user-tunable: a fixed protocol convention of an external service.
 pub const NEWS_FRESHNESS_OPERATOR: &str = "when:7d";
+
+// ─── Web-search language parity ──────────────────────────────────────────────
+
+/// The language every search channel falls back to when a query's language is
+/// neither detectable from its script nor readable from the user's locale, and
+/// the language whose request shapes are the compiled-in default everywhere.
+///
+/// Not user-tunable: it is the anchor of the allowlist in
+/// `crate::websearch::lang`, and a value outside that allowlist would have no
+/// verified request shape on any channel.
+pub const SEARCH_LANG_DEFAULT: &str = "en";
+
+/// Minimum share of a query's alphabetic characters that must belong to one
+/// script before that script decides the query's language (Han, Kana, Hangul,
+/// Thai, Arabic, Hebrew, Greek).
+///
+/// A presence check would be wrong: "what does 中 mean" is an English question
+/// that happens to quote one Han character, and a single character must never
+/// flip the whole request to Chinese. At `0.30` that query scores `0.08` and
+/// stays English, while a genuinely mixed query ("iPhone 16 レビュー", `0.40`)
+/// still resolves to its own language.
+///
+/// Not user-tunable: a defense-in-depth bound on how loudly one stray character
+/// may speak for a whole query, not a quality knob.
+pub const SEARCH_LANG_SCRIPT_RATIO_MIN: f64 = 0.30;
+
+/// Minimum share of a query's whitespace tokens that must contain a
+/// Vietnamese-distinctive character (see
+/// `crate::websearch::script::is_vietnamese_marker`) before the query resolves
+/// to Vietnamese.
+///
+/// Vietnamese is Latin script, so it has no script signal, only a diacritic
+/// one, and the same diacritics ride into English on loanwords. The threshold
+/// is set above the loanword case: "what does phở mean" scores `0.25` (one
+/// token of four) and must stay English, while real Vietnamese queries carrying
+/// two or more marked tokens ("thời tiết Hà Nội hôm nay", `0.50`) clear it. A
+/// Vietnamese query below the bar is not lost, it falls through to the user's
+/// locale, which is the correct signal for a Vietnamese-locale user.
+///
+/// Not user-tunable: same defense-in-depth rationale as
+/// [`SEARCH_LANG_SCRIPT_RATIO_MIN`].
+pub const SEARCH_LANG_VI_TOKEN_RATIO_MIN: f64 = 0.30;
+
+/// DuckDuckGo `kl` (region) value used when the query's language does not
+/// resolve, or resolves to [`SEARCH_LANG_DEFAULT`]. `wt-wt` is DuckDuckGo's own
+/// "worldwide, no region bias" code: strictly better than the `us-en` this
+/// replaced, which forced United States results onto every unresolved query.
+///
+/// Not user-tunable: a fixed protocol convention of an external service.
+pub const DDG_DEFAULT_REGION: &str = "wt-wt";
+
+/// `Accept-Language` header sent when the query resolves to
+/// [`SEARCH_LANG_DEFAULT`]. DuckDuckGo's `kl` selects a REGION, not a language,
+/// and its HTML endpoint exposes no language selector, so this header is the
+/// only language lever the engine tier has and it must follow the resolved
+/// language (see `crate::websearch::lang::accept_language`).
+///
+/// Not user-tunable: a fixed protocol convention of an external service.
+pub const SEARCH_DEFAULT_ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
+
+/// Suffix appended to a non-English `Accept-Language` header, so a page with no
+/// edition in the resolved language still ranks its English edition ahead of an
+/// arbitrary third language rather than being excluded outright.
+///
+/// Not user-tunable: a fixed protocol convention of an external service.
+pub const SEARCH_ACCEPT_LANGUAGE_FALLBACK: &str = ",en;q=0.5";
+
+/// Mojeek `lbb` (language bias boost) percentage sent alongside `lb` on a
+/// non-English query. `100` is the documented maximum: full weight on the
+/// requested language.
+///
+/// Not user-tunable: a fixed protocol convention of an external service.
+pub const MOJEEK_LANGUAGE_BIAS_BOOST: &str = "100";
 
 /// How long a search engine is skipped after it returns a bot challenge or
 /// rate-limit response (seconds), keyed per engine. Re-hammering a blocked
@@ -1172,6 +1345,45 @@ pub const FETCH_MAX_ELEMENTS_TO_PARSE: usize = 9000;
 ///
 /// Not user-tunable: a retrieval-pipeline shape constant.
 pub const CHUNK_TARGET_WORDS: usize = 350;
+
+/// Target size, in characters, of one page chunk when the page is written in an
+/// unspaced script (Chinese, Japanese, Thai, Lao, Khmer, Burmese), where
+/// whitespace does not delimit words and the word target above is meaningless.
+/// ~500 Han characters carry roughly the information of the ~350 English words
+/// [`CHUNK_TARGET_WORDS`] targets, so both paths land in the same retrieval
+/// band.
+///
+/// Not user-tunable: a retrieval-pipeline shape constant.
+pub const CHUNK_CJK_TARGET_CHARS: usize = 500;
+
+/// Hard character ceiling for a single chunk on the unspaced-script path. A
+/// sentence longer than this (a paragraph with no sentence terminator, the
+/// normal shape of Thai prose) is split at this width, which guarantees forward
+/// progress and makes a degenerate whole-page chunk impossible by construction.
+/// Set above [`CHUNK_CJK_TARGET_CHARS`] so ordinary sentence packing, not the
+/// hard split, decides chunk boundaries whenever the text has any.
+///
+/// Not user-tunable: a retrieval-pipeline shape constant.
+pub const CHUNK_CJK_MAX_CHARS: usize = 700;
+
+/// Sentence terminators the unspaced-script chunker splits on, kept with the
+/// sentence they end. Covers the full-width CJK forms and the ASCII marks that
+/// appear in mixed text; the full-width comma and the ideographic comma are
+/// deliberately absent, as they separate clauses, not sentences.
+///
+/// Not user-tunable: a retrieval-pipeline shape constant.
+pub const CHUNK_CJK_SENTENCE_TERMINATORS: [char; 7] = ['。', '！', '？', '；', '．', '!', '?'];
+
+/// Minimum fraction of a page's non-whitespace characters that must belong to
+/// an unspaced script before the page chunks on characters instead of words.
+/// Above 0.3 the text is dominated by a script whose words carry no whitespace
+/// delimiter, so `split_whitespace` returns a handful of enormous units; below
+/// it, the page is mostly whitespace-delimited text (including Korean, which is
+/// spaced) and the word path is correct. Deliberately low so a CJK page carrying
+/// Latin markup, URLs, and numbers still takes the character path.
+///
+/// Not user-tunable: a retrieval-pipeline shape constant.
+pub const CHUNK_UNSPACED_RATIO_MIN: f64 = 0.3;
 
 /// BM25 term-frequency saturation parameter `k1`. The Okapi default; higher
 /// values let repeated query terms keep raising a chunk's score, lower values
@@ -1393,6 +1605,18 @@ pub const CITE_REPAIR_MAX_ATTEMPTS: u32 = 1;
 /// content, not a user preference.
 pub const CITE_UNVERIFIABLE_MIN_SOURCE_BYTES: usize = 20;
 
+/// Unicode code-point range of the fullwidth ASCII digits (`０`-`９`,
+/// U+FF10-U+FF19, the digit run of the Halfwidth and Fullwidth Forms block).
+/// The citation audit's content-token filter treats a run as number-like if
+/// any of its characters fall in this range, alongside plain ASCII digits:
+/// Japanese and Chinese source pages routinely render numerals fullwidth, and
+/// without this a short fullwidth numeral (a lone `２`, or `３人`) never
+/// clears the `> 3` character length rule and is silently dropped as a
+/// content token, even though the same numeral in ASCII form would be kept.
+///
+/// Not user-tunable: a fixed Unicode block boundary, not a preference.
+pub const CITE_FULLWIDTH_DIGITS: RangeInclusive<char> = '\u{FF10}'..='\u{FF19}';
+
 /// Attached letter magnitude suffixes the citation audit's numeric-consistency
 /// guard recognizes directly after a digit run (`615B`, `1.2mn`), paired with
 /// the power-of-ten exponent each one adds. Checked in this order, but order
@@ -1414,16 +1638,60 @@ pub const CITE_MAGNITUDE_ABBREVIATIONS: [(&str, u32); 7] = [
 ];
 
 /// Spelled-out magnitude words the citation audit's numeric-consistency guard
-/// recognizes after a digit run and whitespace (`615 billion`), paired with
-/// the power-of-ten exponent each one adds.
+/// recognizes after a digit run and whitespace (`615 billion`, `144500 triệu`),
+/// paired with the power-of-ten exponent each one adds. Includes Vietnamese
+/// scale words so a model double-count (`144500 triệu` against a source
+/// `144.500.000`) cannot pass as a digit match.
 ///
-/// Not user-tunable: fixed English magnitude vocabulary for a parsing guard,
-/// same rationale as [`CITE_MAGNITUDE_ABBREVIATIONS`].
-pub const CITE_MAGNITUDE_WORDS: [(&str, u32); 4] = [
+/// Not user-tunable: fixed multi-locale magnitude vocabulary for a parsing
+/// guard, same rationale as [`CITE_MAGNITUDE_ABBREVIATIONS`].
+pub const CITE_MAGNITUDE_WORDS: [(&str, u32); 10] = [
     ("thousand", 3),
     ("million", 6),
     ("billion", 9),
     ("trillion", 12),
+    ("triệu", 6),
+    ("trieu", 6),
+    ("tỷ", 9),
+    ("nghìn", 3),
+    ("ngàn", 3),
+    ("trăm", 2),
+];
+
+/// Unit suffixes the citation audit binds to a number after the digit run
+/// (optional whitespace). Longer patterns must appear before shorter ones that
+/// share a prefix (`/lượng` before `lượng`, `kilogram` before `kg`). Keys are
+/// interned unit ids used only for equality inside the guard.
+///
+/// Not user-tunable: fixed unit vocabulary for grounding, not a preference.
+/// Kept minimal to the units that live smoke already proved can ship wrong
+/// (money mass units, percent, temperature).
+pub const CITE_UNIT_SUFFIXES: [(&str, &str); 23] = [
+    // Compound currency+mass first so "đồng/kg" does not bind only "đồng".
+    ("đồng/lượng", "luong"),
+    ("dong/luong", "luong"),
+    ("đồng/kg", "kg"),
+    ("dong/kg", "kg"),
+    ("đ/lượng", "luong"),
+    ("đ/luong", "luong"),
+    ("/lượng", "luong"),
+    ("/luong", "luong"),
+    ("lượng", "luong"),
+    ("luong", "luong"),
+    ("đ/kg", "kg"),
+    ("/kg", "kg"),
+    ("kilogram", "kg"),
+    ("kg", "kg"),
+    ("°c", "celsius"),
+    ("℃", "celsius"),
+    // SEO widgets often write "33oC" without the degree sign.
+    ("oc", "celsius"),
+    ("đồng", "vnd"),
+    ("dong", "vnd"),
+    ("vnd", "vnd"),
+    ("ounce", "ounce"),
+    ("oz", "ounce"),
+    ("%", "percent"),
 ];
 
 /// English month names, lowercase, paired with their calendar month number.

@@ -61,18 +61,23 @@ use tokio_util::sync::CancellationToken;
 
 use crate::commands::ChatMessage;
 use crate::config::defaults::{
-    REQUERY_MISSING_MAX_CHARS, SERP_EARLY_STOP_HITS, TRACE_SOURCE_TEXT_MAX_BYTES,
+    REQUERY_MISSING_MAX_CHARS, SEARCH_LANG_DEFAULT, SERP_EARLY_STOP_HITS,
+    TRACE_SOURCE_TEXT_MAX_BYTES,
 };
 use crate::net::transport::HttpTransport;
 use crate::trace::{truncate_for_trace, BoundRecorder, EngineStat, RecorderEvent, RetrievedSource};
 use crate::websearch::assemble::{assemble_context, SourceBlock};
 use crate::websearch::cache::{CachedSearch, SourceCache};
-use crate::websearch::encyclopedia::{fetch_encyclopedia, is_volatile_question};
+use crate::websearch::encyclopedia::{
+    fetch_encyclopedia, is_price_intent_question, is_volatile_question,
+};
 use crate::websearch::engine::{
     any_engine_available, transport_unreachable, web_search, EngineHealth, SearchHit,
 };
+use crate::websearch::evidence::filter_evidence_chunks;
 use crate::websearch::fetch::{fetch_pages, FetchedPage};
 use crate::websearch::judge::{deterministic_sufficiency, SufficiencyJudge, SufficiencyVerdict};
+use crate::websearch::lang::{detect_script_lang, resolve_lang, supported_lang};
 use crate::websearch::news::{fetch_news, is_news_intent};
 use crate::websearch::prefilter::{prefilter, PreFilterVerdict};
 use crate::websearch::prepass::{
@@ -87,7 +92,7 @@ use crate::websearch::stage_timing::{
     STAGE_JUDGE_POST_REQUERY, STAGE_RANK_ASSEMBLY, STAGE_RAW_RACE_SERP, STAGE_SERP,
     STAGE_WRITER_PREPARE,
 };
-use crate::websearch::weather::fetch_weather;
+use crate::websearch::weather::{fetch_weather, is_weather_intent};
 use crate::websearch::writer::{unreachable_messages, writer_messages};
 
 /// Progress phase reported to the UI while the pipeline runs, before any answer
@@ -147,6 +152,11 @@ pub enum SearchFailReason {
     /// nothing usable survived fusion and ranking: the web was searched and
     /// simply had nothing current. Includes the blocked-but-online case.
     NoResults,
+    /// Weather vertical wanted live Open-Meteo conditions but geocode/forecast
+    /// missed. Must not fall back to SEO or to model-invented seasonal RH/temp
+    /// (2026-07-15 Hanoi humidity smoke). Distinct disclosure from general
+    /// [`Self::NoResults`].
+    WeatherUnavailable,
 }
 
 /// The injected effectful dependencies of the pipeline.
@@ -355,9 +365,17 @@ async fn run_search_inner(
             raced_serp,
         } => (classified, raced_serp),
     };
-    let decision = resolve_decision(verdict, classified);
+    let decision = sanitize_search_decision(latest_user, resolve_decision(verdict, classified));
+    // The turn's language, resolved ONCE and threaded down into every channel.
+    // Resolved from `latest_user`, the message the USER actually wrote, never from
+    // the classifier's rewrite: the rewrite is tuned for retrieval (it may carry an
+    // English companion query on a Vietnamese turn), so its wording is an artifact,
+    // not a language signal. The classifier's own `lang` judgement rides alongside
+    // the raw text and is validated inside `resolve_lang` before it can influence
+    // anything.
+    let lang = resolve_lang(latest_user, &decision.lang, locale);
     eprintln!(
-        "[search] decision={:?} route={:?} queries={}",
+        "[search] decision={:?} route={:?} queries={} lang={lang}",
         decision.decision,
         decision.route,
         decision.queries.len()
@@ -370,8 +388,9 @@ async fn run_search_inner(
         standalone_question: decision.standalone_question.clone(),
         queries: decision.queries.clone(),
     });
-    // Keep raced ForceWeb SERP only when rewrite ≈ raw and decision is web.
-    let preloaded_serp = preloaded_serp_for_decision(&decision, latest_user, raced_serp);
+    // Keep raced ForceWeb SERP only when rewrite ≈ raw, decision is web, and the
+    // race language matches the final resolved language (else re-SERP under final).
+    let preloaded_serp = preloaded_serp_for_decision(&decision, latest_user, lang, raced_serp);
     // Explicit "look it up / verify / double-check" request, or the `/search`
     // command (`deps.force_search`): re-serving ANY fast path is forbidden. Skip
     // the cache AND every vertical and go straight to the scraped engines with
@@ -390,6 +409,7 @@ async fn run_search_inner(
             num_ctx,
             today,
             locale,
+            lang,
             cancel,
             status,
             true,
@@ -413,6 +433,7 @@ async fn run_search_inner(
                 cached.sources,
                 today,
                 locale,
+                lang,
                 Vec::new(),
                 // A cache hit is never a conflict commit: no fresh judge ran.
                 false,
@@ -430,6 +451,7 @@ async fn run_search_inner(
                     num_ctx,
                     today,
                     locale,
+                    lang,
                     cancel,
                     status,
                     false,
@@ -450,6 +472,7 @@ async fn run_search_inner(
                 num_ctx,
                 today,
                 locale,
+                lang,
                 cancel,
                 status,
                 false,
@@ -482,10 +505,27 @@ enum ClassifyRaceResult {
     /// Ambiguous-turn classifier infra failure: answer without search.
     NoSearch,
     /// Classifier finished (or ForceWeb fallback synthesized); optional raced SERP.
+    ///
+    /// The raced triple is `(hits, engine stats, race_lang)`: `race_lang` is the
+    /// script-only language the concurrent SERP used, so
+    /// [`preloaded_serp_for_decision`] can discard hits when the final resolved
+    /// language differs.
     Ready {
         classified: PrePassDecision,
-        raced_serp: Option<(Vec<SearchHit>, Vec<EngineStat>)>,
+        raced_serp: Option<(Vec<SearchHit>, Vec<EngineStat>, &'static str)>,
     },
+}
+
+/// Language for a ForceWeb concurrent raw-query SERP race.
+///
+/// Script only: the classifier has not returned yet, and locale must not bias
+/// the race. A `vi_VN` machine racing an English query under `vi` was the live
+/// regression this path exists to prevent. No supported script signal →
+/// [`SEARCH_LANG_DEFAULT`].
+fn race_lang_for_force_web(latest_user: &str) -> &'static str {
+    detect_script_lang(latest_user)
+        .and_then(supported_lang)
+        .unwrap_or(SEARCH_LANG_DEFAULT)
 }
 
 /// Whether a ForceWeb turn should race a raw-query SERP with the classifier.
@@ -499,11 +539,9 @@ fn force_web_should_race_raw(latest_user: &str) -> bool {
     if is_sports_intent(latest_user) || is_news_intent(latest_user) {
         return false;
     }
-    let lower = latest_user.to_ascii_lowercase();
-    let weather_shaped = lower
-        .split(|c: char| !c.is_alphanumeric())
-        .any(|t| matches!(t, "weather" | "temperature" | "forecast" | "humidity"));
-    !weather_shaped
+    // Share the weather vertical's intent detector so VI phrases ("độ ẩm",
+    // "thời tiết") also skip the raw SERP race the same way English does.
+    !is_weather_intent(latest_user)
 }
 
 /// Runs the classifier; on [`PreFilterVerdict::ForceWeb`] only (and when the
@@ -536,6 +574,10 @@ async fn classify_maybe_race_raw(
             deps.timings.record(STAGE_CLASSIFIER, start);
             res
         };
+        // Race SERP cannot wait for the classifier's lang field. Script only
+        // (default en); never locale: locale is the weak signal that raced
+        // English queries under a non-English $LANG on ForceWeb.
+        let race_lang = race_lang_for_force_web(latest_user);
         let race = async {
             let start = Instant::now();
             let res = web_search(
@@ -543,6 +585,7 @@ async fn classify_maybe_race_raw(
                 &raw,
                 deps.health,
                 freshness,
+                race_lang,
                 deps.web_cache,
                 false,
             )
@@ -563,12 +606,15 @@ async fn classify_maybe_race_raw(
                     standalone_question: raw.clone(),
                     queries: vec![raw.clone()],
                     explicit_search: false,
+                    // No classifier output: resolve_lang falls back to script/locale.
+                    lang: String::new(),
                 }
             }
         };
+        let (hits, stats) = race_res;
         return ClassifyRaceResult::Ready {
             classified,
-            raced_serp: Some(race_res),
+            raced_serp: Some((hits, stats, race_lang)),
         };
     }
 
@@ -611,6 +657,8 @@ async fn classify_maybe_race_raw(
                     standalone_question: latest_user.trim().to_string(),
                     queries: vec![latest_user.trim().to_string()],
                     explicit_search: false,
+                    // No classifier output: resolve_lang falls back to script/locale.
+                    lang: String::new(),
                 },
                 raced_serp: None,
             }
@@ -619,19 +667,27 @@ async fn classify_maybe_race_raw(
 }
 
 /// Keeps a ForceWeb raced SERP only when the classifier's first query is a
-/// near-duplicate of the raw user message and the decision is still `web`.
-/// Empty race results are kept too (same miss, no second DDG round that would
-/// re-touch engines already cooling from the race). Divergent rewrites return
-/// `None` so the engine tier re-SERPs the rewrite.
+/// near-duplicate of the raw user message, the decision is still `web`, and the
+/// race language matches the final resolved language. Empty race results are
+/// kept too when those hold (same miss, no second DDG round that would re-touch
+/// engines already cooling from the race). Divergent rewrites or a language
+/// mismatch return `None` so the engine tier re-SERPs under the final language.
 fn preloaded_serp_for_decision(
     decision: &PrePassDecision,
     latest_user: &str,
-    raced_serp: Option<(Vec<SearchHit>, Vec<EngineStat>)>,
+    final_lang: &str,
+    raced_serp: Option<(Vec<SearchHit>, Vec<EngineStat>, &'static str)>,
 ) -> Option<(Vec<SearchHit>, Vec<EngineStat>)> {
     if decision.decision != SearchDecision::Web {
         return None;
     }
-    let (hits, stats) = raced_serp?;
+    let (hits, stats, race_lang) = raced_serp?;
+    if race_lang != final_lang {
+        eprintln!(
+            "[search] force_web race: discard raw SERP (lang mismatch race={race_lang} final={final_lang})"
+        );
+        return None;
+    }
     let first = decision
         .queries
         .first()
@@ -678,6 +734,104 @@ fn route_label(route: SearchRoute) -> &'static str {
     }
 }
 
+/// User text after stripping a leading `/search` command token, trimmed.
+///
+/// The slash command is handled as `force_search` upstream; the message body
+/// that remains is what intent clamps must read. Pure and total.
+fn message_body_without_search_command(latest_user: &str) -> &str {
+    let trimmed = latest_user.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if let Some(rest) = lower.strip_prefix("/search") {
+        // Map the lowercased prefix length back onto the original so casing of
+        // the remainder is preserved when present.
+        let prefix_len = trimmed.len() - rest.len();
+        trimmed[prefix_len..].trim()
+    } else {
+        trimmed
+    }
+}
+
+/// True when the user's message is only the bare token `SJC` (optional
+/// `/search` prefix). That token is both Vietnam's dominant gold brand and
+/// San Jose's IATA code; without an explicit weather/airport cue, Thuki
+/// prefers gold for this product (local-first VN market). Pure and total.
+fn is_bare_sjc_token(latest_user: &str) -> bool {
+    message_body_without_search_command(latest_user).eq_ignore_ascii_case("sjc")
+}
+
+/// True when the user explicitly asked for airport / aviation context (so bare
+/// `SJC` may mean San Jose, not gold). Pure and total.
+fn user_signals_airport_context(latest_user: &str) -> bool {
+    let lower = latest_user.to_lowercase();
+    lower.split(|c: char| !c.is_alphanumeric()).any(|t| {
+        matches!(
+            t,
+            "airport"
+                | "iata"
+                | "icao"
+                | "flight"
+                | "flights"
+                | "airline"
+                | "airlines"
+                | "runway"
+                | "terminal"
+                | "sfo"
+                | "oak"
+        ) || t == "san" // "San Jose" usually co-occurs; weak alone, paired with jose below
+    }) || lower.contains("san jose")
+        || lower.contains("mineta")
+}
+
+/// Clamps classifier hallucinations that invent weather (or airport) for
+/// messages the user never framed that way, and rewrites bare `SJC` to a gold
+/// price ask.
+///
+/// 2026-07-15 smoke: `/search SJC` → classifier rewrote to San Jose airport
+/// weather → SEO heat advisory. Reliability first: only honour a weather route
+/// when the user's own text carries weather or explicit airport intent.
+///
+/// Pure over its inputs (no I/O). Decision fields not rewritten are preserved.
+fn sanitize_search_decision(latest_user: &str, mut decision: PrePassDecision) -> PrePassDecision {
+    if is_bare_sjc_token(latest_user) && !user_signals_airport_context(latest_user) {
+        // Bare SJC without airport cue: gold brand, not KSJC weather.
+        let vi_query = "giá vàng SJC hôm nay";
+        let en_query = "SJC gold price today";
+        // Prefer the Vietnamese gold phrasing when the classifier (or locale
+        // path) already marked the turn as VI; otherwise lead with English
+        // and still fan out both queries so SERP hits either brand page.
+        let prefer_vi = decision.lang.eq_ignore_ascii_case("vi");
+        let primary = if prefer_vi { vi_query } else { en_query };
+        decision.decision = SearchDecision::Web;
+        decision.route = SearchRoute::Web;
+        decision.standalone_question = primary.to_string();
+        decision.queries = vec![vi_query.to_string(), en_query.to_string()];
+        eprintln!("[search] sanitize: bare SJC -> gold web ({primary})");
+        return decision;
+    }
+
+    // Classifier invented a weather route (or weather rewrite) the user's own
+    // message does not support: demote to web and restore the user text so
+    // engines do not chase the fabricated airport/weather SERP.
+    if matches!(decision.route, SearchRoute::Weather)
+        && !is_weather_intent(latest_user)
+        && !user_signals_airport_context(latest_user)
+    {
+        eprintln!(
+            "[search] sanitize: drop invented weather route (user={:?})",
+            message_body_without_search_command(latest_user)
+        );
+        decision.route = SearchRoute::Web;
+        if is_weather_intent(&decision.standalone_question) {
+            let body = message_body_without_search_command(latest_user);
+            if !body.is_empty() {
+                decision.standalone_question = body.to_string();
+                decision.queries = vec![body.to_string()];
+            }
+        }
+    }
+    decision
+}
+
 /// Combines the pre-filter verdict with the classifier's result into the final
 /// decision. `ForceWeb` overrides a classifier `no` to `web` (the deterministic
 /// freshness signal is authoritative over the model declining to search), but
@@ -711,6 +865,9 @@ fn resolve_decision(verdict: PreFilterVerdict, classified: PrePassDecision) -> P
                 // still be an explicit "look it up" request, and dropping it
                 // here would silently re-enable the fast paths it must skip.
                 explicit_search: classified.explicit_search,
+                // ForceWeb overrides the yes/no decision, never what language the
+                // user wrote in: that is an observation, not a decision.
+                lang: classified.lang,
             }
         }
         // Ambiguous honours the classifier verbatim; ForceNo never reaches here
@@ -759,9 +916,16 @@ async fn force_explicit_web(
                 standalone_question: latest_user.trim().to_string(),
                 queries: vec![latest_user.trim().to_string()],
                 explicit_search: true,
+                // No classifier output, so no language judgement (see the same
+                // fallback in `run_search_inner`).
+                lang: String::new(),
             }
         }
     };
+    let lang = resolve_lang(latest_user, &classified.lang, locale);
+    // Same classifier-hallucination clamp as the auto path: bare `SJC` must not
+    // become San Jose airport weather under `/search` either.
+    let classified = sanitize_search_decision(latest_user, classified);
     let queries = if classified.queries.is_empty() {
         vec![classified.standalone_question.clone()]
     } else {
@@ -796,6 +960,7 @@ async fn force_explicit_web(
         num_ctx,
         today,
         locale,
+        lang,
         cancel,
         status,
         true, /* explicit_search: skip cache + verticals */
@@ -819,6 +984,12 @@ async fn force_explicit_web(
 /// pulled from the in-memory cache within its TTL. The cache is still written
 /// through on a fresh fetch either way, so the entry the user just distrusted
 /// is replaced rather than left to keep answering later, non-explicit turns.
+///
+/// `lang` is the turn's language, resolved once by the caller from the user's
+/// ORIGINAL message (see [`crate::websearch::lang::resolve_lang`]) and forwarded
+/// to every channel with a language-dependent request shape: the weather
+/// geocoder, the news feed's locale triple, the Wikipedia edition, and both
+/// scraped engines. No stage below re-derives it.
 #[allow(clippy::too_many_arguments)]
 async fn run_web(
     deps: &SearchDeps<'_>,
@@ -831,6 +1002,7 @@ async fn run_web(
     num_ctx: u32,
     today: &str,
     locale: &str,
+    lang: &str,
     cancel: &CancellationToken,
     status: &(dyn Fn(SearchPhase) + Send + Sync),
     engines_only: bool,
@@ -849,19 +1021,20 @@ async fn run_web(
     // toward recent results, since a needless date filter costs nothing on a
     // stable question but a missing one on a volatile one risks a stale answer.
     let freshness = is_volatile_question(standalone_question);
-    // An explicit look-it-up request (`engines_only`) skips every vertical fast
-    // path: the user already told us a vertical/cache answer was insufficient,
-    // so only the scraped engines are allowed to answer this turn.
-    // Vertical tier first: an official keyless API that recognises the question
-    // answers it directly and skips the scraped engines entirely (an API cannot
-    // bot-block the way SERPs do). A miss falls through with nothing lost.
+    // An explicit look-it-up request (`engines_only`) skips *cached* and most
+    // vertical fast paths: the user already asked to re-check. Weather is the
+    // exception: Open-Meteo is live structured truth, not a stale cache, and
+    // SEO weather widgets invent impossible RH / wrong cities. On any weather
+    // intent (user or classifier route), try Open-Meteo and, on a miss, refuse
+    // with NoResults rather than scraping engines.
     //
     // Weather keeps its own precise gate (location extraction inside
     // `fetch_weather` self-gates: a non-weather question yields no location and
-    // returns `None`), so it is attempted whenever its own signal matches or the
-    // classifier routed to weather. Either way a miss continues to the next tier.
-    if !engines_only {
-        if let Some(block) = fetch_weather(deps.transport, standalone_question).await {
+    // returns `None`).
+    let weather_turn =
+        is_weather_intent(standalone_question) || matches!(route, SearchRoute::Weather);
+    if weather_turn {
+        if let Some(block) = fetch_weather(deps.transport, standalone_question, lang).await {
             return commit_or_escalate(
                 deps,
                 "weather",
@@ -874,16 +1047,34 @@ async fn run_web(
                 num_ctx,
                 today,
                 locale,
+                lang,
                 freshness,
                 cancel,
                 status,
             )
             .await;
         }
+        // Honour cancel that landed during the Open-Meteo attempt before the
+        // honest-refuse path; otherwise a mid-geocode cancel would surface as
+        // NoResults instead of Cancelled.
+        if cancel.is_cancelled() {
+            return SearchOutcome::Cancelled;
+        }
+        eprintln!("[search] weather exclusive miss -> WeatherUnavailable (no SEO fallback)");
+        return SearchOutcome::Unreachable {
+            messages: unreachable_messages(
+                chat_system_prompt,
+                history,
+                latest_user,
+                deps.latest_images,
+                SearchFailReason::WeatherUnavailable,
+            ),
+            reason: SearchFailReason::WeatherUnavailable,
+        };
     }
-    if cancel.is_cancelled() {
-        return SearchOutcome::Cancelled;
-    }
+    // Cancel already checked at `run_web` entry and inside the weather-miss
+    // path above; nothing async runs between those and here on a non-weather
+    // turn, so a third cancel probe would be dead.
     // Route-respect hint gating (see `hint_claims_turn`): the classifier's
     // explicit route outranks a vertical's deterministic keyword hint. A hint
     // only claims a turn the model routed to that same vertical, or to the
@@ -918,6 +1109,7 @@ async fn run_web(
                 num_ctx,
                 today,
                 locale,
+                lang,
                 freshness,
                 cancel,
                 status,
@@ -942,7 +1134,7 @@ async fn run_web(
     let news_hint = is_news_intent(standalone_question) && matches!(route, SearchRoute::Web);
     if !engines_only && (matches!(route, SearchRoute::News) || news_hint) {
         for query in queries {
-            if let Some(block) = fetch_news(deps.transport, query, freshness).await {
+            if let Some(block) = fetch_news(deps.transport, query, freshness, lang).await {
                 return commit_or_escalate(
                     deps,
                     "news",
@@ -955,6 +1147,7 @@ async fn run_web(
                     num_ctx,
                     today,
                     locale,
+                    lang,
                     freshness,
                     cancel,
                     status,
@@ -973,7 +1166,7 @@ async fn run_web(
     // vertical itself applies a second, year-mismatch guard after resolving the
     // article title. A miss or a refusal falls through to the engines.
     if !engines_only && matches!(route, SearchRoute::Wiki) && !freshness {
-        if let Some(block) = fetch_encyclopedia(deps.transport, standalone_question).await {
+        if let Some(block) = fetch_encyclopedia(deps.transport, standalone_question, lang).await {
             return commit_or_escalate(
                 deps,
                 "wiki",
@@ -986,6 +1179,7 @@ async fn run_web(
                 num_ctx,
                 today,
                 locale,
+                lang,
                 freshness,
                 cancel,
                 status,
@@ -1008,6 +1202,7 @@ async fn run_web(
         queries,
         num_ctx,
         freshness,
+        lang,
         // `engines_only` is set exactly when this call is reached via an
         // explicit look-it-up request (see the module-level comment above the
         // `decision.explicit_search` branch in `run_search`, the only place
@@ -1057,6 +1252,7 @@ async fn run_web(
                 }),
                 num_ctx,
                 freshness,
+                lang,
                 engines_only,
                 cancel,
             )
@@ -1076,6 +1272,7 @@ async fn run_web(
                         sources,
                         today,
                         locale,
+                        lang,
                         engine_stats,
                         conflict,
                         still_missing,
@@ -1160,6 +1357,7 @@ async fn run_engine_tier(
     queries: &[String],
     num_ctx: u32,
     freshness: bool,
+    lang: &str,
     bypass_cache: bool,
     cancel: &CancellationToken,
     status: &(dyn Fn(SearchPhase) + Send + Sync),
@@ -1203,6 +1401,7 @@ async fn run_engine_tier(
                 query,
                 deps.health,
                 freshness,
+                lang,
                 deps.web_cache,
                 bypass_cache,
             )
@@ -1265,6 +1464,12 @@ async fn run_engine_tier(
     } else {
         chunks
     };
+    // Evidence bar for live-price / freshness turns: drop multi-year archive
+    // URL paths and, on price intent, require price-like numbers (else empty
+    // → NoResults refuse rather than confident scrapes). See `evidence`.
+    let price_intent = is_price_intent_question(standalone_question);
+    let now_year = time::OffsetDateTime::now_utc().year() as u32;
+    let chunks = filter_evidence_chunks(chunks, freshness, price_intent, now_year);
     let sources = assemble_context(&chunks, num_ctx);
     deps.timings.record(STAGE_RANK_ASSEMBLY, rank_start);
     if sources.is_empty() {
@@ -1323,6 +1528,7 @@ async fn commit_or_escalate(
     num_ctx: u32,
     today: &str,
     locale: &str,
+    lang: &str,
     freshness: bool,
     cancel: &CancellationToken,
     status: &(dyn Fn(SearchPhase) + Send + Sync),
@@ -1374,6 +1580,7 @@ async fn commit_or_escalate(
             vec![block],
             today,
             locale,
+            lang,
             Vec::new(),
             // The vertical judge (single block) never yields a conflict verdict.
             false,
@@ -1405,6 +1612,7 @@ async fn commit_or_escalate(
             vec![block],
             today,
             locale,
+            lang,
             Vec::new(),
             // The vertical judge (single block) never yields a conflict verdict.
             false,
@@ -1426,6 +1634,7 @@ async fn commit_or_escalate(
         &escalation_queries,
         num_ctx,
         freshness,
+        lang,
         // A judge-driven escalation is not a user distrust signal (the user
         // never asked to re-check anything this turn), so a cached-but-fresh
         // result is fine here: never bypass on this path.
@@ -1466,6 +1675,7 @@ async fn commit_or_escalate(
                 None,
                 num_ctx,
                 freshness,
+                lang,
                 // A judge-driven escalation is not a user distrust signal, the
                 // same rationale as the `run_engine_tier` call above: never
                 // bypass the cache on this path.
@@ -1488,6 +1698,7 @@ async fn commit_or_escalate(
                         sources,
                         today,
                         locale,
+                        lang,
                         engine_stats,
                         conflict,
                         still_missing,
@@ -1516,6 +1727,7 @@ async fn commit_or_escalate(
                 vec![block],
                 today,
                 locale,
+                lang,
                 Vec::new(),
                 // Engine-miss fallback to the vertical block: no conflict verdict.
                 false,
@@ -1555,6 +1767,7 @@ fn grounded_answer(
     sources: Vec<SourceBlock>,
     today: &str,
     locale: &str,
+    lang: &str,
     engine_stats: Vec<EngineStat>,
     conflict: bool,
     still_missing: Option<String>,
@@ -1595,6 +1808,7 @@ fn grounded_answer(
         &sources,
         today,
         locale,
+        lang,
         is_cache_tier,
         conflict,
         still_missing.as_deref(),
@@ -1850,6 +2064,7 @@ async fn judge_and_requery(
     rerank: Option<RequeryRerank>,
     num_ctx: u32,
     freshness: bool,
+    lang: &str,
     bypass_cache: bool,
     cancel: &CancellationToken,
 ) -> EngineJudgeOutcome {
@@ -1954,6 +2169,10 @@ async fn judge_and_requery(
     // Multi-query requery: same fan-out shape as `run_engine_tier`'s primary
     // loop (early-stop at SERP_EARLY_STOP_HITS). Prefer judge keyword queries
     // so the second SERP aims at the gap, not a prose restatement of round one.
+    // The requery races the keyless engines exactly as the primary query does,
+    // so it produces its own per-engine outcome summary. Carry it back to the
+    // caller regardless of whether new pages survive below, so the trace
+    // records the requery's engines even when it found no new URLs.
     let mut hits: Vec<SearchHit> = Vec::new();
     let mut requery_stats: Vec<EngineStat> = Vec::new();
     for query in &requery_queries {
@@ -1965,6 +2184,7 @@ async fn judge_and_requery(
             query,
             deps.health,
             freshness,
+            lang,
             deps.web_cache,
             bypass_cache,
         )
@@ -2033,6 +2253,12 @@ async fn judge_and_requery(
             } else {
                 rerank_by_score(combined_chunks)
             };
+            let ordered = filter_evidence_chunks(
+                ordered,
+                freshness,
+                is_price_intent_question(standalone_question),
+                now.year() as u32,
+            );
             assemble_context(&ordered, num_ctx)
         }
         // Vertical-escalation merge (contract locked): the vertical block stays
@@ -2048,6 +2274,12 @@ async fn judge_and_requery(
             } else {
                 chunks
             };
+            let chunks = filter_evidence_chunks(
+                chunks,
+                freshness,
+                is_price_intent_question(standalone_question),
+                now.year() as u32,
+            );
             let new_sources = assemble_context(&chunks, num_ctx);
             merge_sources(sources, new_sources, num_ctx)
         }
@@ -2181,6 +2413,7 @@ mod tests {
             standalone_question: "when was the treaty of versailles signed in paris".into(),
             queries: queries.into_iter().map(String::from).collect(),
             explicit_search: false,
+            lang: "en".into(),
         }
     }
 
@@ -2583,6 +2816,7 @@ mod tests {
             standalone_question: "tell me a joke".into(),
             queries: vec![],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = FakeHttpTransport::new();
         let (phases, status) = recorder();
@@ -2612,6 +2846,7 @@ mod tests {
             standalone_question: "who owns Figma".into(),
             queries: vec!["Figma ownership".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let (phases, status) = recorder();
@@ -2692,6 +2927,7 @@ mod tests {
             standalone_question: "   ".into(),
             queries: vec![],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let (_phases, status) = recorder();
@@ -2747,6 +2983,7 @@ mod tests {
             standalone_question: "when was the treaty of versailles signed in paris".into(),
             queries: vec![],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let (phases, status) = recorder();
@@ -2786,6 +3023,7 @@ mod tests {
             standalone_question: "when was the treaty of versailles signed in paris".into(),
             queries: vec!["treaty versailles paris".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let cancel = CancellationToken::new();
@@ -2820,8 +3058,9 @@ mod tests {
             standalone_question: "who won the most recent F1 race".into(),
             queries: vec!["f1 race winner".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
-        let feed_url = crate::websearch::news::news_request("f1 race winner", true).url;
+        let feed_url = crate::websearch::news::news_request("f1 race winner", true, "en").url;
         let feed = r#"<rss><channel><item><title>Leclerc wins British GP - Formula 1</title><pubDate>Wed, 08 Jul 2026 01:11:35 GMT</pubDate></item></channel></rss>"#;
         let transport = FakeHttpTransport::new().with_response(
             &feed_url,
@@ -2864,6 +3103,7 @@ mod tests {
             standalone_question: "who won the game".into(),
             queries: vec![],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = FakeHttpTransport::new();
         let (_p, status) = recorder();
@@ -2893,6 +3133,7 @@ mod tests {
             standalone_question: "who won the race".into(),
             queries: vec!["race winner".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let cancel = CancellationToken::new();
         let transport = CancelOnSend {
@@ -2925,6 +3166,7 @@ mod tests {
             standalone_question: "who won the treaty of versailles game".into(),
             queries: vec!["treaty versailles paris".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -2956,9 +3198,10 @@ mod tests {
             standalone_question: "who won the race".into(),
             queries: vec!["empty first query".into(), "race winner".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
-        let first_url = crate::websearch::news::news_request("empty first query", false).url;
-        let second_url = crate::websearch::news::news_request("race winner", false).url;
+        let first_url = crate::websearch::news::news_request("empty first query", false, "en").url;
+        let second_url = crate::websearch::news::news_request("race winner", false, "en").url;
         let transport = FakeHttpTransport::new()
             .with_response(
                 &first_url,
@@ -3011,8 +3254,9 @@ mod tests {
             standalone_question: "weather in Tokyo".into(),
             queries: vec!["tokyo weather".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
-        let geo_url = crate::websearch::weather::geocode_request("Tokyo").url;
+        let geo_url = crate::websearch::weather::geocode_request("Tokyo", "en").url;
         let geo_body = r#"{"results":[{"name":"Tokyo","latitude":35.6895,"longitude":139.69171,"country":"Japan"}]}"#;
         let place = crate::websearch::weather::parse_geocode(geo_body).unwrap();
         let fc_url = crate::websearch::weather::forecast_request(&place).url;
@@ -3060,14 +3304,15 @@ mod tests {
     #[tokio::test]
     async fn cancel_during_vertical_miss_yields_cancelled() {
         // A weather-shaped question whose geocode call cancels the token and
-        // returns junk: the vertical misses, and the post-vertical cancellation
-        // check aborts before any engine is queried.
+        // returns junk: the vertical misses, and the post-Open-Meteo cancel
+        // check aborts (weather exclusive does not fall through to engines).
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Web,
             route: SearchRoute::Weather,
             standalone_question: "weather in Xyzzyplace".into(),
-            queries: vec!["q".into()],
+            queries: vec!["xyzzyplace weather".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let cancel = CancellationToken::new();
         let transport = CancelOnSend {
@@ -3079,7 +3324,9 @@ mod tests {
             &deps(&prepass, &transport, &Bm25Scorer),
             "sys",
             &[],
-            "q",
+            // User text must itself be weather-shaped so sanitize keeps the
+            // weather route (bare "q" would demote to web engines).
+            "weather in Xyzzyplace",
             16384,
             "2026-07-05",
             "en-US",
@@ -3091,15 +3338,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vertical_miss_falls_through_to_engines() {
-        // A weather-shaped question whose geocode fails (no canned response)
-        // still resolves through the normal engine pipeline.
+    async fn weather_miss_refuses_without_engine_seo() {
+        // Weather exclusive: Open-Meteo miss must NOT fall through to scraped
+        // engines (SEO widgets invent humidity > 100% and wrong cities).
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Web,
-            route: SearchRoute::Web,
-            standalone_question: "weather in Xyzzyplace treaty versailles paris".into(),
-            queries: vec!["treaty versailles paris".into()],
+            route: SearchRoute::Weather,
+            standalone_question: "weather in Xyzzyplace".into(),
+            queries: vec!["xyzzyplace weather".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -3107,7 +3355,7 @@ mod tests {
             &deps(&prepass, &transport, &Bm25Scorer),
             "sys",
             &[],
-            "q",
+            "weather in Xyzzyplace",
             16384,
             "2026-07-05",
             "en-US",
@@ -3115,10 +3363,123 @@ mod tests {
             &status,
         )
         .await;
-        // Geocode had no canned response (transport error) -> vertical miss ->
-        // engines ran and grounded the answer.
-        assert!(matches!(outcome, SearchOutcome::Answer { .. }));
-        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+        assert!(
+            matches!(
+                &outcome,
+                SearchOutcome::Unreachable {
+                    reason: SearchFailReason::WeatherUnavailable,
+                    messages,
+                } if messages.first().is_some_and(|m| {
+                    m.content.contains("Do NOT invent") && m.content.contains("live weather")
+                })
+            ),
+            "expected WeatherUnavailable with no-invent system note"
+        );
+        assert!(
+            !transport.calls().iter().any(|c| c.url == DDG_ENDPOINT),
+            "weather exclusive must not touch scraped engines"
+        );
+    }
+
+    #[test]
+    fn sanitize_bare_sjc_rewrites_to_gold_web() {
+        let classified = PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Weather,
+            standalone_question:
+                "what is the current weather at San Jose International Airport (SJC)".into(),
+            queries: vec!["SJC weather".into()],
+            explicit_search: true,
+            lang: "en".into(),
+        };
+        let out = sanitize_search_decision("SJC", classified);
+        assert_eq!(out.route, SearchRoute::Web);
+        assert!(out.standalone_question.to_lowercase().contains("gold"));
+        assert!(out.queries.iter().any(|q| q.contains("SJC")));
+        // `/search` prefix still counts as bare SJC; VI lang prefers vàng.
+        let with_cmd = sanitize_search_decision(
+            "/search SJC",
+            PrePassDecision {
+                decision: SearchDecision::Web,
+                route: SearchRoute::Weather,
+                standalone_question: "SJC weather".into(),
+                queries: vec!["SJC weather".into()],
+                explicit_search: true,
+                lang: "vi".into(),
+            },
+        );
+        assert_eq!(with_cmd.route, SearchRoute::Web);
+        assert!(with_cmd.standalone_question.contains("vàng"));
+        // Explicit airport context still allows weather.
+        let airport = PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Weather,
+            standalone_question: "SJC airport weather".into(),
+            queries: vec!["SJC airport weather".into()],
+            explicit_search: false,
+            lang: "en".into(),
+        };
+        let kept = sanitize_search_decision("SJC airport weather", airport);
+        assert_eq!(kept.route, SearchRoute::Weather);
+        // Flight/IATA tokens also mark airport context (not gold rewrite).
+        assert!(user_signals_airport_context("SJC flight status"));
+        // San Jose / mineta phrasing is also airport context.
+        let jose = sanitize_search_decision(
+            "weather at San Jose SJC",
+            PrePassDecision {
+                decision: SearchDecision::Web,
+                route: SearchRoute::Weather,
+                standalone_question: "SJC weather".into(),
+                queries: vec!["SJC weather".into()],
+                explicit_search: false,
+                lang: "en".into(),
+            },
+        );
+        assert_eq!(jose.route, SearchRoute::Weather);
+        // Weather route with weather rewrite but empty body after `/search` alone:
+        // demote route without rewriting queries onto empty text.
+        let empty_body = sanitize_search_decision(
+            "/search",
+            PrePassDecision {
+                decision: SearchDecision::Web,
+                route: SearchRoute::Weather,
+                standalone_question: "weather in Paris".into(),
+                queries: vec!["paris weather".into()],
+                explicit_search: true,
+                lang: "en".into(),
+            },
+        );
+        assert_eq!(empty_body.route, SearchRoute::Web);
+        assert_eq!(empty_body.standalone_question, "weather in Paris");
+        // Weather route but non-weather rewrite: demote route, leave standalone.
+        let no_weather_rewrite = sanitize_search_decision(
+            "capital of France",
+            PrePassDecision {
+                decision: SearchDecision::Web,
+                route: SearchRoute::Weather,
+                standalone_question: "capital of France".into(),
+                queries: vec!["capital of France".into()],
+                explicit_search: false,
+                lang: "en".into(),
+            },
+        );
+        assert_eq!(no_weather_rewrite.route, SearchRoute::Web);
+        assert_eq!(no_weather_rewrite.standalone_question, "capital of France");
+    }
+
+    #[test]
+    fn sanitize_drops_invented_weather_route_without_user_signal() {
+        let classified = PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Weather,
+            standalone_question: "weather in Paris".into(),
+            queries: vec!["paris weather".into()],
+            explicit_search: false,
+            lang: "en".into(),
+        };
+        let out = sanitize_search_decision("tell me about Paris", classified);
+        assert_eq!(out.route, SearchRoute::Web);
+        assert_eq!(out.standalone_question, "tell me about Paris");
     }
 
     // ── sports vertical routing ────────────────────────────────────────────────
@@ -3137,6 +3498,7 @@ mod tests {
             standalone_question: "what's the score of the nba game".into(),
             queries: vec!["nba score".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let espn_url =
             crate::websearch::sports::scoreboard_request("basketball", "nba", "2026-07-05").url;
@@ -3182,6 +3544,7 @@ mod tests {
             standalone_question: "nfl scores this week".into(),
             queries: vec!["nfl scores".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let espn_url =
             crate::websearch::sports::scoreboard_request("football", "nfl", "2026-07-05").url;
@@ -3226,6 +3589,7 @@ mod tests {
             standalone_question: "what's the nba score".into(),
             queries: vec!["nba score".into()],
             explicit_search: true,
+            lang: "en".into(),
         }));
         let espn_url =
             crate::websearch::sports::scoreboard_request("basketball", "nba", "2026-07-05").url;
@@ -3290,6 +3654,7 @@ mod tests {
             standalone_question: "when was the treaty of versailles signed in paris".into(),
             queries: vec!["treaty versailles paris".into()],
             explicit_search: true,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
@@ -3325,6 +3690,7 @@ mod tests {
             standalone_question: "when was the treaty of versailles signed in paris".into(),
             queries: vec!["treaty versailles paris".into()],
             explicit_search: true,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -3358,6 +3724,7 @@ mod tests {
             standalone_question: "when was the treaty of versailles signed in paris".into(),
             queries: vec!["treaty versailles paris".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let mut deps = deps(&prepass, &transport, &Bm25Scorer);
@@ -3437,6 +3804,7 @@ mod tests {
             standalone_question: standalone.into(),
             queries: vec![query.into()],
             explicit_search: true,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let web_cache = WebCache::new(
@@ -3452,6 +3820,7 @@ mod tests {
             "duckduckgo",
             query,
             freshness,
+            "en",
             vec![SearchHit {
                 title: "Stale".into(),
                 url: "https://stale.example/".into(),
@@ -3506,10 +3875,11 @@ mod tests {
             standalone_question: "what's the score of the nba game".into(),
             queries: vec!["nba game score".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let espn_url =
             crate::websearch::sports::scoreboard_request("basketball", "nba", "2026-07-05").url;
-        let feed_url = crate::websearch::news::news_request("nba game score", false).url;
+        let feed_url = crate::websearch::news::news_request("nba game score", false, "en").url;
         let transport = FakeHttpTransport::new()
             .with_response(
                 &espn_url,
@@ -3559,8 +3929,9 @@ mod tests {
             standalone_question: "what's the score of the nba game".into(),
             queries: vec!["nba game score".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
-        let feed_url = crate::websearch::news::news_request("nba game score", false).url;
+        let feed_url = crate::websearch::news::news_request("nba game score", false, "en").url;
         let transport = FakeHttpTransport::new().with_response(
             &feed_url,
             HttpResponse {
@@ -3596,6 +3967,7 @@ mod tests {
             standalone_question: "nhl scores treaty versailles paris".into(),
             queries: vec!["treaty versailles paris".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -3626,6 +3998,7 @@ mod tests {
             standalone_question: "nba scores tonight".into(),
             queries: vec!["q".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let cancel = CancellationToken::new();
         let transport = CancelOnSend {
@@ -3651,6 +4024,66 @@ mod tests {
     // ── encyclopedia vertical routing ─────────────────────────────────────────
 
     #[tokio::test]
+    async fn the_turns_language_comes_from_the_user_not_the_rewrite_or_the_locale() {
+        // THE end-to-end regression. Every ingredient is deliberate:
+        // - the user's Vietnamese carries NO Vietnamese-distinctive character,
+        //   so script detection names nothing and only the classifier's `lang`
+        //   can see it (this is the local-price question class, the highest
+        //   value there is);
+        // - the classifier ALSO emits an English companion query beside the
+        //   native one (measured live: it does this on its own), and that
+        //   English rewrite must not drag the turn back to the English feed;
+        // - the machine's locale is `en-US`, so the locale cannot supply `vi`
+        //   either. Only the classifier can, and it does.
+        let question = "giá vàng hôm nay bao nhiêu";
+        assert_eq!(
+            crate::websearch::lang::detect_script_lang(question),
+            None,
+            "fixture invalid: this question must be invisible to script detection"
+        );
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::News,
+            standalone_question: question.into(),
+            queries: vec!["giá vàng hôm nay".into(), "gold price today".into()],
+            explicit_search: false,
+            lang: "vi".into(),
+        }));
+        let freshness = is_volatile_question(question);
+        let feed_url =
+            crate::websearch::news::news_request("giá vàng hôm nay", freshness, "vi").url;
+        // The Vietnamese feed, derived from one allowlist row, so the triple
+        // cannot disagree and silently serve English.
+        assert!(feed_url.contains("ceid=VN%3Avi"), "{feed_url}");
+        let feed = r#"<rss><channel><item><title>Giá vàng hôm nay tăng mạnh - VnExpress</title><pubDate>Tue, 14 Jul 2026 01:11:35 GMT</pubDate></item></channel></rss>"#;
+        let transport = FakeHttpTransport::new().with_response(
+            &feed_url,
+            HttpResponse {
+                status: 200,
+                final_url: feed_url.clone(),
+                body: feed.as_bytes().to_vec(),
+            },
+        );
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            question,
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        // The Vietnamese feed answered, so the request went out under `vi`.
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources.len() == 1 && sources[0].url == "https://news.google.com/"));
+        assert!(transport.calls().iter().any(|c| c.url == feed_url));
+    }
+
+    #[tokio::test]
     async fn encyclopedia_question_answers_via_vertical_without_engines() {
         // A stable factual question: Wikipedia search + summary resolve it and
         // the scraped engines are never queried.
@@ -3660,11 +4093,17 @@ mod tests {
             standalone_question: "what is photosynthesis".into(),
             queries: vec!["photosynthesis".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
+        // The turn resolves English (English message, English classifier `lang`,
+        // `en-US` locale below), so the wiki vertical rides the English edition
+        // and the canned URLs are keyed to it.
+        let lang = "en";
         let search_url =
-            crate::websearch::encyclopedia::search_request("what is photosynthesis").url;
+            crate::websearch::encyclopedia::search_request("what is photosynthesis", lang).url;
         let search_body = r#"{"query":{"search":[{"title":"Photosynthesis"}]}}"#;
-        let summary_url = crate::websearch::encyclopedia::summary_request("Photosynthesis").url;
+        let summary_url =
+            crate::websearch::encyclopedia::summary_request("Photosynthesis", lang).url;
         let summary_body = r#"{"type":"standard","title":"Photosynthesis","extract":"Photosynthesis is a system of biological processes.","content_urls":{"desktop":{"page":"https://en.wikipedia.org/wiki/Photosynthesis"}}}"#;
         let transport = FakeHttpTransport::new()
             .with_response(
@@ -3716,6 +4155,7 @@ mod tests {
             standalone_question: "what is xyzzyplace".into(),
             queries: vec!["q".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let cancel = CancellationToken::new();
         let transport = CancelOnSend {
@@ -3748,6 +4188,7 @@ mod tests {
             standalone_question: "what is the treaty of versailles game".into(),
             queries: vec!["treaty versailles paris".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -3784,6 +4225,7 @@ mod tests {
             standalone_question: "who won the championship treaty versailles paris".into(),
             queries: vec!["treaty versailles paris".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -3821,8 +4263,9 @@ mod tests {
             standalone_question: "who won the big game tonight".into(),
             queries: vec!["big game result".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
-        let feed_url = crate::websearch::news::news_request("big game result", false).url;
+        let feed_url = crate::websearch::news::news_request("big game result", false, "en").url;
         let transport = FakeHttpTransport::new().with_response(
             &feed_url,
             HttpResponse {
@@ -3859,6 +4302,7 @@ mod tests {
             standalone_question: "what's the nba score tonight".into(),
             queries: vec!["nba score".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let espn_url =
             crate::websearch::sports::scoreboard_request("basketball", "nba", "2026-07-05").url;
@@ -3905,6 +4349,7 @@ mod tests {
             standalone_question: "who won the election treaty versailles paris".into(),
             queries: vec!["treaty versailles paris".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -3936,9 +4381,24 @@ mod tests {
     #[test]
     fn force_web_should_race_raw_skips_vertical_shaped() {
         assert!(!force_web_should_race_raw("weather in Tokyo"));
+        assert!(!force_web_should_race_raw("độ ẩm Hà Nội"));
         assert!(!force_web_should_race_raw("NBA Lakers score tonight"));
         assert!(!force_web_should_race_raw("latest news about tariffs"));
         assert!(force_web_should_race_raw("what is the latest rust version"));
+        assert!(force_web_should_race_raw("SJC"));
+    }
+
+    #[test]
+    fn race_lang_for_force_web_is_script_only() {
+        // No locale arg: English text defaults to en even when the machine is
+        // vi_VN (that was the live race regression).
+        assert_eq!(
+            race_lang_for_force_web("what is the latest rust version"),
+            "en"
+        );
+        assert_eq!(race_lang_for_force_web("thời tiết Hà Nội hôm nay"), "vi");
+        assert_eq!(race_lang_for_force_web("東京の天気は"), "ja");
+        assert_eq!(race_lang_for_force_web("SJC"), "en");
     }
 
     #[test]
@@ -3949,9 +4409,14 @@ mod tests {
             standalone_question: "latest rust version".into(),
             queries: vec!["latest rust version".into()],
             explicit_search: false,
+            lang: "en".into(),
         };
-        let empty =
-            preloaded_serp_for_decision(&decision, "latest rust version", Some((vec![], vec![])));
+        let empty = preloaded_serp_for_decision(
+            &decision,
+            "latest rust version",
+            "en",
+            Some((vec![], vec![], "en")),
+        );
         assert!(empty.is_some());
         let hit = SearchHit {
             title: "t".into(),
@@ -3961,7 +4426,8 @@ mod tests {
         let kept = preloaded_serp_for_decision(
             &decision,
             "  Latest  Rust  Version ",
-            Some((vec![hit], vec![])),
+            "en",
+            Some((vec![hit], vec![], "en")),
         );
         assert_eq!(kept.unwrap().0.len(), 1);
     }
@@ -3974,17 +4440,20 @@ mod tests {
             standalone_question: "adobe figma deal".into(),
             queries: vec!["adobe figma deal".into()],
             explicit_search: false,
+            lang: "en".into(),
         };
         assert!(preloaded_serp_for_decision(
             &web,
             "latest figma ownership",
+            "en",
             Some((
                 vec![SearchHit {
                     title: "t".into(),
                     url: "https://example.com/".into(),
                     snippet: "s".into(),
                 }],
-                vec![]
+                vec![],
+                "en"
             )),
         )
         .is_none());
@@ -3994,13 +4463,70 @@ mod tests {
             standalone_question: "latest rust version".into(),
             queries: vec!["latest rust version".into()],
             explicit_search: false,
+            lang: "en".into(),
         };
         assert!(preloaded_serp_for_decision(
             &cached,
             "latest rust version",
-            Some((vec![], vec![])),
+            "en",
+            Some((vec![], vec![], "en")),
         )
         .is_none());
+    }
+
+    #[test]
+    fn preloaded_serp_drops_when_race_lang_mismatches_final() {
+        let decision = PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: "latest rust version".into(),
+            queries: vec!["latest rust version".into()],
+            explicit_search: false,
+            lang: "en".into(),
+        };
+        // Near-duplicate rewrite would keep, but race ran under vi and final is en.
+        assert!(preloaded_serp_for_decision(
+            &decision,
+            "latest rust version",
+            "en",
+            Some((
+                vec![SearchHit {
+                    title: "t".into(),
+                    url: "https://example.com/".into(),
+                    snippet: "s".into(),
+                }],
+                vec![],
+                "vi"
+            )),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn preloaded_serp_keeps_when_race_lang_matches_final() {
+        let decision = PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Web,
+            standalone_question: "latest rust version".into(),
+            queries: vec!["latest rust version".into()],
+            explicit_search: false,
+            lang: "en".into(),
+        };
+        let kept = preloaded_serp_for_decision(
+            &decision,
+            "latest rust version",
+            "en",
+            Some((
+                vec![SearchHit {
+                    title: "t".into(),
+                    url: "https://example.com/".into(),
+                    snippet: "s".into(),
+                }],
+                vec![],
+                "en",
+            )),
+        );
+        assert_eq!(kept.unwrap().0.len(), 1);
     }
 
     #[tokio::test]
@@ -4035,6 +4561,7 @@ mod tests {
             standalone_question: "what is the latest rust version".into(),
             queries: vec!["what is the latest rust version".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -4073,6 +4600,7 @@ mod tests {
             standalone_question: raw.into(),
             queries: vec![raw.into(), secondary.into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -4164,6 +4692,7 @@ mod tests {
                 standalone_question: "what is the latest rust version".into(),
                 queries: vec!["what is the latest rust version".into()],
                 explicit_search: false,
+                lang: "en".into(),
             }),
         };
         let transport = DelayedTransport {
@@ -4261,6 +4790,7 @@ mod tests {
                 standalone_question: "current tokyo weather".into(),
                 queries: vec![],
                 explicit_search: false,
+                lang: "en".into(),
             },
         );
         assert_eq!(out.decision, SearchDecision::Web);
@@ -4277,6 +4807,7 @@ mod tests {
                 standalone_question: "q".into(),
                 queries: vec!["a".into(), "b".into()],
                 explicit_search: false,
+                lang: "en".into(),
             },
         );
         assert_eq!(out.decision, SearchDecision::Web);
@@ -4303,6 +4834,7 @@ mod tests {
                 standalone_question: "what's the latest stable rust version".into(),
                 queries: vec!["rust latest stable version".into()],
                 explicit_search: false,
+                lang: "en".into(),
             },
         );
         assert_eq!(out.decision, SearchDecision::Cached);
@@ -4316,6 +4848,7 @@ mod tests {
             standalone_question: "q".into(),
             queries: vec![],
             explicit_search: false,
+            lang: "en".into(),
         };
         let out = resolve_decision(PreFilterVerdict::Ambiguous, classified.clone());
         assert_eq!(out, classified);
@@ -4331,6 +4864,7 @@ mod tests {
             standalone_question: "q".into(),
             queries: vec!["a".into()],
             explicit_search: false,
+            lang: "en".into(),
         };
         let out = resolve_decision(PreFilterVerdict::ForceNo, classified.clone());
         assert_eq!(out, classified);
@@ -4561,6 +5095,7 @@ mod tests {
             standalone_question: standalone.into(),
             queries: vec!["springfield population".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = transport_with_two_dated_pages(old, new);
         let (_p, status) = recorder();
@@ -4600,6 +5135,7 @@ mod tests {
             standalone_question: standalone.into(),
             queries: vec!["springfield population".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = transport_with_two_dated_pages(old, new);
         let (_p, status) = recorder();
@@ -4688,6 +5224,7 @@ mod tests {
             standalone_question: "what is the latest rust version".into(),
             queries: vec!["what is the latest rust version".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         // DDG returns a bot challenge (blocked, but online) and Mojeek transport-
         // fails. At least one engine reached the web, so the miss is `NoResults`,
@@ -4732,6 +5269,7 @@ mod tests {
             standalone_question: "quantum chromodynamics lagrangian".into(),
             queries: vec!["q".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -4847,6 +5385,7 @@ mod tests {
             standalone_question: "xyzzyplace status report".into(),
             queries: vec!["q one".into(), "q two".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let cancel = CancellationToken::new();
         let transport = CancelOnSend {
@@ -4882,6 +5421,7 @@ mod tests {
             standalone_question: "xyzzyplace status report".into(),
             queries: vec!["q".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let cancel = CancellationToken::new();
         let transport = CancelOnSend {
@@ -4915,6 +5455,7 @@ mod tests {
             standalone_question: "treaty of versailles signed paris".into(),
             queries: vec!["treaty versailles".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -4964,6 +5505,7 @@ mod tests {
             standalone_question: "what is the stable rust version we discussed".into(),
             queries: vec!["rust stable version".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         // No canned responses at all: a network call would fail the test by
         // returning a transport error the pipeline would otherwise degrade on.
@@ -5064,6 +5606,7 @@ mod tests {
             standalone_question: "treaty of versailles signed paris".into(),
             queries: vec!["treaty versailles".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -5118,6 +5661,7 @@ mod tests {
             standalone_question: "treaty of versailles signed paris".into(),
             queries: vec!["treaty versailles".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -5208,8 +5752,9 @@ mod tests {
             standalone_question: "who won the most recent F1 race".into(),
             queries: vec!["f1 race winner".into()],
             explicit_search: false,
+            lang: "en".into(),
         }));
-        let feed_url = crate::websearch::news::news_request("f1 race winner", true).url;
+        let feed_url = crate::websearch::news::news_request("f1 race winner", true, "en").url;
         let feed = r#"<rss><channel><item><title>Leclerc wins British GP - Formula 1</title><pubDate>Wed, 08 Jul 2026 01:11:35 GMT</pubDate></item></channel></rss>"#;
         let transport = FakeHttpTransport::new().with_response(
             &feed_url,
@@ -5420,13 +5965,15 @@ mod tests {
             standalone_question: "when was the treaty of versailles signed in paris".into(),
             queries: vec!["treaty versailles paris".into()],
             explicit_search: false,
+            lang: "en".into(),
         }
     }
 
     /// The Google News feed response for the escalation tests' query (non-
     /// volatile, so `freshness` is false), yielding a `news.google.com` block.
     fn news_feed_response() -> (String, HttpResponse) {
-        let feed_url = crate::websearch::news::news_request("treaty versailles paris", false).url;
+        let feed_url =
+            crate::websearch::news::news_request("treaty versailles paris", false, "en").url;
         let resp = HttpResponse {
             status: 200,
             final_url: feed_url.clone(),
@@ -5634,12 +6181,14 @@ mod tests {
             "duckduckgo",
             "treaty versailles paris",
             false,
+            "en",
             vec![cached_hit()],
         );
         web_cache.serp_put(
             "mojeek",
             "treaty versailles paris",
             false,
+            "en",
             vec![cached_hit()],
         );
         let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
@@ -5669,7 +6218,7 @@ mod tests {
         // Neither engine's SERP endpoint was ever contacted: both were served
         // from the warm cache.
         let mojeek_url =
-            crate::websearch::engine::mojeek_request("treaty versailles paris", false).url;
+            crate::websearch::engine::mojeek_request("treaty versailles paris", false, "en").url;
         assert!(!transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
         assert!(!transport.calls().iter().any(|c| c.url == mojeek_url));
     }
@@ -5944,6 +6493,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -5975,6 +6525,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -6008,6 +6559,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -6035,6 +6587,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -6063,6 +6616,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -6093,6 +6647,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -6125,6 +6680,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -6160,6 +6716,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &cancel,
         )
@@ -6190,6 +6747,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &cancel,
         )
@@ -6241,6 +6799,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -6333,6 +6892,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -6407,6 +6967,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -6463,6 +7024,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -6520,6 +7082,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -6565,6 +7128,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -6603,6 +7167,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -6637,6 +7202,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -6667,6 +7233,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &cancel,
         )
@@ -6699,6 +7266,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &cancel,
         )
@@ -6726,6 +7294,7 @@ mod tests {
             None,
             100,
             false,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -6755,8 +7324,14 @@ mod tests {
             64,
             128,
         );
-        web_cache.serp_put("duckduckgo", &requery_text, false, vec![cached_hit.clone()]);
-        web_cache.serp_put("mojeek", &requery_text, false, vec![cached_hit]);
+        web_cache.serp_put(
+            "duckduckgo",
+            &requery_text,
+            false,
+            "en",
+            vec![cached_hit.clone()],
+        );
+        web_cache.serp_put("mojeek", &requery_text, false, "en", vec![cached_hit]);
         // Only the page fetch hits the network; both engines' SERP endpoints
         // are served from the warm cache.
         let transport = FakeHttpTransport::new().with_response(
@@ -6787,6 +7362,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -6796,7 +7372,7 @@ mod tests {
             if s.iter().any(|b| b.url == "https://cached-requery.example/"))
         );
         assert!(!transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
-        let mojeek_url = crate::websearch::engine::mojeek_request(&requery_text, false).url;
+        let mojeek_url = crate::websearch::engine::mojeek_request(&requery_text, false, "en").url;
         assert!(!transport.calls().iter().any(|c| c.url == mojeek_url));
     }
 
@@ -6818,7 +7394,7 @@ mod tests {
             64,
             128,
         );
-        web_cache.serp_put("duckduckgo", &requery_text, false, vec![cached_hit]);
+        web_cache.serp_put("duckduckgo", &requery_text, false, "en", vec![cached_hit]);
         let transport = requery_transport();
         let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
@@ -6840,6 +7416,7 @@ mod tests {
             None,
             16384,
             false,
+            "en",
             true,
             &CancellationToken::new(),
         )
@@ -6928,6 +7505,7 @@ mod tests {
             Some(rerank),
             16384,
             false,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -6973,6 +7551,7 @@ mod tests {
             Some(rerank),
             16384,
             true,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -7014,6 +7593,7 @@ mod tests {
             Some(rerank),
             2048,
             false,
+            "en",
             false,
             &CancellationToken::new(),
         )
@@ -7110,6 +7690,7 @@ mod tests {
             None,
             16384,
             true,
+            "en",
             false,
             &CancellationToken::new(),
         )

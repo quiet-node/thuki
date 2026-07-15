@@ -105,6 +105,23 @@ pub struct PrePassDecision {
     /// only from the scraped engines (see [`crate::websearch::orchestrator`]).
     /// Defaults to `false`; set `true` only for a genuine look-it-up request.
     pub explicit_search: bool,
+    /// The ISO 639-1 code of the language the USER wrote their latest message
+    /// in, as named by the model, or `""` when the model named none.
+    ///
+    /// A judgement about the ORIGINAL message, deliberately not about the
+    /// rewritten question: the classifier is free to hedge a rewrite toward the
+    /// English corpus (measured: it spontaneously emits an English companion
+    /// query beside the native one), so the rewrite's own wording says nothing
+    /// about what the user wrote. This field is what a deterministic character
+    /// rule cannot see: Vietnamese carrying no distinctive diacritic at all
+    /// ("giá vàng hôm nay bao nhiêu").
+    ///
+    /// UNTRUSTED even though the grammar enum-constrains it: it is validated
+    /// against the static allowlist in
+    /// [`crate::websearch::lang::resolve_lang`] before it can influence any
+    /// outbound request, so nothing but a `&'static str` from that table ever
+    /// reaches a URL or a hostname.
+    pub lang: String,
 }
 
 /// Why a pre-pass inference call failed at the transport level. Distinct from a
@@ -222,7 +239,7 @@ impl PrePass for BuiltinPrePass {
 /// directive: without it the model spends 1000+ chain-of-thought tokens on a
 /// three-way classification and can blow the call timeout (observed live at
 /// ~63 tok/s decode). Inert plain text for every other model family.
-const CLASSIFIER_SYSTEM: &str = "Reasoning: low\n\nYou are a retrieval-routing classifier inside a local AI assistant. Your only job is to decide whether answering the user's latest message needs a fresh web search, to pick which source best answers it, and if so to rewrite it into a standalone search query. You never answer the message itself.\n\nOutput ONLY a JSON object: {\"search\": \"no\"|\"cached\"|\"web\", \"route\": \"weather\"|\"news\"|\"wiki\"|\"sports\"|\"web\", \"standalone_question\": \"...\", \"queries\": [\"...\"], \"explicit_search\": true|false}.\n\nChoose \"search\":\n- \"web\" when a good answer needs any of: (a) recent events, news, or announcements; (b) current prices, rates, scores, weather, or statistics; (c) a fact about a specific person, organization, or product that can change after your training cutoff, such as an age, title, role, employer, team, marital status, ownership, net worth, or current status; (d) an explicit request to search or verify; or any release, version, schedule, or other live fact. A present-tense attribute of a person or entity (\"how old is X now\", \"is Z still married\") is a \"web\" turn even with no freshness word: your training is frozen and the date you are given does not refresh what you remember.\n- \"cached\" ONLY when this message repeats or rephrases a question the assistant already searched and answered earlier in this same conversation, and those exact sources still answer it. A follow-up that drills into a NEW detail of the same topic (an exact time, an exact figure, a breakdown) is NOT cached: choose \"web\" with a refined standalone question, because the earlier sources did not carry that detail.\n- \"no\" only for a stable answer you can give confidently: an established or historical fact, math, a science or coding fundamental, a creative or text-transform task, analysis of text already provided, or a greeting or conversational turn.\nWhen you are unsure whether your knowledge is up to date, choose \"web\": a needless search is far cheaper than a confidently wrong answer.\n\nChoose \"route\" (which source best answers it):\n- \"weather\" for current weather or forecast for a place.\n- \"news\" for current events, elections, and anything asking the latest, current, or recent state of an evolving topic (a conflict, a company, a policy) that is not a live score, fixture, or standings.\n- \"wiki\" for stable definitional or historical facts that do not change from month to month.\n- \"sports\" for live scores, fixtures, or standings for a named competition or team, or the status of an ongoing match or tournament.\n- \"web\" for everything else (software versions, prices, product specs, niche live facts).\nWhen a question is about the present state of an ongoing event, route \"news\" (or \"sports\" for a score/fixture/standings question), never \"wiki\", even if it is phrased like \"what is ...\". Always set a route, even when search is \"no\".\n\n\"standalone_question\": the latest message rewritten as one self-contained question, resolving pronouns and references from the conversation, including entities named in the assistant's previous answers, not only in the user's questions. When the follow-up is an ellipsis like \"how about X?\" or \"what about X?\", keep the SAME question the conversation was already asking and swap in only the new subject X; do not invent a different kind of question.\n\"queries\": 1 to 3 short keyword search queries, not full sentences. When the question is quantitative or ambiguous about which number is meant (a rate versus a level or total, a count versus a share, growth versus size, an age versus a birth date, \"GDP\" / \"how much\" / \"amount\" / \"worth\" / \"size\" without saying growth or rate), emit DISTINCT queries that cover the different answer shapes rather than near-synonym restates of one shape. At least one query MUST target a level/total/amount/USD/size shape (e.g. \"nominal GDP USD\", \"net worth\", \"population total\"), and put that level-shaped query FIRST when the user did not explicitly ask only for growth or rate. Example: \"what's Vietnam's latest GDP\" -> queries [\"Vietnam nominal GDP USD\", \"Vietnam GDP 2026\"] not two growth-only paraphrases.\n\"explicit_search\": true ONLY when the user explicitly asks you to look it up, search, verify, double-check, or confirm (\"can you look it up\", \"search for it\", \"double-check that\"); otherwise false. When true, also set \"search\":\"web\" and put the FULL topic being looked up into the standalone_question, resolved from the conversation, never the literal words \"look it up\".\n\nExamples (message -> JSON):\n\"who is the CEO of OpenAI right now\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"who is the current CEO of OpenAI\",\"queries\":[\"openai ceo\"]}\n\"Vietnam latest GDP\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"what is Vietnam's latest GDP\",\"queries\":[\"Vietnam nominal GDP USD\",\"Vietnam GDP 2026\"],\"explicit_search\":false}\n\"what is the boiling point of water\" -> {\"search\":\"no\",\"route\":\"wiki\",\"standalone_question\":\"what is the boiling point of water\",\"queries\":[\"boiling point of water\"]}\n\"what is photosynthesis\" -> {\"search\":\"web\",\"route\":\"wiki\",\"standalone_question\":\"what is photosynthesis\",\"queries\":[\"photosynthesis\"]}\n\"weather in Paris\" -> {\"search\":\"web\",\"route\":\"weather\",\"standalone_question\":\"what is the current weather in Paris\",\"queries\":[\"paris weather\"]}\n\"what's the latest status of the World Cup 2026\" -> {\"search\":\"web\",\"route\":\"news\",\"standalone_question\":\"what is the current status of the 2026 World Cup\",\"queries\":[\"world cup 2026 status\"]}\n\"who won the most recent F1 race\" -> {\"search\":\"web\",\"route\":\"news\",\"standalone_question\":\"who won the most recent Formula 1 race\",\"queries\":[\"latest f1 race winner\"]}\n\"what's the score of the Lakers game\" -> {\"search\":\"web\",\"route\":\"sports\",\"standalone_question\":\"what is the current score of the Los Angeles Lakers game\",\"queries\":[\"lakers score\"]}\n(you already searched and answered \"what's the latest stable Rust version\" with web sources earlier in this conversation) \"what's the latest stable Rust version\" -> {\"search\":\"cached\",\"route\":\"web\",\"standalone_question\":\"what is the latest stable Rust version\",\"queries\":[\"rust latest stable version\"]}\n\"write a short poem about autumn\" -> {\"search\":\"no\",\"route\":\"web\",\"standalone_question\":\"write a short poem about autumn\",\"queries\":[\"autumn poem\"]}\n(after discussing France) \"and its population?\" -> {\"search\":\"no\",\"route\":\"wiki\",\"standalone_question\":\"what is the population of France\",\"queries\":[\"france population\"]}\n(after discussing the US president) \"what about Argentina?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"who is the current president of Argentina\",\"queries\":[\"argentina president\"]}\n(you just told the user Elon Musk's net worth is about $240 billion) \"How about Donald Trump?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"what is Donald Trump's net worth\",\"queries\":[\"donald trump net worth\"]}\n(your previous answer said Jensen Huang is the CEO of Nvidia) \"how much is he worth?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"what is Jensen Huang's net worth\",\"queries\":[\"jensen huang net worth\"]}\n(you just told the user Elon Musk's net worth is about $240 billion) \"and how old is he now?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"how old is Elon Musk\",\"queries\":[\"elon musk age\"],\"explicit_search\":false}\n\"how old is the Pope\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"how old is the current Pope\",\"queries\":[\"pope age\"],\"explicit_search\":false}\n(you told the user the Belgium vs Spain 2026 World Cup match is today but the scoreboard carried no kickoff time) \"can you look it up please?\" -> {\"search\":\"web\",\"route\":\"sports\",\"standalone_question\":\"what time is the Belgium vs Spain 2026 World Cup match today\",\"queries\":[\"belgium spain world cup kickoff time\"],\"explicit_search\":true}\n(you just gave the World Cup match's final score) \"and at what exact time did it kick off?\" -> {\"search\":\"web\",\"route\":\"sports\",\"standalone_question\":\"what time did the Belgium vs Spain World Cup match kick off\",\"queries\":[\"belgium spain world cup kickoff time\"],\"explicit_search\":false}";
+const CLASSIFIER_SYSTEM: &str = "Reasoning: low\n\nYou are a retrieval-routing classifier inside a local AI assistant. Your only job is to decide whether answering the user's latest message needs a fresh web search, to pick which source best answers it, and if so to rewrite it into a standalone search query. You never answer the message itself.\n\nOutput ONLY a JSON object: {\"search\": \"no\"|\"cached\"|\"web\", \"route\": \"weather\"|\"news\"|\"wiki\"|\"sports\"|\"web\", \"standalone_question\": \"...\", \"queries\": [\"...\"], \"explicit_search\": true|false, \"lang\": \"<ISO 639-1 code>\"}.\n\nChoose \"search\":\n- \"web\" when a good answer needs any of: (a) recent events, news, or announcements; (b) current prices, rates, scores, weather, or statistics; (c) a fact about a specific person, organization, or product that can change after your training cutoff, such as an age, title, role, employer, team, marital status, ownership, net worth, or current status; (d) an explicit request to search or verify; or any release, version, schedule, or other live fact. A present-tense attribute of a person or entity (\"how old is X now\", \"is Z still married\") is a \"web\" turn even with no freshness word: your training is frozen and the date you are given does not refresh what you remember.\n- \"cached\" ONLY when this message repeats or rephrases a question the assistant already searched and answered earlier in this same conversation, and those exact sources still answer it. A follow-up that drills into a NEW detail of the same topic (an exact time, an exact figure, a breakdown) is NOT cached: choose \"web\" with a refined standalone question, because the earlier sources did not carry that detail.\n- \"no\" only for a stable answer you can give confidently: an established or historical fact, math, a science or coding fundamental, a creative or text-transform task, analysis of text already provided, or a greeting or conversational turn.\nWhen you are unsure whether your knowledge is up to date, choose \"web\": a needless search is far cheaper than a confidently wrong answer.\n\nChoose \"route\" (which source best answers it):\n- \"weather\" for current weather or forecast for a place.\n- \"news\" for current events, elections, and anything asking the latest, current, or recent state of an evolving topic (a conflict, a company, a policy) that is not a live score, fixture, or standings.\n- \"wiki\" for stable definitional or historical facts that do not change from month to month.\n- \"sports\" for live scores, fixtures, or standings for a named competition or team, or the status of an ongoing match or tournament.\n- \"web\" for everything else (software versions, prices, product specs, niche live facts).\nWhen a question is about the present state of an ongoing event, route \"news\" (or \"sports\" for a score/fixture/standings question), never \"wiki\", even if it is phrased like \"what is ...\". Always set a route, even when search is \"no\".\n\n\"standalone_question\": the latest message rewritten as one self-contained question, resolving pronouns and references from the conversation, including entities named in the assistant's previous answers, not only in the user's questions. When the follow-up is an ellipsis like \"how about X?\" or \"what about X?\", keep the SAME question the conversation was already asking and swap in only the new subject X; do not invent a different kind of question.\n\"queries\": 1 to 3 short keyword search queries, not full sentences. When the question is quantitative or ambiguous about which number is meant (a rate versus a level or total, a count versus a share, growth versus size, an age versus a birth date, \"GDP\" / \"how much\" / \"amount\" / \"worth\" / \"size\" without saying growth or rate), emit DISTINCT queries that cover the different answer shapes rather than near-synonym restates of one shape. At least one query MUST target a level/total/amount/USD/size shape (e.g. \"nominal GDP USD\", \"net worth\", \"population total\"), and put that level-shaped query FIRST when the user did not explicitly ask only for growth or rate. Example: \"what's Vietnam's latest GDP\" -> queries [\"Vietnam nominal GDP USD\", \"Vietnam GDP 2026\"] not two growth-only paraphrases.\n\"explicit_search\": true ONLY when the user explicitly asks you to look it up, search, verify, double-check, or confirm (\"can you look it up\", \"search for it\", \"double-check that\"); otherwise false. When true, also set \"search\":\"web\" and put the FULL topic being looked up into the standalone_question, resolved from the conversation, never the literal words \"look it up\".\n\nExamples (message -> JSON):\n\"who is the CEO of OpenAI right now\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"who is the current CEO of OpenAI\",\"queries\":[\"openai ceo\"]}\n\"Vietnam latest GDP\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"what is Vietnam's latest GDP\",\"queries\":[\"Vietnam nominal GDP USD\",\"Vietnam GDP 2026\"],\"explicit_search\":false}\n\"what is the boiling point of water\" -> {\"search\":\"no\",\"route\":\"wiki\",\"standalone_question\":\"what is the boiling point of water\",\"queries\":[\"boiling point of water\"]}\n\"what is photosynthesis\" -> {\"search\":\"web\",\"route\":\"wiki\",\"standalone_question\":\"what is photosynthesis\",\"queries\":[\"photosynthesis\"]}\n\"weather in Paris\" -> {\"search\":\"web\",\"route\":\"weather\",\"standalone_question\":\"what is the current weather in Paris\",\"queries\":[\"paris weather\"]}\n\"what's the latest status of the World Cup 2026\" -> {\"search\":\"web\",\"route\":\"news\",\"standalone_question\":\"what is the current status of the 2026 World Cup\",\"queries\":[\"world cup 2026 status\"]}\n\"who won the most recent F1 race\" -> {\"search\":\"web\",\"route\":\"news\",\"standalone_question\":\"who won the most recent Formula 1 race\",\"queries\":[\"latest f1 race winner\"]}\n\"what's the score of the Lakers game\" -> {\"search\":\"web\",\"route\":\"sports\",\"standalone_question\":\"what is the current score of the Los Angeles Lakers game\",\"queries\":[\"lakers score\"]}\n(you already searched and answered \"what's the latest stable Rust version\" with web sources earlier in this conversation) \"what's the latest stable Rust version\" -> {\"search\":\"cached\",\"route\":\"web\",\"standalone_question\":\"what is the latest stable Rust version\",\"queries\":[\"rust latest stable version\"]}\n\"write a short poem about autumn\" -> {\"search\":\"no\",\"route\":\"web\",\"standalone_question\":\"write a short poem about autumn\",\"queries\":[\"autumn poem\"]}\n(after discussing France) \"and its population?\" -> {\"search\":\"no\",\"route\":\"wiki\",\"standalone_question\":\"what is the population of France\",\"queries\":[\"france population\"]}\n(after discussing the US president) \"what about Argentina?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"who is the current president of Argentina\",\"queries\":[\"argentina president\"]}\n(you just told the user Elon Musk's net worth is about $240 billion) \"How about Donald Trump?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"what is Donald Trump's net worth\",\"queries\":[\"donald trump net worth\"]}\n(your previous answer said Jensen Huang is the CEO of Nvidia) \"how much is he worth?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"what is Jensen Huang's net worth\",\"queries\":[\"jensen huang net worth\"]}\n(you just told the user Elon Musk's net worth is about $240 billion) \"and how old is he now?\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"how old is Elon Musk\",\"queries\":[\"elon musk age\"],\"explicit_search\":false}\n\"how old is the Pope\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"how old is the current Pope\",\"queries\":[\"pope age\"],\"explicit_search\":false}\n(you told the user the Belgium vs Spain 2026 World Cup match is today but the scoreboard carried no kickoff time) \"can you look it up please?\" -> {\"search\":\"web\",\"route\":\"sports\",\"standalone_question\":\"what time is the Belgium vs Spain 2026 World Cup match today\",\"queries\":[\"belgium spain world cup kickoff time\"],\"explicit_search\":true}\n(you just gave the World Cup match's final score) \"and at what exact time did it kick off?\" -> {\"search\":\"web\",\"route\":\"sports\",\"standalone_question\":\"what time did the Belgium vs Spain World Cup match kick off\",\"queries\":[\"belgium spain world cup kickoff time\"],\"explicit_search\":false}\n\nLanguage:\nWrite \"standalone_question\" and every entry of \"queries\" in the SAME language the user wrote their latest message in. Never translate them into English: a Vietnamese question searches the Vietnamese web, a Japanese question the Japanese web, and an English query would retrieve the wrong sources for it. You may ADD one English query alongside the native one when you judge the English web would also help; keep the native query first.\nSet \"lang\" to the ISO 639-1 code of the language the USER wrote in, one of: en, vi, ja, zh, ko, th, ar, es, fr, de, pt, ru, hi, id. Judge the language of the user's own words, not of any name or loanword inside them: \"what does pho mean\" is English. If the user wrote in a language not on that list, use the closest one on it, and otherwise \"en\".\nThis changes NOTHING about the \"search\" or \"route\" decision: decide both exactly as above, in exactly the same way you would for the same question asked in English.\n\nExamples (message -> JSON):\n\"thời tiết Hà Nội hôm nay thế nào\" -> {\"search\":\"web\",\"route\":\"weather\",\"standalone_question\":\"thời tiết Hà Nội hôm nay thế nào\",\"queries\":[\"thời tiết Hà Nội hôm nay\"],\"explicit_search\":false,\"lang\":\"vi\"}\n\"giá vàng hôm nay bao nhiêu\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"giá vàng hôm nay bao nhiêu\",\"queries\":[\"giá vàng hôm nay\"],\"explicit_search\":false,\"lang\":\"vi\"}\n\"東京の今日の天気は\" -> {\"search\":\"web\",\"route\":\"weather\",\"standalone_question\":\"東京の今日の天気は\",\"queries\":[\"東京 天気 今日\"],\"explicit_search\":false,\"lang\":\"ja\"}\n\"what does phở mean\" -> {\"search\":\"no\",\"route\":\"wiki\",\"standalone_question\":\"what does phở mean\",\"queries\":[\"phở meaning\"],\"explicit_search\":false,\"lang\":\"en\"}\n\"who is the CEO of OpenAI right now\" -> {\"search\":\"web\",\"route\":\"web\",\"standalone_question\":\"who is the current CEO of OpenAI\",\"queries\":[\"openai ceo\"],\"explicit_search\":false,\"lang\":\"en\"}";
 
 /// The trailing instruction on the classifier's user turn, after the optional
 /// conversation block and the latest message.
@@ -238,6 +255,14 @@ const CLASSIFIER_VISION_INSTRUCTION: &str = "Attached image(s) are part of the l
 const CONVERSATION_HEADER: &str = "Conversation so far (context only):";
 
 /// Builds the `response_format` JSON schema constraining the pre-pass output.
+///
+/// `lang` is enum-constrained to the language allowlist
+/// ([`crate::websearch::lang::supported_langs`], the same table every outbound
+/// request shape is read from), so the grammar itself makes an out-of-range code
+/// impossible at the source rather than only rejecting it downstream. It is
+/// `required`: the field is the only signal that can name a language a character
+/// rule cannot see, and a model left free to omit it would omit it on exactly the
+/// turns it matters.
 pub(crate) fn prepass_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -251,9 +276,20 @@ pub(crate) fn prepass_schema() -> serde_json::Value {
                 "minItems": 1,
                 "maxItems": MAX_QUERIES
             },
-            "explicit_search": { "type": "boolean" }
+            "explicit_search": { "type": "boolean" },
+            "lang": {
+                "type": "string",
+                "enum": crate::websearch::lang::supported_langs()
+            }
         },
-        "required": ["search", "route", "standalone_question", "queries", "explicit_search"],
+        "required": [
+            "search",
+            "route",
+            "standalone_question",
+            "queries",
+            "explicit_search",
+            "lang"
+        ],
         "additionalProperties": false
     })
 }
@@ -385,6 +421,14 @@ struct PrePassWire {
     /// the live grammar lists it in `required` so the model always emits it.
     #[serde(default)]
     explicit_search: bool,
+    /// The language the model says the user wrote in. `#[serde(default)]` for
+    /// the same lenient reason as `explicit_search`: a model that omits it
+    /// degrades to an empty string (no language signal, so resolution simply
+    /// falls through to the locale) rather than failing the whole response. The
+    /// live grammar enum-constrains it AND lists it in `required`, so this is a
+    /// degradation path, not the expected one.
+    #[serde(default)]
+    lang: String,
 }
 
 /// Parses a raw pre-pass response into a normalised decision, or `None` when
@@ -405,6 +449,11 @@ pub(crate) fn parse_prepass(raw: &str) -> Option<PrePassDecision> {
         standalone_question: wire.standalone_question.trim().to_string(),
         queries: normalize_queries(wire.queries),
         explicit_search: wire.explicit_search,
+        // Carried through verbatim, trimmed only. It is NOT validated here: the
+        // one gate is `lang::resolve_lang`, so there is exactly one place an
+        // unrecognised code can be turned away and no second, drifting copy of
+        // the allowlist.
+        lang: wire.lang.trim().to_string(),
     })
 }
 
@@ -423,7 +472,10 @@ pub(crate) fn prepass_or_no(parsed: Option<PrePassDecision>, latest: &str) -> Pr
                 standalone_question: latest.trim().to_string(),
                 queries: Vec::new(),
                 explicit_search: false,
-            }
+                // No parse, so no language judgement: the resolver falls back to
+                // the message's own script and the user's locale.
+                lang: String::new(),
+            };
         }
     };
     if decision.standalone_question.trim().is_empty() {
@@ -522,6 +574,30 @@ mod tests {
             .iter()
             .any(|r| r == "explicit_search"));
         assert_eq!(s["additionalProperties"], false);
+    }
+
+    #[test]
+    fn schema_enum_constrains_lang_to_the_allowlist_and_requires_it() {
+        let s = prepass_schema();
+        let langs: Vec<String> = s["properties"]["lang"]["enum"]
+            .as_array()
+            .expect("lang is enum-constrained")
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        // The grammar's enum IS the allowlist, read from the same table the
+        // outbound request shapes are read from, so the set the model may emit
+        // and the set that can reach a hostname cannot drift apart.
+        assert_eq!(langs, crate::websearch::lang::supported_langs());
+        assert!(langs.contains(&"vi".to_string()));
+        // Required: the field is the only signal that can name a language a
+        // character rule cannot see, so a model free to omit it would omit it on
+        // exactly the turns that need it.
+        assert!(s["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == "lang"));
     }
 
     // ── route parsing ─────────────────────────────────────────────────────────
@@ -705,6 +781,32 @@ mod tests {
     }
 
     #[test]
+    fn classifier_prompt_carries_the_language_preservation_rule() {
+        // The rule: rewrite in the user's language, never translate to English.
+        assert!(CLASSIFIER_SYSTEM.contains("SAME language the user wrote their latest message in"));
+        assert!(CLASSIFIER_SYSTEM.contains("Never translate them into English"));
+        // The English companion query is PERMITTED, not forbidden: the model
+        // emits one on its own where it judges the English corpus useful, and
+        // that hedge is worth keeping.
+        assert!(CLASSIFIER_SYSTEM.contains("You may ADD one English query"));
+        // Naming the language is a separate instruction from writing in it.
+        assert!(CLASSIFIER_SYSTEM.contains("ISO 639-1 code of the language the USER wrote in"));
+        // And it must not disturb the decision the rest of the prompt makes.
+        assert!(CLASSIFIER_SYSTEM
+            .contains("changes NOTHING about the \"search\" or \"route\" decision"));
+        // The loanword trap, stated in the prompt as well as guarded in code.
+        assert!(CLASSIFIER_SYSTEM.contains("what does pho mean\" is English"));
+    }
+
+    #[test]
+    fn classifier_prompt_still_fits_the_output_budget() {
+        // The `lang` field adds ~15 characters of OUTPUT. The cap governs output
+        // tokens, not the prompt, and a classifier JSON object is far under it;
+        // this asserts the headroom is real rather than assumed.
+        assert!(crate::config::defaults::PREPASS_MAX_TOKENS >= 1536);
+    }
+
+    #[test]
     fn classifier_prompt_carries_search_trigger_taxonomy() {
         // Anthropic search-trigger category (c): entity/person/product
         // attributes that can change after the training cutoff.
@@ -740,6 +842,21 @@ mod tests {
         assert_eq!(d.decision, SearchDecision::Web);
         assert_eq!(d.standalone_question, "weather in Paris today");
         assert_eq!(d.queries, vec!["paris weather today"]);
+    }
+
+    #[test]
+    fn parse_reads_lang_and_degrades_when_it_is_absent() {
+        let raw = r#"{"search":"web","route":"web","standalone_question":"giá vàng hôm nay bao nhiêu","queries":["giá vàng hôm nay","gold price today"],"explicit_search":false,"lang":" vi "}"#;
+        let d = parse_prepass(raw).unwrap();
+        assert_eq!(d.lang, "vi");
+        // The English companion query the model adds on its own survives intact:
+        // it hedges toward the English corpus, which is useful, and it does NOT
+        // change the turn's language (see `orchestrator::run_search`).
+        assert_eq!(d.queries, vec!["giá vàng hôm nay", "gold price today"]);
+        // A model that omits the field (no grammar) degrades to "no signal"
+        // rather than failing the whole response.
+        let missing = r#"{"search":"web","standalone_question":"q","queries":["a"]}"#;
+        assert_eq!(parse_prepass(missing).unwrap().lang, "");
     }
 
     #[test]
@@ -823,6 +940,7 @@ mod tests {
             standalone_question: "capital of France".into(),
             queries: vec![],
             explicit_search: false,
+            lang: "en".into(),
         });
         let d = prepass_or_no(parsed, "and there?");
         assert_eq!(d.decision, SearchDecision::Web);
@@ -837,6 +955,7 @@ mod tests {
             standalone_question: "   ".into(),
             queries: vec!["q".into()],
             explicit_search: false,
+            lang: "en".into(),
         });
         let d = prepass_or_no(parsed, "the real question");
         assert_eq!(d.standalone_question, "the real question");
@@ -851,6 +970,7 @@ mod tests {
             standalone_question: "hello".into(),
             queries: vec![],
             explicit_search: false,
+            lang: "en".into(),
         });
         let d = prepass_or_no(parsed, "hello");
         assert_eq!(d.decision, SearchDecision::No);
@@ -867,6 +987,7 @@ mod tests {
             standalone_question: "q".into(),
             queries: vec!["q".into()],
             explicit_search: false,
+            lang: "en".into(),
         };
         let fake = FakePrePass::returning(Ok(want.clone()));
         let got = fake
