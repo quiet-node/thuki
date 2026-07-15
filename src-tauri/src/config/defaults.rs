@@ -1472,3 +1472,22 @@ pub const REQUERY_QUERY_MAX: usize = 2;
 ///
 /// Not user-tunable: engine query hygiene is a pipeline-shape constant.
 pub const REQUERY_QUERY_MAX_CHARS: usize = 120;
+
+/// Maximum characters of HTML table text the page extractor may append to a
+/// readability article body (or use alone when readability returns nothing).
+/// Tables hold level/amount figures that Mozilla-style readability often
+/// drops; this bound keeps token budget and attacker-controlled HTML in check.
+///
+/// Not user-tunable: extract size is a pipeline-shape constant.
+pub const TABLE_EXTRACT_MAX_CHARS: usize = 4000;
+
+/// Maximum number of `<table>` elements whose cells are harvested into the
+/// table extract. Further tables are ignored.
+///
+/// Not user-tunable: extract size is a pipeline-shape constant.
+pub const TABLE_EXTRACT_MAX_TABLES: usize = 8;
+
+/// Maximum cells read from one table during table extract (row-major).
+///
+/// Not user-tunable: extract size is a pipeline-shape constant.
+pub const TABLE_EXTRACT_MAX_CELLS_PER_TABLE: usize = 200;

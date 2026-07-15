@@ -414,6 +414,7 @@ async fn run_search_inner(
                 Vec::new(),
                 // A cache hit is never a conflict commit: no fresh judge ran.
                 false,
+                None,
             ),
             None => {
                 run_web(
@@ -1060,7 +1061,7 @@ async fn run_web(
             .await
             {
                 EngineJudgeOutcome::Cancelled => SearchOutcome::Cancelled,
-                EngineJudgeOutcome::Sources(sources, requery_stats, conflict) => {
+                EngineJudgeOutcome::Sources(sources, requery_stats, conflict, still_missing) => {
                     let mut engine_stats = engine_stats;
                     engine_stats.extend(requery_stats);
                     grounded_answer(
@@ -1075,6 +1076,7 @@ async fn run_web(
                         locale,
                         engine_stats,
                         conflict,
+                        still_missing,
                     )
                 }
             }
@@ -1362,6 +1364,7 @@ async fn commit_or_escalate(
             Vec::new(),
             // The vertical judge (single block) never yields a conflict verdict.
             false,
+            None,
         );
     }
     eprintln!(
@@ -1392,6 +1395,7 @@ async fn commit_or_escalate(
             Vec::new(),
             // The vertical judge (single block) never yields a conflict verdict.
             false,
+            None,
         );
     }
     // Prefer judge-authored gap-targeted keyword queries when escalating a
@@ -1458,7 +1462,7 @@ async fn commit_or_escalate(
             .await
             {
                 EngineJudgeOutcome::Cancelled => SearchOutcome::Cancelled,
-                EngineJudgeOutcome::Sources(sources, requery_stats, conflict) => {
+                EngineJudgeOutcome::Sources(sources, requery_stats, conflict, still_missing) => {
                     let mut engine_stats = engine_stats;
                     engine_stats.extend(requery_stats);
                     grounded_answer(
@@ -1473,6 +1477,7 @@ async fn commit_or_escalate(
                         locale,
                         engine_stats,
                         conflict,
+                        still_missing,
                     )
                 }
             }
@@ -1501,6 +1506,7 @@ async fn commit_or_escalate(
                 Vec::new(),
                 // Engine-miss fallback to the vertical block: no conflict verdict.
                 false,
+                None,
             )
         }
     }
@@ -1520,11 +1526,11 @@ async fn commit_or_escalate(
 /// from the cache is not a new search, so it must not reset the entry's TTL
 /// or overwrite it with the same sources).
 ///
-/// `conflict` is forwarded to the writer prompt (see
-/// [`crate::websearch::writer::writer_messages`]): `true` only on the engine
-/// tier's conflict commit (see [`judge_and_requery`]), where the judge found the
-/// sources disagree on the asked value, so the writer presents the spread rather
-/// than hedging. Every other caller passes `false`.
+/// `conflict` and `still_missing` are forwarded to the writer prompt (see
+/// [`crate::websearch::writer::writer_messages`]): `conflict` is `true` only on
+/// the engine tier's conflict commit (see [`judge_and_requery`]); `still_missing`
+/// is set when a requery still could not surface the asked fact. Every other
+/// caller passes `false` / `None`.
 #[allow(clippy::too_many_arguments)]
 fn grounded_answer(
     deps: &SearchDeps<'_>,
@@ -1538,6 +1544,7 @@ fn grounded_answer(
     locale: &str,
     engine_stats: Vec<EngineStat>,
     conflict: bool,
+    still_missing: Option<String>,
 ) -> SearchOutcome {
     deps.recorder.record(RecorderEvent::SearchRetrieved {
         tier: tier.to_string(),
@@ -1577,6 +1584,7 @@ fn grounded_answer(
         locale,
         is_cache_tier,
         conflict,
+        still_missing.as_deref(),
         deps.latest_images,
     );
     deps.timings.record(STAGE_WRITER_PREPARE, writer_start);
@@ -1727,7 +1735,7 @@ enum EngineJudgeOutcome {
     Cancelled,
     /// The sources to answer from, paired with the per-query, per-engine outcome
     /// summary of the one requery this call may have fired (see [`EngineStat`]),
-    /// and a conflict flag.
+    /// a conflict flag, and an optional still-missing phrase.
     ///
     /// The sources are `sources` unchanged (a sufficient verdict, a judge
     /// failure, an empty `missing` phrase, a conflict verdict, or a requery that
@@ -1736,11 +1744,16 @@ enum EngineJudgeOutcome {
     /// the caller to fold into the primary query's [`RecorderEvent::SearchRetrieved`]
     /// so one retrieval record shows both rounds' engines.
     ///
-    /// The final `bool` is the conflict flag: `true` only when the judge returned
-    /// an insufficient-because-conflicting verdict (see [`judge_and_requery`]), so
+    /// `conflict` is `true` only when the judge returned an
+    /// insufficient-because-conflicting verdict (see [`judge_and_requery`]), so
     /// the caller forwards it to [`grounded_answer`] and the writer presents the
-    /// disagreement rather than hedging. `false` on every other path.
-    Sources(Vec<SourceBlock>, Vec<EngineStat>, bool),
+    /// disagreement rather than hedging.
+    ///
+    /// `still_missing` is `Some(phrase)` when a requery ran (or found no new
+    /// URLs) and the asked fact is still absent: the writer gets a partial
+    /// directive so it does not treat a related metric as the full answer.
+    /// Mutually exclusive with `conflict` in practice (conflict skips requery).
+    Sources(Vec<SourceBlock>, Vec<EngineStat>, bool, Option<String>),
 }
 
 /// Round one's ranked chunks and fetched pages, supplied only by the
@@ -1808,12 +1821,14 @@ struct RequeryRerank {
 ///   first contract is locked, so it never takes the fused re-rank. Round two
 ///   is still recency-reordered on a fresh turn before the merge.
 ///
-/// NO second judge ever runs on the requeried result: a judge error, timeout,
-/// or unparseable body (surfaced as [`InferenceError::Request`]) fails toward
-/// committing `sources` unchanged, the same posture [`commit_or_escalate`]
-/// takes on a vertical judge failure; a [`InferenceError::Cancelled`] or an
-/// observed cancellation before the requery's network calls yields
-/// [`EngineJudgeOutcome::Cancelled`] instead.
+/// After the requery merges new sources (or finds none), a **second** judge
+/// call checks whether the asked fact is now present. If still missing, the
+/// commit carries `still_missing` so the writer partial-directive path fires
+/// (related metrics must not masquerade as the asked total/level). A post-
+/// requery judge error fails toward committing with the first-round
+/// `still_missing` phrase (safe: better a partial caveat than a false full
+/// answer). A [`InferenceError::Cancelled`] or an observed cancellation
+/// before the requery's network calls yields [`EngineJudgeOutcome::Cancelled`].
 #[allow(clippy::too_many_arguments)]
 async fn judge_and_requery(
     deps: &SearchDeps<'_>,
@@ -1842,7 +1857,7 @@ async fn judge_and_requery(
         Err(InferenceError::Request(reason)) => {
             deps.timings.record(STAGE_JUDGE, judge_start);
             eprintln!("[search] engine-tier judge error: {reason} -> committing round-one sources");
-            return EngineJudgeOutcome::Sources(sources, Vec::new(), false);
+            return EngineJudgeOutcome::Sources(sources, Vec::new(), false, None);
         }
     };
     // Conflict: the sources DO hold the asked value but disagree on it (see
@@ -1856,7 +1871,7 @@ async fn judge_and_requery(
             "[search] engine tier conflicting (missing: {}) -> committing, flagging writer",
             verdict.missing
         );
-        return EngineJudgeOutcome::Sources(sources, Vec::new(), true);
+        return EngineJudgeOutcome::Sources(sources, Vec::new(), true, None);
     }
     // Sufficient, or insufficient with nothing to search for: commit
     // round-one's sources. `ENGINE_REQUERY_MAX == 0` also lands here (the
@@ -1867,8 +1882,11 @@ async fn judge_and_requery(
         || verdict.missing.is_empty()
         || crate::config::defaults::ENGINE_REQUERY_MAX == 0
     {
-        return EngineJudgeOutcome::Sources(sources, Vec::new(), false);
+        return EngineJudgeOutcome::Sources(sources, Vec::new(), false, None);
     }
+    // Keep the gap phrase for post-requery partial-missing if the second
+    // search still cannot fill it (or finds no new URLs).
+    let first_missing = verdict.missing.clone();
     if cancel.is_cancelled() {
         return EngineJudgeOutcome::Cancelled;
     }
@@ -1900,18 +1918,19 @@ async fn judge_and_requery(
         &verdict.requery_queries,
     );
     if requery_queries.is_empty() {
-        // No searchable string at all (empty question + empty missing): commit.
-        return EngineJudgeOutcome::Sources(sources, Vec::new(), false);
+        // No searchable string at all: commit with partial flag so the writer
+        // does not treat related metrics as the asked answer.
+        return EngineJudgeOutcome::Sources(sources, Vec::new(), false, Some(first_missing));
     }
     // Forensic: first query is the primary; join extras so multi-query requeries
     // remain readable in one field without a schema bump on SearchRequeried.
     let requery_trace = requery_queries.join(" | ");
     eprintln!(
         "[search] engine tier insufficient (missing: {}) -> requerying once: {requery_trace}",
-        verdict.missing
+        first_missing
     );
     deps.recorder.record(RecorderEvent::SearchRequeried {
-        missing: verdict.missing,
+        missing: first_missing.clone(),
         requery: requery_trace,
     });
     // Multi-query requery: same fan-out shape as `run_engine_tier`'s primary
@@ -1940,7 +1959,11 @@ async fn judge_and_requery(
     }
     let new_hits = new_urls_only(hits, &sources);
     if new_hits.is_empty() {
-        return EngineJudgeOutcome::Sources(sources, requery_stats, false);
+        // Requery found nothing new: still missing the asked fact.
+        eprintln!(
+            "[search] engine tier requery found no new URLs -> committing with still_missing={first_missing}"
+        );
+        return EngineJudgeOutcome::Sources(sources, requery_stats, false, Some(first_missing));
     }
     if cancel.is_cancelled() {
         return EngineJudgeOutcome::Cancelled;
@@ -2011,7 +2034,50 @@ async fn judge_and_requery(
             merge_sources(sources, new_sources, num_ctx)
         }
     };
-    EngineJudgeOutcome::Sources(merged, requery_stats, false)
+    // Post-requery judge: did the merged set finally contain the asked fact?
+    // Without this, a related-facet corpus (growth % only) was committed as a
+    // full answer. One extra LLM call, only on the requery path.
+    if cancel.is_cancelled() {
+        return EngineJudgeOutcome::Cancelled;
+    }
+    let post_start = Instant::now();
+    let post = match deps.judge.judge(standalone_question, &merged, cancel).await {
+        Ok(v) => {
+            deps.timings.record(STAGE_JUDGE, post_start);
+            v
+        }
+        Err(InferenceError::Cancelled) => {
+            deps.timings.record(STAGE_JUDGE, post_start);
+            return EngineJudgeOutcome::Cancelled;
+        }
+        Err(InferenceError::Request(reason)) => {
+            deps.timings.record(STAGE_JUDGE, post_start);
+            // Fail toward commit with the original gap: never claim sufficiency
+            // we did not verify.
+            eprintln!(
+                "[search] post-requery judge error: {reason} -> committing with still_missing"
+            );
+            return EngineJudgeOutcome::Sources(merged, requery_stats, false, Some(first_missing));
+        }
+    };
+    if post.conflicting() {
+        eprintln!(
+            "[search] post-requery conflicting (missing: {}) -> committing, flagging writer",
+            post.missing
+        );
+        return EngineJudgeOutcome::Sources(merged, requery_stats, true, None);
+    }
+    if post.sufficient {
+        eprintln!("[search] post-requery sufficient -> committing");
+        return EngineJudgeOutcome::Sources(merged, requery_stats, false, None);
+    }
+    let still = if post.missing.is_empty() {
+        first_missing
+    } else {
+        post.missing
+    };
+    eprintln!("[search] post-requery still insufficient (missing: {still}) -> partial writer path");
+    EngineJudgeOutcome::Sources(merged, requery_stats, false, Some(still))
 }
 
 #[cfg(test)]
@@ -5719,7 +5785,7 @@ mod tests {
             &CancellationToken::new(),
         )
         .await;
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _) if s == &sources));
+        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None) if s == &sources));
         assert!(
             transport.calls().is_empty(),
             "a sufficient verdict must never requery"
@@ -5738,7 +5804,7 @@ mod tests {
         // replacing it.
         let prepass = dummy_prepass();
         let transport = requery_transport();
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let (mock, bound) = mock_recorder();
         let sources = round_one_sources();
@@ -5755,12 +5821,14 @@ mod tests {
             &CancellationToken::new(),
         )
         .await;
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
+        assert!(
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None)
             if s.len() == 2
                 && s[0].url == "https://match.example/"
                 && s[0].index == 1
                 && s[1].url == "https://requery.example/"
-                && s[1].index == 2));
+                && s[1].index == 2)
+        );
         // Exactly one requery: the DDG POST carried the missing phrase
         // appended to the standalone question.
         let ddg_call = transport
@@ -5923,7 +5991,7 @@ mod tests {
                 body: dup_serp.as_bytes().to_vec(),
             },
         );
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let (mock, bound) = mock_recorder();
         let sources = round_one_sources();
@@ -5940,7 +6008,12 @@ mod tests {
             &CancellationToken::new(),
         )
         .await;
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _) if s == &sources));
+        // No new URLs: sources unchanged, still_missing flags partial writer path.
+        assert!(matches!(
+            &outcome,
+            EngineJudgeOutcome::Sources(s, _, false, Some(m))
+                if s == &sources && m == "the treaty terms"
+        ));
         assert!(!transport
             .calls()
             .iter()
@@ -5980,7 +6053,7 @@ mod tests {
             &CancellationToken::new(),
         )
         .await;
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _) if s == &sources));
+        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None) if s == &sources));
         assert!(transport.calls().is_empty());
         let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
         assert!(
@@ -6020,7 +6093,7 @@ mod tests {
         .await;
         // Sources unchanged, conflict flag raised, so the writer presents the
         // spread rather than re-searching.
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, true) if s == &sources));
+        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, true, None) if s == &sources));
         // No requery fired: a disagreement is not searchable.
         assert!(transport.calls().is_empty());
         let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
@@ -6064,7 +6137,7 @@ mod tests {
         // record and `SearchRequeried` sit on the far side of this check).
         let prepass = dummy_prepass();
         let transport = FakeHttpTransport::new();
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let (mock, bound) = mock_recorder();
         let cancel = CancellationToken::new();
@@ -6098,7 +6171,7 @@ mod tests {
             token: cancel.clone(),
             serp: REQUERY_SERP_HTML.as_bytes().to_vec(),
         };
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
         let outcome = judge_and_requery(
@@ -6124,7 +6197,7 @@ mod tests {
         // budget, so the merge must drop it rather than append unchecked.
         let prepass = dummy_prepass();
         let transport = requery_transport();
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
         let sources = round_one_sources();
@@ -6142,7 +6215,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _) if s == &sources),
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None) if s == &sources),
             "the oversized requery source must be dropped, leaving round-one sources unchanged"
         );
     }
@@ -6178,7 +6251,7 @@ mod tests {
                 body: REQUERY_PAGE_HTML.as_bytes().to_vec(),
             },
         );
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
         let outcome = judge_and_requery(
@@ -6202,8 +6275,10 @@ mod tests {
             &CancellationToken::new(),
         )
         .await;
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
-            if s.iter().any(|b| b.url == "https://cached-requery.example/")));
+        assert!(
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None)
+            if s.iter().any(|b| b.url == "https://cached-requery.example/"))
+        );
         assert!(!transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
         let mojeek_url = crate::websearch::engine::mojeek_request(&requery_text, false).url;
         assert!(!transport.calls().iter().any(|c| c.url == mojeek_url));
@@ -6229,7 +6304,7 @@ mod tests {
         );
         web_cache.serp_put("duckduckgo", &requery_text, false, vec![cached_hit]);
         let transport = requery_transport();
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
         let outcome = judge_and_requery(
@@ -6256,9 +6331,11 @@ mod tests {
         // The network's hit (requery.example), not the stale cached one, made
         // it through: the cache read was genuinely skipped, not
         // coincidentally equal.
-        assert!(matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
+        assert!(
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None)
             if s.iter().any(|b| b.url == "https://requery.example/")
-                && !s.iter().any(|b| b.url == "https://cached-requery.example/")));
+                && !s.iter().any(|b| b.url == "https://cached-requery.example/"))
+        );
         assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
     }
 
@@ -6317,7 +6394,7 @@ mod tests {
         // ahead the way the vertical-escalation (`None`) contract would.
         let prepass = dummy_prepass();
         let transport = requery_transport();
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
         let (sources, rerank) = round_one_rerank(0.5, "round one is weakly relevant here", None);
@@ -6340,7 +6417,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None)
                 if s.len() == 2
                     && s[0].url == "https://requery.example/"
                     && s[0].index == 1
@@ -6360,7 +6437,7 @@ mod tests {
         // freshness-gated recency fusion ran over the combined set.
         let prepass = dummy_prepass();
         let transport = requery_transport();
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
         let ancient = time::macros::datetime!(2000-01-01 00:00:00 UTC);
@@ -6385,7 +6462,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None)
                 if s.first().map(|b| b.url.as_str()) == Some("https://requery.example/")),
             "the fresher round-two source must be recency-reordered ahead of the ancient round one"
         );
@@ -6402,7 +6479,7 @@ mod tests {
         // proves truncation follows fused score, not round order.
         let prepass = dummy_prepass();
         let transport = requery_transport();
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
         let huge = "round one padding ".repeat(400); // ~7200 chars, far over budget
@@ -6426,7 +6503,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None)
                 if s.iter().any(|b| b.url == "https://requery.example/")
                     && !s.iter().any(|b| b.url == "https://round-one.example/")),
             "the fused tail (weak, oversized round one) must be dropped, not round two"
@@ -6500,7 +6577,7 @@ mod tests {
                     body: older.into_bytes(),
                 },
             );
-        let judge = insufficient();
+        let judge = insufficient_then_sufficient();
         let health = EngineHealth::new();
         let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
         let outcome = judge_and_requery(
@@ -6522,7 +6599,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _)
+            matches!(&outcome, EngineJudgeOutcome::Sources(s, _, _, None)
                 if s.len() == 3
                     && s[0].url == "https://match.example/"
                     && s[1].url == "https://newer.example/"

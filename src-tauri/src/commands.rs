@@ -4878,9 +4878,17 @@ mod tests {
             "deadbeef",
             false, /* is_cache_tier */
             verdict.conflicting(),
+            None,
         );
-        let plain_appendix =
-            build_writer_appendix(&blocks, "2026-07-10", "en-US", "deadbeef", false, false);
+        let plain_appendix = build_writer_appendix(
+            &blocks,
+            "2026-07-10",
+            "en-US",
+            "deadbeef",
+            false,
+            false,
+            None,
+        );
         assert!(conflict_appendix.contains("The sources disagree on a value the question asks for"));
         assert!(!plain_appendix.contains("The sources disagree on a value the question asks for"));
 
