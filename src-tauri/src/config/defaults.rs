@@ -335,6 +335,28 @@ pub const VRAM_POLL_INTERVAL_SECS: u64 = 5;
 /// Toggleable from the Settings panel (Diagnostics). Off by default.
 pub const DEFAULT_DEBUG_TRACE_ENABLED: bool = false;
 
+/// How many days trace files are retained before the startup / on-change prune
+/// deletes them. Default 7 days: long enough to revisit a recent investigation,
+/// short enough that forensic files carrying sensitive text do not accumulate
+/// on disk indefinitely.
+///
+/// The sentinel [`TRACE_RETENTION_FOREVER`] (`-1`) disables pruning entirely.
+/// Any positive value is bounded by [`BOUNDS_TRACE_RETENTION_DAYS`]. Signed so
+/// the `-1` sentinel is representable. Toggleable from the Settings panel
+/// (Diagnostics).
+pub const DEFAULT_TRACE_RETENTION_DAYS: i64 = 7;
+
+/// Accepted positive range for `trace_retention_days` (in days). One day floor,
+/// ten-year ceiling. The [`TRACE_RETENTION_FOREVER`] sentinel is handled
+/// separately and is intentionally outside this range; every other value
+/// outside it (including `0`) resets to [`DEFAULT_TRACE_RETENTION_DAYS`].
+pub const BOUNDS_TRACE_RETENTION_DAYS: (i64, i64) = (1, 3650);
+
+/// Sentinel `trace_retention_days` value meaning "keep trace files forever"
+/// (never prune). Kept as a named constant so the loader clamp and the prune
+/// caller agree on the one magic number rather than both hardcoding `-1`.
+pub const TRACE_RETENTION_FOREVER: i64 = -1;
+
 /// Whether `/rewrite` and `/refine` results are written straight back into the
 /// source app (replacing the selection) the moment the model finishes,
 /// without the user clicking the in-chat Replace button.
@@ -534,6 +556,7 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     ("behavior", "search_notice_acknowledged"),
     // [debug]
     ("debug", "trace_enabled"),
+    ("debug", "trace_retention_days"),
     // [updater]
     ("updater", "auto_check"),
     ("updater", "check_interval_hours"),

@@ -2856,6 +2856,12 @@ pub fn run() {
             let initial_inner = build_trace_inner(app.handle(), trace_enabled);
             app.manage(Arc::new(trace::LiveTraceRecorder::new(initial_inner)));
 
+            // Enforce `[debug] trace_retention_days` with a one-shot prune of
+            // stale trace files. Runs here (after config is managed) rather than
+            // on any per-message path: a bounded metadata-only walk that never
+            // gates launch on failure. The keep-forever sentinel (-1) skips it.
+            settings_commands::prune_traces_at_startup(app.handle());
+
             // ── SQLite database for conversation history ──────────
             let app_data_dir = app
                 .path()

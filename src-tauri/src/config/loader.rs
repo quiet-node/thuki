@@ -25,13 +25,14 @@ use super::defaults::{
     ALLOWED_FONT_WEIGHTS, BOUNDS_KEEP_WARM_INACTIVITY_MINUTES, BOUNDS_MAX_CHAT_HEIGHT,
     BOUNDS_MAX_IMAGES, BOUNDS_NUM_CTX, BOUNDS_OVERLAY_WIDTH, BOUNDS_QUOTE_MAX_CONTEXT_LENGTH,
     BOUNDS_QUOTE_MAX_DISPLAY_CHARS, BOUNDS_QUOTE_MAX_DISPLAY_LINES, BOUNDS_TEXT_BASE_PX,
-    BOUNDS_TEXT_LETTER_SPACING_PX, BOUNDS_TEXT_LINE_HEIGHT, BOUNDS_UPDATER_CHECK_INTERVAL_HOURS,
-    DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
-    DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
-    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_SYSTEM_PROMPT_BASE,
-    DEFAULT_TEXT_BASE_PX, DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX,
-    DEFAULT_TEXT_LINE_HEIGHT, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
-    SLASH_COMMAND_PROMPT_APPENDIX,
+    BOUNDS_TEXT_LETTER_SPACING_PX, BOUNDS_TEXT_LINE_HEIGHT, BOUNDS_TRACE_RETENTION_DAYS,
+    BOUNDS_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
+    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL,
+    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX,
+    DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT,
+    DEFAULT_TRACE_RETENTION_DAYS, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS,
+    DEFAULT_UPDATER_MANIFEST_URL, SLASH_COMMAND_PROMPT_APPENDIX, TRACE_RETENTION_FOREVER,
 };
 use super::error::ConfigError;
 use super::schema::AppConfig;
@@ -212,7 +213,13 @@ pub(crate) fn resolve(config: &mut AppConfig) {
 
     // Behavior section: boolean flag has no resolution step (any value is valid).
 
-    // Debug section: boolean flag has no resolution step (any value is valid).
+    // Debug section: trace_enabled is a boolean (any value valid); the
+    // retention window is clamped to its sentinel-or-range contract.
+    clamp_trace_retention_days(
+        &mut config.debug.trace_retention_days,
+        DEFAULT_TRACE_RETENTION_DAYS,
+        "debug.trace_retention_days",
+    );
 
     // Updater section.
     clamp_u64(
@@ -403,6 +410,22 @@ fn clamp_keep_warm_inactivity(value: &mut i32, default: i32, field: &str) {
         eprintln!(
             "thuki: [config] {field}={value} out of bounds (must be {lo}..={hi}); using default {default}",
             value = *value
+        );
+        *value = default;
+    }
+}
+
+fn clamp_trace_retention_days(value: &mut i64, default: i64, field: &str) {
+    // Valid: -1 (keep trace files forever) or 1..=3650 (an explicit retention
+    // window in days). Invalid: 0, below -1, or above 3650 — reset to the
+    // compiled default. Mirrors `clamp_keep_warm_inactivity`: out-of-range
+    // resets to the default rather than saturating to a bound.
+    let (lo, hi) = BOUNDS_TRACE_RETENTION_DAYS;
+    if *value != TRACE_RETENTION_FOREVER && !(lo..=hi).contains(value) {
+        eprintln!(
+            "thuki: [config] {field}={value} out of bounds (must be {forever} or {lo}..={hi}); using default {default}",
+            value = *value,
+            forever = TRACE_RETENTION_FOREVER
         );
         *value = default;
     }

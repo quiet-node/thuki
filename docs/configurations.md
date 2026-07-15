@@ -105,6 +105,8 @@ search_notice_acknowledged = false
 # Records every chat conversation, including its built-in web-search turns, to
 # disk for later inspection.
 trace_enabled = false
+# Days to keep recorded trace files before they are pruned; -1 keeps forever.
+trace_retention_days = 7
 
 [updater]
 # Poll for new Thuki releases at startup and on a recurring interval.
@@ -259,6 +261,7 @@ Records every chat conversation, including its built-in web-search turns, as JSO
 | Field           | Default | Tunable? | Why not tunable | Bounds | Description                                                                                     |
 | :-------------- | :------ | :------- | :-------------- | :----- | :--------------------------------------------------------------------------------------------- |
 | `trace_enabled` | `false` | Yes      | —               | —      | Records every chat conversation, including its web-search turns, to disk for debugging. |
+| `trace_retention_days` | `7` | Yes | — | `-1` or `1`..`3650` | How many days recorded trace files are kept before a startup / on-change prune deletes them. Raise to keep history longer; lower to reclaim disk sooner; `-1` to keep forever. `0` and other out-of-range values reset to the default. |
 
 ### `[updater]`
 

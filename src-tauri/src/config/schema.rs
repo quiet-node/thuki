@@ -21,9 +21,9 @@ use super::defaults::{
     DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
     DEFAULT_SEARCH_NOTICE_ACKNOWLEDGED, DEFAULT_SYSTEM_CUSTOMIZED, DEFAULT_SYSTEM_PROMPT_BASE,
     DEFAULT_TEXT_BASE_PX, DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX,
-    DEFAULT_TEXT_LINE_HEIGHT, DEFAULT_UPDATER_AUTO_CHECK, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS,
-    DEFAULT_UPDATER_MANIFEST_URL, PROVIDER_ID_BUILTIN, PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN,
-    PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
+    DEFAULT_TEXT_LINE_HEIGHT, DEFAULT_TRACE_RETENTION_DAYS, DEFAULT_UPDATER_AUTO_CHECK,
+    DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL, PROVIDER_ID_BUILTIN,
+    PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
 };
 
 /// A single configured inference provider. Exactly one is active at a time
@@ -328,12 +328,20 @@ pub struct DebugSection {
     /// JSON-Lines files under `app_data_dir/traces/chat/<conversation_id>.jsonl`.
     /// Off by default; toggleable from Settings.
     pub trace_enabled: bool,
+
+    /// How many days recorded trace files are kept before they are pruned.
+    /// Defaults to 7 days; the sentinel `-1` keeps them forever (never prune).
+    /// Raise it to keep more history for later inspection, lower it to reclaim
+    /// disk sooner. Enforced by a prune at startup and whenever the value
+    /// changes from Settings.
+    pub trace_retention_days: i64,
 }
 
 impl Default for DebugSection {
     fn default() -> Self {
         Self {
             trace_enabled: DEFAULT_DEBUG_TRACE_ENABLED,
+            trace_retention_days: DEFAULT_TRACE_RETENTION_DAYS,
         }
     }
 }
