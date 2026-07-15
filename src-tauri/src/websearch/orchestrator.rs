@@ -64,6 +64,7 @@ use crate::config::defaults::{
     REQUERY_MISSING_MAX_CHARS, SEARCH_LANG_DEFAULT, SERP_EARLY_STOP_HITS,
     TRACE_SOURCE_TEXT_MAX_BYTES,
 };
+use crate::net::reachability::{offline_cutoff, Reachability};
 use crate::net::transport::HttpTransport;
 use crate::trace::{truncate_for_trace, BoundRecorder, EngineStat, RecorderEvent, RetrievedSource};
 use crate::websearch::assemble::{assemble_context, SourceBlock};
@@ -172,6 +173,15 @@ pub struct SearchDeps<'a> {
     /// branches are tested with a fake judge.
     pub judge: &'a dyn SufficiencyJudge,
     pub transport: &'a dyn HttpTransport,
+    /// The offline fast-fail signal, RACED against the engine tier's live
+    /// requests (never used as a pre-flight gate; see
+    /// [`crate::net::reachability`]). Only a proven-unreachable probe, with no
+    /// engine response inside the grace window, short-circuits the turn to the
+    /// existing "can't reach the web" disclosure; a reachable or inconclusive
+    /// probe leaves the requests their full budget. Injected like the other
+    /// effectful dependencies so both sides of that decision are tested without
+    /// a resolver or a network.
+    pub reachability: &'a dyn Reachability,
     pub scorer: &'a dyn Scorer,
     /// Cross-turn engine block memory; blocked engines sit out their cooldown.
     pub health: &'a EngineHealth,
@@ -360,6 +370,21 @@ async fn run_search_inner(
     let (classified, raced_serp) = match classified_and_race {
         ClassifyRaceResult::Cancelled => return SearchOutcome::Cancelled,
         ClassifyRaceResult::NoSearch => return SearchOutcome::NoSearch,
+        ClassifyRaceResult::Offline => {
+            // ForceWeb raw-SERP race lost to a proven-unreachable probe: same
+            // Unreachable disclosure as `run_engine_tier`'s offline cut, without
+            // waiting for stalled engines under the classifier join.
+            return SearchOutcome::Unreachable {
+                messages: unreachable_messages(
+                    chat_system_prompt,
+                    history,
+                    latest_user,
+                    deps.latest_images,
+                    SearchFailReason::Unreachable,
+                ),
+                reason: SearchFailReason::Unreachable,
+            };
+        }
         ClassifyRaceResult::Ready {
             classified,
             raced_serp,
@@ -504,6 +529,9 @@ enum ClassifyRaceResult {
     Cancelled,
     /// Ambiguous-turn classifier infra failure: answer without search.
     NoSearch,
+    /// Offline probe proved no network path while the ForceWeb raw SERP was
+    /// racing the classifier. Same disclosure as an engine-tier offline cut.
+    Offline,
     /// Classifier finished (or ForceWeb fallback synthesized); optional raced SERP.
     ///
     /// The raced triple is `(hits, engine stats, race_lang)`: `race_lang` is the
@@ -580,20 +608,39 @@ async fn classify_maybe_race_raw(
         let race_lang = race_lang_for_force_web(latest_user);
         let race = async {
             let start = Instant::now();
-            let res = web_search(
-                deps.transport,
-                &raw,
-                deps.health,
-                freshness,
-                race_lang,
-                deps.web_cache,
-                false,
-            )
-            .await;
+            // Race the raw SERP against the offline cutoff, same contract as
+            // `run_engine_tier`: never a preflight gate; proven-unreachable only;
+            // taking the cutoff DROPS the in-flight SERP so a late engine cannot
+            // contradict the disclosure. Without this, ForceWeb offline turns
+            // paid the full dual-engine stall under `tokio::join!` before the
+            // engine-tier race ever ran.
+            let res = tokio::select! {
+                biased;
+                res = web_search(
+                    deps.transport,
+                    &raw,
+                    deps.health,
+                    freshness,
+                    race_lang,
+                    deps.web_cache,
+                    false,
+                ) => Some(res),
+                () = offline_cutoff(deps.reachability) => None,
+            };
             deps.timings.record(STAGE_RAW_RACE_SERP, start);
             res
         };
         let (classified_res, race_res) = tokio::join!(decide, race);
+        // Offline proved during the raw race. Prefer user cancel if the
+        // classifier also reported it; otherwise short-circuit before any
+        // further SERP round.
+        let Some(race_res) = race_res else {
+            if matches!(classified_res, Err(InferenceError::Cancelled)) {
+                return ClassifyRaceResult::Cancelled;
+            }
+            eprintln!("[search] offline short-circuit: reachability probe proved no network path");
+            return ClassifyRaceResult::Offline;
+        };
         let classified = match classified_res {
             Ok(c) => c,
             Err(InferenceError::Cancelled) => return ClassifyRaceResult::Cancelled,
@@ -1390,31 +1437,75 @@ async fn run_engine_tier(
     // Skip the SERP loop when race alone already hit early-stop, or when the
     // keep path has no remaining queries (single near-dupe rewrite).
     if !queries_to_serp.is_empty() && hits.len() < SERP_EARLY_STOP_HITS {
+        // Offline fast-fail races the WHOLE remaining SERP round (not each
+        // query): an offline turn runs every remaining query (no hit → early
+        // stop never fires), and a per-query race would cost one grace window
+        // per query. `biased` polls the real round first so a round that
+        // completes wins even against a cutoff due in the same poll; taking
+        // the cutoff arm DROPS in-flight requests so a late engine cannot
+        // contradict the disclosure. Only proven-unreachable short-circuits
+        // (see `offline_cutoff`); Unknown/hang never does. Only the SERP
+        // round is raced, not page fetch: past that point an engine already
+        // answered, so the device is demonstrably online.
         let serp_start = Instant::now();
-        for query in queries_to_serp {
-            if cancel.is_cancelled() {
+        // Seed early-stop accounting with any ForceWeb-preloaded hits so a
+        // partial race seed still stops the remaining loop at the same
+        // threshold as the non-offline path.
+        let preloaded_hit_count = hits.len();
+        let round = async {
+            let mut round_hits: Vec<SearchHit> = Vec::new();
+            let mut round_stats: Vec<EngineStat> = Vec::new();
+            let mut total_hits = preloaded_hit_count;
+            for query in queries_to_serp {
+                if cancel.is_cancelled() {
+                    return None;
+                }
+                let (query_hits, query_stats) = web_search(
+                    deps.transport,
+                    query,
+                    deps.health,
+                    freshness,
+                    lang,
+                    deps.web_cache,
+                    bypass_cache,
+                )
+                .await;
+                total_hits += query_hits.len();
+                round_hits.extend(query_hits);
+                round_stats.extend(query_stats);
+                // Early stop: once one query has produced enough hits, further
+                // queries add third-party burst (the engines' rate limits are
+                // volume-triggered) and latency for marginal recall.
+                if total_hits >= SERP_EARLY_STOP_HITS {
+                    break;
+                }
+            }
+            Some((round_hits, round_stats))
+        };
+        let (round_hits, round_stats) = tokio::select! {
+            biased;
+            round = round => match round {
+                Some(round) => round,
+                None => {
+                    deps.timings.record(STAGE_SERP, serp_start);
+                    return EngineTierOutcome::Cancelled;
+                }
+            },
+            () = offline_cutoff(deps.reachability) => {
+                eprintln!(
+                    "[search] offline short-circuit: reachability probe proved no network path"
+                );
                 deps.timings.record(STAGE_SERP, serp_start);
-                return EngineTierOutcome::Cancelled;
+                // Straight into the existing unreachable path: same outcome the
+                // stacked-timeout route reached ~46 s later (see
+                // `engine::transport_unreachable`), just honest about it in ~1 s.
+                return EngineTierOutcome::Empty {
+                    reason: SearchFailReason::Unreachable,
+                };
             }
-            let (query_hits, query_stats) = web_search(
-                deps.transport,
-                query,
-                deps.health,
-                freshness,
-                lang,
-                deps.web_cache,
-                bypass_cache,
-            )
-            .await;
-            hits.extend(query_hits);
-            engine_stats.extend(query_stats);
-            // Early stop: once one query has produced enough hits, further queries
-            // add third-party burst (the engines' rate limits are volume-triggered)
-            // and latency for marginal recall.
-            if hits.len() >= SERP_EARLY_STOP_HITS {
-                break;
-            }
-        }
+        };
+        hits.extend(round_hits);
+        engine_stats.extend(round_stats);
         deps.timings.record(STAGE_SERP, serp_start);
     }
     let hits = dedupe_hits(hits);
@@ -2333,6 +2424,7 @@ async fn judge_and_requery(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::net::reachability::{FakeReachability, ReachabilityVerdict};
     use crate::net::transport::{FakeHttpTransport, HttpRequest, HttpResponse, TransportError};
     use crate::websearch::cache::TtlSourceCache;
     use crate::websearch::judge::{FakeSufficiencyJudge, InsufficiencyReason};
@@ -2437,6 +2529,29 @@ mod tests {
             )
     }
 
+    /// The reachability probe every default-path test injects: a network that
+    /// reports itself up, so no existing test can short-circuit. The offline
+    /// fast-fail tests below opt in explicitly via [`deps_with_probe`].
+    fn reachable() -> &'static dyn Reachability {
+        Box::leak(Box::new(FakeReachability::returning(
+            ReachabilityVerdict::Reachable,
+        )))
+    }
+
+    /// The default [`deps`] with the reachability probe swapped, so the offline
+    /// fast-fail tests can script what the network says while everything else
+    /// stays on the shared default path.
+    fn deps_with_probe<'a>(
+        prepass: &'a dyn PrePass,
+        transport: &'a dyn HttpTransport,
+        scorer: &'a dyn Scorer,
+        reachability: &'a dyn Reachability,
+    ) -> SearchDeps<'a> {
+        let mut deps = deps(prepass, transport, scorer);
+        deps.reachability = reachability;
+        deps
+    }
+
     fn deps<'a>(
         prepass: &'a dyn PrePass,
         transport: &'a dyn HttpTransport,
@@ -2489,6 +2604,7 @@ mod tests {
             // `deps_for_escalation`).
             judge: Box::leak(Box::new(FakeSufficiencyJudge::sufficient())),
             transport,
+            reachability: reachable(),
             scorer,
             // Each test gets its own leaked registry so a block marked in one
             // test can never poison a parallel test's rotation.
@@ -2530,6 +2646,7 @@ mod tests {
             prepass,
             judge,
             transport,
+            reachability: reachable(),
             scorer,
             health,
             recorder,
@@ -2567,6 +2684,7 @@ mod tests {
             prepass,
             judge,
             transport,
+            reachability: reachable(),
             scorer,
             health,
             recorder,
@@ -5211,6 +5329,202 @@ mod tests {
                 && m.content.contains("no web sources could be retrieved"))
                 && messages.last().is_some_and(|m|
                     m.content == "what is the latest rust version")));
+    }
+
+    /// A transport whose ENGINE (SERP) requests stall for `delay` before
+    /// resolving through `inner`; page fetches are served instantly. Models the
+    /// two networks the offline fast-fail exists to tell apart: a dead link
+    /// (`inner` has no canned SERP, so the stalled request ends in a transport
+    /// error, exactly as a real connect/request timeout does) and a
+    /// slow-but-working one (`inner` serves a real SERP and page, just late).
+    struct StalledEngineTransport {
+        delay: std::time::Duration,
+        inner: FakeHttpTransport,
+    }
+
+    #[async_trait]
+    impl HttpTransport for StalledEngineTransport {
+        async fn send(&self, req: &HttpRequest) -> Result<HttpResponse, TransportError> {
+            if req.url.contains("duckduckgo") || req.url.contains("mojeek") {
+                tokio::time::sleep(self.delay).await;
+            }
+            self.inner.send(req).await
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn offline_turn_short_circuits_to_unreachable_inside_the_grace_window() {
+        // Two queries, every engine request stalling for the full per-request
+        // timeout: without the fast-fail this turn burns the stacked
+        // per-engine, per-query timeouts (~30 s here, ~46 s in production with
+        // the connect timeout on top) before concluding what the probe already
+        // proved. With it, the same honest Unreachable disclosure lands inside
+        // the grace window.
+        let prepass = FakePrePass::returning(Ok(web_decision(vec!["q one", "q two"])));
+        let transport = StalledEngineTransport {
+            delay: std::time::Duration::from_secs(crate::config::defaults::HTTP_REQUEST_TIMEOUT_S),
+            inner: FakeHttpTransport::new(),
+        };
+        let probe = FakeReachability::returning(ReachabilityVerdict::Unreachable);
+        let (_p, status) = recorder();
+        let started = tokio::time::Instant::now();
+        let outcome = run_search(
+            &deps_with_probe(&prepass, &transport, &Bm25Scorer, &probe),
+            "sys",
+            &[],
+            "what is the latest rust version",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        let elapsed = started.elapsed();
+        assert!(matches!(&outcome,
+            SearchOutcome::Unreachable { messages, reason: SearchFailReason::Unreachable }
+            if messages.first().is_some_and(|m|
+                m.content.contains("no web sources could be retrieved"))));
+        // The whole point: about a window, not tens of seconds of timeouts.
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "offline turn took {elapsed:?}, expected the ~{}ms grace window",
+            crate::config::defaults::OFFLINE_SHORTCIRCUIT_WINDOW_MS
+        );
+    }
+
+    /// Non-ForceWeb path: no raw-SERP race under the classifier, so the offline
+    /// cut lands inside [`run_engine_tier`] itself (the SERP round race). Covers
+    /// the post-#324 merge of reachability into the preloaded-SERP engine tier.
+    #[tokio::test(start_paused = true)]
+    async fn offline_engine_tier_short_circuits_on_ambiguous_turn() {
+        let prepass = FakePrePass::returning(Ok(web_decision(vec!["q one", "q two"])));
+        let transport = StalledEngineTransport {
+            delay: std::time::Duration::from_secs(crate::config::defaults::HTTP_REQUEST_TIMEOUT_S),
+            inner: FakeHttpTransport::new(),
+        };
+        let probe = FakeReachability::returning(ReachabilityVerdict::Unreachable);
+        let (_p, status) = recorder();
+        let started = tokio::time::Instant::now();
+        let outcome = run_search(
+            &deps_with_probe(&prepass, &transport, &Bm25Scorer, &probe),
+            "sys",
+            &[],
+            // No ForceWeb prefilter keywords: Ambiguous → classifier only, then
+            // engine tier (where the offline race lives for this shape).
+            "when was the treaty of versailles signed",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        let elapsed = started.elapsed();
+        assert!(matches!(
+            &outcome,
+            SearchOutcome::Unreachable {
+                reason: SearchFailReason::Unreachable,
+                ..
+            }
+        ));
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "engine-tier offline cut took {elapsed:?}, expected the grace window"
+        );
+    }
+
+    /// ForceWeb raw race offline + classifier Cancelled: user cancel wins over
+    /// the offline disclosure (same preference as a cancel mid-classifier).
+    #[tokio::test(start_paused = true)]
+    async fn offline_force_web_race_prefers_classifier_cancel() {
+        let prepass = FakePrePass::returning(Err(InferenceError::Cancelled));
+        let transport = StalledEngineTransport {
+            delay: std::time::Duration::from_secs(crate::config::defaults::HTTP_REQUEST_TIMEOUT_S),
+            inner: FakeHttpTransport::new(),
+        };
+        let probe = FakeReachability::returning(ReachabilityVerdict::Unreachable);
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_with_probe(&prepass, &transport, &Bm25Scorer, &probe),
+            "sys",
+            &[],
+            "what is the latest rust version",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Cancelled));
+    }
+
+    /// THE false-positive guard: a working-but-slow network (hotel Wi-Fi, a
+    /// congested tether) must never be told it is offline. The probe says
+    /// reachable, so no cutoff fires however long the engines take, and the real
+    /// result wins: an Answer, not an Unreachable disclosure.
+    #[tokio::test(start_paused = true)]
+    async fn slow_but_reachable_network_is_never_told_it_is_offline() {
+        let prepass = FakePrePass::returning(Ok(web_decision(vec!["q"])));
+        // Far longer than the grace window, so a cutoff that wrongly fired would
+        // beat the real fetch and be caught here.
+        let slow = std::time::Duration::from_secs(5);
+        let transport = StalledEngineTransport {
+            delay: slow,
+            inner: transport_with_serp_and_page(),
+        };
+        let probe = FakeReachability::returning(ReachabilityVerdict::Reachable);
+        let (_p, status) = recorder();
+        let started = tokio::time::Instant::now();
+        let outcome = run_search(
+            &deps_with_probe(&prepass, &transport, &Bm25Scorer, &probe),
+            "sys",
+            &[],
+            "when was the treaty of versailles signed",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(
+            matches!(&outcome, SearchOutcome::Answer { .. }),
+            "a slow but reachable network must still get its real answer"
+        );
+        // And it really did wait for the slow engines rather than short-circuit.
+        assert!(started.elapsed() >= slow);
+    }
+
+    /// An inconclusive probe (one that never answers, so [`offline_cutoff`] hits
+    /// its deadline) is not evidence of being offline either: same
+    /// slow-but-working network, same real answer.
+    #[tokio::test(start_paused = true)]
+    async fn inconclusive_probe_does_not_short_circuit() {
+        let prepass = FakePrePass::returning(Ok(web_decision(vec!["q"])));
+        let slow = std::time::Duration::from_secs(5);
+        let transport = StalledEngineTransport {
+            delay: slow,
+            inner: transport_with_serp_and_page(),
+        };
+        let probe = FakeReachability::hanging();
+        let (_p, status) = recorder();
+        let started = tokio::time::Instant::now();
+        let outcome = run_search(
+            &deps_with_probe(&prepass, &transport, &Bm25Scorer, &probe),
+            "sys",
+            &[],
+            "when was the treaty of versailles signed",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { .. }));
+        assert!(started.elapsed() >= slow);
     }
 
     #[tokio::test]

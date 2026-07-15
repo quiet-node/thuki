@@ -19,7 +19,7 @@
 //! pulling in an XML dependency: it is pure, total (malformed XML yields fewer
 //! rows, never a panic), and bounded by [`MAX_NEWS_ITEMS`].
 
-use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
+use crate::net::transport::{send_with_retry, HttpMethod, HttpRequest, HttpTransport};
 use crate::websearch::assemble::SourceBlock;
 use crate::websearch::lang::news_locale;
 use crate::websearch::THUKI_USER_AGENT;
@@ -198,7 +198,7 @@ pub(crate) async fn fetch_news(
     freshness: bool,
     lang: &str,
 ) -> Option<SourceBlock> {
-    let response = match transport.send(&news_request(query, freshness, lang)).await {
+    let response = match send_with_retry(transport, &news_request(query, freshness, lang)).await {
         Ok(response) => response,
         Err(_) => {
             eprintln!("[search] vertical=news transport_error -> engines");
@@ -380,9 +380,12 @@ mod tests {
         assert!(block.text.contains("Leclerc"));
     }
 
-    #[tokio::test]
+    // start_paused: the transport-error and 503 cases below each drive the
+    // vertical retry (see `net::transport::send_with_retry`), whose jittered
+    // backoff sleeps real time unless the tokio clock is paused.
+    #[tokio::test(start_paused = true)]
     async fn fetch_news_none_on_error_bad_status_or_empty() {
-        // No canned response -> transport error -> None.
+        // No canned response -> transport error, retried once, still None.
         assert!(fetch_news(&FakeHttpTransport::new(), "f1", false, "en")
             .await
             .is_none());

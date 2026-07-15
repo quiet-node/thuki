@@ -269,6 +269,23 @@ export function SearchProgressBlock({
       aria-busy={isExiting || undefined}
       className="mb-2"
     >
+      {/*
+        Screen-reader-only announcement of the same string the visible
+        header shows (`headerLabel`), so SR and sighted users hear one
+        phase name. Uses inventory `Sources (N)` on non-reasoned verify
+        turns: the footer `sources-verifying-pill` owns "Verifying
+        sources..." there, and announcing the live stage string here
+        would double it. Reasoned verify keeps the live verify copy in
+        both places on purpose (strip under Reasoning + pill).
+      */}
+      <span
+        data-testid="search-progress-live-region"
+        role="status"
+        aria-live="polite"
+        className="sr-only"
+      >
+        {headerLabel}
+      </span>
       <div className="flex min-w-0 items-center gap-2">
         {hasSources ? (
           <button

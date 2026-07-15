@@ -1,4 +1,10 @@
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  createEvent,
+  act,
+} from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ChatBubble } from '../ChatBubble';
 import { invoke } from '../../testUtils/mocks/tauri';
@@ -1286,6 +1292,100 @@ describe('ChatBubble', () => {
       expect(invoke).toHaveBeenCalledWith('open_url', {
         url: 'https://doc.rust-lang.org',
       });
+    });
+
+    it('is reachable by Tab and exposes an accessible source name', () => {
+      render(
+        <ChatBubble
+          role="assistant"
+          content="See [1] for details."
+          index={0}
+          searchSources={SOURCES}
+        />,
+      );
+      const anchor = screen.getByRole('button', {
+        name: 'Source 1: doc.rust-lang.org',
+      });
+      expect(anchor.tagName).toBe('A');
+      expect(anchor).toHaveAttribute('tabindex', '0');
+    });
+
+    it('opens the URL via open_url on Enter keydown', () => {
+      const { container } = render(
+        <ChatBubble
+          role="assistant"
+          content="See [1] for details."
+          index={0}
+          searchSources={SOURCES}
+        />,
+      );
+      const anchor = container.querySelector('a.citation-link') as HTMLElement;
+      fireEvent.keyDown(anchor, { key: 'Enter' });
+      expect(invoke).toHaveBeenCalledWith('open_url', {
+        url: 'https://doc.rust-lang.org',
+      });
+    });
+
+    it('opens the URL via open_url on Space keydown without scrolling the page', () => {
+      const { container } = render(
+        <ChatBubble
+          role="assistant"
+          content="See [1] for details."
+          index={0}
+          searchSources={SOURCES}
+        />,
+      );
+      const anchor = container.querySelector('a.citation-link') as HTMLElement;
+      const event = createEvent.keyDown(anchor, { key: ' ' });
+      const preventDefaultSpy = vi.spyOn(event, 'preventDefault');
+      fireEvent(anchor, event);
+      expect(invoke).toHaveBeenCalledWith('open_url', {
+        url: 'https://doc.rust-lang.org',
+      });
+      expect(preventDefaultSpy).toHaveBeenCalled();
+    });
+
+    it('ignores key-repeat Enter/Space so open_url is not multi-fired', () => {
+      const { container } = render(
+        <ChatBubble
+          role="assistant"
+          content="See [1] for details."
+          index={0}
+          searchSources={SOURCES}
+        />,
+      );
+      const anchor = container.querySelector('a.citation-link') as HTMLElement;
+      fireEvent.keyDown(anchor, { key: ' ', repeat: true });
+      fireEvent.keyDown(anchor, { key: 'Enter', repeat: true });
+      expect(invoke).not.toHaveBeenCalled();
+    });
+
+    it('ignores keydown events on the bubble that are not Enter or Space', () => {
+      const { container } = render(
+        <ChatBubble
+          role="assistant"
+          content="See [1] for details."
+          index={0}
+          searchSources={SOURCES}
+        />,
+      );
+      const anchor = container.querySelector('a.citation-link') as HTMLElement;
+      fireEvent.keyDown(anchor, { key: 'a' });
+      expect(invoke).not.toHaveBeenCalled();
+    });
+
+    it('ignores Enter keydown when the target is not a citation anchor', () => {
+      const { container } = render(
+        <ChatBubble
+          role="assistant"
+          content="No citations here."
+          index={0}
+          searchSources={SOURCES}
+        />,
+      );
+      const bubble = container.querySelector('.search-bubble') as HTMLElement;
+      fireEvent.keyDown(bubble, { key: 'Enter' });
+      expect(invoke).not.toHaveBeenCalled();
     });
 
     it('wraps citation at the very start of text and handles text ending in citation', () => {

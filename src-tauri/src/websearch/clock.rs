@@ -52,6 +52,10 @@ pub(crate) async fn resolve_place_time(
     now_utc: OffsetDateTime,
     lang: &str,
 ) -> Option<String> {
+    // Bare send, not `net::transport::send_with_retry`: this clock feature sits
+    // outside the search decision entirely (see the module docs above) and is not
+    // part of the search vertical stack the retry policy covers, even though it
+    // issues the identical Open-Meteo geocoding request `websearch::weather` does.
     let response = transport.send(&geocode_request(place, lang)).await.ok()?;
     let geo = parse_geocode(&String::from_utf8_lossy(&response.body))?;
     format_place_time_line(&geo, now_utc)

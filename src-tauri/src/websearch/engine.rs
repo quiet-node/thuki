@@ -91,6 +91,15 @@ const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7
 const DDG_HTML_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
 const MOJEEK_ENDPOINT: &str = "https://www.mojeek.com/search";
 
+/// Every keyless SERP endpoint this tier requests, in [`ENGINES`] order. The
+/// single source the offline reachability probe derives its host list from (see
+/// [`crate::net::reachability::probe_hosts`]), so an engine added to [`ENGINES`]
+/// cannot silently leave the probe testing only the old hosts: a probe that
+/// checked one engine would call a network "unreachable" whenever THAT engine's
+/// DNS is blocked (a documented corporate/ISP filter configuration for
+/// DuckDuckGo), even though another engine here would have answered the query.
+pub(crate) const SERP_ENDPOINTS: &[&str] = &[DDG_HTML_ENDPOINT, MOJEEK_ENDPOINT];
+
 /// One keyless search engine: a name for logging and cooldown keying, a request
 /// builder, a pure SERP parser, and how long to skip it after it blocks.
 /// [`web_search`] races every live engine and fuses their lists; this struct is

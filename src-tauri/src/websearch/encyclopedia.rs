@@ -35,7 +35,7 @@
 use crate::config::defaults::{
     WIKI_VOLATILITY_MARKERS, WIKI_VOLATILITY_MIN_YEAR, WIKI_VOLATILITY_PHRASES,
 };
-use crate::net::transport::{HttpMethod, HttpRequest, HttpTransport};
+use crate::net::transport::{send_with_retry, HttpMethod, HttpRequest, HttpTransport};
 use crate::websearch::assemble::SourceBlock;
 use crate::websearch::lang::wiki_subdomain;
 use crate::websearch::WIKIPEDIA_ATTRIBUTION;
@@ -299,16 +299,14 @@ pub(crate) async fn fetch_encyclopedia(
     standalone_question: &str,
     lang: &str,
 ) -> Option<SourceBlock> {
-    let search_response = match transport
-        .send(&search_request(standalone_question, lang))
-        .await
-    {
-        Ok(response) => response,
-        Err(e) => {
-            eprintln!("[search] vertical=wiki search_transport_error {e}");
-            return None;
-        }
-    };
+    let search_response =
+        match send_with_retry(transport, &search_request(standalone_question, lang)).await {
+            Ok(response) => response,
+            Err(e) => {
+                eprintln!("[search] vertical=wiki search_transport_error {e}");
+                return None;
+            }
+        };
     if search_response.status != 200 {
         eprintln!(
             "[search] vertical=wiki search_status={} -> engines",
@@ -320,7 +318,7 @@ pub(crate) async fn fetch_encyclopedia(
         eprintln!("[search] vertical=wiki no_search_hit -> engines");
         return None;
     };
-    let summary_response = match transport.send(&summary_request(&title, lang)).await {
+    let summary_response = match send_with_retry(transport, &summary_request(&title, lang)).await {
         Ok(response) => response,
         Err(e) => {
             eprintln!("[search] vertical=wiki summary_transport_error {e}");
@@ -716,10 +714,14 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    // start_paused: the transport error below drives the vertical retry (see
+    // `net::transport::send_with_retry`), whose jittered backoff sleeps real
+    // time unless the tokio clock is paused.
+    #[tokio::test(start_paused = true)]
     async fn fetch_encyclopedia_none_when_search_fails() {
         // Search transport error (no canned response): the vertical falls
-        // through. Routing/volatility gating is the orchestrator's job now, so
+        // through after the single automatic retry also fails. Routing/
+        // volatility gating is the orchestrator's job now, so
         // fetch_encyclopedia always issues the search request when called.
         let transport = FakeHttpTransport::new();
         assert!(

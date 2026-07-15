@@ -394,6 +394,11 @@ body {
   color: #e8835a;
   background-color: rgba(232, 131, 90, 0.14);
 }
+.citation-link:focus-visible {
+  outline: none;
+  color: #e8835a;
+  box-shadow: 0 0 0 2px rgba(255, 141, 92, 0.32);
+}
 .search-bubble[data-active-citation='1'] .citation-link[data-citation='1'],
 .search-bubble[data-active-citation='2'] .citation-link[data-citation='2'],
 .search-bubble[data-active-citation='3'] .citation-link[data-citation='3'],

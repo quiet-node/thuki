@@ -143,6 +143,102 @@ pub(crate) fn redirect_decision(next: &Url, hops: usize, max_redirects: usize) -
     }
 }
 
+// ─── Vertical retry helper (SERP engines must NEVER use this) ────────────────
+//
+// DuckDuckGo and Mojeek calls stay on a bare `transport.send`: a same-identity
+// retry after a block/rate-limit response pattern-matches a bot burst and has
+// triggered multi-hour SERP IP blocks. Only the idempotent vertical GETs
+// (Open-Meteo, Wikipedia, Google News RSS, ESPN) route through
+// [`send_with_retry`].
+
+/// Whether a completed transport attempt should be retried once: only a
+/// [`TransportError::Request`] (the genuinely transient case: connect, TLS,
+/// timeout, read), or a successful response carrying HTTP 429 (rate limited)
+/// or 5xx (server error). Every other [`TransportError`] variant is
+/// deterministic and retrying it would just repeat the same outcome, or
+/// actively make things worse: [`TransportError::Ssrf`] means the security
+/// guard just refused this exact URL or redirect target, and
+/// [`TransportError::ResponseTooLarge`] means re-sending would re-download up
+/// to the byte cap again against an already-hostile-sized response
+/// (bandwidth amplification, not resilience). A successful response with any
+/// other status is never retriable either, including one whose body turns
+/// out to be parse-empty or a vertical intent miss: those are content
+/// problems, not transport problems.
+///
+/// Matches every error variant by name (no catch-all arm) so that adding a
+/// new [`TransportError`] variant forces a deliberate retriable/not decision
+/// here at compile time instead of silently defaulting one way or the other.
+pub(crate) fn is_retriable(result: &Result<HttpResponse, TransportError>) -> bool {
+    match result {
+        Err(TransportError::Request(_)) => true,
+        Err(TransportError::Ssrf(_)) => false,
+        Err(TransportError::InvalidUrl(_)) => false,
+        Err(TransportError::ResponseTooLarge { .. }) => false,
+        Err(TransportError::TooManyRedirects { .. }) => false,
+        Ok(resp) => resp.status == 429 || (500..=599).contains(&resp.status),
+    }
+}
+
+/// Computes the jittered backoff delay before a vertical's single automatic
+/// retry: a linear interpolation between
+/// [`crate::config::defaults::VERTICAL_RETRY_BACKOFF_MIN_MS`] and
+/// [`crate::config::defaults::VERTICAL_RETRY_BACKOFF_MAX_MS`], using
+/// `jitter_unit` (clamped to `[0.0, 1.0]`) as the interpolation fraction. Pure
+/// and deterministic given `jitter_unit`, so the bounds are tested directly
+/// without needing to fake a clock or an RNG.
+pub(crate) fn backoff_delay(jitter_unit: f64) -> std::time::Duration {
+    use crate::config::defaults::{VERTICAL_RETRY_BACKOFF_MAX_MS, VERTICAL_RETRY_BACKOFF_MIN_MS};
+    let unit = jitter_unit.clamp(0.0, 1.0);
+    let min = VERTICAL_RETRY_BACKOFF_MIN_MS as f64;
+    let max = VERTICAL_RETRY_BACKOFF_MAX_MS as f64;
+    std::time::Duration::from_millis((min + unit * (max - min)) as u64)
+}
+
+/// Counter backing [`jitter_unit`]. Not a security-relevant RNG: the only job
+/// of the jitter is to keep concurrent vertical retries from waking in
+/// lockstep, so an incrementing counter folded through a fixed multiplier is
+/// enough and avoids pulling in the `rand` crate for this alone.
+static JITTER_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Cheap, infallible, non-cryptographic jitter fraction in `[0.0, 1.0)`: each
+/// call advances a process-wide counter and folds it through a fixed
+/// multiplicative hash so sequential calls land at spread-out points in the
+/// interval rather than a slow ramp.
+pub(crate) fn jitter_unit() -> f64 {
+    let n = JITTER_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let hashed = n.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 40;
+    (hashed as f64) / ((1u64 << 24) as f64)
+}
+
+/// Sends `req` via `transport`, retrying up to
+/// [`crate::config::defaults::VERTICAL_RETRY_ATTEMPTS`] additional times when
+/// an attempt is [`is_retriable`]. Reserved for idempotent vertical GET
+/// requests (Open-Meteo, Wikipedia, Google News RSS, ESPN); SERP engine calls
+/// (DuckDuckGo, Mojeek) must call [`HttpTransport::send`] directly and never
+/// this helper (see the module-level note above).
+///
+/// Not coverage-excluded: the retry loop, the attempt bound, and the
+/// re-send live here, not in [`is_retriable`] or [`backoff_delay`], so this is
+/// the one place that would silently stop enforcing "exactly one retry, never
+/// for SERP" if it went unmeasured. Covered directly against a fake transport
+/// in the tests below.
+pub(crate) async fn send_with_retry(
+    transport: &dyn HttpTransport,
+    req: &HttpRequest,
+) -> Result<HttpResponse, TransportError> {
+    use crate::config::defaults::VERTICAL_RETRY_ATTEMPTS;
+
+    let mut result = transport.send(req).await;
+    for _ in 0..VERTICAL_RETRY_ATTEMPTS {
+        if !is_retriable(&result) {
+            break;
+        }
+        tokio::time::sleep(backoff_delay(jitter_unit())).await;
+        result = transport.send(req).await;
+    }
+    result
+}
+
 // ─── reqwest backend (thin wrapper, excluded from coverage) ──────────────────
 
 /// Production [`HttpTransport`] over a single pooled reqwest client wired with
@@ -396,5 +492,190 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(e, TransportError::Request(_)));
+    }
+
+    // ── is_retriable ──────────────────────────────────────────────────────────
+
+    fn ok(status: u16) -> Result<HttpResponse, TransportError> {
+        Ok(HttpResponse {
+            status,
+            final_url: "https://example.com/".into(),
+            body: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn is_retriable_true_on_request_error() {
+        let err: Result<HttpResponse, TransportError> = Err(TransportError::Request("boom".into()));
+        assert!(is_retriable(&err));
+    }
+
+    #[test]
+    fn is_retriable_false_on_ssrf_error() {
+        let err: Result<HttpResponse, TransportError> =
+            Err(TransportError::Ssrf(SsrfError::NoAddresses));
+        assert!(!is_retriable(&err));
+    }
+
+    #[test]
+    fn is_retriable_false_on_invalid_url() {
+        let err: Result<HttpResponse, TransportError> =
+            Err(TransportError::InvalidUrl("not a url".into()));
+        assert!(!is_retriable(&err));
+    }
+
+    #[test]
+    fn is_retriable_false_on_response_too_large() {
+        let err: Result<HttpResponse, TransportError> =
+            Err(TransportError::ResponseTooLarge { limit: 4096 });
+        assert!(!is_retriable(&err));
+    }
+
+    #[test]
+    fn is_retriable_false_on_too_many_redirects() {
+        let err: Result<HttpResponse, TransportError> =
+            Err(TransportError::TooManyRedirects { max: 5 });
+        assert!(!is_retriable(&err));
+    }
+
+    #[test]
+    fn is_retriable_true_on_429_and_5xx() {
+        assert!(is_retriable(&ok(429)));
+        assert!(is_retriable(&ok(500)));
+        assert!(is_retriable(&ok(503)));
+        assert!(is_retriable(&ok(599)));
+    }
+
+    #[test]
+    fn is_retriable_false_on_success_or_non_retriable_status() {
+        assert!(!is_retriable(&ok(200)));
+        assert!(!is_retriable(&ok(404)));
+        assert!(!is_retriable(&ok(400)));
+        assert!(!is_retriable(&ok(600)));
+    }
+
+    // ── backoff_delay ────────────────────────────────────────────────────────
+
+    #[test]
+    fn backoff_delay_interpolates_between_bounds() {
+        assert_eq!(backoff_delay(0.0), std::time::Duration::from_millis(300));
+        assert_eq!(backoff_delay(1.0), std::time::Duration::from_millis(800));
+        assert_eq!(backoff_delay(0.5), std::time::Duration::from_millis(550));
+    }
+
+    #[test]
+    fn backoff_delay_clamps_out_of_range_jitter() {
+        assert_eq!(backoff_delay(-1.0), std::time::Duration::from_millis(300));
+        assert_eq!(backoff_delay(2.0), std::time::Duration::from_millis(800));
+    }
+
+    // ── jitter_unit ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn jitter_unit_stays_in_unit_interval() {
+        for _ in 0..16 {
+            let u = jitter_unit();
+            assert!((0.0..1.0).contains(&u), "{u} out of range");
+        }
+    }
+
+    // ── send_with_retry ──────────────────────────────────────────────────────
+
+    /// Test-only transport that replays a fixed sequence of outcomes in order,
+    /// one per call, holding on the last entry once exhausted. Lets a retry
+    /// test script "fails then succeeds" without touching the shared
+    /// [`FakeHttpTransport`], which is keyed by URL and always replays the
+    /// same canned response.
+    struct SequencedTransport {
+        attempts: std::sync::atomic::AtomicUsize,
+        outcomes: Vec<Option<u16>>,
+    }
+
+    impl SequencedTransport {
+        fn new(outcomes: Vec<Option<u16>>) -> Self {
+            Self {
+                attempts: std::sync::atomic::AtomicUsize::new(0),
+                outcomes,
+            }
+        }
+
+        fn attempt_count(&self) -> usize {
+            self.attempts.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl HttpTransport for SequencedTransport {
+        async fn send(&self, req: &HttpRequest) -> Result<HttpResponse, TransportError> {
+            let i = self
+                .attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            match self.outcomes[i.min(self.outcomes.len() - 1)] {
+                None => Err(TransportError::Request("canned failure".into())),
+                Some(status) => Ok(HttpResponse {
+                    status,
+                    final_url: req.url.clone(),
+                    body: Vec::new(),
+                }),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_succeeds_first_try_without_retry() {
+        let transport = SequencedTransport::new(vec![Some(200)]);
+        let resp = send_with_retry(&transport, &HttpRequest::get("https://example.com/"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(transport.attempt_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_does_not_retry_non_retriable_status() {
+        let transport = SequencedTransport::new(vec![Some(404)]);
+        let resp = send_with_retry(&transport, &HttpRequest::get("https://example.com/"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status, 404);
+        assert_eq!(transport.attempt_count(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn send_with_retry_retries_once_on_transport_error_then_succeeds() {
+        let transport = SequencedTransport::new(vec![None, Some(200)]);
+        let resp = send_with_retry(&transport, &HttpRequest::get("https://example.com/"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(transport.attempt_count(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn send_with_retry_retries_once_on_5xx_or_429_then_succeeds() {
+        let transport = SequencedTransport::new(vec![Some(503), Some(200)]);
+        let resp = send_with_retry(&transport, &HttpRequest::get("https://example.com/"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(transport.attempt_count(), 2);
+
+        let transport = SequencedTransport::new(vec![Some(429), Some(200)]);
+        let resp = send_with_retry(&transport, &HttpRequest::get("https://example.com/"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(transport.attempt_count(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn send_with_retry_gives_up_after_one_retry_still_failing() {
+        let transport = SequencedTransport::new(vec![Some(503), Some(503)]);
+        let resp = send_with_retry(&transport, &HttpRequest::get("https://example.com/"))
+            .await
+            .unwrap();
+        // Still the final (second) attempt's result, and no third attempt.
+        assert_eq!(resp.status, 503);
+        assert_eq!(transport.attempt_count(), 2);
     }
 }

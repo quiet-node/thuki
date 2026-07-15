@@ -92,6 +92,7 @@
 //! `websearch` retrieval pipeline; no local search services are required.
 
 use thuki_agent_lib::commands::ChatMessage;
+use thuki_agent_lib::net::reachability::DnsReachability;
 use thuki_agent_lib::net::transport::ReqwestTransport;
 use thuki_agent_lib::openai::{
     request_openai_json, stream_openai_chat, OpenAiChatParams, V1Flavor,
@@ -866,6 +867,7 @@ async fn live_answer_for(
         prepass: &prepass,
         judge: &judge,
         transport: &transport,
+        reachability: &DnsReachability,
         scorer: &Bm25Scorer,
         health: &health,
         recorder: &recorder,
