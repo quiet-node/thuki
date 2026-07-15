@@ -843,6 +843,16 @@
   opacity: 0.4;
   cursor: not-allowed;
 }
+/* Free-traces success morph: the destructive action briefly draws a green tick
+ * (DrawCheckIcon) before settling into its disabled/grey empty state. Overrides
+ * the 0.4 disabled dimming so the tick reads at full strength; green matches the
+ * Keep-Warm eject and update-check success ticks (#5ec98a). */
+.button[data-freed='true']:disabled {
+  opacity: 1;
+  color: #5ec98a;
+  border-color: rgba(94, 201, 138, 0.25);
+  cursor: default;
+}
 .buttonGhost {
   background: transparent;
   border-color: rgba(255, 255, 255, 0.06);
@@ -1266,6 +1276,28 @@
 
 /* ─── Confirm dialog ────────────────────────────────────────────────────── */
 
+/* Calm entrance: the backdrop fades in while the panel eases up a few pixels
+ * and settles from a near-full scale. Subtle, ~180ms ease-out, no bounce. The
+ * element still mounts immediately (no JS timer gates it); only the paint is
+ * animated. Suppressed under prefers-reduced-motion below. */
+@keyframes dialogBackdropIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes dialogPanelIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
 .dialogBackdrop {
   position: fixed;
   inset: 0;
@@ -1276,6 +1308,7 @@
   align-items: center;
   justify-content: center;
   z-index: 1000;
+  animation: dialogBackdropIn 180ms ease-out;
 }
 .dialog {
   background: rgba(36, 30, 26, 0.98);
@@ -1290,6 +1323,7 @@
     0 1px 4px -1px rgba(0, 0, 0, 0.3),
     0 0 0 1px rgba(255, 141, 92, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  animation: dialogPanelIn 180ms ease-out;
 }
 .dialogTitle {
   font-size: 15px;
@@ -1795,7 +1829,9 @@
   .keepWarmCircleAnim,
   .keepWarmCheckAnim,
   .keepWarmVramDot,
-  .devChevron {
+  .devChevron,
+  .dialogBackdrop,
+  .dialog {
     transition: none !important;
     animation: none !important;
   }

@@ -26,7 +26,7 @@ import { DownloadsProvider } from '../../contexts/DownloadsContext';
 import { DisplayTab } from './DisplayTab';
 
 import { AboutTab } from './AboutTab';
-import { BehaviorTab } from './BehaviorTab';
+import { BehaviorTab, FREE_SUCCESS_HOLD_MS } from './BehaviorTab';
 import type { RawAppConfig } from '../types';
 
 const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
@@ -117,6 +117,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
   clearEventHandlers();
 });
 
@@ -840,6 +841,138 @@ describe('BehaviorTab', () => {
     expect(
       await screen.findByText('No traces recorded yet'),
     ).toBeInTheDocument();
+  });
+
+  /** Stubs `window.matchMedia` so `prefers-reduced-motion` resolves to `reduce`. */
+  function stubReducedMotion(reduce: boolean) {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockReturnValue({
+        matches: reduce,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }),
+    );
+  }
+
+  it('greys the Free traces button when there are no traces on disk', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'traces_stats')
+        return Promise.resolve({ count: 0, bytes: 0 });
+      return Promise.resolve(undefined);
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+    await screen.findByText('No traces recorded yet');
+    expect(screen.getByRole('button', { name: 'Free traces…' })).toBeDisabled();
+  });
+
+  it('keeps the Free traces button active when traces exist', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'traces_stats')
+        return Promise.resolve({ count: 5, bytes: 1000 });
+      return Promise.resolve(undefined);
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+    await screen.findByText('5 traces · 1000 B on disk');
+    expect(screen.getByRole('button', { name: 'Free traces…' })).toBeEnabled();
+  });
+
+  it('leaves the Free traces button active while the count is unknown', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'traces_stats') return Promise.reject(new Error('nope'));
+      return Promise.resolve(undefined);
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+    // The stats probe failed, so the count stays unknown and the button must
+    // not be trapped in the disabled state.
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Open traces folder' }),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.getByRole('button', { name: 'Free traces…' })).toBeEnabled();
+  });
+
+  it('draws the success tick after freeing, then settles into the disabled state', async () => {
+    vi.useFakeTimers();
+    stubReducedMotion(false);
+    let freed = false;
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'traces_stats')
+        return Promise.resolve(
+          freed ? { count: 0, bytes: 0 } : { count: 3, bytes: 900 },
+        );
+      if (cmd === 'free_traces') {
+        freed = true;
+        return Promise.resolve(undefined);
+      }
+      return Promise.resolve(undefined);
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+    // Flush the initial (non-empty) stats load.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('button', { name: 'Free traces…' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Free traces…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Free traces' }));
+    // Flush free_traces + the post-delete stats refetch + the success kick-off.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Mid-hold: the button shows the drawn green tick and is non-interactive.
+    const tick = screen.getByRole('button', { name: 'Traces freed' });
+    expect(tick).toBeDisabled();
+    expect(tick).toHaveAttribute('data-freed', 'true');
+    expect(tick.querySelector('svg')).not.toBeNull();
+
+    // Hold elapses: settle into the plain disabled/grey empty state.
+    act(() => {
+      vi.advanceTimersByTime(FREE_SUCCESS_HOLD_MS);
+    });
+    const settled = screen.getByRole('button', { name: 'Free traces…' });
+    expect(settled).toBeDisabled();
+    expect(settled).not.toHaveAttribute('data-freed');
+  });
+
+  it('skips the success tick under reduced motion and settles straight to grey', async () => {
+    stubReducedMotion(true);
+    let freed = false;
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'traces_stats')
+        return Promise.resolve(
+          freed ? { count: 0, bytes: 0 } : { count: 3, bytes: 900 },
+        );
+      if (cmd === 'free_traces') {
+        freed = true;
+        return Promise.resolve(undefined);
+      }
+      return Promise.resolve(undefined);
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+    await screen.findByText('3 traces · 900 B on disk');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Free traces…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Free traces' }));
+
+    expect(
+      await screen.findByText('No traces recorded yet'),
+    ).toBeInTheDocument();
+    // No tick was ever drawn; the button went directly to disabled/grey.
+    expect(screen.queryByRole('button', { name: 'Traces freed' })).toBeNull();
+    const btn = screen.getByRole('button', { name: 'Free traces…' });
+    expect(btn).toBeDisabled();
+    expect(btn).not.toHaveAttribute('data-freed');
   });
 
   const RETENTION_NAME = 'Days to keep recorded traces';

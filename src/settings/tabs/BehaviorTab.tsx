@@ -16,6 +16,7 @@ import {
   POINTING_WIGGLE_MS,
 } from '../../components/PointingWiggle';
 import { ConfirmDialog, Section, SettingRow, Toggle } from '../components';
+import { DrawCheckIcon } from '../../components/DrawCheckIcon';
 import { SaveField } from '../components/SaveField';
 import { useDebouncedSave } from '../hooks/useDebouncedSave';
 import { configHelp } from '../configHelpers';
@@ -41,6 +42,31 @@ interface BehaviorTabProps {
 interface TracesStats {
   count: number;
   bytes: number;
+}
+
+/**
+ * How long the "Free traces" button shows its drawn green tick after a
+ * successful delete before settling into the disabled/grey empty state.
+ *
+ * Sized to clear the full `DrawCheckIcon` draw and add a brief dwell: the ring
+ * animates 0..550ms and the check 450..750ms (see `keepWarmCircleAnim` /
+ * `keepWarmCheckAnim` in `settings.module.css`), so anything under ~750ms would
+ * cut the checkmark mid-stroke. This holds the completed tick for ~450ms more.
+ */
+export const FREE_SUCCESS_HOLD_MS = 1200;
+
+/**
+ * Whether the OS is set to reduce motion. Gates the Free-traces success draw:
+ * when true, the tick animation is skipped and the button goes straight to its
+ * settled grey state. Mirrors the guard used by `ThreeDotMotion`.
+ *
+ * @returns `true` when `prefers-reduced-motion: reduce` matches, else `false`
+ *   (including when `matchMedia` is unavailable).
+ */
+function prefersReducedMotion(): boolean {
+  return (
+    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+  );
 }
 
 /**
@@ -92,6 +118,16 @@ export function BehaviorTab({
   // resolves, and on any invoke failure, so a backend error never throws into
   // render).
   const [tracesSubtext, setTracesSubtext] = useState<string | null>(null);
+  // Numeric trace count driving the "Free traces" disabled state. `null` means
+  // unknown (still loading, or the stats fetch failed): the button stays
+  // enabled then, since `free_traces` is a safe no-op on an empty dir. `0`
+  // greys the button; any positive value keeps it active.
+  const [tracesCount, setTracesCount] = useState<number | null>(null);
+  // Transient success flag: true while the "Free traces" button draws its green
+  // tick after a successful delete, then cleared so it settles into the grey
+  // empty state (count is 0 by then).
+  const [freeSuccess, setFreeSuccess] = useState(false);
+  const freeSuccessTimerRef = useRef<number | null>(null);
 
   // Trace retention days (debounced save). Mirrors the Keep Warm "Release
   // after" numeric input: a raw string backs the field so a partial "-" or a
@@ -134,10 +170,34 @@ export function BehaviorTab({
     try {
       const stats = await invoke<TracesStats>('traces_stats');
       setTracesSubtext(formatTracesSubtext(stats.count, stats.bytes));
+      setTracesCount(stats.count);
     } catch {
-      // Hide the subtext rather than surfacing a raw error in the UI.
+      // Hide the subtext rather than surfacing a raw error in the UI, and drop
+      // the count back to unknown so the button re-enables (never trap the user
+      // on a stale zero after a failed probe).
       setTracesSubtext(null);
+      setTracesCount(null);
     }
+  }, []);
+
+  // Runs the Free-traces success draw: a brief green tick, then settle. Skipped
+  // entirely under reduced motion so the button jumps straight to grey rather
+  // than flashing a half-drawn tick.
+  const startFreeSuccess = useCallback(() => {
+    if (prefersReducedMotion()) return;
+    setFreeSuccess(true);
+    freeSuccessTimerRef.current = window.setTimeout(() => {
+      setFreeSuccess(false);
+    }, FREE_SUCCESS_HOLD_MS);
+  }, []);
+
+  // Clear a pending success-hold timer if the tab unmounts mid-animation.
+  useEffect(() => {
+    return () => {
+      if (freeSuccessTimerRef.current !== null) {
+        window.clearTimeout(freeSuccessTimerRef.current);
+      }
+    };
   }, []);
 
   // Fetch the footprint only once the Diagnostics block is opened; a collapsed
@@ -326,9 +386,12 @@ export function BehaviorTab({
                 <button
                   type="button"
                   className={`${styles.button} ${styles.buttonDestructive}`}
+                  data-freed={freeSuccess ? 'true' : undefined}
+                  disabled={freeSuccess || tracesCount === 0}
+                  aria-label={freeSuccess ? 'Traces freed' : undefined}
                   onClick={() => setConfirmFree(true)}
                 >
-                  Free traces…
+                  {freeSuccess ? <DrawCheckIcon /> : 'Free traces…'}
                 </button>
               </div>
               {tracesSubtext !== null ? (
@@ -350,14 +413,18 @@ export function BehaviorTab({
           // Delete, then refresh the footprint so the subtext drops to the
           // empty state. Swallow a delete failure and reload regardless, so the
           // subtext always resyncs to the true on-disk state and no rejection
-          // escapes into an unhandled promise.
+          // escapes into an unhandled promise. Only a clean delete plays the
+          // success tick; a failure just resyncs quietly.
           void (async () => {
+            let freed = false;
             try {
               await invoke('free_traces');
+              freed = true;
             } catch {
               // Deletion failed; the reload below reflects the real state.
             }
             await loadTracesStats();
+            if (freed) startFreeSuccess();
           })();
         }}
         onCancel={() => setConfirmFree(false)}
