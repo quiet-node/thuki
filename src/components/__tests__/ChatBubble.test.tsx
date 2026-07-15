@@ -1345,6 +1345,21 @@ describe('ChatBubble', () => {
       expect(preventDefaultSpy).toHaveBeenCalled();
     });
 
+    it('ignores key-repeat Enter/Space so open_url is not multi-fired', () => {
+      const { container } = render(
+        <ChatBubble
+          role="assistant"
+          content="See [1] for details."
+          index={0}
+          searchSources={SOURCES}
+        />,
+      );
+      const anchor = container.querySelector('a.citation-link') as HTMLElement;
+      fireEvent.keyDown(anchor, { key: ' ', repeat: true });
+      fireEvent.keyDown(anchor, { key: 'Enter', repeat: true });
+      expect(invoke).not.toHaveBeenCalled();
+    });
+
     it('ignores keydown events on the bubble that are not Enter or Space', () => {
       const { container } = render(
         <ChatBubble

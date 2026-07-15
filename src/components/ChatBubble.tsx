@@ -569,6 +569,7 @@ export function ChatBubble({
    * non-form element.
    */
   const onAnswerKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.repeat) return;
     if (e.key !== 'Enter' && e.key !== ' ') return;
     const target = (e.target as HTMLElement).closest(
       'a[data-citation]',
