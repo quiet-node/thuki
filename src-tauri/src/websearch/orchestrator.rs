@@ -67,10 +67,13 @@ use crate::net::transport::HttpTransport;
 use crate::trace::{truncate_for_trace, BoundRecorder, EngineStat, RecorderEvent, RetrievedSource};
 use crate::websearch::assemble::{assemble_context, SourceBlock};
 use crate::websearch::cache::{CachedSearch, SourceCache};
-use crate::websearch::encyclopedia::{fetch_encyclopedia, is_volatile_question};
+use crate::websearch::encyclopedia::{
+    fetch_encyclopedia, is_price_intent_question, is_volatile_question,
+};
 use crate::websearch::engine::{
     any_engine_available, transport_unreachable, web_search, EngineHealth, SearchHit,
 };
+use crate::websearch::evidence::filter_evidence_chunks;
 use crate::websearch::fetch::{fetch_pages, FetchedPage};
 use crate::websearch::judge::{deterministic_sufficiency, SufficiencyJudge, SufficiencyVerdict};
 use crate::websearch::lang::resolve_lang;
@@ -1309,6 +1312,12 @@ async fn run_engine_tier(
     } else {
         chunks
     };
+    // Evidence bar for live-price / freshness turns: drop multi-year archive
+    // URL paths and, on price intent, require price-like numbers (else empty
+    // → NoResults refuse rather than confident scrapes). See `evidence`.
+    let price_intent = is_price_intent_question(standalone_question);
+    let now_year = time::OffsetDateTime::now_utc().year() as u32;
+    let chunks = filter_evidence_chunks(chunks, freshness, price_intent, now_year);
     let sources = assemble_context(&chunks, num_ctx);
     deps.timings.record(STAGE_RANK_ASSEMBLY, rank_start);
     if sources.is_empty() {
@@ -2086,6 +2095,12 @@ async fn judge_and_requery(
             } else {
                 rerank_by_score(combined_chunks)
             };
+            let ordered = filter_evidence_chunks(
+                ordered,
+                freshness,
+                is_price_intent_question(standalone_question),
+                now.year() as u32,
+            );
             assemble_context(&ordered, num_ctx)
         }
         // Vertical-escalation merge (contract locked): the vertical block stays
@@ -2101,6 +2116,12 @@ async fn judge_and_requery(
             } else {
                 chunks
             };
+            let chunks = filter_evidence_chunks(
+                chunks,
+                freshness,
+                is_price_intent_question(standalone_question),
+                now.year() as u32,
+            );
             let new_sources = assemble_context(&chunks, num_ctx);
             merge_sources(sources, new_sources, num_ctx)
         }

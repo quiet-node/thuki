@@ -496,6 +496,32 @@ describe('useModel', () => {
       );
     });
 
+    it('clears decide-only fromSearch on Done even without prior tokens', async () => {
+      // Empty/cancelled-ish NoSearch: status then Done, no stream body.
+      // Done path must still drop fromSearch (branch coverage on the map).
+      const onTurnComplete = vi.fn();
+      const { result } = renderHook(() => useModel('m', onTurnComplete));
+      await act(async () => {
+        await result.current.ask('hello');
+      });
+      const channel = getChannel();
+
+      act(() => {
+        channel!.simulateMessage({
+          type: 'SearchStatus',
+          data: { phase: 'deciding' },
+        });
+        channel!.simulateMessage({ type: 'Done' });
+      });
+      expect(
+        result.current.messages.find((m) => m.role === 'assistant')?.fromSearch,
+      ).toBeUndefined();
+      expect(onTurnComplete).toHaveBeenCalledWith(
+        expect.objectContaining({ role: 'user' }),
+        expect.objectContaining({ fromSearch: undefined }),
+      );
+    });
+
     it('keeps fromSearch when retrieval advances past deciding before tokens', async () => {
       const { result } = renderHook(() => useModel('m'));
       await act(async () => {

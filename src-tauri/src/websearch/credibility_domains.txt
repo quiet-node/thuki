@@ -29,6 +29,13 @@ mediamass.net
 newsunzip.com
 current-affairs.org
 
+# cluster: editorial judgment -- 2026-07-14 gold-price smoke (giá vàng hôm nay): SEO scrapes /
+# free-blog hosts that assembled stale "SJC 80 triệu" / 2020 USD quotes ahead of real VN hubs
+blogdanica.com
+globaleasyforex.com
+ponselharian.com
+kulturellen.net
+
 # penalize
 
 # cluster: quenhus/uBlock-Origin-dev-filter (dist/duckduckgo/seo_spam.txt) -- Unlicense
@@ -343,6 +350,12 @@ bls.gov
 census.gov
 irs.gov
 ecb.europa.eu
+
+# cluster: editorial judgment -- primary VN gold / bullion quote hubs (2026-07-14 dogfood)
+# Prefer these over SEO scrapes when they appear in the same SERP.
+pnj.com.vn
+sjc.com.vn
+doji.vn
 
 # cluster: official sports / standards bodies (editorial curation, common-knowledge authoritative sources)
 olympics.com

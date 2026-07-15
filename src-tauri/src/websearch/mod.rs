@@ -37,6 +37,8 @@
 //! - [`recency`] — bounded published-date extraction and the recency-prior
 //!   fusion applied to the engine tier's ranked sources on a freshness-flagged
 //!   turn only.
+//! - [`evidence`] — post-rank filters for freshness path-year demotion and
+//!   price-intent numeric utility (refuse when every page is numberless).
 //! - [`assemble`] — group ranked chunks into budgeted numbered source blocks.
 //! - [`writer`] — writer prompt assembly with prompt-injection defenses.
 //! - [`orchestrator`] — the fixed pipeline tying the stages together.
@@ -48,6 +50,7 @@ pub mod clock;
 pub mod credibility;
 pub mod encyclopedia;
 pub mod engine;
+pub mod evidence;
 pub mod fetch;
 pub mod judge;
 pub mod lang;

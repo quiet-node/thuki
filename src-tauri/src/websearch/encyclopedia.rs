@@ -63,17 +63,18 @@ pub(crate) struct WikiSummary {
 /// Whether `question` carries a freshness signal that disqualifies the
 /// Wikipedia vertical even when the classifier routed the turn to `wiki`. True
 /// when the lowercased question contains any [`WIKI_VOLATILITY_MARKERS`] token,
-/// any [`WIKI_VOLATILITY_PHRASES`] whole phrase, or a 4-digit year at or after
-/// [`WIKI_VOLATILITY_MIN_YEAR`]. Wikipedia's lead summary answers the stable
-/// subject, never its live state, so such a question must fall through to the
-/// news / engine tiers.
+/// any [`WIKI_VOLATILITY_PHRASES`] whole phrase, any
+/// [`crate::config::defaults::PRICE_INTENT_MARKERS`] token, or a 4-digit year
+/// at or after [`WIKI_VOLATILITY_MIN_YEAR`]. Wikipedia's lead summary answers
+/// the stable subject, never its live state, so such a question must fall
+/// through to the news / engine tiers.
 ///
 /// This is also the sole freshness signal for the rest of the search pipeline
 /// (see `orchestrator::run_web`'s `freshness` variable): the same `true`/`false`
-/// gates the DuckDuckGo/Google News date-bias operators and the recency-prior
-/// fusion re-ranking, not just the Wikipedia vertical. `WIKI_VOLATILITY_PHRASES`
-/// documents the age/biography patterns in detail, including which related
-/// phrasings are deliberately excluded and why.
+/// gates the DuckDuckGo/Google News date-bias operators, the recency-prior
+/// fusion re-ranking, and the evidence path-year filter, not just the Wikipedia
+/// vertical. `WIKI_VOLATILITY_PHRASES` documents the age/biography patterns in
+/// detail, including which related phrasings are deliberately excluded and why.
 pub(crate) fn is_volatile_question(question: &str) -> bool {
     let lower = question.to_lowercase();
     let tokens: Vec<&str> = lower
@@ -81,6 +82,14 @@ pub(crate) fn is_volatile_question(question: &str) -> bool {
         .filter(|t| !t.is_empty())
         .collect();
     if tokens.iter().any(|t| WIKI_VOLATILITY_MARKERS.contains(t)) {
+        return true;
+    }
+    // Live market quotes change as fast as "today" news; force the same
+    // freshness path even when the user omits an explicit "today" word.
+    if tokens
+        .iter()
+        .any(|t| crate::config::defaults::PRICE_INTENT_MARKERS.contains(t))
+    {
         return true;
     }
     if tokens
@@ -94,6 +103,19 @@ pub(crate) fn is_volatile_question(question: &str) -> bool {
     WIKI_VOLATILITY_PHRASES
         .iter()
         .any(|phrase| padded.contains(&format!(" {phrase} ")))
+}
+
+/// True when `question` is a price / market-quote ask (any
+/// [`crate::config::defaults::PRICE_INTENT_MARKERS`] token). Used by the
+/// evidence pipeline to require price-like numbers in assembled chunks and to
+/// refuse a confident answer when every surviving page is numberless marketing
+/// chrome (the 2026-07-14 gold-price regression class).
+pub(crate) fn is_price_intent_question(question: &str) -> bool {
+    let lower = question.to_lowercase();
+    lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .any(|t| crate::config::defaults::PRICE_INTENT_MARKERS.contains(&t))
 }
 
 /// Whether `question` names a 4-digit year that conflicts with the resolved
@@ -367,6 +389,15 @@ mod tests {
         assert!(is_volatile_question("what is trending right now"));
         assert!(is_volatile_question("the best phones this year"));
         assert!(is_volatile_question("what is the World Cup 2026"));
+        // Multilingual "today" (token-joined phrases) must arm freshness the
+        // same way English "today" does. Regression: 2026-07-14 gold smoke.
+        assert!(is_volatile_question("giá vàng hôm nay bao nhiêu"));
+        assert!(is_volatile_question("thời tiết Hà Nội hôm nay thế nào"));
+        // Price intent alone (no "today" word) still forces the freshness path.
+        assert!(is_volatile_question("giá vàng SJC"));
+        assert!(is_volatile_question("what is the gold price"));
+        assert!(is_price_intent_question("giá vàng hôm nay bao nhiêu"));
+        assert!(!is_price_intent_question("what is photosynthesis"));
     }
 
     #[test]

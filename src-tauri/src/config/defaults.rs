@@ -851,6 +851,20 @@ pub const WIKI_VOLATILITY_MARKERS: &[&str] = &[
     "recent",
     "upcoming",
     "anniversary",
+    // Non-English single-token "today/now" forms. Multi-word forms live in
+    // [`WIKI_VOLATILITY_PHRASES`] (e.g. "hôm nay", "aujourd hui"). Without
+    // these, non-English "today" questions never arm DDG date bias or recency
+    // fusion (2026-07-14 gold-price smoke: VI "hôm nay" was invisible).
+    "heute",
+    "hoje",
+    "hoy",
+    "oggi",
+    "vandaag",
+    "сегодня",
+    "今日",
+    "今天",
+    "오늘",
+    "วันนี้",
 ];
 
 /// Multi-word freshness phrases that disqualify the Wikipedia vertical, matched
@@ -903,7 +917,76 @@ pub const WIKI_VOLATILITY_PHRASES: &[&str] = &[
     "what age is",
     "s age",
     "how long ago",
+    // Multilingual "today / right now / latest" (token-joined phrases).
+    "hôm nay",
+    "mới nhất",
+    "hiện nay",
+    "bây giờ",
+    "hari ini",
+    "maintenant",
+    "ahora mismo",
+    // "aujourd'hui" splits on the apostrophe into these two tokens.
+    "aujourd hui",
 ];
+
+/// Tokens that mark a **price / market-quote** question. Any one present forces
+/// the same freshness path as [`WIKI_VOLATILITY_MARKERS`] (DDG date bias,
+/// recency fusion) and enables the price-intent evidence filters (numeric
+/// utility, stale path-year drop). Without this, "giá vàng" with no "today"
+/// word would skip temporal ranking and lose to number-bearing SEO scrapes.
+///
+/// Not user-tunable: a routing/evidence-contract list, same rationale as the
+/// volatility markers.
+pub const PRICE_INTENT_MARKERS: &[&str] = &[
+    "price",
+    "prices",
+    "pricing",
+    "cost",
+    "costs",
+    "rate",
+    "rates",
+    "quote",
+    "spot",
+    "ticker",
+    // Vietnamese
+    "giá",
+    // Other supported-lang common forms (single token after lowercasing).
+    "precio",
+    "precios",
+    "prix",
+    "preis",
+    "preço",
+    "preco",
+    "prezzo",
+    "цена",
+    "价格",
+    "價錢",
+    "价钱",
+    "値段",
+    "価格",
+    "가격",
+    "ราคา",
+    "harga",
+];
+
+/// Path-year lag for freshness-gated stale URL demotion: a URL path segment
+/// `/YYYY/` with `YYYY <= now_year - STALE_PATH_YEAR_LAG` is treated as
+/// multi-year stale evidence on a live-price/freshness turn (e.g. `/2020/` in
+/// 2026). Lag `2` keeps last calendar year eligible while dropping older
+/// archive paths that SEO scrapes love for "today" price queries.
+///
+/// Not user-tunable: an evidence-pipeline constant tied to the freshness
+/// contract, not a user preference.
+pub const STALE_PATH_YEAR_LAG: u32 = 2;
+
+/// Minimum consecutive ASCII digits that count as a price-like figure in a
+/// chunk when applying the price-intent numeric utility filter. `2` admits
+/// "80" (triệu) and "45" while rejecting lone list indices; independent of
+/// [`STATISTIC_MIN_DIGIT_RUN`] (which is the GEO nudge threshold on boosted
+/// domains only).
+///
+/// Not user-tunable: a ranking-algorithm heuristic bound.
+pub const PRICE_LIKE_MIN_DIGIT_RUN: usize = 2;
 
 /// Earliest 4-digit year that reads as a present/future freshness signal in a
 /// standalone question, disqualifying the Wikipedia vertical. A year at or above
