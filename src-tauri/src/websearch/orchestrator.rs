@@ -426,6 +426,7 @@ async fn run_search_inner(
                 cached.sources,
                 today,
                 locale,
+                lang,
                 Vec::new(),
                 // A cache hit is never a conflict commit: no fresh judge ran.
                 false,
@@ -1121,6 +1122,7 @@ async fn run_web(
                         sources,
                         today,
                         locale,
+                        lang,
                         engine_stats,
                         conflict,
                         still_missing,
@@ -1428,6 +1430,7 @@ async fn commit_or_escalate(
             vec![block],
             today,
             locale,
+            lang,
             Vec::new(),
             // The vertical judge (single block) never yields a conflict verdict.
             false,
@@ -1459,6 +1462,7 @@ async fn commit_or_escalate(
             vec![block],
             today,
             locale,
+            lang,
             Vec::new(),
             // The vertical judge (single block) never yields a conflict verdict.
             false,
@@ -1544,6 +1548,7 @@ async fn commit_or_escalate(
                         sources,
                         today,
                         locale,
+                        lang,
                         engine_stats,
                         conflict,
                         still_missing,
@@ -1572,6 +1577,7 @@ async fn commit_or_escalate(
                 vec![block],
                 today,
                 locale,
+                lang,
                 Vec::new(),
                 // Engine-miss fallback to the vertical block: no conflict verdict.
                 false,
@@ -1611,6 +1617,7 @@ fn grounded_answer(
     sources: Vec<SourceBlock>,
     today: &str,
     locale: &str,
+    lang: &str,
     engine_stats: Vec<EngineStat>,
     conflict: bool,
     still_missing: Option<String>,
@@ -1651,6 +1658,7 @@ fn grounded_answer(
         &sources,
         today,
         locale,
+        lang,
         is_cache_tier,
         conflict,
         still_missing.as_deref(),

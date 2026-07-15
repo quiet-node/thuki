@@ -4883,6 +4883,7 @@ mod tests {
             &blocks,
             "2026-07-10",
             "en-US",
+            "en",
             "deadbeef",
             false, /* is_cache_tier */
             verdict.conflicting(),
@@ -4892,6 +4893,7 @@ mod tests {
             &blocks,
             "2026-07-10",
             "en-US",
+            "en",
             "deadbeef",
             false,
             false,
