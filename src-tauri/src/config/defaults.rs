@@ -988,6 +988,21 @@ pub const STALE_PATH_YEAR_LAG: u32 = 2;
 /// Not user-tunable: a ranking-algorithm heuristic bound.
 pub const PRICE_LIKE_MIN_DIGIT_RUN: usize = 2;
 
+/// Minimum primary quote value (after grouping-separator strip) that enters
+/// the price-magnitude consensus filter. `10_000` keeps bullion / retail
+/// quotes (VND and major fiat) while ignoring tiny list indices and percents.
+///
+/// Not user-tunable: evidence-pipeline bound for cross-source outlier drop.
+pub const PRICE_MAGNITUDE_MIN_PRIMARY: f64 = 10_000.0;
+
+/// Minimum max/min primary-price ratio across numeric chunks before the
+/// magnitude-consensus filter drops the minority order-of-magnitude cluster.
+/// `5.0` catches the 14.35M-vs-145.5M SJC miếng class (≈10×) without splitting
+/// normal bid/ask spreads (~1.02×).
+///
+/// Not user-tunable: evidence-pipeline bound for cross-source outlier drop.
+pub const PRICE_MAGNITUDE_RATIO: f64 = 5.0;
+
 /// Earliest 4-digit year that reads as a present/future freshness signal in a
 /// standalone question, disqualifying the Wikipedia vertical. A year at or above
 /// this is about the live world, which a static encyclopedia extract cannot

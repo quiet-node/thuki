@@ -22,7 +22,7 @@ use crate::websearch::lang::geocode_language;
 use crate::websearch::{OPEN_METEO_ATTRIBUTION, THUKI_USER_AGENT};
 
 /// Words that signal a weather question. Matched on whole tokens of the
-/// lowercased standalone question.
+/// lowercased standalone question (English and common single-token forms).
 const WEATHER_WORDS: &[&str] = &[
     "weather",
     "forecast",
@@ -36,6 +36,27 @@ const WEATHER_WORDS: &[&str] = &[
     "windy",
     "humidity",
     "humid",
+    // Vietnamese single tokens that appear after phrase split (see
+    // [`WEATHER_PHRASES`] for the multi-token forms that must match first).
+    "mưa",
+    "nắng",
+    "gió",
+];
+
+/// Multi-word weather phrases matched as substrings on the lowercased
+/// question. Vietnamese "thời tiết" / "độ ẩm" / "nhiệt độ" never appear as
+/// single alphanumeric tokens under the English-style splitter, so without
+/// these phrases the vertical never fired on VI weather smokes and the turn
+/// fell through to SEO widgets (humidity 108%, etc.).
+const WEATHER_PHRASES: &[&str] = &[
+    "thời tiết",
+    "thoi tiet",
+    "độ ẩm",
+    "do am",
+    "nhiệt độ",
+    "nhiet do",
+    "dự báo thời tiết",
+    "du bao thoi tiet",
 ];
 
 /// Tokens stripped from the question when isolating the location text: the
@@ -99,6 +120,47 @@ const NON_LOCATION_WORDS: &[&str] = &[
     "ll",
     "re",
     "ve",
+    // Vietnamese weather / filler tokens stripped when isolating a place name
+    // from "độ ẩm Hà Nội hôm nay" → "Hà Nội".
+    "thời",
+    "tiết",
+    "thoi",
+    "tiet",
+    "độ",
+    "ẩm",
+    "do",
+    "am",
+    "nhiệt",
+    "nhiet",
+    "mưa",
+    "nắng",
+    "gió",
+    "dự",
+    "báo",
+    "du",
+    "bao",
+    "hôm",
+    "hom",
+    "nay",
+    "thế",
+    "the",
+    "nào",
+    "nao",
+    "bao",
+    "nhiêu",
+    "nhieu",
+    "hiện",
+    "hien",
+    "tại",
+    "tai",
+    "đang",
+    "dang",
+    "ở",
+    "o",
+    "như",
+    "nhu",
+    "thế",
+    "nào",
 ];
 
 /// Endpoints for Open-Meteo's keyless APIs.
@@ -120,18 +182,31 @@ pub(crate) struct GeoPlace {
     pub(crate) timezone: String,
 }
 
+/// True when `question` is recognisably a weather / humidity / temperature
+/// ask in any supported language. Used by the orchestrator to commit the
+/// Open-Meteo vertical exclusively (never answer current conditions from SEO
+/// scrapes) and by location extraction to gate geocoding.
+///
+/// Matches whole English-style weather tokens and multi-word Vietnamese
+/// phrases. Pure and total over the input string.
+pub(crate) fn is_weather_intent(question: &str) -> bool {
+    let lower = question.to_lowercase();
+    if WEATHER_PHRASES.iter().any(|p| lower.contains(p)) {
+        return true;
+    }
+    lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .any(|t| WEATHER_WORDS.contains(&t))
+}
+
 /// Extracts the location text from a weather question, or `None` when the
 /// question is not about weather or carries no location to geocode. The
 /// remaining words after stripping weather/filler tokens are taken verbatim
 /// (original casing) as the geocoding query; a question like "will it rain
-/// today" leaves nothing and correctly falls through to the engine tier.
+/// today" leaves nothing and correctly refuses rather than inventing a place.
 pub(crate) fn weather_location(question: &str) -> Option<String> {
-    let lower = question.to_lowercase();
-    let tokens: Vec<&str> = lower
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
-        .collect();
-    if !tokens.iter().any(|t| WEATHER_WORDS.contains(t)) {
+    if !is_weather_intent(question) {
         return None;
     }
     // Walk the ORIGINAL text so the location keeps its casing ("New York"),
@@ -377,14 +452,36 @@ mod tests {
     }
 
     #[test]
+    fn vietnamese_weather_phrases_extract_location() {
+        // 2026-07-15 smoke: VI humidity/temp never matched WEATHER_WORDS and
+        // fell through to SEO widgets with impossible RH. Phrases must fire.
+        assert!(is_weather_intent("độ ẩm Hà Nội"));
+        assert!(is_weather_intent("nhiệt độ Hà Nội hôm nay"));
+        assert!(is_weather_intent("thời tiết Đà Nẵng"));
+        assert_eq!(weather_location("độ ẩm Hà Nội").as_deref(), Some("Hà Nội"));
+        assert_eq!(
+            weather_location("nhiệt độ Hà Nội hôm nay").as_deref(),
+            Some("Hà Nội")
+        );
+        assert_eq!(
+            weather_location("thời tiết Đà Nẵng").as_deref(),
+            Some("Đà Nẵng")
+        );
+    }
+
+    #[test]
     fn non_weather_questions_yield_none() {
+        assert!(!is_weather_intent("latest rust version"));
         assert_eq!(weather_location("latest rust version"), None);
         assert_eq!(weather_location("who won the F1 race"), None);
+        assert!(!is_weather_intent("SJC"));
+        assert!(!is_weather_intent("giá vàng SJC"));
     }
 
     #[test]
     fn weather_question_without_location_yields_none() {
-        // No location to geocode: falls through to the engine tier.
+        // No location to geocode: vertical refuses rather than inventing a place.
+        assert!(is_weather_intent("will it rain today"));
         assert_eq!(weather_location("will it rain today"), None);
         assert_eq!(weather_location("what's the weather like"), None);
     }

@@ -91,7 +91,7 @@ use crate::websearch::stage_timing::{
     STAGE_JUDGE_POST_REQUERY, STAGE_RANK_ASSEMBLY, STAGE_RAW_RACE_SERP, STAGE_SERP,
     STAGE_WRITER_PREPARE,
 };
-use crate::websearch::weather::fetch_weather;
+use crate::websearch::weather::{fetch_weather, is_weather_intent};
 use crate::websearch::writer::{unreachable_messages, writer_messages};
 
 /// Progress phase reported to the UI while the pipeline runs, before any answer
@@ -359,7 +359,7 @@ async fn run_search_inner(
             raced_serp,
         } => (classified, raced_serp),
     };
-    let decision = resolve_decision(verdict, classified);
+    let decision = sanitize_search_decision(latest_user, resolve_decision(verdict, classified));
     // The turn's language, resolved ONCE and threaded down into every channel.
     // Resolved from `latest_user`, the message the USER actually wrote, never from
     // the classifier's rewrite: the rewrite is tuned for retrieval (it may carry an
@@ -515,11 +515,9 @@ fn force_web_should_race_raw(latest_user: &str) -> bool {
     if is_sports_intent(latest_user) || is_news_intent(latest_user) {
         return false;
     }
-    let lower = latest_user.to_ascii_lowercase();
-    let weather_shaped = lower
-        .split(|c: char| !c.is_alphanumeric())
-        .any(|t| matches!(t, "weather" | "temperature" | "forecast" | "humidity"));
-    !weather_shaped
+    // Share the weather vertical's intent detector so VI phrases ("độ ẩm",
+    // "thời tiết") also skip the raw SERP race the same way English does.
+    !is_weather_intent(latest_user)
 }
 
 /// Runs the classifier; on [`PreFilterVerdict::ForceWeb`] only (and when the
@@ -703,6 +701,104 @@ fn route_label(route: SearchRoute) -> &'static str {
     }
 }
 
+/// User text after stripping a leading `/search` command token, trimmed.
+///
+/// The slash command is handled as `force_search` upstream; the message body
+/// that remains is what intent clamps must read. Pure and total.
+fn message_body_without_search_command(latest_user: &str) -> &str {
+    let trimmed = latest_user.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if let Some(rest) = lower.strip_prefix("/search") {
+        // Map the lowercased prefix length back onto the original so casing of
+        // the remainder is preserved when present.
+        let prefix_len = trimmed.len() - rest.len();
+        trimmed[prefix_len..].trim()
+    } else {
+        trimmed
+    }
+}
+
+/// True when the user's message is only the bare token `SJC` (optional
+/// `/search` prefix). That token is both Vietnam's dominant gold brand and
+/// San Jose's IATA code; without an explicit weather/airport cue, Thuki
+/// prefers gold for this product (local-first VN market). Pure and total.
+fn is_bare_sjc_token(latest_user: &str) -> bool {
+    message_body_without_search_command(latest_user).eq_ignore_ascii_case("sjc")
+}
+
+/// True when the user explicitly asked for airport / aviation context (so bare
+/// `SJC` may mean San Jose, not gold). Pure and total.
+fn user_signals_airport_context(latest_user: &str) -> bool {
+    let lower = latest_user.to_lowercase();
+    lower.split(|c: char| !c.is_alphanumeric()).any(|t| {
+        matches!(
+            t,
+            "airport"
+                | "iata"
+                | "icao"
+                | "flight"
+                | "flights"
+                | "airline"
+                | "airlines"
+                | "runway"
+                | "terminal"
+                | "sfo"
+                | "oak"
+        ) || t == "san" // "San Jose" usually co-occurs; weak alone, paired with jose below
+    }) || lower.contains("san jose")
+        || lower.contains("mineta")
+}
+
+/// Clamps classifier hallucinations that invent weather (or airport) for
+/// messages the user never framed that way, and rewrites bare `SJC` to a gold
+/// price ask.
+///
+/// 2026-07-15 smoke: `/search SJC` → classifier rewrote to San Jose airport
+/// weather → SEO heat advisory. Reliability first: only honour a weather route
+/// when the user's own text carries weather or explicit airport intent.
+///
+/// Pure over its inputs (no I/O). Decision fields not rewritten are preserved.
+fn sanitize_search_decision(latest_user: &str, mut decision: PrePassDecision) -> PrePassDecision {
+    if is_bare_sjc_token(latest_user) && !user_signals_airport_context(latest_user) {
+        // Bare SJC without airport cue: gold brand, not KSJC weather.
+        let vi_query = "giá vàng SJC hôm nay";
+        let en_query = "SJC gold price today";
+        // Prefer the Vietnamese gold phrasing when the classifier (or locale
+        // path) already marked the turn as VI; otherwise lead with English
+        // and still fan out both queries so SERP hits either brand page.
+        let prefer_vi = decision.lang.eq_ignore_ascii_case("vi");
+        let primary = if prefer_vi { vi_query } else { en_query };
+        decision.decision = SearchDecision::Web;
+        decision.route = SearchRoute::Web;
+        decision.standalone_question = primary.to_string();
+        decision.queries = vec![vi_query.to_string(), en_query.to_string()];
+        eprintln!("[search] sanitize: bare SJC -> gold web ({primary})");
+        return decision;
+    }
+
+    // Classifier invented a weather route (or weather rewrite) the user's own
+    // message does not support: demote to web and restore the user text so
+    // engines do not chase the fabricated airport/weather SERP.
+    if matches!(decision.route, SearchRoute::Weather)
+        && !is_weather_intent(latest_user)
+        && !user_signals_airport_context(latest_user)
+    {
+        eprintln!(
+            "[search] sanitize: drop invented weather route (user={:?})",
+            message_body_without_search_command(latest_user)
+        );
+        decision.route = SearchRoute::Web;
+        if is_weather_intent(&decision.standalone_question) {
+            let body = message_body_without_search_command(latest_user);
+            if !body.is_empty() {
+                decision.standalone_question = body.to_string();
+                decision.queries = vec![body.to_string()];
+            }
+        }
+    }
+    decision
+}
+
 /// Combines the pre-filter verdict with the classifier's result into the final
 /// decision. `ForceWeb` overrides a classifier `no` to `web` (the deterministic
 /// freshness signal is authoritative over the model declining to search), but
@@ -794,6 +890,9 @@ async fn force_explicit_web(
         }
     };
     let lang = resolve_lang(latest_user, &classified.lang, locale);
+    // Same classifier-hallucination clamp as the auto path: bare `SJC` must not
+    // become San Jose airport weather under `/search` either.
+    let classified = sanitize_search_decision(latest_user, classified);
     let queries = if classified.queries.is_empty() {
         vec![classified.standalone_question.clone()]
     } else {
@@ -889,18 +988,19 @@ async fn run_web(
     // toward recent results, since a needless date filter costs nothing on a
     // stable question but a missing one on a volatile one risks a stale answer.
     let freshness = is_volatile_question(standalone_question);
-    // An explicit look-it-up request (`engines_only`) skips every vertical fast
-    // path: the user already told us a vertical/cache answer was insufficient,
-    // so only the scraped engines are allowed to answer this turn.
-    // Vertical tier first: an official keyless API that recognises the question
-    // answers it directly and skips the scraped engines entirely (an API cannot
-    // bot-block the way SERPs do). A miss falls through with nothing lost.
+    // An explicit look-it-up request (`engines_only`) skips *cached* and most
+    // vertical fast paths: the user already asked to re-check. Weather is the
+    // exception: Open-Meteo is live structured truth, not a stale cache, and
+    // SEO weather widgets invent impossible RH / wrong cities. On any weather
+    // intent (user or classifier route), try Open-Meteo and, on a miss, refuse
+    // with NoResults rather than scraping engines.
     //
     // Weather keeps its own precise gate (location extraction inside
     // `fetch_weather` self-gates: a non-weather question yields no location and
-    // returns `None`), so it is attempted whenever its own signal matches or the
-    // classifier routed to weather. Either way a miss continues to the next tier.
-    if !engines_only {
+    // returns `None`).
+    let weather_turn =
+        is_weather_intent(standalone_question) || matches!(route, SearchRoute::Weather);
+    if weather_turn {
         if let Some(block) = fetch_weather(deps.transport, standalone_question, lang).await {
             return commit_or_escalate(
                 deps,
@@ -921,10 +1021,27 @@ async fn run_web(
             )
             .await;
         }
+        // Honour cancel that landed during the Open-Meteo attempt before the
+        // honest-refuse path; otherwise a mid-geocode cancel would surface as
+        // NoResults instead of Cancelled.
+        if cancel.is_cancelled() {
+            return SearchOutcome::Cancelled;
+        }
+        eprintln!("[search] weather exclusive miss -> NoResults (no SEO fallback)");
+        return SearchOutcome::Unreachable {
+            messages: unreachable_messages(
+                chat_system_prompt,
+                history,
+                latest_user,
+                deps.latest_images,
+                SearchFailReason::NoResults,
+            ),
+            reason: SearchFailReason::NoResults,
+        };
     }
-    if cancel.is_cancelled() {
-        return SearchOutcome::Cancelled;
-    }
+    // Cancel already checked at `run_web` entry and inside the weather-miss
+    // path above; nothing async runs between those and here on a non-weather
+    // turn, so a third cancel probe would be dead.
     // Route-respect hint gating (see `hint_claims_turn`): the classifier's
     // explicit route outranks a vertical's deterministic keyword hint. A hint
     // only claims a turn the model routed to that same vertical, or to the
@@ -3154,13 +3271,13 @@ mod tests {
     #[tokio::test]
     async fn cancel_during_vertical_miss_yields_cancelled() {
         // A weather-shaped question whose geocode call cancels the token and
-        // returns junk: the vertical misses, and the post-vertical cancellation
-        // check aborts before any engine is queried.
+        // returns junk: the vertical misses, and the post-Open-Meteo cancel
+        // check aborts (weather exclusive does not fall through to engines).
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Web,
             route: SearchRoute::Weather,
             standalone_question: "weather in Xyzzyplace".into(),
-            queries: vec!["q".into()],
+            queries: vec!["xyzzyplace weather".into()],
             explicit_search: false,
             lang: "en".into(),
         }));
@@ -3174,7 +3291,9 @@ mod tests {
             &deps(&prepass, &transport, &Bm25Scorer),
             "sys",
             &[],
-            "q",
+            // User text must itself be weather-shaped so sanitize keeps the
+            // weather route (bare "q" would demote to web engines).
+            "weather in Xyzzyplace",
             16384,
             "2026-07-05",
             "en-US",
@@ -3186,14 +3305,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vertical_miss_falls_through_to_engines() {
-        // A weather-shaped question whose geocode fails (no canned response)
-        // still resolves through the normal engine pipeline.
+    async fn weather_miss_refuses_without_engine_seo() {
+        // Weather exclusive: Open-Meteo miss must NOT fall through to scraped
+        // engines (SEO widgets invent humidity > 100% and wrong cities).
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
             decision: SearchDecision::Web,
-            route: SearchRoute::Web,
-            standalone_question: "weather in Xyzzyplace treaty versailles paris".into(),
-            queries: vec!["treaty versailles paris".into()],
+            route: SearchRoute::Weather,
+            standalone_question: "weather in Xyzzyplace".into(),
+            queries: vec!["xyzzyplace weather".into()],
             explicit_search: false,
             lang: "en".into(),
         }));
@@ -3203,7 +3322,7 @@ mod tests {
             &deps(&prepass, &transport, &Bm25Scorer),
             "sys",
             &[],
-            "q",
+            "weather in Xyzzyplace",
             16384,
             "2026-07-05",
             "en-US",
@@ -3211,10 +3330,118 @@ mod tests {
             &status,
         )
         .await;
-        // Geocode had no canned response (transport error) -> vertical miss ->
-        // engines ran and grounded the answer.
-        assert!(matches!(outcome, SearchOutcome::Answer { .. }));
-        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+        assert!(matches!(
+            outcome,
+            SearchOutcome::Unreachable {
+                reason: SearchFailReason::NoResults,
+                ..
+            }
+        ));
+        assert!(
+            !transport.calls().iter().any(|c| c.url == DDG_ENDPOINT),
+            "weather exclusive must not touch scraped engines"
+        );
+    }
+
+    #[test]
+    fn sanitize_bare_sjc_rewrites_to_gold_web() {
+        let classified = PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Weather,
+            standalone_question:
+                "what is the current weather at San Jose International Airport (SJC)".into(),
+            queries: vec!["SJC weather".into()],
+            explicit_search: true,
+            lang: "en".into(),
+        };
+        let out = sanitize_search_decision("SJC", classified);
+        assert_eq!(out.route, SearchRoute::Web);
+        assert!(out.standalone_question.to_lowercase().contains("gold"));
+        assert!(out.queries.iter().any(|q| q.contains("SJC")));
+        // `/search` prefix still counts as bare SJC; VI lang prefers vàng.
+        let with_cmd = sanitize_search_decision(
+            "/search SJC",
+            PrePassDecision {
+                decision: SearchDecision::Web,
+                route: SearchRoute::Weather,
+                standalone_question: "SJC weather".into(),
+                queries: vec!["SJC weather".into()],
+                explicit_search: true,
+                lang: "vi".into(),
+            },
+        );
+        assert_eq!(with_cmd.route, SearchRoute::Web);
+        assert!(with_cmd.standalone_question.contains("vàng"));
+        // Explicit airport context still allows weather.
+        let airport = PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Weather,
+            standalone_question: "SJC airport weather".into(),
+            queries: vec!["SJC airport weather".into()],
+            explicit_search: false,
+            lang: "en".into(),
+        };
+        let kept = sanitize_search_decision("SJC airport weather", airport);
+        assert_eq!(kept.route, SearchRoute::Weather);
+        // Flight/IATA tokens also mark airport context (not gold rewrite).
+        assert!(user_signals_airport_context("SJC flight status"));
+        // San Jose / mineta phrasing is also airport context.
+        let jose = sanitize_search_decision(
+            "weather at San Jose SJC",
+            PrePassDecision {
+                decision: SearchDecision::Web,
+                route: SearchRoute::Weather,
+                standalone_question: "SJC weather".into(),
+                queries: vec!["SJC weather".into()],
+                explicit_search: false,
+                lang: "en".into(),
+            },
+        );
+        assert_eq!(jose.route, SearchRoute::Weather);
+        // Weather route with weather rewrite but empty body after `/search` alone:
+        // demote route without rewriting queries onto empty text.
+        let empty_body = sanitize_search_decision(
+            "/search",
+            PrePassDecision {
+                decision: SearchDecision::Web,
+                route: SearchRoute::Weather,
+                standalone_question: "weather in Paris".into(),
+                queries: vec!["paris weather".into()],
+                explicit_search: true,
+                lang: "en".into(),
+            },
+        );
+        assert_eq!(empty_body.route, SearchRoute::Web);
+        assert_eq!(empty_body.standalone_question, "weather in Paris");
+        // Weather route but non-weather rewrite: demote route, leave standalone.
+        let no_weather_rewrite = sanitize_search_decision(
+            "capital of France",
+            PrePassDecision {
+                decision: SearchDecision::Web,
+                route: SearchRoute::Weather,
+                standalone_question: "capital of France".into(),
+                queries: vec!["capital of France".into()],
+                explicit_search: false,
+                lang: "en".into(),
+            },
+        );
+        assert_eq!(no_weather_rewrite.route, SearchRoute::Web);
+        assert_eq!(no_weather_rewrite.standalone_question, "capital of France");
+    }
+
+    #[test]
+    fn sanitize_drops_invented_weather_route_without_user_signal() {
+        let classified = PrePassDecision {
+            decision: SearchDecision::Web,
+            route: SearchRoute::Weather,
+            standalone_question: "weather in Paris".into(),
+            queries: vec!["paris weather".into()],
+            explicit_search: false,
+            lang: "en".into(),
+        };
+        let out = sanitize_search_decision("tell me about Paris", classified);
+        assert_eq!(out.route, SearchRoute::Web);
+        assert_eq!(out.standalone_question, "tell me about Paris");
     }
 
     // ── sports vertical routing ────────────────────────────────────────────────
@@ -4116,9 +4343,11 @@ mod tests {
     #[test]
     fn force_web_should_race_raw_skips_vertical_shaped() {
         assert!(!force_web_should_race_raw("weather in Tokyo"));
+        assert!(!force_web_should_race_raw("độ ẩm Hà Nội"));
         assert!(!force_web_should_race_raw("NBA Lakers score tonight"));
         assert!(!force_web_should_race_raw("latest news about tariffs"));
         assert!(force_web_should_race_raw("what is the latest rust version"));
+        assert!(force_web_should_race_raw("SJC"));
     }
 
     #[test]

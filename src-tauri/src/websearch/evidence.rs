@@ -2,8 +2,8 @@
 //!
 //! After BM25 ranking (and optional recency reordering), the engine tier still
 //! holds SEO scrapes with old numbers and official quote pages that extracted
-//! as numberless marketing chrome. This module applies two pure filters used
-//! only when the turn's signals ask for them:
+//! as numberless marketing chrome. This module applies pure filters used only
+//! when the turn's signals ask for them:
 //!
 //! 1. **Stale path years** (freshness turns): drop chunks whose URL path
 //!    contains `/YYYY/` with a year older than [`STALE_PATH_YEAR_LAG`] full
@@ -14,18 +14,28 @@
 //!    orchestrator can refuse rather than let the writer invent confidence
 //!    from numberless shells while a scraper with "80 triệu" would otherwise
 //!    have won.
+//! 3. **Price magnitude consensus** (price-intent turns, after numeric utility):
+//!    when multiple numeric chunks disagree by an order of magnitude or more
+//!    (e.g. one page quotes SJC miếng at `14.350.000` while peers quote
+//!    `145.500.000`), drop the minority magnitude cluster so the writer cannot
+//!    lead with a self-consistent but 10×-wrong source. Digits-in-source cite
+//!    audit cannot catch this class: the bad page agrees with itself.
 //!
-//! Both filters are pure over their inputs, allocate at most the size of the
+//! All filters are pure over their inputs, allocate at most the size of the
 //! input chunk list, and never panic on hostile URLs or empty text.
 
-use crate::config::defaults::{PRICE_LIKE_MIN_DIGIT_RUN, STALE_PATH_YEAR_LAG};
+use crate::config::defaults::{
+    PRICE_LIKE_MIN_DIGIT_RUN, PRICE_MAGNITUDE_MIN_PRIMARY, PRICE_MAGNITUDE_RATIO,
+    STALE_PATH_YEAR_LAG,
+};
 use crate::websearch::rank::ScoredChunk;
 
 /// Applies freshness and price-intent evidence filters to ranked chunks.
 ///
 /// Order is load-bearing: drop multi-year-stale path archives first (so a 2020
 /// page with numbers cannot survive a price filter alone), then apply the
-/// price numeric utility gate. Pure and total.
+/// price numeric utility gate, then cross-source magnitude consensus. Pure
+/// and total.
 ///
 /// @param chunks - BM25 (and maybe recency) survivors, best-first.
 /// @param freshness - Turn carries a freshness signal (recency path armed).
@@ -45,7 +55,8 @@ pub(crate) fn filter_evidence_chunks(
         chunks
     };
     if price_intent {
-        filter_price_numeric_utility(chunks)
+        let with_nums = filter_price_numeric_utility(chunks);
+        filter_price_magnitude_outliers(with_nums)
     } else {
         chunks
     }
@@ -84,6 +95,149 @@ fn filter_price_numeric_utility(chunks: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
         .filter(|c| has_price_like_number(&c.text))
         .collect();
     with_nums
+}
+
+/// Drops price chunks whose primary quote sits an order of magnitude away
+/// from the peer-majority (or score-weighted) cluster.
+///
+/// Only activates when at least two chunks each expose a primary price at or
+/// above [`PRICE_MAGNITUDE_MIN_PRIMARY`] and the max/min primary ratio is at
+/// least [`PRICE_MAGNITUDE_RATIO`]. Otherwise the list is returned unchanged
+/// (single-source and near-agreement cases must not invent consensus).
+///
+/// Pure and total: never panics; allocates at most one output vector of the
+/// input length.
+fn filter_price_magnitude_outliers(chunks: Vec<ScoredChunk>) -> Vec<ScoredChunk> {
+    if chunks.len() < 2 {
+        return chunks;
+    }
+    // `primary_price_value` already floors at PRICE_MAGNITUDE_MIN_PRIMARY.
+    let primaries: Vec<(usize, f64)> = chunks
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| primary_price_value(&c.text).map(|v| (i, v)))
+        .collect();
+    if primaries.len() < 2 {
+        return chunks;
+    }
+    let min_p = primaries
+        .iter()
+        .map(|(_, v)| *v)
+        .fold(f64::INFINITY, f64::min);
+    let max_p = primaries.iter().map(|(_, v)| *v).fold(0.0_f64, f64::max);
+    // Primaries are always > 0 by construction; ratio short-circuit is the
+    // near-agreement guard (bid/ask within the same order of magnitude).
+    if max_p / min_p < PRICE_MAGNITUDE_RATIO {
+        return chunks;
+    }
+    // Bucket by floor(log10). Majority count wins. On a count tie (common
+    // 1-vs-1 wrong-scale case), prefer the *higher* magnitude bucket: a
+    // high-scoring chỉ-scale page (14.35M) must not beat a real miếng quote
+    // (145.5M) just because BM25 liked the long wrong table more.
+    let mut bucket_count: std::collections::HashMap<i32, usize> = std::collections::HashMap::new();
+    for &(_, v) in &primaries {
+        *bucket_count.entry(magnitude_bucket(v)).or_insert(0) += 1;
+    }
+    // `primaries` non-empty ⇒ `bucket_count` non-empty ⇒ `max_by` always Some.
+    let win = *bucket_count
+        .iter()
+        .max_by(|(b1, c1), (b2, c2)| c1.cmp(c2).then_with(|| b1.cmp(b2)))
+        .expect("bucket_count non-empty when primaries >= 2")
+        .0;
+    let keep: std::collections::HashSet<usize> = primaries
+        .iter()
+        .filter(|(_, v)| magnitude_bucket(*v) == win)
+        .map(|(i, _)| *i)
+        .collect();
+    // Drop loser-bucket primaries; keep ancillary chunks (small % deltas, etc.)
+    // that never exposed a competing primary above the floor.
+    chunks
+        .into_iter()
+        .enumerate()
+        .filter(|(i, c)| {
+            if keep.contains(i) {
+                return true;
+            }
+            // Drop loser-bucket primaries only.
+            !matches!(
+                primary_price_value(&c.text),
+                Some(v) if v >= PRICE_MAGNITUDE_MIN_PRIMARY
+            )
+        })
+        .map(|(_, c)| c)
+        .collect()
+}
+
+/// Order-of-magnitude bucket for a positive price: `floor(log10(v))`.
+///
+/// Callers only pass primaries from [`primary_price_value`] (always `> 0`).
+fn magnitude_bucket(v: f64) -> i32 {
+    v.log10().floor() as i32
+}
+
+/// Largest price-like numeric value in `text`, preferring multi-digit runs that
+/// look like money (at least [`PRICE_LIKE_MIN_DIGIT_RUN`] digits after stripping
+/// grouping separators). Returns `None` when nothing qualifies.
+///
+/// Handles VN/EU multi-dot thousands (`144.500.000`) and EN comma thousands
+/// (`144,500,000`) by stripping separators when every group is three digits.
+/// Pure and total.
+pub(crate) fn primary_price_value(text: &str) -> Option<f64> {
+    // Collapse Unicode thousands separators (thin space U+202F, NBSP) so the
+    // ASCII scanner only has to handle `.` / `,` grouping. Plain ASCII spaces
+    // stay: "9999 145.500.000" must remain two values.
+    let normalized: String = text
+        .chars()
+        .map(|c| {
+            if c == '\u{202f}' || c == '\u{00a0}' {
+                '\0'
+            } else {
+                c
+            }
+        })
+        .filter(|c| *c != '\0')
+        .collect();
+    let mut best: Option<f64> = None;
+    let bytes = normalized.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        // Consume digits and `.` / `,` grouping separators only.
+        while i < bytes.len() {
+            let b = bytes[i];
+            let is_digit = b.is_ascii_digit();
+            let is_group_sep =
+                (b == b'.' || b == b',') && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit();
+            if is_digit || is_group_sep {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        let raw = &normalized[start..i];
+        if let Some(v) = parse_grouped_number(raw) {
+            if v >= PRICE_MAGNITUDE_MIN_PRIMARY {
+                best = Some(best.map_or(v, |b| b.max(v)));
+            }
+        }
+    }
+    best
+}
+
+/// Parses a digit run that may contain `.` / `,` / spaces as thousands
+/// separators into an `f64`. Returns `None` when digit count is below
+/// [`PRICE_LIKE_MIN_DIGIT_RUN`] or the form is not a clean integer group.
+fn parse_grouped_number(raw: &str) -> Option<f64> {
+    let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.len() < PRICE_LIKE_MIN_DIGIT_RUN {
+        return None;
+    }
+    // Reject pure years / short list indices already gated by min primary.
+    digits.parse::<f64>().ok()
 }
 
 /// True when `text` carries a run of at least [`PRICE_LIKE_MIN_DIGIT_RUN`]
@@ -335,5 +489,114 @@ mod tests {
         )];
         let out = filter_evidence_chunks(chunks, false, true, 2026);
         assert!(out.is_empty());
+    }
+
+    // ── price magnitude consensus ────────────────────────────────────────────
+
+    #[test]
+    fn primary_price_value_reads_vn_grouped_millions() {
+        assert_eq!(
+            primary_price_value("mua vào 14.350.000 đ/lượng bán 14.850.000"),
+            Some(14_850_000.0)
+        );
+        assert_eq!(
+            primary_price_value("SJC Miếng 145.500.000▲ 148.500.000"),
+            Some(148_500_000.0)
+        );
+    }
+
+    #[test]
+    fn magnitude_filter_drops_10x_outlier_when_peers_agree() {
+        // 2026-07-15 smoke: webgia 14.35M "miếng" vs giavangnay 145.5M board.
+        // Two correct peers + one chỉ-scale page: drop the 1e7 cluster.
+        let chunks = vec![
+            ScoredChunk {
+                url: "https://webgia.vn/vang-mieng-sjc".into(),
+                title: "wrong scale".into(),
+                text: "VÀNG MIẾNG SJC mua vào 14.350.000 bán ra 14.850.000 đ/lượng".into(),
+                score: 10.0, // high BM25, still wrong
+            },
+            ScoredChunk {
+                url: "https://giavangnay.com/".into(),
+                title: "board".into(),
+                text: "SJC Miếng 9999 145.500.000 148.500.000 VNĐ/lượng".into(),
+                score: 3.0,
+            },
+            ScoredChunk {
+                url: "https://www.pnj.com.vn/site/gia-vang".into(),
+                title: "pnj".into(),
+                text: "Giá SJC mua vào 144.500.000 bán ra 147.500.000 đồng/lượng".into(),
+                score: 2.0,
+            },
+        ];
+        let out = filter_price_magnitude_outliers(chunks);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|c| !c.url.contains("webgia")));
+        assert!(out.iter().any(|c| c.text.contains("145")));
+    }
+
+    #[test]
+    fn magnitude_filter_noop_when_prices_agree() {
+        let chunks = vec![
+            chunk("https://a.example/", "SJC 145.500.000 mua 148.500.000 bán"),
+            chunk("https://b.example/", "SJC 144.500.000 mua 147.500.000 bán"),
+        ];
+        let out = filter_price_magnitude_outliers(chunks.clone());
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn magnitude_filter_noop_on_single_chunk() {
+        let chunks = vec![chunk("https://webgia.vn/x", "14.350.000 đ/lượng")];
+        let out = filter_price_magnitude_outliers(chunks.clone());
+        assert_eq!(out, chunks);
+    }
+
+    #[test]
+    fn gold_mieng_smoke_combined_keeps_145m_cluster() {
+        let chunks = vec![
+            ScoredChunk {
+                url: "https://webgia.vn/vang-mieng-sjc".into(),
+                title: "t".into(),
+                text: "15/07/2026 09:02 14.350.000 14.850.000 500.000".into(),
+                score: 9.0,
+            },
+            ScoredChunk {
+                url: "https://giavangnay.com/".into(),
+                title: "t".into(),
+                text: "SJC Miếng 9999 145.500.000 148.500.000".into(),
+                score: 4.0,
+            },
+            ScoredChunk {
+                url: "https://example.com/delta".into(),
+                title: "t".into(),
+                text: "tăng 0,70% so với phiên trước".into(),
+                score: 1.0,
+            },
+        ];
+        let out = filter_evidence_chunks(chunks, true, true, 2026);
+        assert!(out.iter().any(|c| c.text.contains("145.500")));
+        assert!(out.iter().all(|c| !c.url.contains("webgia")));
+    }
+
+    #[test]
+    fn magnitude_filter_noop_when_only_one_primary_qualifies() {
+        // Two chunks, but only one has a primary above the floor: no consensus.
+        let chunks = vec![
+            chunk("https://a.example/", "up 12% today"),
+            chunk("https://b.example/", "SJC 145.500.000 đ/lượng"),
+        ];
+        let out = filter_price_magnitude_outliers(chunks.clone());
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn primary_price_reads_thin_space_thousands_and_commas() {
+        // U+202F thin space (common in writer/source paste) + EN comma groups.
+        let thin = format!("mua 144\u{202f}500\u{202f}000 bán");
+        assert_eq!(primary_price_value(&thin), Some(144_500_000.0));
+        assert_eq!(primary_price_value("spot 1,234,567 USD"), Some(1_234_567.0));
+        assert_eq!(primary_price_value("only 9"), None);
+        assert_eq!(primary_price_value("no digits here"), None);
     }
 }
