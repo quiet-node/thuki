@@ -417,7 +417,7 @@ fn clamp_keep_warm_inactivity(value: &mut i32, default: i32, field: &str) {
 
 fn clamp_trace_retention_days(value: &mut i64, default: i64, field: &str) {
     // Valid: -1 (keep trace files forever) or 1..=3650 (an explicit retention
-    // window in days). Invalid: 0, below -1, or above 3650 — reset to the
+    // window in days). Invalid: 0, below -1, or above 3650: reset to the
     // compiled default. Mirrors `clamp_keep_warm_inactivity`: out-of-range
     // resets to the default rather than saturating to a bound.
     let (lo, hi) = BOUNDS_TRACE_RETENTION_DAYS;
