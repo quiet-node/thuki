@@ -151,6 +151,11 @@ pub enum SearchFailReason {
     /// nothing usable survived fusion and ranking: the web was searched and
     /// simply had nothing current. Includes the blocked-but-online case.
     NoResults,
+    /// Weather vertical wanted live Open-Meteo conditions but geocode/forecast
+    /// missed. Must not fall back to SEO or to model-invented seasonal RH/temp
+    /// (2026-07-15 Hanoi humidity smoke). Distinct disclosure from general
+    /// [`Self::NoResults`].
+    WeatherUnavailable,
 }
 
 /// The injected effectful dependencies of the pipeline.
@@ -1027,16 +1032,16 @@ async fn run_web(
         if cancel.is_cancelled() {
             return SearchOutcome::Cancelled;
         }
-        eprintln!("[search] weather exclusive miss -> NoResults (no SEO fallback)");
+        eprintln!("[search] weather exclusive miss -> WeatherUnavailable (no SEO fallback)");
         return SearchOutcome::Unreachable {
             messages: unreachable_messages(
                 chat_system_prompt,
                 history,
                 latest_user,
                 deps.latest_images,
-                SearchFailReason::NoResults,
+                SearchFailReason::WeatherUnavailable,
             ),
-            reason: SearchFailReason::NoResults,
+            reason: SearchFailReason::WeatherUnavailable,
         };
     }
     // Cancel already checked at `run_web` entry and inside the weather-miss
@@ -3330,13 +3335,18 @@ mod tests {
             &status,
         )
         .await;
-        assert!(matches!(
-            outcome,
-            SearchOutcome::Unreachable {
-                reason: SearchFailReason::NoResults,
-                ..
-            }
-        ));
+        assert!(
+            matches!(
+                &outcome,
+                SearchOutcome::Unreachable {
+                    reason: SearchFailReason::WeatherUnavailable,
+                    messages,
+                } if messages.first().is_some_and(|m| {
+                    m.content.contains("Do NOT invent") && m.content.contains("live weather")
+                })
+            ),
+            "expected WeatherUnavailable with no-invent system note"
+        );
         assert!(
             !transport.calls().iter().any(|c| c.url == DDG_ENDPOINT),
             "weather exclusive must not touch scraped engines"

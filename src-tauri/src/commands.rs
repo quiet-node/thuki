@@ -4243,6 +4243,12 @@ mod tests {
         })
         .unwrap();
         assert_eq!(no_results["data"]["reason"], "no_results");
+
+        let weather = serde_json::to_value(StreamChunk::SearchFailed {
+            reason: SearchFailReason::WeatherUnavailable,
+        })
+        .unwrap();
+        assert_eq!(weather["data"]["reason"], "weather_unavailable");
     }
 
     #[test]

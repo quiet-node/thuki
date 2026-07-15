@@ -161,6 +161,57 @@ const NON_LOCATION_WORDS: &[&str] = &[
     "nhu",
     "thế",
     "nào",
+    // Copulas / question shells left by classifier rewrites such as
+    // "độ ẩm tại Hà Nội hiện nay là bao nhiêu" → must not geocode "Hà Nội là"
+    // (2026-07-15 smoke: Open-Meteo miss, then model invented seasonal RH).
+    "là",
+    "la",
+    "có",
+    "co",
+    "gì",
+    "gi",
+    "vậy",
+    "vay",
+    "không",
+    "khong",
+    "của",
+    "cua",
+    "và",
+    "va",
+    "với",
+    "voi",
+    "về",
+    "ve",
+    "đến",
+    "den",
+    "trong",
+    "ngoài",
+    "ngoai",
+    "khoảng",
+    "khoang",
+    "rất",
+    "rat",
+    "thì",
+    "thi",
+    "được",
+    "duoc",
+    "xin",
+    "cho",
+    "hỏi",
+    "hoi",
+    "biết",
+    "biet",
+    // English residual question shells after weather-word strip.
+    "much",
+    "many",
+    "tell",
+    "me",
+    "about",
+    "please",
+    "can",
+    "you",
+    "give",
+    "vs",
 ];
 
 /// Endpoints for Open-Meteo's keyless APIs.
@@ -466,6 +517,11 @@ mod tests {
         assert_eq!(
             weather_location("thời tiết Đà Nẵng").as_deref(),
             Some("Đà Nẵng")
+        );
+        // Classifier rewrite that used to geocode "Hà Nội là" and miss Open-Meteo.
+        assert_eq!(
+            weather_location("độ ẩm tại Hà Nội hiện nay là bao nhiêu").as_deref(),
+            Some("Hà Nội")
         );
     }
 
