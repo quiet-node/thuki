@@ -863,6 +863,30 @@ pub const SEARCH_CACHE_TTL_S: u64 = 600;
 /// keeping the retained-source footprint small and fixed.
 pub const SEARCH_CACHE_MAX_ENTRIES: usize = 4;
 
+/// Per-page text byte cap for a stored multi-turn cache entry. Each entry holds
+/// the fetched pages a search grounded its answer on (see
+/// [`crate::websearch::cache`]); a page's readability-extracted body is not
+/// otherwise hard-bounded in bytes, so the cache truncates each page's text to
+/// this many bytes (at a UTF-8 char boundary) before storing it.
+///
+/// Not user-tunable: a defense-in-depth memory bound on attacker-influenceable
+/// fetched page text. 24 KiB comfortably holds a typical article's readable
+/// body (the reuse pipeline re-chunks and BM25-selects from it, so the leading
+/// body that carries the answer is what matters), while capping the worst case.
+pub const SEARCH_CACHE_PAGE_TEXT_MAX_BYTES: usize = 24 * 1024;
+
+/// Per-entry total text byte cap for a stored multi-turn cache entry: once the
+/// cumulative (already per-page-capped) page text of one entry would exceed this
+/// budget, the remaining pages are dropped from the tail. Combined with
+/// [`SEARCH_CACHE_MAX_ENTRIES`] and [`SEARCH_CACHE_PAGE_TEXT_MAX_BYTES`], this
+/// gives a hard, fixed upper bound on the cache's retained-text memory (at most
+/// `SEARCH_CACHE_MAX_ENTRIES * SEARCH_CACHE_ENTRY_TEXT_MAX_BYTES`).
+///
+/// Not user-tunable: a defense-in-depth memory bound on attacker-influenceable
+/// fetched page text. 128 KiB holds the several pages a single search fetches
+/// while keeping the per-entry footprint small.
+pub const SEARCH_CACHE_ENTRY_TEXT_MAX_BYTES: usize = 128 * 1024;
+
 /// Token cap for the grammar-constrained sufficiency-judge response. The judge
 /// decides whether a retrieved vertical block actually answers the specific
 /// question before the pipeline commits to it, so an insufficient fast-path

@@ -121,7 +121,7 @@ pub(crate) const INSUFFICIENT_EVIDENCE_SENTINEL: &str = "INSUFFICIENT_EVIDENCE";
 /// the buffered synthesis before any token reaches the user and turns into a
 /// fresh web search. A judge false positive on an on-topic page that lacks the
 /// specific detail is caught here rather than served as a degraded caveat.
-const CACHE_INSUFFICIENT_DIRECTIVE: &str = "If the provided sources do not contain the information needed to answer the question, output exactly the single line INSUFFICIENT_EVIDENCE and nothing else. Never invent the missing part.";
+const CACHE_INSUFFICIENT_DIRECTIVE: &str = "If the provided sources do not contain the information needed to answer the question, output exactly the single line INSUFFICIENT_EVIDENCE and nothing else. Never invent the missing part. Information directly derivable from the sources counts as contained: for example an age from a stated birth date and today's date. Derive it and answer.";
 
 /// Fresh-retrieval sufficiency contract: answer with the relevant information
 /// the sources do contain and caveat only what is missing. A fresh retrieval
@@ -723,6 +723,13 @@ mod tests {
         assert!(appendix.contains(INSUFFICIENT_EVIDENCE_SENTINEL));
         // The fresh partial-answer caveat must NOT leak into the cache contract.
         assert!(!appendix.contains("never reply with only a statement that the sources lack"));
+        // Derivation carve-out (parallel to the judge's): a fact directly
+        // derivable from the sources (an age from a stated birth date) counts as
+        // contained, so the sentinel does not fire on a derivable follow-up.
+        assert!(appendix
+            .contains("Information directly derivable from the sources counts as contained"));
+        assert!(appendix.contains("an age from a stated birth date"));
+        assert!(appendix.contains("Derive it and answer"));
     }
 
     #[test]
