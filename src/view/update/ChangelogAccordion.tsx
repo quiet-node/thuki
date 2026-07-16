@@ -1,5 +1,9 @@
-import { useCallback, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { useCallback, useMemo, useState } from 'react';
+import {
+  AnimatePresence,
+  motion,
+  useReducedMotion,
+} from 'framer-motion';
 
 import { MarkdownRenderer } from '../../components/MarkdownRenderer';
 import type { ChangelogSection } from './changelog';
@@ -9,12 +13,6 @@ import type { ChangelogSection } from './changelog';
  * command-suggestion expand (cubic-bezier(0.16, 1, 0.3, 1)).
  */
 const THUKI_EASE = [0.16, 1, 0.3, 1] as const;
-
-/** Expand/collapse timing for version bodies: height leads, opacity soft-follows. */
-const BODY_TRANSITION = {
-  height: { duration: 0.28, ease: THUKI_EASE },
-  opacity: { duration: 0.2, ease: 'easeOut' as const },
-};
 
 interface ChangelogAccordionProps {
   sections: ChangelogSection[];
@@ -35,8 +33,24 @@ export function ChangelogAccordion({
   sections,
   showLatestPill = false,
 }: ChangelogAccordionProps) {
+  const reduceMotion = useReducedMotion();
   const [expanded, setExpanded] = useState<Set<string>>(
     () => new Set(sections.slice(0, 1).map((s) => s.version)),
+  );
+
+  /**
+   * Expand/collapse timing. Zeroed when the user prefers reduced motion so
+   * toggles stay instantaneous without mid-state freezes.
+   */
+  const bodyTransition = useMemo(
+    () =>
+      reduceMotion
+        ? { duration: 0 }
+        : {
+            height: { duration: 0.28, ease: THUKI_EASE },
+            opacity: { duration: 0.2, ease: 'easeOut' as const },
+          },
+    [reduceMotion],
   );
 
   /**
@@ -70,9 +84,11 @@ export function ChangelogAccordion({
               <svg
                 viewBox="0 0 16 16"
                 aria-hidden="true"
-                className={`h-3 w-3 shrink-0 text-text-secondary transition-transform duration-[280ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${
-                  isOpen ? 'rotate-90' : ''
-                }`}
+                className={`h-3 w-3 shrink-0 text-text-secondary transition-transform ${
+                  reduceMotion
+                    ? 'duration-0'
+                    : 'duration-[280ms] ease-[cubic-bezier(0.16,1,0.3,1)]'
+                } ${isOpen ? 'rotate-90' : ''}`}
               >
                 <path
                   d="M6 4l4 4-4 4"
@@ -106,10 +122,10 @@ export function ChangelogAccordion({
               {isOpen ? (
                 <motion.div
                   key={`${section.version}-body`}
-                  initial={{ height: 0, opacity: 0 }}
+                  initial={reduceMotion ? false : { height: 0, opacity: 0 }}
                   animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={BODY_TRANSITION}
+                  exit={reduceMotion ? undefined : { height: 0, opacity: 0 }}
+                  transition={bodyTransition}
                   style={{ overflow: 'hidden' }}
                 >
                   <div className="pb-3 pl-5">

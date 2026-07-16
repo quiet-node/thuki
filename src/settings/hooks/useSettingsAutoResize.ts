@@ -35,7 +35,7 @@ import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 const ANIMATE_MS = 220;
 /**
  * Hard floor. The window hugs the active section's content height, but the
- * left sidebar (group label + five items + the pinned Running-model footer)
+ * left sidebar (group label + six items + the pinned Running-model footer)
  * is taller than a light section like Behavior. This floor guarantees the
  * window is always tall enough to show the whole sidebar with the footer
  * clearly separated from the last item, so short sections never clip it.
