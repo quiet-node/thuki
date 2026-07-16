@@ -58,7 +58,9 @@ describe('ChangelogAccordion', () => {
 
   it('omits the Latest pill by default', () => {
     render(<ChangelogAccordion sections={SECTIONS} />);
-    expect(screen.queryByTestId('changelog-latest-pill')).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('changelog-latest-pill'),
+    ).not.toBeInTheDocument();
   });
 
   it('shows Latest only on the first section when showLatestPill is set', () => {
@@ -68,8 +70,8 @@ describe('ChangelogAccordion', () => {
     );
     const newest = screen.getByRole('button', { name: /0\.14\.0/ });
     expect(newest).toHaveTextContent('Latest');
-    expect(screen.getByRole('button', { name: /0\.13\.0/ })).not.toHaveTextContent(
-      'Latest',
-    );
+    expect(
+      screen.getByRole('button', { name: /0\.13\.0/ }),
+    ).not.toHaveTextContent('Latest');
   });
 });

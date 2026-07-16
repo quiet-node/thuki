@@ -1,9 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import {
-  AnimatePresence,
-  motion,
-  useReducedMotion,
-} from 'framer-motion';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 
 import { MarkdownRenderer } from '../../components/MarkdownRenderer';
 import type { ChangelogSection } from './changelog';
