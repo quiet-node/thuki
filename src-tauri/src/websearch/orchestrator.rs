@@ -1015,10 +1015,13 @@ async fn force_explicit_web(
 ///    flows straight through the fresh path (as a `web` decision would), so its
 ///    live vertical always runs: those tiers answer volatile questions stored
 ///    sources must never re-serve.
-/// 2. Evidence. Every live cache entry for the turn's scope is unioned, most
-///    recent first, and re-budgeted to the context allowance via
-///    [`merge_sources`] (the oldest tail that does not fit is dropped). An empty
-///    cache escalates.
+/// 2. Evidence. The live cache entries for the turn's scope whose OWN producing
+///    route was a stable tier (web or wiki) are unioned, most recent first, and
+///    re-budgeted to the context allowance via [`merge_sources`] (the oldest
+///    tail that does not fit is dropped). Entries produced by a volatile
+///    vertical (weather, news, sports) are excluded, since their content was
+///    fetched for a live question. An empty cache, or one with no stable-tier
+///    entry, escalates.
 /// 3. Grounding judge. The same [`crate::websearch::judge::SufficiencyJudge`]
 ///    the vertical fast paths use decides whether the union carries the answer.
 ///    Its prompt fences the untrusted source text exactly as the writer's does,
@@ -1051,14 +1054,25 @@ async fn reuse_or_escalate(
     preloaded_serp: Option<(Vec<SearchHit>, Vec<EngineStat>)>,
 ) -> SearchOutcome {
     if matches!(route, SearchRoute::Web | SearchRoute::Wiki) {
-        let entries = deps.cache.entries(deps.cache_scope);
-        if !entries.is_empty() {
+        // Reuse only entries whose OWN producing route was a stable tier (web or
+        // wiki). A stored source produced by a volatile vertical (weather, news,
+        // sports) must never ground a later turn even on an eligible route: it
+        // was fetched to answer a live question and may already be stale. The
+        // provenance route recorded on each entry (see `CachedSearch::route`) is
+        // what makes this exclusion possible.
+        let eligible: Vec<CachedSearch> = deps
+            .cache
+            .entries(deps.cache_scope)
+            .into_iter()
+            .filter(|entry| matches!(entry.route, SearchRoute::Web | SearchRoute::Wiki))
+            .collect();
+        if !eligible.is_empty() {
             // Fold the entries newest-first: `merge_sources` keeps its first
             // argument whole and renumbers the combined list, so accumulating
             // from the most recent entry drops the oldest sources first when the
             // union exceeds the context budget.
             let mut union: Vec<SourceBlock> = Vec::new();
-            for entry in entries {
+            for entry in eligible {
                 union = merge_sources(union, entry.sources, num_ctx);
             }
             let judge_start = Instant::now();
@@ -6333,6 +6347,141 @@ mod tests {
             RecorderEvent::SearchRetrieved { tier, sources, .. }
             if tier == "cache" && sources.len() == 2
         )));
+    }
+
+    #[tokio::test]
+    async fn cached_decision_excludes_volatile_route_entries_from_the_reuse_union() {
+        // Two stored searches under scope 7: one produced by the stable web
+        // tier, one by the volatile news vertical. A web-routed `cached`
+        // follow-up must reuse ONLY the web-tier source; the news-tier source is
+        // excluded from the union because its content was fetched for a live
+        // question and may be stale.
+        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600), 4);
+        cache.store(
+            7,
+            CachedSearch {
+                standalone_question: "stable topic".into(),
+                sources: vec![SourceBlock {
+                    index: 1,
+                    url: "https://web.example/".into(),
+                    title: "Web".into(),
+                    text: "stable web source".into(),
+                }],
+                route: SearchRoute::Web,
+            },
+        );
+        cache.store(
+            7,
+            CachedSearch {
+                standalone_question: "volatile topic".into(),
+                sources: vec![SourceBlock {
+                    index: 1,
+                    url: "https://news.example/".into(),
+                    title: "News".into(),
+                    text: "volatile news source".into(),
+                }],
+                route: SearchRoute::News,
+            },
+        );
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Cached,
+            route: SearchRoute::Web,
+            standalone_question: "the stable topic detail".into(),
+            queries: vec!["stable topic".into()],
+            explicit_search: false,
+            lang: "en".into(),
+        }));
+        let transport = FakeHttpTransport::new();
+        let health = EngineHealth::new();
+        let judge = FakeSufficiencyJudge::sufficient();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_for_reuse(
+                &prepass,
+                &transport,
+                &Bm25Scorer,
+                &judge,
+                &health,
+                &bound,
+                &cache,
+                7,
+            ),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        // Only the web-tier source survives; the news-tier source is excluded.
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources.len() == 1 && sources[0].url == "https://web.example/"));
+        assert!(transport.calls().is_empty(), "a reuse must not retrieve");
+    }
+
+    #[tokio::test]
+    async fn cached_decision_escalates_when_every_stored_entry_is_volatile_route() {
+        // The only stored entry was produced by a volatile vertical (sports), so
+        // even though the follow-up route is eligible and the judge would find it
+        // sufficient, no entry survives the route filter and the turn escalates
+        // to a fresh search rather than grounding on stale live data.
+        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600), 4);
+        cache.store(
+            7,
+            CachedSearch {
+                standalone_question: "yesterday's score".into(),
+                sources: vec![SourceBlock {
+                    index: 1,
+                    url: "https://scores.example/".into(),
+                    title: "Scores".into(),
+                    text: "a stale scoreboard".into(),
+                }],
+                route: SearchRoute::Sports,
+            },
+        );
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Cached,
+            route: SearchRoute::Web,
+            standalone_question: "when was the treaty of versailles signed in paris".into(),
+            queries: vec!["treaty versailles".into()],
+            explicit_search: false,
+            lang: "en".into(),
+        }));
+        let transport = transport_with_serp_and_page();
+        let health = EngineHealth::new();
+        // Would reuse if any eligible entry survived the filter.
+        let judge = FakeSufficiencyJudge::sufficient();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_for_reuse(
+                &prepass,
+                &transport,
+                &Bm25Scorer,
+                &judge,
+                &health,
+                &bound,
+                &cache,
+                7,
+            ),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources.iter().all(|s| s.url != "https://scores.example/")
+                && sources.iter().any(|s| s.url == "https://match.example/")));
+        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
     }
 
     #[tokio::test]
