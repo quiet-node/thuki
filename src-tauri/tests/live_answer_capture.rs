@@ -117,7 +117,10 @@ async fn live_turn(
     let judge = AlwaysSufficientJudge;
     let health = EngineHealth::new();
     let recorder = BoundRecorder::noop_for(ConversationId::new("capture"));
-    let cache = TtlSourceCache::new(std::time::Duration::from_secs(600));
+    let cache = TtlSourceCache::new(
+        std::time::Duration::from_secs(600),
+        thuki_agent_lib::config::defaults::SEARCH_CACHE_MAX_ENTRIES,
+    );
     let web_cache = WebCache::new(
         std::time::Duration::from_secs(600),
         std::time::Duration::from_secs(600),

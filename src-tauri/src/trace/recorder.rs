@@ -305,16 +305,22 @@ pub enum RecorderEvent {
         engine_stats: Vec<EngineStat>,
         round: Option<u8>,
     },
-    /// The sufficiency judge's verdict on a vertical's answer, and what the
+    /// The sufficiency judge's verdict on a fast-path answer, and what the
     /// orchestrator did with it. Emitted once per turn a keyless vertical
-    /// answered, so a trace shows why a vertical result was committed or
-    /// escalated to the scraped engines. `from_tier` is the vertical judged
-    /// ("weather", "sports", "news", "wiki"); `sufficient` is the verdict;
-    /// `missing` is the judge's short phrase for what the block lacked (empty
-    /// when sufficient); `escalated` is whether the scraped-engine tier was then
-    /// run (only when the block was insufficient AND an engine was not cooling);
-    /// `escalation_hit` is whether that escalation produced sources that
-    /// replaced the vertical block.
+    /// answered, or once per turn the conversation-cache reuse gate ran, so a
+    /// trace shows why a fast-path result was committed or escalated to a fresh
+    /// search. `from_tier` is the source judged: a vertical ("weather",
+    /// "sports", "news", "wiki") for the vertical fast paths, or "cache" for the
+    /// multi-turn reuse gate (see
+    /// `crate::websearch::orchestrator::reuse_or_escalate`). `sufficient` is the
+    /// verdict; `missing` is the judge's short phrase for what the sources
+    /// lacked (empty when sufficient); `escalated` is whether the turn then went
+    /// to a fresh search (for a vertical, the scraped-engine tier, only when the
+    /// block was insufficient AND an engine was not cooling; for the cache gate,
+    /// whether the turn left the cache for a fresh search); `escalation_hit` is
+    /// whether a vertical's escalation produced sources that replaced its block
+    /// (always false for the cache gate, which emits at the gate before the
+    /// fresh search resolves and has no block to replace).
     SearchEscalated {
         from_tier: String,
         sufficient: bool,

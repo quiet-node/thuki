@@ -36,12 +36,15 @@
 //! rate-limits are volume-triggered: the pipeline's own burst was observed
 //! live tripping them.
 //!
-//! A `cached` decision answers from [`SearchDeps::cache`], the TTL'd
-//! multi-turn source cache of the most recent successful search, when an
-//! unexpired entry exists for the turn's [`SearchDeps::cache_scope`]. An
-//! expired or empty cache falls back to the same `web` retrieval a `web`
-//! decision runs, using the classifier's route, standalone rewrite, and
-//! queries exactly as today.
+//! A `cached` decision is only a routing hint: it enters the gated reuse arm
+//! ([`reuse_or_escalate`]), which reuses the conversation's stored sources from
+//! [`SearchDeps::cache`] (the TTL'd, bounded multi-turn source cache of the
+//! recent successful searches for the turn's [`SearchDeps::cache_scope`]) only
+//! when the route is eligible AND the sufficiency judge confirms the union of
+//! those sources answers the question. An ineligible route (weather, news,
+//! sports), an empty cache, an insufficient union, or a judge failure all
+//! escalate to the same `web` retrieval a `web` decision runs, using the
+//! classifier's route, standalone rewrite, and queries.
 //!
 //! Whenever the general engine tier itself assembles sources (whether reached
 //! directly or via a vertical's escalation, see [`commit_or_escalate`]), one
@@ -191,9 +194,10 @@ pub struct SearchDeps<'a> {
     /// bound recorder makes every emission a constant-time no-op when tracing is
     /// off (the production default).
     pub recorder: &'a BoundRecorder,
-    /// The multi-turn source cache backing a `cached` decision (see module
-    /// docs). Every successful `web`-tier answer writes its sources here;
-    /// only a `cached` decision reads from it.
+    /// The bounded multi-turn source cache backing a `cached` decision (see
+    /// module docs). Every successful answer of any tier writes its sources
+    /// here (recording the route that produced them); only a `cached` decision
+    /// reads from it, through the reuse gate ([`reuse_or_escalate`]).
     pub cache: &'a dyn SourceCache,
     /// Opaque scope key for `cache` reads/writes this turn (in production,
     /// the backend's conversation epoch at the start of the turn), so a
@@ -444,47 +448,29 @@ async fn run_search_inner(
     }
     match decision.decision {
         SearchDecision::No => SearchOutcome::NoSearch,
-        // An unexpired cache entry for this turn's scope answers instantly,
-        // no retrieval at all. An expired or empty cache degrades to exactly
-        // the `web` path below, using the classifier's own route/rewrite.
-        SearchDecision::Cached => match deps.cache.get(deps.cache_scope) {
-            Some(cached) => grounded_answer(
+        // A `cached` decision is only a hint: the reuse gate verifies the
+        // stored sources against the actual question (the sufficiency judge)
+        // and escalates to a fresh search when they do not carry the answer,
+        // so a recall-biased classifier never serves a wrong or stale reply.
+        SearchDecision::Cached => {
+            reuse_or_escalate(
                 deps,
-                "cache",
                 chat_system_prompt,
                 history,
                 latest_user,
+                decision.route,
                 &decision.standalone_question,
-                cached.sources,
+                &decision.queries,
+                num_ctx,
                 today,
                 locale,
                 lang,
-                Vec::new(),
-                // A cache hit is never a conflict commit: no fresh judge ran.
-                false,
-                None,
-            ),
-            None => {
-                run_web(
-                    deps,
-                    chat_system_prompt,
-                    history,
-                    latest_user,
-                    decision.route,
-                    &decision.standalone_question,
-                    &decision.queries,
-                    num_ctx,
-                    today,
-                    locale,
-                    lang,
-                    cancel,
-                    status,
-                    false,
-                    preloaded_serp,
-                )
-                .await
-            }
-        },
+                cancel,
+                status,
+                preloaded_serp,
+            )
+            .await
+        }
         SearchDecision::Web => {
             run_web(
                 deps,
@@ -1016,6 +1002,171 @@ async fn force_explicit_web(
         None,
     )
     .await
+}
+
+/// The `cached` decision's gated reuse arm: reuse the conversation's stored
+/// sources when they actually answer the follow-up, else escalate to a fresh
+/// web search in the same turn. The `cached` classifier decision is only a
+/// hint; this function is where it is verified against real evidence.
+///
+/// The gate:
+/// 1. Eligibility. Reuse runs only for the general `web` and `wiki` routes. A
+///    weather, news, or sports `cached` decision bypasses reuse entirely and
+///    flows straight through the fresh path (as a `web` decision would), so its
+///    live vertical always runs: those tiers answer volatile questions stored
+///    sources must never re-serve.
+/// 2. Evidence. Every live cache entry for the turn's scope is unioned, most
+///    recent first, and re-budgeted to the context allowance via
+///    [`merge_sources`] (the oldest tail that does not fit is dropped). An empty
+///    cache escalates.
+/// 3. Grounding judge. The same [`crate::websearch::judge::SufficiencyJudge`]
+///    the vertical fast paths use decides whether the union carries the answer.
+///    Its prompt fences the untrusted source text exactly as the writer's does,
+///    so reused web content flows through the same spotlighting as a fresh
+///    fetch. A sufficient verdict commits the reuse (a `cache`-tier grounded
+///    answer, no retrieval); an insufficient verdict or a judge transport
+///    failure both escalate; only a cancellation short-circuits. The bias is
+///    always toward a fresh search, never toward a weakly grounded reply.
+///
+/// An ineligible route, an empty cache, an insufficient reuse, and a judge
+/// failure all converge on one identical fresh-search call (the classifier's own
+/// route, rewrite, and queries, no second classification), so the return value
+/// is indistinguishable from a plain `web`-decision turn on every escalation
+/// path.
+#[allow(clippy::too_many_arguments)]
+async fn reuse_or_escalate(
+    deps: &SearchDeps<'_>,
+    chat_system_prompt: &str,
+    history: &[ChatMessage],
+    latest_user: &str,
+    route: SearchRoute,
+    standalone_question: &str,
+    queries: &[String],
+    num_ctx: u32,
+    today: &str,
+    locale: &str,
+    lang: &str,
+    cancel: &CancellationToken,
+    status: &(dyn Fn(SearchPhase) + Send + Sync),
+    preloaded_serp: Option<(Vec<SearchHit>, Vec<EngineStat>)>,
+) -> SearchOutcome {
+    if matches!(route, SearchRoute::Web | SearchRoute::Wiki) {
+        let entries = deps.cache.entries(deps.cache_scope);
+        if !entries.is_empty() {
+            // Fold the entries newest-first: `merge_sources` keeps its first
+            // argument whole and renumbers the combined list, so accumulating
+            // from the most recent entry drops the oldest sources first when the
+            // union exceeds the context budget.
+            let mut union: Vec<SourceBlock> = Vec::new();
+            for entry in entries {
+                union = merge_sources(union, entry.sources, num_ctx);
+            }
+            let judge_start = Instant::now();
+            let verdict = deps.judge.judge(standalone_question, &union, cancel).await;
+            deps.timings.record(STAGE_JUDGE, judge_start);
+            match verdict {
+                Ok(v) if v.sufficient => {
+                    eprintln!("[search] cache reuse sufficient -> serving from stored sources");
+                    // Records the reuse commit on the same escalation trace the
+                    // verticals use, with the synthetic tier "cache": sufficient,
+                    // not escalated. `grounded_answer` then emits the terminal
+                    // SearchRetrieved{tier:"cache"} and skips the cache write (a
+                    // reuse is not a new search).
+                    deps.recorder.record(RecorderEvent::SearchEscalated {
+                        from_tier: "cache".to_string(),
+                        sufficient: true,
+                        missing: String::new(),
+                        escalated: false,
+                        escalation_hit: false,
+                    });
+                    return grounded_answer(
+                        deps,
+                        "cache",
+                        chat_system_prompt,
+                        history,
+                        latest_user,
+                        standalone_question,
+                        union,
+                        today,
+                        locale,
+                        lang,
+                        Vec::new(),
+                        // A cache reuse is never a conflict commit: the reuse
+                        // judge is a plain sufficiency check, not the engine
+                        // tier's conflict-aware judge.
+                        false,
+                        None,
+                    );
+                }
+                Ok(v) => {
+                    eprintln!(
+                        "[search] cache reuse insufficient (missing: {}) -> fresh search",
+                        v.missing
+                    );
+                    // `escalated: true` records that the turn left the cache for
+                    // a fresh search; `escalation_hit` stays false here because
+                    // this event is emitted at the gate, before the fresh search
+                    // resolves. That search records its own SearchRetrieved.
+                    deps.recorder.record(RecorderEvent::SearchEscalated {
+                        from_tier: "cache".to_string(),
+                        sufficient: false,
+                        missing: v.missing,
+                        escalated: true,
+                        escalation_hit: false,
+                    });
+                }
+                Err(InferenceError::Cancelled) => return SearchOutcome::Cancelled,
+                // A judge transport failure fails toward a FRESH search, the
+                // opposite of the vertical fast path's fail-toward-commit: here
+                // committing would mean serving a reply the gate could not
+                // actually vouch for, and a fresh search is always safe.
+                Err(InferenceError::Request(reason)) => {
+                    eprintln!("[search] cache reuse judge error: {reason} -> fresh search");
+                    deps.recorder.record(RecorderEvent::SearchEscalated {
+                        from_tier: "cache".to_string(),
+                        sufficient: false,
+                        missing: String::new(),
+                        escalated: true,
+                        escalation_hit: false,
+                    });
+                }
+            }
+        }
+    }
+    run_web(
+        deps,
+        chat_system_prompt,
+        history,
+        latest_user,
+        route,
+        standalone_question,
+        queries,
+        num_ctx,
+        today,
+        locale,
+        lang,
+        cancel,
+        status,
+        false,
+        preloaded_serp,
+    )
+    .await
+}
+
+/// Maps a retrieval tier label (the answering source, as passed to
+/// [`grounded_answer`]) to the [`SearchRoute`] recorded on the cache entry that
+/// answer produces. The general scraped-engine tier ("engine"), and the cache
+/// tier itself, map to [`SearchRoute::Web`]; every keyless vertical maps to its
+/// own route. Total by construction (an unknown tier is the general engine
+/// route), so a new tier label never fails the store.
+fn route_for_tier(tier: &str) -> SearchRoute {
+    match tier {
+        "weather" => SearchRoute::Weather,
+        "news" => SearchRoute::News,
+        "wiki" => SearchRoute::Wiki,
+        "sports" => SearchRoute::Sports,
+        _ => SearchRoute::Web,
+    }
 }
 
 /// The `web`/`cached` branch: search every query, fetch and rank the pages,
@@ -1888,6 +2039,9 @@ fn grounded_answer(
             CachedSearch {
                 standalone_question: standalone_question.to_string(),
                 sources: sources.clone(),
+                // The route the answering tier maps to, recorded as provenance
+                // on the entry (see `CachedSearch::route`).
+                route: route_for_tier(tier),
             },
         );
     }
@@ -2582,6 +2736,7 @@ mod tests {
             recorder,
             Box::leak(Box::new(TtlSourceCache::new(
                 std::time::Duration::from_secs(600),
+                crate::config::defaults::SEARCH_CACHE_MAX_ENTRIES,
             ))),
             1,
         )
@@ -2652,6 +2807,7 @@ mod tests {
             recorder,
             cache: Box::leak(Box::new(TtlSourceCache::new(
                 std::time::Duration::from_secs(600),
+                crate::config::defaults::SEARCH_CACHE_MAX_ENTRIES,
             ))),
             cache_scope: 1,
             web_cache: Box::leak(Box::new(WebCache::new(
@@ -2690,9 +2846,49 @@ mod tests {
             recorder,
             cache: Box::leak(Box::new(TtlSourceCache::new(
                 std::time::Duration::from_secs(600),
+                crate::config::defaults::SEARCH_CACHE_MAX_ENTRIES,
             ))),
             cache_scope: 1,
             web_cache,
+            local_zone: None,
+            force_search: false,
+            latest_images: None,
+            timings: Box::leak(Box::new(TimingBag::new())),
+        }
+    }
+
+    /// `SearchDeps` for the multi-turn reuse-gate tests: a caller-supplied cache
+    /// (pre-loaded with stored searches), sufficiency judge (the reuse grounding
+    /// gate), engine health (whether an escalation can reach the engines), and
+    /// scope, the inputs that decide whether a `cached` decision reuses stored
+    /// sources or escalates to a fresh search.
+    #[allow(clippy::too_many_arguments)]
+    fn deps_for_reuse<'a>(
+        prepass: &'a dyn PrePass,
+        transport: &'a dyn HttpTransport,
+        scorer: &'a dyn Scorer,
+        judge: &'a dyn SufficiencyJudge,
+        health: &'a EngineHealth,
+        recorder: &'a crate::trace::BoundRecorder,
+        cache: &'a dyn SourceCache,
+        cache_scope: u64,
+    ) -> SearchDeps<'a> {
+        SearchDeps {
+            prepass,
+            judge,
+            transport,
+            reachability: reachable(),
+            scorer,
+            health,
+            recorder,
+            cache,
+            cache_scope,
+            web_cache: Box::leak(Box::new(WebCache::new(
+                std::time::Duration::from_secs(600),
+                std::time::Duration::from_secs(600),
+                64,
+                128,
+            ))),
             local_zone: None,
             force_search: false,
             latest_images: None,
@@ -3753,7 +3949,7 @@ mod tests {
         // A populated cache would normally answer a `cached` decision instantly.
         // An explicit look-it-up request must bypass the cache entirely and
         // re-search from the engines.
-        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600));
+        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600), 4);
         cache.store(
             7,
             CachedSearch {
@@ -3764,6 +3960,7 @@ mod tests {
                     title: "Cached".into(),
                     text: "a stale cached answer".into(),
                 }],
+                route: SearchRoute::Web,
             },
         );
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
@@ -5800,7 +5997,7 @@ mod tests {
         // raw-query race does not fire; a ForceWeb+Cached turn may still race
         // once and discard (see force_web_should_race_raw), which is outside
         // this unit's contract.
-        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600));
+        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600), 4);
         cache.store(
             7,
             CachedSearch {
@@ -5811,6 +6008,7 @@ mod tests {
                     title: "Rust 1.90.0".into(),
                     text: "Rust 1.90.0 is the latest stable release.".into(),
                 }],
+                route: SearchRoute::Web,
             },
         );
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
@@ -5901,7 +6099,7 @@ mod tests {
         // conversation before a reset) must never answer a turn scoped to a
         // different epoch: the cache read misses and the pipeline searches
         // fresh, exactly like an empty cache.
-        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600));
+        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600), 4);
         cache.store(
             1,
             CachedSearch {
@@ -5912,6 +6110,7 @@ mod tests {
                     title: "Stale".into(),
                     text: "stale text".into(),
                 }],
+                route: SearchRoute::Web,
             },
         );
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
@@ -5956,7 +6155,7 @@ mod tests {
         // A zero-TTL cache: the entry is stored, but by the time it is read it
         // has already expired, so the `cached` decision must degrade to a
         // fresh search rather than serving the stale sources.
-        let cache = TtlSourceCache::new(std::time::Duration::ZERO);
+        let cache = TtlSourceCache::new(std::time::Duration::ZERO, 4);
         cache.store(
             7,
             CachedSearch {
@@ -5967,6 +6166,7 @@ mod tests {
                     title: "Stale".into(),
                     text: "stale text".into(),
                 }],
+                route: SearchRoute::Web,
             },
         );
         let prepass = FakePrePass::returning(Ok(PrePassDecision {
@@ -6011,7 +6211,7 @@ mod tests {
         // holding those exact sources, under the turn's scope, so the very
         // next turn's `cached` decision (if the classifier judges the
         // follow-up answerable from them) can reuse them without retrieving.
-        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600));
+        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600), 4);
         let prepass = FakePrePass::returning(Ok(web_decision(vec!["treaty versailles paris"])));
         let transport = transport_with_serp_and_page();
         let (_p, status) = recorder();
@@ -6028,14 +6228,363 @@ mod tests {
             &status,
         )
         .await;
-        let cached = cache
-            .get(9)
-            .expect("a successful search must populate the cache");
+        let entries = cache.entries(9);
+        assert_eq!(
+            entries.len(),
+            1,
+            "a successful search must populate the cache"
+        );
+        let cached = &entries[0];
         assert_eq!(cached.sources.len(), 1);
         assert_eq!(cached.sources[0].url, "https://match.example/");
         assert_eq!(
             cached.standalone_question,
             "when was the treaty of versailles signed in paris"
+        );
+        // The general engine tier that produced this answer maps to the Web
+        // route, recorded on the entry as provenance.
+        assert_eq!(cached.route, crate::websearch::prepass::SearchRoute::Web);
+    }
+
+    #[test]
+    fn route_for_tier_maps_every_answering_tier_to_a_route() {
+        assert_eq!(route_for_tier("weather"), SearchRoute::Weather);
+        assert_eq!(route_for_tier("news"), SearchRoute::News);
+        assert_eq!(route_for_tier("wiki"), SearchRoute::Wiki);
+        assert_eq!(route_for_tier("sports"), SearchRoute::Sports);
+        assert_eq!(route_for_tier("engine"), SearchRoute::Web);
+        // The cache tier is never stored, but the mapping is total: it and any
+        // unknown label fall back to the general engine route.
+        assert_eq!(route_for_tier("cache"), SearchRoute::Web);
+    }
+
+    #[tokio::test]
+    async fn cached_decision_reuses_the_union_of_live_entries_when_the_judge_finds_them_sufficient()
+    {
+        // Two searches earlier this conversation (scope 7). A `cached` follow-up
+        // on an eligible (web) route reuses the UNION of their sources, most
+        // recent first and renumbered, with no retrieval, when the grounding
+        // judge agrees they answer the question.
+        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600), 4);
+        let entry = |url: &str, text: &str| CachedSearch {
+            standalone_question: "elon musk profile".into(),
+            sources: vec![SourceBlock {
+                index: 1,
+                url: url.into(),
+                title: "Profile".into(),
+                text: text.into(),
+            }],
+            route: SearchRoute::Web,
+        };
+        cache.store(7, entry("https://older.example/", "older stored source"));
+        cache.store(7, entry("https://newer.example/", "newer stored source"));
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Cached,
+            route: SearchRoute::Web,
+            standalone_question: "how old is elon musk".into(),
+            queries: vec!["elon musk age".into()],
+            explicit_search: false,
+            lang: "en".into(),
+        }));
+        // No canned responses: any retrieval would fail the test with a
+        // transport error instead of the silent no-op a true reuse produces.
+        let transport = FakeHttpTransport::new();
+        let health = EngineHealth::new();
+        let judge = FakeSufficiencyJudge::sufficient();
+        let (mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_for_reuse(
+                &prepass,
+                &transport,
+                &Bm25Scorer,
+                &judge,
+                &health,
+                &bound,
+                &cache,
+                7,
+            ),
+            "sys",
+            &[],
+            "and how old is he now?",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        // The union, most recent first, renumbered contiguously from 1.
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources.len() == 2
+                && sources[0].index == 1
+                && sources[0].url == "https://newer.example/"
+                && sources[1].index == 2
+                && sources[1].url == "https://older.example/"));
+        assert!(transport.calls().is_empty(), "a reuse must not retrieve");
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            RecorderEvent::SearchEscalated { from_tier, sufficient, escalated, .. }
+            if from_tier == "cache" && *sufficient && !*escalated
+        )));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            RecorderEvent::SearchRetrieved { tier, sources, .. }
+            if tier == "cache" && sources.len() == 2
+        )));
+    }
+
+    #[tokio::test]
+    async fn cached_decision_escalates_to_fresh_search_when_the_judge_finds_the_union_insufficient()
+    {
+        // A stored source that no longer answers the drilled-down follow-up: the
+        // grounding judge says insufficient, so the turn escalates to a fresh
+        // web search and answers from the new result, never the stale entry.
+        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600), 4);
+        cache.store(
+            7,
+            CachedSearch {
+                standalone_question: "prior".into(),
+                sources: vec![SourceBlock {
+                    index: 1,
+                    url: "https://cached.example/".into(),
+                    title: "Cached".into(),
+                    text: "a stale cached answer".into(),
+                }],
+                route: SearchRoute::Web,
+            },
+        );
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Cached,
+            route: SearchRoute::Web,
+            standalone_question: "when was the treaty of versailles signed in paris".into(),
+            queries: vec!["treaty versailles".into()],
+            explicit_search: false,
+            lang: "en".into(),
+        }));
+        let transport = transport_with_serp_and_page();
+        let health = EngineHealth::new();
+        // The reuse gate (first judge call) says insufficient -> escalate; the
+        // engine tier (second call) then commits the fresh block.
+        let judge = insufficient_then_sufficient();
+        let (mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_for_reuse(
+                &prepass,
+                &transport,
+                &Bm25Scorer,
+                &judge,
+                &health,
+                &bound,
+                &cache,
+                7,
+            ),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources.iter().all(|s| s.url != "https://cached.example/")
+                && sources.iter().any(|s| s.url == "https://match.example/")));
+        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            RecorderEvent::SearchEscalated { from_tier, sufficient, escalated, .. }
+            if from_tier == "cache" && !*sufficient && *escalated
+        )));
+    }
+
+    #[tokio::test]
+    async fn cached_decision_on_a_non_eligible_route_bypasses_reuse_and_searches_fresh() {
+        // A news-routed `cached` decision must never reuse stored sources, even
+        // when a sufficient entry exists: the live news vertical (then the
+        // engines) owns volatile questions. The judge is `sufficient()`, so had
+        // the reuse gate run it would have served the stored source with no
+        // retrieval. A fresh search instead (transport hit, cached source
+        // absent) proves the eligibility check skipped the gate entirely.
+        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600), 4);
+        cache.store(
+            7,
+            CachedSearch {
+                standalone_question: "prior".into(),
+                sources: vec![SourceBlock {
+                    index: 1,
+                    url: "https://cached.example/".into(),
+                    title: "Cached".into(),
+                    text: "a stale cached answer".into(),
+                }],
+                route: SearchRoute::Web,
+            },
+        );
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Cached,
+            route: SearchRoute::News,
+            standalone_question: "what is the latest economic news".into(),
+            queries: vec!["economy news".into()],
+            explicit_search: false,
+            lang: "en".into(),
+        }));
+        let transport = transport_with_serp_and_page();
+        let health = EngineHealth::new();
+        let judge = FakeSufficiencyJudge::sufficient();
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_for_reuse(
+                &prepass,
+                &transport,
+                &Bm25Scorer,
+                &judge,
+                &health,
+                &bound,
+                &cache,
+                7,
+            ),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources.iter().all(|s| s.url != "https://cached.example/")));
+        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+    }
+
+    #[tokio::test]
+    async fn cached_decision_escalates_to_fresh_search_when_the_grounding_judge_errors() {
+        // A judge transport failure fails toward a FRESH search (the opposite of
+        // the vertical fast path's fail-toward-commit): committing would serve a
+        // reply the gate could not vouch for.
+        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600), 4);
+        cache.store(
+            7,
+            CachedSearch {
+                standalone_question: "prior".into(),
+                sources: vec![SourceBlock {
+                    index: 1,
+                    url: "https://cached.example/".into(),
+                    title: "Cached".into(),
+                    text: "a stale cached answer".into(),
+                }],
+                route: SearchRoute::Web,
+            },
+        );
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Cached,
+            route: SearchRoute::Web,
+            standalone_question: "when was the treaty of versailles signed in paris".into(),
+            queries: vec!["treaty versailles".into()],
+            explicit_search: false,
+            lang: "en".into(),
+        }));
+        let transport = transport_with_serp_and_page();
+        let health = EngineHealth::new();
+        let judge = FakeSufficiencyJudge::returning(Err(InferenceError::Request("boom".into())));
+        let (mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_for_reuse(
+                &prepass,
+                &transport,
+                &Bm25Scorer,
+                &judge,
+                &health,
+                &bound,
+                &cache,
+                7,
+            ),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
+            if sources.iter().all(|s| s.url != "https://cached.example/")));
+        assert!(transport.calls().iter().any(|c| c.url == DDG_ENDPOINT));
+        let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            RecorderEvent::SearchEscalated { from_tier, sufficient, escalated, .. }
+            if from_tier == "cache" && !*sufficient && *escalated
+        )));
+    }
+
+    #[tokio::test]
+    async fn cached_decision_is_cancelled_when_the_grounding_judge_is_cancelled() {
+        // A cancellation during the reuse judge short-circuits the whole turn:
+        // no fresh search runs after a cancel.
+        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600), 4);
+        cache.store(
+            7,
+            CachedSearch {
+                standalone_question: "prior".into(),
+                sources: vec![SourceBlock {
+                    index: 1,
+                    url: "https://cached.example/".into(),
+                    title: "Cached".into(),
+                    text: "a stale cached answer".into(),
+                }],
+                route: SearchRoute::Web,
+            },
+        );
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Cached,
+            route: SearchRoute::Web,
+            standalone_question: "when was the treaty of versailles signed in paris".into(),
+            queries: vec!["treaty versailles".into()],
+            explicit_search: false,
+            lang: "en".into(),
+        }));
+        // No canned responses: a fresh search after cancel would error here.
+        let transport = FakeHttpTransport::new();
+        let health = EngineHealth::new();
+        let judge = FakeSufficiencyJudge::returning(Err(InferenceError::Cancelled));
+        let bound = crate::trace::BoundRecorder::noop_for(crate::trace::ConversationId::new("t"));
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_for_reuse(
+                &prepass,
+                &transport,
+                &Bm25Scorer,
+                &judge,
+                &health,
+                &bound,
+                &cache,
+                7,
+            ),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Cancelled));
+        assert!(
+            transport.calls().is_empty(),
+            "a cancelled reuse must not search fresh"
         );
     }
 
