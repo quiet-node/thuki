@@ -836,18 +836,59 @@ pub const PREPASS_MAX_TOKENS: i32 = 1536;
 /// Not user-tunable: an internal robustness bound.
 pub const PREPASS_TIMEOUT_S: u64 = 35;
 
-/// TTL (seconds) for the multi-turn source cache: how long the sources of the
-/// most recent successful search stay reusable for a `cached` classifier
-/// decision (a follow-up that repeats or rephrases the question just
+/// TTL (seconds) for the multi-turn source cache: how long the sources of a
+/// successful search stay reusable for a `cached` classifier decision (a
+/// follow-up that repeats, rephrases, or drills into the same topic just
 /// answered) before a later turn falls back to a fresh search. 10 minutes
 /// covers the realistic follow-up window without risking a stale answer on a
-/// slow-moving conversation. The cache holds at most one entry (the most
-/// recent search only, replaced whole by every new one), so this TTL is its
-/// only expiry mechanism.
+/// slow-moving conversation. The cache holds up to [`SEARCH_CACHE_MAX_ENTRIES`]
+/// entries per conversation, each carrying its own insertion time, so this TTL
+/// is the per-entry expiry mechanism alongside the entry cap.
 ///
 /// Not user-tunable: an internal robustness bound, the same rationale as
 /// [`PREPASS_TIMEOUT_S`].
 pub const SEARCH_CACHE_TTL_S: u64 = 600;
+
+/// Maximum number of entries the multi-turn page cache holds per conversation
+/// scope. Each successful engine-tier search pushes one entry (its fetched
+/// pages plus the producing route; see [`crate::websearch::cache::CachedSearch`]);
+/// the oldest entry is evicted once this cap is exceeded, so the cache reuse
+/// gate can re-run the post-fetch pipeline over the last few page sets of a
+/// conversation, not just the most recent one, when a follow-up drills into an
+/// adjacent detail. Per-page and per-entry text caps
+/// ([`SEARCH_CACHE_PAGE_TEXT_MAX_BYTES`], [`SEARCH_CACHE_ENTRY_TEXT_MAX_BYTES`])
+/// bound each entry's retained body text.
+///
+/// Not user-tunable: a defense-in-depth memory bound. Every entry retains
+/// fetched web-page text (attacker-influenceable content), so an unbounded
+/// entry list would let a long conversation grow process memory without limit.
+/// Four entries is enough follow-up depth for a realistic conversation while
+/// keeping the retained-page footprint small and fixed.
+pub const SEARCH_CACHE_MAX_ENTRIES: usize = 4;
+
+/// Per-page text byte cap for a stored multi-turn cache entry. Each entry holds
+/// the fetched pages a search grounded its answer on (see
+/// [`crate::websearch::cache`]); a page's readability-extracted body is not
+/// otherwise hard-bounded in bytes, so the cache truncates each page's text to
+/// this many bytes (at a UTF-8 char boundary) before storing it.
+///
+/// Not user-tunable: a defense-in-depth memory bound on attacker-influenceable
+/// fetched page text. 24 KiB comfortably holds a typical article's readable
+/// body (the reuse pipeline re-chunks and BM25-selects from it, so the leading
+/// body that carries the answer is what matters), while capping the worst case.
+pub const SEARCH_CACHE_PAGE_TEXT_MAX_BYTES: usize = 24 * 1024;
+
+/// Per-entry total text byte cap for a stored multi-turn cache entry: once the
+/// cumulative (already per-page-capped) page text of one entry would exceed this
+/// budget, the remaining pages are dropped from the tail. Combined with
+/// [`SEARCH_CACHE_MAX_ENTRIES`] and [`SEARCH_CACHE_PAGE_TEXT_MAX_BYTES`], this
+/// gives a hard, fixed upper bound on the cache's retained-text memory (at most
+/// `SEARCH_CACHE_MAX_ENTRIES * SEARCH_CACHE_ENTRY_TEXT_MAX_BYTES`).
+///
+/// Not user-tunable: a defense-in-depth memory bound on attacker-influenceable
+/// fetched page text. 128 KiB holds the several pages a single search fetches
+/// while keeping the per-entry footprint small.
+pub const SEARCH_CACHE_ENTRY_TEXT_MAX_BYTES: usize = 128 * 1024;
 
 /// Token cap for the grammar-constrained sufficiency-judge response. The judge
 /// decides whether a retrieved vertical block actually answers the specific

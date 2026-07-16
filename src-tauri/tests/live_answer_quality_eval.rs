@@ -838,6 +838,22 @@ impl SufficiencyJudge for AlwaysSufficientJudge {
     }
 }
 
+/// A synthesizer that returns a fixed grounded answer. The cache-reuse gate is
+/// never reached in these forced-retrieval eval rows (empty per-run cache), so
+/// it is inert; it exists only to satisfy the `SearchDeps` contract.
+struct AlwaysGroundedSynthesizer;
+
+#[async_trait]
+impl thuki_agent_lib::websearch::orchestrator::Synthesizer for AlwaysGroundedSynthesizer {
+    async fn synthesize(
+        &self,
+        _messages: &[thuki_agent_lib::commands::ChatMessage],
+        _cancel: &CancellationToken,
+    ) -> Result<String, InferenceError> {
+        Ok("reused answer [1]".to_string())
+    }
+}
+
 /// Drives one row through the real `run_search` orchestrator (retrieval
 /// forced via [`ScriptedWebPrePass`]) and, when it produced a citable answer,
 /// through one real writer completion over the assembled prompt. Returns the
@@ -855,7 +871,10 @@ async fn live_answer_for(
     let judge = AlwaysSufficientJudge;
     let health = EngineHealth::new();
     let recorder = BoundRecorder::noop_for(ConversationId::new("j5-eval"));
-    let cache = TtlSourceCache::new(std::time::Duration::from_secs(600));
+    let cache = TtlSourceCache::new(
+        std::time::Duration::from_secs(600),
+        thuki_agent_lib::config::defaults::SEARCH_CACHE_MAX_ENTRIES,
+    );
     let web_cache = WebCache::new(
         std::time::Duration::from_secs(600),
         std::time::Duration::from_secs(600),
@@ -863,9 +882,11 @@ async fn live_answer_for(
         128,
     );
     let timings = thuki_agent_lib::websearch::stage_timing::TimingBag::new();
+    let synthesizer = AlwaysGroundedSynthesizer;
     let deps = SearchDeps {
         prepass: &prepass,
         judge: &judge,
+        synthesizer: &synthesizer,
         transport: &transport,
         reachability: &DnsReachability,
         scorer: &Bm25Scorer,
@@ -893,7 +914,9 @@ async fn live_answer_for(
     )
     .await;
     let messages = match outcome {
-        SearchOutcome::Answer { messages, .. } => messages,
+        SearchOutcome::Answer { messages, .. } | SearchOutcome::AnswerReused { messages, .. } => {
+            messages
+        }
         SearchOutcome::Unreachable { .. } | SearchOutcome::NoSearch | SearchOutcome::Cancelled => {
             return None
         }
