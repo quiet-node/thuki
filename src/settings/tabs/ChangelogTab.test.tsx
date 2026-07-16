@@ -49,6 +49,9 @@ describe('ChangelogTab', () => {
     expect(screen.getByText('0.14.0')).toBeInTheDocument();
     expect(screen.getByText('0.13.1')).toBeInTheDocument();
     expect(screen.getByText('Release history')).toBeInTheDocument();
+    expect(screen.getByTestId('changelog-latest-pill')).toHaveTextContent(
+      'Latest',
+    );
   });
 
   it('expands the newest version by default and toggles on click', () => {

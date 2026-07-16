@@ -59,7 +59,7 @@ export function ChangelogTab({
       <Section heading="Release history">
         <div className={styles.changelogNotes} data-testid="changelog-notes">
           {sections.length > 0 ? (
-            <ChangelogAccordion sections={sections} />
+            <ChangelogAccordion sections={sections} showLatestPill />
           ) : (
             <p className={styles.changelogEmpty} data-testid="changelog-empty">
               No release notes are bundled with this build.{' '}

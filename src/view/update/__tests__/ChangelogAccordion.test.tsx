@@ -55,4 +55,21 @@ describe('ChangelogAccordion', () => {
     fireEvent.click(screen.getByRole('button', { name: /0\.14\.0/ }));
     expect(screen.queryByText('newest thing')).not.toBeInTheDocument();
   });
+
+  it('omits the Latest pill by default', () => {
+    render(<ChangelogAccordion sections={SECTIONS} />);
+    expect(screen.queryByTestId('changelog-latest-pill')).not.toBeInTheDocument();
+  });
+
+  it('shows Latest only on the first section when showLatestPill is set', () => {
+    render(<ChangelogAccordion sections={SECTIONS} showLatestPill />);
+    expect(screen.getByTestId('changelog-latest-pill')).toHaveTextContent(
+      'Latest',
+    );
+    const newest = screen.getByRole('button', { name: /0\.14\.0/ });
+    expect(newest).toHaveTextContent('Latest');
+    expect(screen.getByRole('button', { name: /0\.13\.0/ })).not.toHaveTextContent(
+      'Latest',
+    );
+  });
 });
