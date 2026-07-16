@@ -2059,7 +2059,7 @@
   line-height: 1.55;
   letter-spacing: 0;
   font-weight: 400;
-  color: var(--t2);
+  color: var(--t1);
 }
 
 .changelogNotes :global(.markdown-body) p {
@@ -2100,7 +2100,7 @@
   position: relative;
   padding: 3px 0 3px 14px;
   margin: 0;
-  color: var(--t2);
+  color: var(--t1);
   font-weight: 400;
 }
 
@@ -2112,7 +2112,7 @@
   width: 3px;
   height: 3px;
   border-radius: 50%;
-  background: var(--t3);
+  background: var(--t2);
 }
 
 .changelogNotes :global(.markdown-body) li.task-list-item {
@@ -2124,21 +2124,20 @@
 }
 
 .changelogNotes :global(.markdown-body) a {
-  color: var(--t2);
+  color: var(--accent);
   text-decoration: none;
-  border-bottom: 1px solid var(--hair);
+  border-bottom: 1px solid rgba(255, 141, 92, 0.28);
   font-weight: 400;
 }
 
 .changelogNotes :global(.markdown-body) a:hover {
-  color: var(--accent);
-  border-bottom-color: rgba(255, 141, 92, 0.35);
+  border-bottom-color: rgba(255, 141, 92, 0.55);
 }
 
 .changelogNotes :global(.markdown-body) code {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
-  color: var(--t2);
+  color: var(--t1);
   background: var(--elev-1);
   padding: 1px 4px;
   border-radius: 4px;
