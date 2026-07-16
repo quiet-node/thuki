@@ -78,7 +78,7 @@ No AI backend setup is required: Thuki bundles its own llama.cpp inference engin
 
    Thuki writes a default config file to `~/Library/Application Support/com.quietnode.thuki/config.toml` on first launch. To customize anything (model, system prompt, window dimensions, activation timing, quote display), edit that file and relaunch. See [docs/configurations.md](docs/configurations.md) for the full schema.
 
-   Built-in web search needs no Docker or local search services: the pipeline lives in `src-tauri/src/websearch/` with SSRF-safe HTTP in `src-tauri/src/net/`. Constants and product notes: [docs/configurations.md](docs/configurations.md). Manual live eval harnesses (ignored by default CI): [docs/search-eval.md](docs/search-eval.md).
+   Built-in web search is keyless and in-process: the pipeline lives in `src-tauri/src/websearch/` with SSRF-safe HTTP in `src-tauri/src/net/`. Design handbook: [docs/built-in-web-search.md](docs/built-in-web-search.md). Privacy egress: [docs/search-privacy.md](docs/search-privacy.md). Constants: [docs/configurations.md](docs/configurations.md). Manual live eval harnesses (ignored by default CI): [docs/search-eval.md](docs/search-eval.md).
 
 5. **Launch the app**
 

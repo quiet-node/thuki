@@ -142,7 +142,7 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 - **Instant follow-ups:** Thuki can keep your model warm in memory between messages, so replies start right away instead of stalling to reload the model on every ask.
 - **Image input and screen capture:** paste or drag images directly into the chat, or type `/screen` to capture your entire screen and attach it as context.
 - **Read text in images, on any model:** commands like `/extract`, `/explain`, `/tldr`, and `/translate` pull the _text_ out of an attached image with on-device macOS Vision OCR, so they work on screenshots and documents even when the active model has no vision capability. They read text, not scenes: describing a textless image (say, a photo of the sky) still needs a vision model. See [docs/ocr-commands.md](docs/ocr-commands.md).
-- **Built-in web search:** With Auto search on (Settings → Behavior, default), Thuki may search the web when a plain message needs current information. Turn it off to stay fully local and use `/search` only when you want an on-demand look-up. Zero-setup, keyless; answers are grounded in retrieved sources with inline citations. See [docs/privacy.md](docs/privacy.md), [docs/commands.md](docs/commands.md) (`/search`), and [docs/configurations.md](docs/configurations.md) (`auto_search` and built-in search constants).
+- **Built-in web search:** With Auto search on (Settings → Behavior, default), Thuki may search the web when a plain message needs current information. Turn it off to stay fully local and use `/search` only when you want an on-demand look-up. Keyless; answers are grounded in retrieved sources with inline citations. See [docs/built-in-web-search.md](docs/built-in-web-search.md), [docs/search-privacy.md](docs/search-privacy.md), [docs/privacy.md](docs/privacy.md), [docs/commands.md](docs/commands.md) (`/search`), and [docs/configurations.md](docs/configurations.md) (`auto_search` and built-in search constants).
 - **Slash commands:** built-in shortcuts for search and prompt actions: `/search`, `/extract`, `/explain`, `/translate`, `/rewrite`, `/tldr`, `/refine`, `/bullets`, `/todos`.
 - **On-demand reasoning:** on models that support reasoning (not every model does), add `/think` to any message to make it work through the problem step by step before answering. It is off by default, so everyday asks stay fast.
 - **Cross-model continuity:** swap models mid-conversation and Thuki sanitizes history and filters capabilities (vision, reasoning) to whatever the new model supports.
@@ -203,7 +203,7 @@ For the engine internals (sidecar lifecycle, Keep Warm, the spawn line, model st
 
 Thuki works on sensible defaults out of the box. Tweak anything from the in-app Settings panel (open it from the menu-bar icon) or by editing the TOML file at `~/Library/Application Support/com.quietnode.thuki/config.toml`; both write to the same place.
 
-See [docs/configurations.md](docs/configurations.md) for the full schema, [docs/commands.md](docs/commands.md) for the slash command reference, and [docs/troubleshooting.md](docs/troubleshooting.md) when something goes wrong.
+See [docs/configurations.md](docs/configurations.md) for the full schema, [docs/commands.md](docs/commands.md) for the slash command reference, [docs/built-in-web-search.md](docs/built-in-web-search.md) for the built-in search design handbook, and [docs/troubleshooting.md](docs/troubleshooting.md) when something goes wrong.
 
 ## Contributing
 

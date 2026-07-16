@@ -59,7 +59,7 @@ export function renderCommandsMarkdown(): string {
     '',
     'Commands can be combined when their behavior allows it. For example, `/screen /think` captures the screen and enables extended reasoning, while `/think /tldr` summarizes with reasoning enabled.',
     '',
-    'Transform commands (`/rewrite`, `/refine`, `/translate`, `/tldr`, `/bullets`, `/todos`, `/extract`) never trigger web search or the auto-search classifier. They run only on the text you supply (or OCR text). Plain messages, `/explain`, and `/think` still follow Auto search in Settings; `/search` always forces a live look-up. Auto search is `[behavior].auto_search` in [configurations.md](./configurations.md); privacy and network notes in [privacy.md](./privacy.md).',
+    'Transform commands (`/rewrite`, `/refine`, `/translate`, `/tldr`, `/bullets`, `/todos`, `/extract`) never trigger web search or the auto-search classifier. They run only on the text you supply (or OCR text). Plain messages, `/explain`, and `/think` still follow Auto search in Settings; `/search` always forces a live look-up. Auto search is `[behavior].auto_search` in [configurations.md](./configurations.md); privacy and network notes in [privacy.md](./privacy.md) and [search-privacy.md](./search-privacy.md); design handbook in [built-in-web-search.md](./built-in-web-search.md).',
     '',
     'Commands that operate on text follow a consistent input priority:',
     '',

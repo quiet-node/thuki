@@ -1,6 +1,6 @@
-# How Thuki web search works
+# Built-in web search privacy
 
-Thuki can look up current information on the web when a question needs fresh facts. This page explains what leaves your device, who receives it, and how you control that.
+What leaves your device when Thuki searches the web, who receives it, and how you control that. For the technical design of the pipeline, see [built-in-web-search.md](./built-in-web-search.md).
 
 ## Queries leave your device
 
