@@ -607,6 +607,37 @@ describe('ConfirmDialog', () => {
     expect(wipe.className.split(/\s+/).length).toBeGreaterThanOrEqual(2);
   });
 
+  it('destructive dialogs autofocus Cancel, not the confirm button', () => {
+    render(
+      <ConfirmDialog
+        open
+        title="t"
+        message="m"
+        confirmLabel="Wipe"
+        destructive
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Wipe' })).not.toHaveFocus();
+  });
+
+  it('non-destructive dialogs still autofocus the confirm button', () => {
+    render(
+      <ConfirmDialog
+        open
+        title="t"
+        message="m"
+        confirmLabel="Yes"
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Yes' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Cancel' })).not.toHaveFocus();
+  });
+
   it('keeps the dialog mounted through its exit animation, then unmounts', () => {
     vi.useFakeTimers();
     try {

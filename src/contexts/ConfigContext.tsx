@@ -70,6 +70,9 @@ interface RawAppConfig {
     auto_close: boolean;
     auto_search: boolean;
     search_notice_acknowledged: boolean;
+    auto_save_conversations: boolean;
+    history_retention_days: number;
+    auto_save_notice_acknowledged: boolean;
   };
 }
 
@@ -113,6 +116,12 @@ export interface AppConfig {
     autoSearch: boolean;
     /** When true, first-use web-search notice has been dismissed forever. */
     searchNoticeAcknowledged: boolean;
+    /** When true, completed turns auto-persist to SQLite history. */
+    autoSaveConversations: boolean;
+    /** Days to keep history by last activity; `-1` forever. */
+    historyRetentionDays: number;
+    /** When true, one-shot auto-save chat notice has been dismissed forever. */
+    autoSaveNoticeAcknowledged: boolean;
   };
 }
 
@@ -164,6 +173,9 @@ function transform(raw: RawAppConfig): AppConfig {
       autoClose: raw.behavior.auto_close,
       autoSearch: raw.behavior.auto_search,
       searchNoticeAcknowledged: raw.behavior.search_notice_acknowledged,
+      autoSaveConversations: raw.behavior.auto_save_conversations,
+      historyRetentionDays: raw.behavior.history_retention_days,
+      autoSaveNoticeAcknowledged: raw.behavior.auto_save_notice_acknowledged,
     },
   };
 }
@@ -311,5 +323,8 @@ export const DEFAULT_CONFIG: AppConfig = {
     autoClose: false,
     autoSearch: true,
     searchNoticeAcknowledged: false,
+    autoSaveConversations: true,
+    historyRetentionDays: -1,
+    autoSaveNoticeAcknowledged: false,
   },
 };

@@ -93,6 +93,27 @@ function getAskInput(): HTMLElement {
   return screen.getByTestId('askbar-input');
 }
 
+/** Config with auto-save off for tests that still exercise bookmark-only save. */
+const NO_AUTO_SAVE_CONFIG = {
+  ...DEFAULT_CONFIG,
+  behavior: {
+    ...DEFAULT_CONFIG.behavior,
+    autoSaveConversations: false,
+  },
+};
+
+/**
+ * Renders App under ConfigProviderForTest with auto-save disabled.
+ * Use when the test needs an unsaved chat after a completed turn.
+ */
+function renderAppNoAutoSave() {
+  return render(
+    <ConfigProviderForTest value={NO_AUTO_SAVE_CONFIG}>
+      <App />
+    </ConfigProviderForTest>,
+  );
+}
+
 /**
  * Sets the AskBar editor's text, mimicking the user typing it. jsdom does not
  * synthesize contentEditable edits from key events, so the value is applied via
@@ -471,23 +492,30 @@ describe('App', () => {
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
     await act(async () => {});
 
+    // Create-on-submit must not race title generation with the live stream.
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        'save_conversation',
+        expect.objectContaining({ messages: expect.any(Array) }),
+      ),
+    );
+    expect(invoke).not.toHaveBeenCalledWith(
+      'generate_title',
+      expect.anything(),
+    );
+
     act(() => {
-      getLastChannel()?.simulateMessage({ type: 'Token', data: 'Hi there!' });
+      getLastChannel()?.simulateMessage({ type: 'Token', data: 'hi' });
       getLastChannel()?.simulateMessage({ type: 'Done' });
     });
+    await act(async () => {});
 
-    await act(async () => {
-      fireEvent.click(screen.getByLabelText('Save conversation'));
-    });
-
-    // The picker selection is threaded into `generate_title` (which uses the
-    // active slug as the title-generation model) and stamped onto the
-    // assistant message via `model_name`. `save_conversation` itself does
-    // not take a top-level `model` arg; the active model is sourced
-    // backend-side from the loaded TOML AppConfig.
-    expect(invoke).toHaveBeenCalledWith(
-      'generate_title',
-      expect.objectContaining({ model: 'qwen2.5:7b' }),
+    // First Done threads the picker selection into `generate_title`.
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        'generate_title',
+        expect.objectContaining({ model: 'qwen2.5:7b' }),
+      ),
     );
   });
 
@@ -2001,6 +2029,9 @@ describe('App', () => {
             autoClose: false,
             autoSearch: true,
             searchNoticeAcknowledged: false,
+            autoSaveConversations: true,
+            historyRetentionDays: -1,
+            autoSaveNoticeAcknowledged: false,
           },
         }}
       >
@@ -2059,6 +2090,9 @@ describe('App', () => {
             autoClose: false,
             autoSearch: true,
             searchNoticeAcknowledged: false,
+            autoSaveConversations: true,
+            historyRetentionDays: -1,
+            autoSaveNoticeAcknowledged: false,
           },
         }}
       >
@@ -2113,6 +2147,9 @@ describe('App', () => {
             autoClose: true,
             autoSearch: true,
             searchNoticeAcknowledged: false,
+            autoSaveConversations: true,
+            historyRetentionDays: -1,
+            autoSaveNoticeAcknowledged: false,
           },
         }}
       >
@@ -2168,6 +2205,9 @@ describe('App', () => {
             autoClose: true,
             autoSearch: true,
             searchNoticeAcknowledged: false,
+            autoSaveConversations: true,
+            historyRetentionDays: -1,
+            autoSaveNoticeAcknowledged: false,
           },
         }}
       >
@@ -2221,6 +2261,9 @@ describe('App', () => {
             autoClose: false,
             autoSearch: true,
             searchNoticeAcknowledged: false,
+            autoSaveConversations: true,
+            historyRetentionDays: -1,
+            autoSaveNoticeAcknowledged: false,
           },
         }}
       >
@@ -2294,6 +2337,9 @@ describe('App', () => {
             autoClose: false,
             autoSearch: true,
             searchNoticeAcknowledged: false,
+            autoSaveConversations: true,
+            historyRetentionDays: -1,
+            autoSaveNoticeAcknowledged: false,
           },
         }}
       >
@@ -2982,11 +3028,17 @@ describe('App', () => {
         getLastChannel()?.simulateMessage({ type: 'Token', data: 'Reply' });
         getLastChannel()?.simulateMessage({ type: 'Done' });
       });
+      await act(async () => {});
 
-      expect(screen.getByRole('button', { name: /save/i })).toBeInTheDocument();
+      // Auto-save fills the bookmark on submit; control stays visible either way.
+      expect(
+        screen.getByRole('button', {
+          name: /save conversation|remove from history/i,
+        }),
+      ).toBeInTheDocument();
     });
 
-    it('save button calls save_conversation when clicked', async () => {
+    it('auto-save creates conversation on submit before stream Done', async () => {
       enableChannelCaptureWithResponses({
         save_conversation: { conversation_id: 'conv-test' },
       });
@@ -3004,22 +3056,461 @@ describe('App', () => {
       });
       await act(async () => {});
 
+      // Create-on-submit: save + filled bookmark + notice mid-stream.
+      // Title generation waits until first Done (must not race the stream).
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith(
+          'save_conversation',
+          expect.objectContaining({
+            messages: expect.arrayContaining([
+              expect.objectContaining({ role: 'user', content: 'question' }),
+            ]),
+          }),
+        ),
+      );
+      const createCall = invoke.mock.calls.find(
+        (c) => c[0] === 'save_conversation',
+      );
+      const createMsgs = (
+        createCall?.[1] as {
+          messages: Array<{ role: string; content: string }>;
+        }
+      ).messages;
+      // Streaming shell assistant must not be bulk-inserted.
+      expect(createMsgs.some((m) => m.role === 'assistant')).toBe(false);
+      expect(createMsgs.map((m) => m.role)).toEqual(['user']);
+      expect(
+        screen.getByRole('button', { name: /remove from history/i }),
+      ).toBeInTheDocument();
+      expect(await screen.findByTestId('auto-save-notice')).toBeInTheDocument();
+      expect(invoke).not.toHaveBeenCalledWith(
+        'generate_title',
+        expect.anything(),
+      );
+
+      invoke.mockClear();
+      enableChannelCaptureWithResponses({
+        save_conversation: { conversation_id: 'should-not-create' },
+      });
+
       act(() => {
         getLastChannel()?.simulateMessage({ type: 'Token', data: 'answer' });
         getLastChannel()?.simulateMessage({ type: 'Done' });
       });
+      await act(async () => {});
+
+      // Done appends assistant only (user already stored on create).
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith(
+          'persist_message',
+          expect.objectContaining({
+            conversationId: 'conv-test',
+            role: 'assistant',
+            content: 'answer',
+          }),
+        ),
+      );
+      expect(invoke).not.toHaveBeenCalledWith(
+        'persist_message',
+        expect.objectContaining({ role: 'user' }),
+      );
+      expect(invoke).not.toHaveBeenCalledWith(
+        'save_conversation',
+        expect.anything(),
+      );
+      // First successful Done with assistant content requests the title once.
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith(
+          'generate_title',
+          expect.objectContaining({
+            conversationId: 'conv-test',
+            model: expect.any(String),
+          }),
+        ),
+      );
 
       await act(async () => {
-        fireEvent.click(
-          screen.getByRole('button', { name: /save conversation/i }),
-        );
+        fireEvent.click(screen.getByTestId('auto-save-notice-ack'));
+      });
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith(
+          'set_config_field',
+          expect.objectContaining({
+            key: 'auto_save_notice_acknowledged',
+            value: true,
+          }),
+        ),
+      );
+      expect(screen.queryByTestId('auto-save-notice')).not.toBeInTheDocument();
+    });
+
+    it('history wipe during create-on-submit discards stamped identity', async () => {
+      let resolveSave: ((v: { conversation_id: string }) => void) | null = null;
+      enableChannelCaptureWithResponses({});
+      const prev = invoke.getMockImplementation();
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (cmd === 'save_conversation') {
+            return new Promise<{ conversation_id: string }>((resolve) => {
+              resolveSave = resolve;
+            });
+          }
+          if (cmd === 'delete_conversation') {
+            return undefined;
+          }
+          if (prev) return prev(cmd, args);
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => {
+        setAskValue('race me');
+      });
+      act(() => {
+        fireEvent.keyDown(getAskInput(), { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      // Wait until create has entered save (pending).
+      await waitFor(() => expect(resolveSave).not.toBeNull());
+
+      // Free chats while save is in flight.
+      await act(async () => {
+        emitTauriEvent('thuki://history-cleared', null);
       });
 
+      // Save resolves after wipe and would stamp identity without epoch guard.
+      await act(async () => {
+        resolveSave?.({ conversation_id: 'conv-stale' });
+      });
+      await act(async () => {});
+
+      // Identity must not stick; wipe epoch forces unsave of the late stamp.
+      await waitFor(() =>
+        expect(
+          screen.getByRole('button', { name: /save conversation/i }),
+        ).toBeInTheDocument(),
+      );
+      expect(
+        screen.queryByRole('button', { name: /remove from history/i }),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByTestId('auto-save-notice')).not.toBeInTheDocument();
+    });
+
+    it('create-on-submit failure lets Done fall back to full save_conversation', async () => {
+      let saveCalls = 0;
+      enableChannelCaptureWithResponses({
+        save_conversation: { conversation_id: 'conv-fallback' },
+      });
+      const prev = invoke.getMockImplementation();
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (cmd === 'save_conversation') {
+            saveCalls += 1;
+            if (saveCalls === 1) {
+              throw new Error('disk full');
+            }
+            return { conversation_id: 'conv-fallback' };
+          }
+          if (prev) return prev(cmd, args);
+        },
+      );
+
+      render(
+        <ConfigProviderForTest
+          value={{
+            ...DEFAULT_CONFIG,
+            behavior: {
+              ...DEFAULT_CONFIG.behavior,
+              // Notice already acked: full-save fallback must not re-show tip.
+              autoSaveNoticeAcknowledged: true,
+            },
+          }}
+        >
+          <App />
+        </ConfigProviderForTest>,
+      );
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => {
+        setAskValue('recover me');
+      });
+      act(() => {
+        fireEvent.keyDown(getAskInput(), { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      // First create attempt failed; still unsaved mid-stream.
+      await waitFor(() => expect(saveCalls).toBeGreaterThanOrEqual(1));
+      expect(
+        screen.queryByRole('button', { name: /remove from history/i }),
+      ).not.toBeInTheDocument();
+
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'ok' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      await waitFor(() =>
+        expect(
+          screen.getByRole('button', { name: /remove from history/i }),
+        ).toBeInTheDocument(),
+      );
+      expect(saveCalls).toBeGreaterThanOrEqual(2);
+      expect(screen.queryByTestId('auto-save-notice')).not.toBeInTheDocument();
+    });
+
+    it('Done with empty assistant after failed create does not force-save', async () => {
+      enableChannelCaptureWithResponses({});
+      const prev = invoke.getMockImplementation();
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (cmd === 'save_conversation') {
+            throw new Error('disk full');
+          }
+          if (prev) return prev(cmd, args);
+        },
+      );
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => {
+        setAskValue('empty reply');
+      });
+      act(() => {
+        fireEvent.keyDown(getAskInput(), { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+
+      act(() => {
+        // Done with no tokens: assistant content stays empty → Done gate skips.
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      // Only the failed create attempts; no successful identity stamp.
+      expect(
+        screen.queryByRole('button', { name: /remove from history/i }),
+      ).not.toBeInTheDocument();
+    });
+
+    it('second auto-save turn calls persist_message not save_conversation again', async () => {
+      enableChannelCaptureWithResponses({
+        save_conversation: { conversation_id: 'conv-turn2' },
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => {
+        setAskValue('first');
+      });
+      act(() => {
+        fireEvent.keyDown(getAskInput(), { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith(
+          'save_conversation',
+          expect.objectContaining({ messages: expect.any(Array) }),
+        ),
+      );
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'a1' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith(
+          'persist_message',
+          expect.objectContaining({
+            conversationId: 'conv-turn2',
+            role: 'assistant',
+            content: 'a1',
+          }),
+        ),
+      );
+
+      invoke.mockClear();
+      enableChannelCaptureWithResponses({
+        save_conversation: { conversation_id: 'should-not-create' },
+      });
+
+      act(() => {
+        setAskValue('second');
+      });
+      act(() => {
+        fireEvent.keyDown(getAskInput(), { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'a2' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith(
+          'persist_message',
+          expect.objectContaining({
+            conversationId: 'conv-turn2',
+            content: 'second',
+          }),
+        ),
+      );
       expect(invoke).toHaveBeenCalledWith(
-        'save_conversation',
+        'persist_message',
         expect.objectContaining({
-          messages: expect.any(Array),
+          conversationId: 'conv-turn2',
+          role: 'assistant',
+          content: 'a2',
         }),
+      );
+      expect(invoke).not.toHaveBeenCalledWith(
+        'save_conversation',
+        expect.anything(),
+      );
+    });
+
+    it('history-cleared event resets saved identity without wiping messages', async () => {
+      enableChannelCaptureWithResponses({
+        save_conversation: { conversation_id: 'conv-clear-live' },
+      });
+
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => {
+        setAskValue('keep me');
+      });
+      act(() => {
+        fireEvent.keyDown(getAskInput(), { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      act(() => {
+        getLastChannel()?.simulateMessage({ type: 'Token', data: 'reply' });
+        getLastChannel()?.simulateMessage({ type: 'Done' });
+      });
+      await act(async () => {});
+      await waitFor(() =>
+        expect(
+          screen.getByRole('button', { name: /remove from history/i }),
+        ).toBeInTheDocument(),
+      );
+
+      await act(async () => {
+        emitTauriEvent('thuki://history-cleared', null);
+      });
+
+      await waitFor(() =>
+        expect(
+          screen.getByRole('button', { name: /save conversation/i }),
+        ).toBeInTheDocument(),
+      );
+      expect(screen.getByText('keep me')).toBeInTheDocument();
+      expect(screen.getByText('reply')).toBeInTheDocument();
+    });
+
+    it('auto-save notice Settings CTA deep-links without flipping auto-save', async () => {
+      enableChannelCaptureWithResponses({
+        save_conversation: { conversation_id: 'conv-notice' },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+      act(() => {
+        setAskValue('question');
+      });
+      act(() => {
+        fireEvent.keyDown(getAskInput(), { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      // Notice shows on submit create, not only after Done.
+      expect(await screen.findByTestId('auto-save-notice')).toBeInTheDocument();
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('auto-save-notice-settings'));
+      });
+      expect(invoke).toHaveBeenCalledWith(
+        'open_settings_to_behavior_auto_save',
+      );
+    });
+
+    it('does not show auto-save notice when already acknowledged in config', async () => {
+      enableChannelCaptureWithResponses({
+        save_conversation: { conversation_id: 'conv-acked' },
+      });
+      render(
+        <ConfigProviderForTest
+          value={{
+            ...DEFAULT_CONFIG,
+            behavior: {
+              ...DEFAULT_CONFIG.behavior,
+              autoSaveNoticeAcknowledged: true,
+            },
+          }}
+        >
+          <App />
+        </ConfigProviderForTest>,
+      );
+      await act(async () => {});
+      await showOverlay();
+      act(() => {
+        setAskValue('q');
+      });
+      act(() => {
+        fireEvent.keyDown(getAskInput(), { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith(
+          'save_conversation',
+          expect.objectContaining({ messages: expect.any(Array) }),
+        ),
+      );
+      expect(screen.queryByTestId('auto-save-notice')).not.toBeInTheDocument();
+    });
+
+    it('auto-save notice ack write failure restores the tip', async () => {
+      enableChannelCaptureWithResponses({
+        save_conversation: { conversation_id: 'conv-ack-fail' },
+      });
+      const prev = invoke.getMockImplementation();
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (
+            cmd === 'set_config_field' &&
+            (args as { key?: string } | undefined)?.key ===
+              'auto_save_notice_acknowledged'
+          ) {
+            throw new Error('write failed');
+          }
+          if (prev) return prev(cmd, args);
+        },
+      );
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+      act(() => {
+        setAskValue('q');
+      });
+      act(() => {
+        fireEvent.keyDown(getAskInput(), { key: 'Enter', shiftKey: false });
+      });
+      await act(async () => {});
+      expect(await screen.findByTestId('auto-save-notice')).toBeInTheDocument();
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('auto-save-notice-ack'));
+      });
+      await waitFor(() =>
+        expect(screen.getByTestId('auto-save-notice')).toBeInTheDocument(),
       );
     });
 
@@ -3044,22 +3535,18 @@ describe('App', () => {
         getLastChannel()?.simulateMessage({ type: 'Token', data: 'answer' });
         getLastChannel()?.simulateMessage({ type: 'Done' });
       });
+      await act(async () => {});
 
-      // Save the conversation first
-      await act(async () => {
-        fireEvent.click(
-          screen.getByRole('button', { name: /save conversation/i }),
-        );
-      });
-
-      // Button should now read "Remove from history"
-      expect(
-        screen.getByRole('button', { name: /remove from history/i }),
-      ).toBeInTheDocument();
+      // Auto-save already filled the bookmark after Done.
+      await waitFor(() =>
+        expect(
+          screen.getByRole('button', { name: /remove from history/i }),
+        ).toBeInTheDocument(),
+      );
 
       invoke.mockClear();
 
-      // Click again to unsave
+      // Click to unsave
       await act(async () => {
         fireEvent.click(
           screen.getByRole('button', { name: /remove from history/i }),
@@ -3098,15 +3585,16 @@ describe('App', () => {
         getLastChannel()?.simulateMessage({ type: 'Token', data: 'Hi' });
         getLastChannel()?.simulateMessage({ type: 'Done' });
       });
+      await act(async () => {});
 
-      // Save
-      await act(async () => {
-        fireEvent.click(
-          screen.getByRole('button', { name: /save conversation/i }),
-        );
-      });
+      // Auto-save after Done
+      await waitFor(() =>
+        expect(
+          screen.getByRole('button', { name: /remove from history/i }),
+        ).toBeInTheDocument(),
+      );
 
-      // Reopen - bookmark should reset (save button enabled again)
+      // Reopen - session resets; history icon in ask-bar
       enableChannelCapture();
       await showOverlay();
 
@@ -3121,7 +3609,7 @@ describe('App', () => {
         list_conversations: [],
       });
 
-      render(<App />);
+      renderAppNoAutoSave();
       await act(async () => {});
       await showOverlay();
 
@@ -3164,7 +3652,7 @@ describe('App', () => {
         list_conversations: [],
       });
 
-      render(<App />);
+      renderAppNoAutoSave();
       await act(async () => {});
       await showOverlay();
 
@@ -3209,7 +3697,7 @@ describe('App', () => {
     it('handleNewConversation resets directly when conversation is already saved', async () => {
       enableChannelCaptureWithResponses({
         list_conversations: [],
-        save_conversation: 'saved-id',
+        save_conversation: { conversation_id: 'saved-id' },
       });
 
       render(<App />);
@@ -3229,13 +3717,14 @@ describe('App', () => {
         getLastChannel()?.simulateMessage({ type: 'Token', data: 'answer' });
         getLastChannel()?.simulateMessage({ type: 'Done' });
       });
+      await act(async () => {});
 
-      // Save the conversation
-      await act(async () => {
-        fireEvent.click(
-          screen.getByRole('button', { name: /save conversation/i }),
-        );
-      });
+      // Auto-save fills the bookmark after Done.
+      await waitFor(() =>
+        expect(
+          screen.getByRole('button', { name: /remove from history/i }),
+        ).toBeInTheDocument(),
+      );
 
       // Click + (already saved → no confirmation, direct reset)
       await act(async () => {
@@ -3254,7 +3743,7 @@ describe('App', () => {
         save_image_command: '/tmp/img.jpg',
       });
 
-      render(<App />);
+      renderAppNoAutoSave();
       await act(async () => {});
       await showOverlay();
 
@@ -3314,10 +3803,10 @@ describe('App', () => {
     it('handleNewConversation saves then resets on Save & Start New', async () => {
       enableChannelCaptureWithResponses({
         list_conversations: [],
-        save_conversation: 'saved-id',
+        save_conversation: { conversation_id: 'saved-id' },
       });
 
-      render(<App />);
+      renderAppNoAutoSave();
       await act(async () => {});
       await showOverlay();
 
@@ -3357,18 +3846,18 @@ describe('App', () => {
     });
 
     it('handleSaveAndNew aborts reset when save fails', async () => {
-      invoke.mockImplementation(async (cmd: string) => {
-        if (cmd === 'get_model_picker_state')
-          return {
-            active: 'gemma4:e2b',
-            all: ['gemma4:e2b'],
-            ollamaReachable: true,
-          };
-        if (cmd === 'list_conversations') return [];
-        if (cmd === 'save_conversation') throw new Error('disk full');
+      enableChannelCaptureWithResponses({
+        list_conversations: [],
       });
+      const prev = invoke.getMockImplementation();
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (cmd === 'save_conversation') throw new Error('disk full');
+          if (prev) return prev(cmd, args);
+        },
+      );
 
-      render(<App />);
+      renderAppNoAutoSave();
       await act(async () => {});
       await showOverlay();
 
@@ -3435,7 +3924,7 @@ describe('App', () => {
         ],
       });
 
-      render(<App />);
+      renderAppNoAutoSave();
       await act(async () => {});
       await showOverlay();
 
@@ -3479,28 +3968,26 @@ describe('App', () => {
     it('handleSaveAndLoad aborts load when save_conversation fails', async () => {
       // Bug: without the early return on save failure, the load would still run
       // and could overwrite the current session with an unrelated conversation.
-      invoke.mockImplementation(async (cmd: string) => {
-        if (cmd === 'get_model_picker_state')
-          return {
-            active: 'gemma4:e2b',
-            all: ['gemma4:e2b'],
-            ollamaReachable: true,
-          };
-        if (cmd === 'list_conversations')
-          return [
-            {
-              id: 'c2',
-              title: 'Other chat',
-              model: 'gemma4:e2b',
-              updated_at: 1,
-              message_count: 1,
-            },
-          ];
-        if (cmd === 'save_conversation') throw new Error('disk full');
-        // load_conversation must NOT be called
+      enableChannelCaptureWithResponses({
+        list_conversations: [
+          {
+            id: 'c2',
+            title: 'Other chat',
+            model: 'gemma4:e2b',
+            updated_at: 1,
+            message_count: 1,
+          },
+        ],
       });
+      const prev = invoke.getMockImplementation();
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (cmd === 'save_conversation') throw new Error('disk full');
+          if (prev) return prev(cmd, args);
+        },
+      );
 
-      render(<App />);
+      renderAppNoAutoSave();
       await act(async () => {});
       await showOverlay();
 
@@ -3586,13 +4073,14 @@ describe('App', () => {
         getLastChannel()?.simulateMessage({ type: 'Token', data: 'a' });
         getLastChannel()?.simulateMessage({ type: 'Done' });
       });
+      await act(async () => {});
 
-      // Save the conversation → isSaved = true
-      await act(async () => {
-        fireEvent.click(
-          screen.getByRole('button', { name: /save conversation/i }),
-        );
-      });
+      // Auto-save after Done → isSaved = true
+      await waitFor(() =>
+        expect(
+          screen.getByRole('button', { name: /remove from history/i }),
+        ).toBeInTheDocument(),
+      );
 
       // Open chat history
       await act(async () => {

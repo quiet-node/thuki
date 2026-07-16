@@ -496,6 +496,48 @@ describe('ConversationView', () => {
       });
       expect(saveBtn).not.toBeDisabled();
     });
+
+    it('shows floating auto-save tip under bookmark when requested', () => {
+      const onAck = vi.fn();
+      const onSettings = vi.fn();
+      render(
+        <ConversationView
+          messages={[]}
+          isGenerating={false}
+          onClose={vi.fn()}
+          onSave={vi.fn()}
+          isSaved={true}
+          canSave={true}
+          showAutoSaveNotice
+          onAutoSaveNoticeAcknowledge={onAck}
+          onAutoSaveNoticeSettings={onSettings}
+        />,
+      );
+      const tip = screen.getByTestId('auto-save-notice');
+      expect(tip).toBeInTheDocument();
+      // Floating tip: not a full-width chat strip insert.
+      expect(tip.className).not.toMatch(/border-b/);
+      expect(tip.parentElement?.style.position).toBe('fixed');
+      expect(screen.getByTestId('auto-save-bookmark')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('auto-save-notice-ack'));
+      expect(onAck).toHaveBeenCalledOnce();
+      fireEvent.click(screen.getByTestId('auto-save-notice-settings'));
+      expect(onSettings).toHaveBeenCalledOnce();
+    });
+
+    it('hides auto-save notice when showAutoSaveNotice is false', () => {
+      render(
+        <ConversationView
+          messages={[]}
+          isGenerating={false}
+          onClose={vi.fn()}
+          onSave={vi.fn()}
+          isSaved={true}
+          canSave={true}
+        />,
+      );
+      expect(screen.queryByTestId('auto-save-notice')).not.toBeInTheDocument();
+    });
   });
 
   describe('Thinking props forwarding', () => {

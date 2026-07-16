@@ -89,6 +89,23 @@ describe('WindowControls', () => {
     expect(onSave).toHaveBeenCalledTimes(1);
   });
 
+  it('attaches bookmarkButtonRef and saveButtonTestId to the save button', () => {
+    const bookmarkButtonRef = { current: null as HTMLButtonElement | null };
+    render(
+      <WindowControls
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+        canSave
+        isSaved
+        bookmarkButtonRef={bookmarkButtonRef}
+        saveButtonTestId="auto-save-bookmark"
+      />,
+    );
+    const btn = screen.getByTestId('auto-save-bookmark');
+    expect(btn).toBe(bookmarkButtonRef.current);
+    expect(btn).toHaveAttribute('aria-label', 'Remove from history');
+  });
+
   it('renders active model pill when activeModel and onModelPickerToggle provided', () => {
     render(
       <WindowControls

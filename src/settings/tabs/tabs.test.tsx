@@ -19,14 +19,19 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { invoke } from '@tauri-apps/api/core';
-import { clearEventHandlers } from '../../testUtils/mocks/tauri';
+import { clearEventHandlers, emit, listen } from '../../testUtils/mocks/tauri';
 
 import { ModelTab } from './ModelTab';
 import { DownloadsProvider } from '../../contexts/DownloadsContext';
 import { DisplayTab } from './DisplayTab';
 
 import { AboutTab } from './AboutTab';
-import { BehaviorTab, FREE_SUCCESS_HOLD_MS } from './BehaviorTab';
+import {
+  BehaviorTab,
+  FREE_SUCCESS_HOLD_MS,
+  HISTORY_CLEARED_EVENT,
+  HISTORY_RETENTION_ZERO_ERROR,
+} from './BehaviorTab';
 import type { RawAppConfig } from '../types';
 
 const invokeMock = invoke as unknown as ReturnType<typeof vi.fn>;
@@ -75,6 +80,9 @@ const CONFIG: RawAppConfig = {
     auto_close: false,
     auto_search: true,
     search_notice_acknowledged: false,
+    auto_save_conversations: true,
+    history_retention_days: -1,
+    auto_save_notice_acknowledged: false,
   },
   debug: {
     trace_enabled: false,
@@ -110,6 +118,20 @@ beforeEach(() => {
         settings_snoozed_until: null,
         chat_snoozed_until: null,
       });
+    }
+    // Footprint probes: shape `{ count, bytes }`, not the full config blob.
+    // Default non-zero so Free chats / Free traces stay enabled unless a test
+    // stubs empty or failing stats.
+    if (cmd === 'history_stats') {
+      return Promise.resolve({ count: 1, bytes: 100 });
+    }
+    if (cmd === 'traces_stats') {
+      return Promise.resolve({ count: 1, bytes: 100 });
+    }
+    // Shortening retention probes prune impact; default >0 so confirm-dialog
+    // tests still open unless they stub zero or a throw.
+    if (cmd === 'history_retention_prune_count') {
+      return Promise.resolve(1);
     }
     return Promise.resolve(CONFIG);
   });
@@ -548,6 +570,9 @@ describe('BehaviorTab', () => {
             auto_close: false,
             auto_search: false,
             search_notice_acknowledged: false,
+            auto_save_conversations: true,
+            history_retention_days: -1,
+            auto_save_notice_acknowledged: false,
           },
         }}
         resyncToken={0}
@@ -607,11 +632,11 @@ describe('BehaviorTab', () => {
     vi.useRealTimers();
   });
 
-  it('renders the Text Replacement section with the Auto-replace toggle', () => {
+  it('renders the Text Replacement section with the Auto replace toggle', () => {
     render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
     expect(screen.getByText('Text Replacement')).toBeInTheDocument();
     // Label is the short one-line form; full copy lives in the "?" tooltip.
-    expect(screen.getByText('Auto-replace')).toBeInTheDocument();
+    expect(screen.getByText('Auto replace')).toBeInTheDocument();
     expect(screen.getByRole('switch', { name: TOGGLE_NAME })).toHaveAttribute(
       'aria-checked',
       'false',
@@ -628,6 +653,9 @@ describe('BehaviorTab', () => {
             auto_close: false,
             auto_search: true,
             search_notice_acknowledged: false,
+            auto_save_conversations: true,
+            history_retention_days: -1,
+            auto_save_notice_acknowledged: false,
           },
         }}
         resyncToken={0}
@@ -642,9 +670,9 @@ describe('BehaviorTab', () => {
 
   const CLOSE_NAME = /Close Thuki after replacing selected text/;
 
-  it('renders the Auto-close toggle in the Text Replacement section', () => {
+  it('renders the Auto close toggle in the Text Replacement section', () => {
     render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
-    expect(screen.getByText('Auto-close')).toBeInTheDocument();
+    expect(screen.getByText('Auto close')).toBeInTheDocument();
     expect(screen.getByRole('switch', { name: CLOSE_NAME })).toHaveAttribute(
       'aria-checked',
       'false',
@@ -661,6 +689,9 @@ describe('BehaviorTab', () => {
             auto_close: true,
             auto_search: true,
             search_notice_acknowledged: false,
+            auto_save_conversations: true,
+            history_retention_days: -1,
+            auto_save_notice_acknowledged: false,
           },
         }}
         resyncToken={0}
@@ -686,7 +717,7 @@ describe('BehaviorTab', () => {
 
   it('opens Text Replacement help tooltips upward so they are not clipped at the bottom edge', () => {
     render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
-    const help = screen.getByRole('button', { name: 'About Auto-replace' });
+    const help = screen.getByRole('button', { name: 'About Auto replace' });
     fireEvent.mouseEnter(help.parentElement!);
     // placement="top" positions the tooltip box with a `translate(..., -100%)`
     // transform (it sits above the trigger).
@@ -1000,15 +1031,20 @@ describe('BehaviorTab', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
 
-    expect(screen.getByText('Retention')).toBeInTheDocument();
+    // History + Diagnostics both use the short "Retention" label.
+    expect(screen.getAllByText('Retention').length).toBeGreaterThanOrEqual(2);
     const input = screen.getByRole('spinbutton', { name: RETENTION_NAME });
     expect(input).toHaveValue(7);
-    expect(screen.getByText('days')).toBeInTheDocument();
+    // History retention also shows a "days" unit above Diagnostics.
+    expect(screen.getAllByText('days').length).toBeGreaterThanOrEqual(1);
 
-    // The compact explanation lives only inside the "?" affordance.
-    fireEvent.mouseEnter(
-      screen.getByRole('button', { name: 'About Retention' }).parentElement!,
-    );
+    // Compact explanation lives only inside the Diagnostics "?" affordance.
+    // Both History and Diagnostics expose "About Retention"; pick the traces one.
+    const aboutRetention = screen
+      .getAllByRole('button', { name: 'About Retention' })
+      .find((btn) => btn.closest('#dev-diagnostics') != null);
+    expect(aboutRetention).toBeTruthy();
+    fireEvent.mouseEnter(aboutRetention!.parentElement!);
     expect(screen.getByText(/kept on disk/)).toBeInTheDocument();
   });
 
@@ -1154,5 +1190,758 @@ describe('BehaviorTab', () => {
       />,
     );
     expect(input).toHaveValue(45);
+  });
+
+  it('renders History with Auto save on by default', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    expect(screen.getByText('History')).toBeInTheDocument();
+    expect(screen.getByText('Auto save')).toBeInTheDocument();
+    expect(screen.getByText('Retention')).toBeInTheDocument();
+    expect(screen.getByText('Chats')).toBeInTheDocument();
+    expect(
+      screen.getByRole('switch', {
+        name: 'Auto-save completed chats to history',
+      }),
+    ).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('history-retention-input')).toHaveValue(-1);
+  });
+
+  it('highlights Auto-save with wiggle then clears via timeout callback', () => {
+    vi.useFakeTimers();
+    const onDone = vi.fn();
+    render(
+      <BehaviorTab
+        config={CONFIG}
+        resyncToken={0}
+        onSaved={() => {}}
+        highlightAutoSaveNonce={1}
+        onHighlightAutoSaveDone={onDone}
+      />,
+    );
+    expect(screen.getByTestId('auto-save-conversations-row')).toHaveAttribute(
+      'data-highlight',
+      'true',
+    );
+    expect(screen.getByTestId('auto-save-wiggle')).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(7200);
+    });
+    expect(onDone).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('changing history retention to forever writes without confirm', async () => {
+    const onSaved = vi.fn();
+    const cfg = {
+      ...CONFIG,
+      behavior: { ...CONFIG.behavior, history_retention_days: 30 },
+    };
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === 'set_config_field') {
+        const a = args as { value: number };
+        return {
+          ...cfg,
+          behavior: { ...cfg.behavior, history_retention_days: a.value },
+        };
+      }
+      return undefined;
+    });
+    render(<BehaviorTab config={cfg} resyncToken={0} onSaved={onSaved} />);
+    const input = screen.getByTestId('history-retention-input');
+    fireEvent.change(input, { target: { value: '-1' } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        'set_config_field',
+        expect.objectContaining({
+          section: 'behavior',
+          key: 'history_retention_days',
+          value: -1,
+        }),
+      ),
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith('prune_conversation_history');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('finite history retention cancel reverts draft and does not write', async () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByTestId('history-retention-input');
+    fireEvent.change(input, { target: { value: '7' } });
+    fireEvent.blur(input);
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument(),
+    );
+    expect(input).toHaveValue(-1);
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      'set_config_field',
+      expect.objectContaining({ key: 'history_retention_days' }),
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith('prune_conversation_history');
+  });
+
+  it('finite history retention confirm writes config and prunes', async () => {
+    const onSaved = vi.fn();
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === 'set_config_field') {
+        const a = args as { value: number };
+        return {
+          ...CONFIG,
+          behavior: {
+            ...CONFIG.behavior,
+            history_retention_days: a.value,
+          },
+        };
+      }
+      if (cmd === 'history_retention_prune_count') return 2;
+      if (cmd === 'prune_conversation_history') return 2;
+      if (cmd === 'history_stats') return { count: 1, bytes: 10 };
+      return undefined;
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={onSaved} />);
+    const input = screen.getByTestId('history-retention-input');
+    fireEvent.change(input, { target: { value: '14' } });
+    fireEvent.blur(input);
+    fireEvent.click(await screen.findByRole('button', { name: 'Acknowledge' }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        'set_config_field',
+        expect.objectContaining({
+          key: 'history_retention_days',
+          value: 14,
+        }),
+      ),
+    );
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('prune_conversation_history'),
+    );
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('history_stats'),
+    );
+    expect(onSaved).toHaveBeenCalled();
+  });
+
+  it('shortening retention with zero prune count commits without dialog', async () => {
+    const onSaved = vi.fn();
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === 'history_retention_prune_count') return 0;
+      if (cmd === 'set_config_field') {
+        const a = args as { value: number };
+        return {
+          ...CONFIG,
+          behavior: {
+            ...CONFIG.behavior,
+            history_retention_days: a.value,
+          },
+        };
+      }
+      if (cmd === 'prune_conversation_history') return 0;
+      if (cmd === 'history_stats') return { count: 0, bytes: 0 };
+      return undefined;
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={onSaved} />);
+    const input = screen.getByTestId('history-retention-input');
+    fireEvent.change(input, { target: { value: '7' } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('history_retention_prune_count', {
+        days: 7,
+      }),
+    );
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        'set_config_field',
+        expect.objectContaining({
+          key: 'history_retention_days',
+          value: 7,
+        }),
+      ),
+    );
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('prune_conversation_history'),
+    );
+    expect(onSaved).toHaveBeenCalled();
+  });
+
+  it('shortening retention with prune count opens confirm dialog', async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'history_retention_prune_count') return 2;
+      if (cmd === 'history_stats') return { count: 2, bytes: 50 };
+      return undefined;
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByTestId('history-retention-input');
+    fireEvent.change(input, { target: { value: '7' } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('history_retention_prune_count', {
+        days: 7,
+      }),
+    );
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      'set_config_field',
+      expect.objectContaining({ key: 'history_retention_days' }),
+    );
+  });
+
+  it('shortening retention probe failure fails closed to confirm dialog', async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'history_retention_prune_count') {
+        throw new Error('db locked');
+      }
+      if (cmd === 'history_stats') return { count: 1, bytes: 10 };
+      return undefined;
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByTestId('history-retention-input');
+    fireEvent.change(input, { target: { value: '14' } });
+    fireEvent.blur(input);
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      'set_config_field',
+      expect.objectContaining({ key: 'history_retention_days' }),
+    );
+  });
+
+  it('history retention confirm copy uses singular day for 1', async () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByTestId('history-retention-input');
+    fireEvent.change(input, { target: { value: '1' } });
+    fireEvent.blur(input);
+    expect(
+      await screen.findByText(/older than 1 day will be permanently deleted/),
+    ).toBeInTheDocument();
+  });
+
+  it('shows saved-chat footprint subtext under Free chats', async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'history_stats') return { count: 12, bytes: 4404019 };
+      return undefined;
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    expect(
+      await screen.findByText('12 chats · 4.2 MB on disk'),
+    ).toBeInTheDocument();
+  });
+
+  it('hides history subtext when history_stats fails', async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'history_stats') throw new Error('db locked');
+      return undefined;
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('clear-all-history')).toBeEnabled(),
+    );
+    expect(screen.queryByText(/on disk/)).not.toBeInTheDocument();
+    expect(screen.queryByText('No saved chats yet')).not.toBeInTheDocument();
+  });
+
+  it('greys Free chats when there are no saved chats', async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'history_stats') return { count: 0, bytes: 0 };
+      return undefined;
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    expect(await screen.findByText('No saved chats yet')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Free chats…' })).toBeDisabled();
+  });
+
+  it('keeps Free chats active when chats exist', async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'history_stats') return { count: 5, bytes: 1000 };
+      return undefined;
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    expect(
+      await screen.findByText('5 chats · 1000 B on disk'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Free chats…' })).toBeEnabled();
+  });
+
+  it('leaves Free chats active while history count is unknown', async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'history_stats') throw new Error('nope');
+      return undefined;
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Free chats…' })).toBeEnabled(),
+    );
+  });
+
+  it('free chats invoke failure is swallowed without history-cleared', async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'history_stats') return { count: 2, bytes: 50 };
+      if (cmd === 'clear_all_conversations') throw new Error('db locked');
+      return undefined;
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await screen.findByText('2 chats · 50 B on disk');
+    fireEvent.click(screen.getByTestId('clear-all-history'));
+    fireEvent.click(screen.getByRole('button', { name: 'Free chats' }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('clear_all_conversations'),
+    );
+    expect(emit).not.toHaveBeenCalledWith(HISTORY_CLEARED_EVENT);
+  });
+
+  it('free chats only runs after confirm', async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'history_stats') return { count: 3, bytes: 90 };
+      return undefined;
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await screen.findByText('3 chats · 90 B on disk');
+    fireEvent.click(screen.getByTestId('clear-all-history'));
+    expect(invokeMock).not.toHaveBeenCalledWith('clear_all_conversations');
+    fireEvent.click(screen.getByRole('button', { name: 'Free chats' }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('clear_all_conversations'),
+    );
+  });
+
+  it('free chats emits history-cleared and refreshes stats after success', async () => {
+    const onCleared = vi.fn();
+    await listen(HISTORY_CLEARED_EVENT, onCleared);
+    let freed = false;
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'history_stats')
+        return freed ? { count: 0, bytes: 0 } : { count: 3, bytes: 900 };
+      if (cmd === 'clear_all_conversations') {
+        freed = true;
+        return undefined;
+      }
+      return undefined;
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await screen.findByText('3 chats · 900 B on disk');
+    fireEvent.click(screen.getByTestId('clear-all-history'));
+    fireEvent.click(screen.getByRole('button', { name: 'Free chats' }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('clear_all_conversations'),
+    );
+    await waitFor(() =>
+      expect(emit).toHaveBeenCalledWith(HISTORY_CLEARED_EVENT),
+    );
+    expect(onCleared).toHaveBeenCalled();
+    expect(await screen.findByText('No saved chats yet')).toBeInTheDocument();
+  });
+
+  it('free chats cancel does not delete', async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'history_stats') return { count: 2, bytes: 40 };
+      return undefined;
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await screen.findByText('2 chats · 40 B on disk');
+    fireEvent.click(screen.getByTestId('clear-all-history'));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument(),
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith('clear_all_conversations');
+  });
+
+  it('draws Free chats success tick then settles disabled', async () => {
+    vi.useFakeTimers();
+    stubReducedMotion(false);
+    let freed = false;
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'history_stats')
+        return freed ? { count: 0, bytes: 0 } : { count: 3, bytes: 900 };
+      if (cmd === 'clear_all_conversations') {
+        freed = true;
+        return undefined;
+      }
+      return undefined;
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('button', { name: 'Free chats…' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Free chats…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Free chats' }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const tick = screen.getByRole('button', { name: 'Chats freed' });
+    expect(tick).toBeDisabled();
+    expect(tick).toHaveAttribute('data-freed', 'true');
+    expect(tick.querySelector('svg')).not.toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(FREE_SUCCESS_HOLD_MS);
+    });
+    const settled = screen.getByRole('button', { name: 'Free chats…' });
+    expect(settled).toBeDisabled();
+    expect(settled).not.toHaveAttribute('data-freed');
+  });
+
+  it('skips Free chats success tick under reduced motion', async () => {
+    stubReducedMotion(true);
+    let freed = false;
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'history_stats')
+        return freed ? { count: 0, bytes: 0 } : { count: 3, bytes: 900 };
+      if (cmd === 'clear_all_conversations') {
+        freed = true;
+        return undefined;
+      }
+      return undefined;
+    });
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await screen.findByText('3 chats · 900 B on disk');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Free chats…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Free chats' }));
+
+    expect(await screen.findByText('No saved chats yet')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Chats freed' })).toBeNull();
+    const btn = screen.getByRole('button', { name: 'Free chats…' });
+    expect(btn).toBeDisabled();
+    expect(btn).not.toHaveAttribute('data-freed');
+  });
+
+  it('lengthening history retention applies without confirm dialog', async () => {
+    const onSaved = vi.fn();
+    const cfg = {
+      ...CONFIG,
+      behavior: { ...CONFIG.behavior, history_retention_days: 7 },
+    };
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === 'set_config_field') {
+        const a = args as { value: number };
+        return {
+          ...cfg,
+          behavior: { ...cfg.behavior, history_retention_days: a.value },
+        };
+      }
+      if (cmd === 'prune_conversation_history') return 0;
+      return undefined;
+    });
+    render(<BehaviorTab config={cfg} resyncToken={0} onSaved={onSaved} />);
+    const input = screen.getByTestId('history-retention-input');
+    fireEvent.change(input, { target: { value: '30' } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        'set_config_field',
+        expect.objectContaining({
+          key: 'history_retention_days',
+          value: 30,
+        }),
+      ),
+    );
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('prune_conversation_history'),
+    );
+  });
+
+  it('history retention keeps unparseable raw text then reverts on blur', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByTestId('history-retention-input');
+    fireEvent.change(input, { target: { value: '-' } });
+    expect(input).toHaveValue(null);
+    fireEvent.blur(input);
+    expect(input).toHaveValue(-1);
+  });
+
+  it('history retention Enter on unparseable value reverts without apply', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByTestId(
+      'history-retention-input',
+    ) as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: '-' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(input).toHaveValue(-1);
+    expect(screen.queryByTestId('history-retention-error')).toBeNull();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      'history_retention_prune_count',
+      expect.anything(),
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      'set_config_field',
+      expect.objectContaining({ key: 'history_retention_days' }),
+    );
+  });
+
+  it('shortening finite retention with prune count still opens confirm', async () => {
+    const cfg = {
+      ...CONFIG,
+      behavior: { ...CONFIG.behavior, history_retention_days: 30 },
+    };
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'history_retention_prune_count') return 3;
+      if (cmd === 'history_stats') return { count: 3, bytes: 90 };
+      return undefined;
+    });
+    render(<BehaviorTab config={cfg} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByTestId('history-retention-input');
+    fireEvent.change(input, { target: { value: '7' } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('history_retention_prune_count', {
+        days: 7,
+      }),
+    );
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      'set_config_field',
+      expect.objectContaining({ key: 'history_retention_days' }),
+    );
+  });
+
+  it('history retention blur of same committed value is a no-op write', async () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByTestId('history-retention-input');
+    fireEvent.change(input, { target: { value: '-1' } });
+    fireEvent.blur(input);
+    await act(async () => {});
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      'set_config_field',
+      expect.objectContaining({ key: 'history_retention_days' }),
+    );
+  });
+
+  it('history retention rejects 0 with inline error and does not write', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByTestId('history-retention-input');
+    fireEvent.change(input, { target: { value: '0' } });
+    fireEvent.blur(input);
+    // Keep invalid "0" visible so the user can fix it; never silent-revert.
+    expect(input).toHaveValue(0);
+    expect(screen.getByTestId('history-retention-error')).toHaveTextContent(
+      HISTORY_RETENTION_ZERO_ERROR,
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      'set_config_field',
+      expect.objectContaining({ key: 'history_retention_days' }),
+    );
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('history retention clears zero-error when user types a valid number', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByTestId('history-retention-input');
+    fireEvent.change(input, { target: { value: '0' } });
+    fireEvent.blur(input);
+    expect(screen.getByTestId('history-retention-error')).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: '7' } });
+    expect(
+      screen.queryByTestId('history-retention-error'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('history retention write failure reverts draft to committed', async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'set_config_field') throw new Error('write failed');
+      return undefined;
+    });
+    render(
+      <BehaviorTab
+        config={{
+          ...CONFIG,
+          behavior: { ...CONFIG.behavior, history_retention_days: 30 },
+        }}
+        resyncToken={0}
+        onSaved={() => {}}
+      />,
+    );
+    const input = screen.getByTestId('history-retention-input');
+    fireEvent.change(input, { target: { value: '-1' } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(input).toHaveValue(30));
+  });
+
+  it('re-seeds history retention on resync when not focused', () => {
+    const { rerender } = render(
+      <BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />,
+    );
+    rerender(
+      <BehaviorTab
+        config={{
+          ...CONFIG,
+          behavior: { ...CONFIG.behavior, history_retention_days: 90 },
+        }}
+        resyncToken={1}
+        onSaved={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('history-retention-input')).toHaveValue(90);
+  });
+
+  it('preserves focused history retention draft across resync', () => {
+    const { rerender } = render(
+      <BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />,
+    );
+    const input = screen.getByTestId('history-retention-input');
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: '12' } });
+    rerender(
+      <BehaviorTab
+        config={{
+          ...CONFIG,
+          behavior: { ...CONFIG.behavior, history_retention_days: 90 },
+        }}
+        resyncToken={1}
+        onSaved={() => {}}
+      />,
+    );
+    expect(input).toHaveValue(12);
+  });
+
+  it('history retention ignores non-Enter keys', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByTestId(
+      'history-retention-input',
+    ) as HTMLInputElement;
+    fireEvent.focus(input);
+    const blurSpy = vi.spyOn(input, 'blur');
+    fireEvent.keyDown(input, { key: 'a' });
+    expect(blurSpy).not.toHaveBeenCalled();
+    blurSpy.mockRestore();
+  });
+
+  it('history retention Enter applies via currentTarget without double commit', async () => {
+    const onSaved = vi.fn();
+    const cfg = {
+      ...CONFIG,
+      behavior: { ...CONFIG.behavior, history_retention_days: 30 },
+    };
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === 'set_config_field') {
+        const a = args as { value: number };
+        return {
+          ...cfg,
+          behavior: { ...cfg.behavior, history_retention_days: a.value },
+        };
+      }
+      return undefined;
+    });
+    render(<BehaviorTab config={cfg} resyncToken={0} onSaved={onSaved} />);
+    const input = screen.getByTestId(
+      'history-retention-input',
+    ) as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: '-1' } });
+    const blurSpy = vi.spyOn(input, 'blur');
+    fireEvent.keyDown(input, { key: 'Enter' });
+    // Enter applies immediately and still blurs for focus cleanup.
+    expect(blurSpy).toHaveBeenCalled();
+    // Synthetic blur must not re-apply (skipHistoryRetentionBlurRef).
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        'set_config_field',
+        expect.objectContaining({
+          key: 'history_retention_days',
+          value: -1,
+        }),
+      ),
+    );
+    expect(
+      invokeMock.mock.calls.filter(
+        (c) =>
+          c[0] === 'set_config_field' &&
+          (c[1] as { key?: string })?.key === 'history_retention_days',
+      ),
+    ).toHaveLength(1);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    blurSpy.mockRestore();
+  });
+
+  it('Enter on shortening retention opens confirm without auto-Acknowledge', async () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByTestId(
+      'history-retention-input',
+    ) as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: '7' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    // queueMicrotask defers dialog open past the Enter keystroke.
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Acknowledge' }),
+    ).toBeInTheDocument();
+    // Destructive focus lands on Cancel, not Acknowledge.
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
+    expect(
+      screen.getByRole('button', { name: 'Acknowledge' }),
+    ).not.toHaveFocus();
+    // No write/prune until the user clicks Acknowledge.
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      'set_config_field',
+      expect.objectContaining({ key: 'history_retention_days' }),
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith('prune_conversation_history');
+  });
+
+  it('shortening retention opens confirm labeled Acknowledge', async () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    const input = screen.getByTestId('history-retention-input');
+    fireEvent.change(input, { target: { value: '7' } });
+    fireEvent.blur(input);
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Acknowledge' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Delete old chats' }),
+    ).toBeNull();
+  });
+
+  it('free chats still shows success tick when history-cleared emit fails', async () => {
+    vi.useFakeTimers();
+    stubReducedMotion(false);
+    let freed = false;
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'history_stats')
+        return freed ? { count: 0, bytes: 0 } : { count: 3, bytes: 900 };
+      if (cmd === 'clear_all_conversations') {
+        freed = true;
+        return undefined;
+      }
+      return undefined;
+    });
+    const emitMock = emit as unknown as ReturnType<typeof vi.fn>;
+    emitMock.mockRejectedValueOnce(new Error('emit failed'));
+
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Free chats…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Free chats' }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Wipe succeeded: green tick must still draw even if emit rejects.
+    const tick = screen.getByRole('button', { name: 'Chats freed' });
+    expect(tick).toBeDisabled();
+    expect(tick).toHaveAttribute('data-freed', 'true');
+    expect(tick.querySelector('svg')).not.toBeNull();
+  });
+
+  it('renders Diagnostics Auto record label', () => {
+    render(<BehaviorTab config={CONFIG} resyncToken={0} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }));
+    expect(screen.getByText('Auto record')).toBeInTheDocument();
   });
 });

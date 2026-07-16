@@ -13,14 +13,16 @@
 use std::path::PathBuf;
 
 use super::defaults::{
-    DEFAULT_ACTIVE_PROVIDER, DEFAULT_AUTO_CLOSE, DEFAULT_AUTO_REPLACE, DEFAULT_AUTO_SEARCH,
-    DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT,
-    DEFAULT_MAX_IMAGES, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
-    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
-    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_SEARCH_NOTICE_ACKNOWLEDGED,
-    DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX, DEFAULT_TEXT_FONT_WEIGHT,
-    DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT, DEFAULT_TRACE_RETENTION_DAYS,
-    DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL, PROVIDER_ID_BUILTIN,
+    DEFAULT_ACTIVE_PROVIDER, DEFAULT_AUTO_CLOSE, DEFAULT_AUTO_REPLACE,
+    DEFAULT_AUTO_SAVE_CONVERSATIONS, DEFAULT_AUTO_SAVE_NOTICE_ACKNOWLEDGED, DEFAULT_AUTO_SEARCH,
+    DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_HISTORY_RETENTION_DAYS,
+    DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
+    DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
+    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
+    DEFAULT_SEARCH_NOTICE_ACKNOWLEDGED, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX,
+    DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT,
+    DEFAULT_TRACE_RETENTION_DAYS, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS,
+    DEFAULT_UPDATER_MANIFEST_URL, HISTORY_RETENTION_FOREVER, PROVIDER_ID_BUILTIN,
     PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
     SLASH_COMMAND_PROMPT_APPENDIX,
 };
@@ -1144,6 +1146,12 @@ fn behavior_section_default_matches_compiled_defaults() {
         b.search_notice_acknowledged,
         DEFAULT_SEARCH_NOTICE_ACKNOWLEDGED
     );
+    assert_eq!(b.auto_save_conversations, DEFAULT_AUTO_SAVE_CONVERSATIONS);
+    assert_eq!(b.history_retention_days, DEFAULT_HISTORY_RETENTION_DAYS);
+    assert_eq!(
+        b.auto_save_notice_acknowledged,
+        DEFAULT_AUTO_SAVE_NOTICE_ACKNOWLEDGED
+    );
 }
 
 #[test]
@@ -1155,6 +1163,18 @@ fn app_config_default_includes_behavior_section_with_compiled_defaults() {
     assert_eq!(
         c.behavior.search_notice_acknowledged,
         DEFAULT_SEARCH_NOTICE_ACKNOWLEDGED
+    );
+    assert_eq!(
+        c.behavior.auto_save_conversations,
+        DEFAULT_AUTO_SAVE_CONVERSATIONS
+    );
+    assert_eq!(
+        c.behavior.history_retention_days,
+        DEFAULT_HISTORY_RETENTION_DAYS
+    );
+    assert_eq!(
+        c.behavior.auto_save_notice_acknowledged,
+        DEFAULT_AUTO_SAVE_NOTICE_ACKNOWLEDGED
     );
 }
 
@@ -1219,6 +1239,108 @@ fn toml_without_behavior_section_deserializes_to_defaults() {
     assert_eq!(
         loaded.behavior.search_notice_acknowledged, DEFAULT_SEARCH_NOTICE_ACKNOWLEDGED,
         "missing search_notice_acknowledged must default false"
+    );
+    assert_eq!(
+        loaded.behavior.auto_save_conversations, DEFAULT_AUTO_SAVE_CONVERSATIONS,
+        "missing auto_save_conversations must default true"
+    );
+    assert_eq!(
+        loaded.behavior.history_retention_days, DEFAULT_HISTORY_RETENTION_DAYS,
+        "missing history_retention_days must default forever (-1)"
+    );
+    assert_eq!(
+        loaded.behavior.auto_save_notice_acknowledged, DEFAULT_AUTO_SAVE_NOTICE_ACKNOWLEDGED,
+        "missing auto_save_notice_acknowledged must default false"
+    );
+}
+
+#[test]
+fn behavior_auto_save_conversations_round_trips_through_load() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[behavior]\nauto_save_conversations = false\n").unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert!(!loaded.behavior.auto_save_conversations);
+}
+
+#[test]
+fn behavior_auto_save_notice_acknowledged_round_trips_through_load() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[behavior]\nauto_save_notice_acknowledged = true\n").unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert!(loaded.behavior.auto_save_notice_acknowledged);
+}
+
+#[test]
+fn behavior_history_retention_minus_one_is_preserved() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[behavior]\nhistory_retention_days = -1\n").unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(
+        loaded.behavior.history_retention_days, HISTORY_RETENTION_FOREVER,
+        "forever sentinel must survive load"
+    );
+}
+
+#[test]
+fn behavior_history_retention_in_bounds_is_preserved() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[behavior]\nhistory_retention_days = 30\n").unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(loaded.behavior.history_retention_days, 30);
+}
+
+#[test]
+fn behavior_history_retention_zero_falls_back_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[behavior]\nhistory_retention_days = 0\n").unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(
+        loaded.behavior.history_retention_days, DEFAULT_HISTORY_RETENTION_DAYS,
+        "0 is out of range and must reset to default forever"
+    );
+}
+
+#[test]
+fn behavior_history_retention_above_max_falls_back_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[behavior]\nhistory_retention_days = 5000\n").unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(
+        loaded.behavior.history_retention_days,
+        DEFAULT_HISTORY_RETENTION_DAYS
+    );
+}
+
+#[test]
+fn behavior_history_retention_below_minus_one_falls_back_to_default() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[behavior]\nhistory_retention_days = -2\n").unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(
+        loaded.behavior.history_retention_days,
+        DEFAULT_HISTORY_RETENTION_DAYS
+    );
+}
+
+#[test]
+fn behavior_history_retention_round_trips_through_toml() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(&path, "[behavior]\nhistory_retention_days = 14\n").unwrap();
+    let config = load_from_path(&path).unwrap();
+    assert_eq!(config.behavior.history_retention_days, 14);
+    atomic_write(&path, &config).unwrap();
+    let reloaded = load_from_path(&path).unwrap();
+    assert_eq!(
+        reloaded.behavior.history_retention_days, config.behavior.history_retention_days,
+        "history_retention_days must round-trip through a TOML write + reload"
     );
 }
 

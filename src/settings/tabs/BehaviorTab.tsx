@@ -3,13 +3,15 @@
  *
  * Web search mode (auto vs on-demand), Text Replacement for `/rewrite` /
  * `/refine` (auto-replace and auto-close; the per-result Replace button is
- * always available regardless of those toggles), and a collapsible
- * Diagnostics block (trace recording, on-disk retention, plus open / free
- * actions for the on-disk trace folder).
+ * always available regardless of those toggles), chat History (auto-save,
+ * retention with confirm, Free chats), and a collapsible Diagnostics block
+ * (trace recording, on-disk retention, plus open / free actions for the
+ * on-disk trace folder).
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 
 import {
   PointingWiggle,
@@ -26,6 +28,7 @@ import { DrawCheckIcon } from '../../components/DrawCheckIcon';
 import { SaveField } from '../components/SaveField';
 import { useDebouncedSave } from '../hooks/useDebouncedSave';
 import { configHelp } from '../configHelpers';
+import { formatHistorySubtext } from '../../utils/formatHistorySubtext';
 import { formatTracesSubtext } from '../../utils/formatTracesSubtext';
 import styles from '../../styles/settings.module.css';
 import type { RawAppConfig } from '../types';
@@ -42,16 +45,23 @@ interface BehaviorTabProps {
   highlightAutoSearchNonce?: number;
   /** Called after the highlight animation completes so the parent can clear. */
   onHighlightAutoSearchDone?: () => void;
+  /**
+   * Deep-link highlight for Auto-save chats. Same nonce contract as
+   * `highlightAutoSearchNonce`.
+   */
+  highlightAutoSaveNonce?: number;
+  /** Called after the Auto-save highlight animation completes. */
+  onHighlightAutoSaveDone?: () => void;
 }
 
-/** Serde shape returned by the `traces_stats` Tauri command. */
-interface TracesStats {
+/** Serde shape returned by `traces_stats` / `history_stats` Tauri commands. */
+interface FootprintStats {
   count: number;
   bytes: number;
 }
 
 /**
- * How long the "Free traces" button shows its drawn green tick after a
+ * How long Free traces / Free chats show the drawn green tick after a
  * successful delete before settling into the disabled/grey empty state.
  *
  * Sized to clear the full `DrawCheckIcon` draw and add a brief dwell: the ring
@@ -73,8 +83,26 @@ const TEXT_REPLACEMENT_HELP =
 const TRACES_HELP =
   'Open the folder where trace recordings are written, or permanently delete every recorded trace from disk (this cannot be undone).';
 
+/** Section "?" for chat History (auto-save + retention + Free chats). */
+const HISTORY_SECTION_HELP =
+  'Local SQLite history for chats you keep. Auto-save writes completed turns without a bookmark click; retention prunes by last activity; Free chats wipes every saved chat.';
+
+/** Row "?" for the Free chats action: irreversible wipe of local history. */
+const FREE_CHATS_HELP =
+  'Permanently delete every chat stored in local history. This cannot be undone.';
+
+/** Broadcast after Free chats succeeds so the overlay drops its saved identity. */
+export const HISTORY_CLEARED_EVENT = 'thuki://history-cleared';
+
 /**
- * Renders Behavior settings: Auto search, Text Replacement toggles, then the
+ * Inline helper when the history retention field holds invalid `0` (backend
+ * would reset; forever is `-1`, finite is `1..=3650`).
+ */
+export const HISTORY_RETENTION_ZERO_ERROR =
+  'Use -1 for forever, or 1–3650 days.';
+
+/**
+ * Renders Behavior settings: Auto search, Text Replacement, History, then the
  * Diagnostics block.
  *
  * @param config Current raw app config from the Settings host.
@@ -82,6 +110,8 @@ const TRACES_HELP =
  * @param onSaved Called with the resolved config after a successful field write.
  * @param highlightAutoSearchNonce Deep-link generation; 0 off, else wiggle + key.
  * @param onHighlightAutoSearchDone Fired when the highlight timeline ends.
+ * @param highlightAutoSaveNonce Deep-link for Auto-save row; 0 off.
+ * @param onHighlightAutoSaveDone Fired when the Auto-save highlight ends.
  */
 export function BehaviorTab({
   config,
@@ -89,8 +119,11 @@ export function BehaviorTab({
   onSaved,
   highlightAutoSearchNonce = 0,
   onHighlightAutoSearchDone,
+  highlightAutoSaveNonce = 0,
+  onHighlightAutoSaveDone,
 }: BehaviorTabProps) {
   const highlightActive = highlightAutoSearchNonce > 0;
+  const highlightAutoSaveActive = highlightAutoSaveNonce > 0;
 
   useEffect(() => {
     if (!highlightActive) return;
@@ -100,12 +133,30 @@ export function BehaviorTab({
     return () => window.clearTimeout(t);
   }, [highlightAutoSearchNonce, highlightActive, onHighlightAutoSearchDone]);
 
+  useEffect(() => {
+    if (!highlightAutoSaveActive) return;
+    const t = window.setTimeout(() => {
+      onHighlightAutoSaveDone?.();
+    }, POINTING_WIGGLE_MS);
+    return () => window.clearTimeout(t);
+  }, [
+    highlightAutoSaveNonce,
+    highlightAutoSaveActive,
+    onHighlightAutoSaveDone,
+  ]);
+
   // Collapsed by default: Diagnostics is a developer affordance, not part of
   // the everyday flow, so it stays folded until explicitly opened.
   const [devOpen, setDevOpen] = useState(false);
   // Two-stage guard for the destructive "Free traces" action: the button only
   // arms the modal; the actual delete runs from the modal's confirm.
   const [confirmFree, setConfirmFree] = useState(false);
+  // Free chats: same confirm-before-mutate pattern as Free traces.
+  const [confirmFreeChats, setConfirmFreeChats] = useState(false);
+  // Pending finite retention change awaiting ConfirmDialog; null when idle.
+  const [pendingHistoryRetention, setPendingHistoryRetention] = useState<
+    number | null
+  >(null);
   // On-disk footprint subtext. `null` hides the line (before the first load
   // resolves, and on any invoke failure, so a backend error never throws into
   // render).
@@ -120,6 +171,13 @@ export function BehaviorTab({
   // empty state (count is 0 by then).
   const [freeSuccess, setFreeSuccess] = useState(false);
   const freeSuccessTimerRef = useRef<number | null>(null);
+
+  // History footprint subtext + count (same null/unknown contract as traces).
+  const [historySubtext, setHistorySubtext] = useState<string | null>(null);
+  const [historyCount, setHistoryCount] = useState<number | null>(null);
+  // Transient success flag for Free chats (green tick hold, then grey empty).
+  const [freeChatsSuccess, setFreeChatsSuccess] = useState(false);
+  const freeChatsSuccessTimerRef = useRef<number | null>(null);
 
   // Trace retention days (debounced save). Mirrors the Keep Warm "Release
   // after" numeric input: a raw string backs the field so a partial "-" or a
@@ -142,6 +200,23 @@ export function BehaviorTab({
     { onSaved },
   );
 
+  // History retention: committed value only writes after Confirm when the new
+  // value is finite (would delete). Forever (-1) applies immediately. Draft
+  // state reverts on Cancel so Cancel never mutates config or prunes.
+  const [historyRetentionCommitted, setHistoryRetentionCommitted] = useState(
+    config.behavior.history_retention_days,
+  );
+  const [rawHistoryRetention, setRawHistoryRetention] = useState(
+    String(config.behavior.history_retention_days),
+  );
+  // Validation message for invalid drafts (currently only `0`); null when clean.
+  const [historyRetentionError, setHistoryRetentionError] = useState<
+    string | null
+  >(null);
+  const historyRetentionFocusedRef = useRef(false);
+  // Enter already applied the draft; skip the synthetic blur re-apply.
+  const skipHistoryRetentionBlurRef = useRef(false);
+
   // Re-seed the retention field from an external resync (e.g. after the loader
   // clamps a saved value back to a valid one), but never while the user is
   // mid-edit, so a background reload cannot clobber an in-progress keystroke.
@@ -153,14 +228,129 @@ export function BehaviorTab({
       setRawRetention(String(config.debug.trace_retention_days));
       resetRetention(config.debug.trace_retention_days);
     }
+    if (!historyRetentionFocusedRef.current) {
+      setHistoryRetentionCommitted(config.behavior.history_retention_days);
+      setRawHistoryRetention(String(config.behavior.history_retention_days));
+      setHistoryRetentionError(null);
+    }
   }
+
+  /**
+   * Loads saved-chat count + content/image footprint for the History subtext.
+   * Shared by mount, post-free, and post-retention prune refresh paths.
+   */
+  const loadHistoryStats = useCallback(async () => {
+    try {
+      const stats = await invoke<FootprintStats>('history_stats');
+      setHistorySubtext(formatHistorySubtext(stats.count, stats.bytes));
+      setHistoryCount(stats.count);
+    } catch {
+      // Hide subtext; drop count to unknown so Free chats stays enabled (same
+      // as Free traces when the probe fails).
+      setHistorySubtext(null);
+      setHistoryCount(null);
+    }
+  }, []);
+
+  /**
+   * Writes a history retention value and, for finite windows, prunes immediately.
+   * Forever (`-1`) only updates config (nothing is deleted).
+   *
+   * @param days Clamped retention days (`-1` or `1..=3650`).
+   */
+  const commitHistoryRetention = useCallback(
+    async (days: number) => {
+      try {
+        const next = await invoke<RawAppConfig>('set_config_field', {
+          section: 'behavior',
+          key: 'history_retention_days',
+          value: days,
+        });
+        setHistoryRetentionCommitted(next.behavior.history_retention_days);
+        setRawHistoryRetention(String(next.behavior.history_retention_days));
+        onSaved(next);
+        if (next.behavior.history_retention_days >= 1) {
+          await invoke('prune_conversation_history');
+          // Prune may have deleted chats; resync footprint for Free chats.
+          await loadHistoryStats();
+        }
+      } catch {
+        // Revert draft to last committed so a failed write never looks applied.
+        setRawHistoryRetention(String(historyRetentionCommitted));
+      }
+    },
+    [historyRetentionCommitted, loadHistoryStats, onSaved],
+  );
+
+  /**
+   * Applies a draft retention value from blur or Enter.
+   *
+   * Forever (`-1`) writes immediately. Finite values that are stricter than
+   * the committed window (including forever → finite, or fewer days) probe
+   * `history_retention_prune_count`: open ConfirmDialog only when ≥1 chat
+   * would be deleted; otherwise commit + prune immediately (no empty
+   * destructive confirm). Probe failure fails closed (still confirm).
+   * Dialog open stays on a microtask so the same Enter keystroke cannot
+   * activate Acknowledge. Lengthening a finite window (e.g. 7 → 30) applies
+   * without the prune dialog; prune still runs and is a no-op delete.
+   * Equal-to-committed values are no-ops. Invalid `0` keeps the raw field and
+   * shows an inline error; it never commits or opens confirm.
+   *
+   * @param days Parsed integer from the retention input.
+   */
+  const applyHistoryRetentionDraft = useCallback(
+    (days: number) => {
+      const clamped = Math.max(-1, Math.min(3650, days));
+      if (clamped === 0) {
+        // 0 is invalid (loader would reset). Keep "0" visible + error; no write.
+        setRawHistoryRetention('0');
+        setHistoryRetentionError(HISTORY_RETENTION_ZERO_ERROR);
+        return;
+      }
+      setHistoryRetentionError(null);
+      if (clamped === historyRetentionCommitted) {
+        setRawHistoryRetention(String(clamped));
+        return;
+      }
+      if (clamped === -1) {
+        void commitHistoryRetention(-1);
+        return;
+      }
+      // Stricter finite window (or forever → finite): confirm only if prune would delete.
+      const shortening =
+        historyRetentionCommitted === -1 || clamped < historyRetentionCommitted;
+      setRawHistoryRetention(String(clamped));
+      if (shortening) {
+        void (async () => {
+          try {
+            const n = await invoke<number>('history_retention_prune_count', {
+              days: clamped,
+            });
+            if (n > 0) {
+              // Defer open so Enter that submitted the field cannot hit the new button.
+              queueMicrotask(() => setPendingHistoryRetention(clamped));
+            } else {
+              await commitHistoryRetention(clamped);
+            }
+          } catch {
+            // Fail closed: still confirm if we cannot probe.
+            queueMicrotask(() => setPendingHistoryRetention(clamped));
+          }
+        })();
+        return;
+      }
+      // Lengthening: write + prune without ConfirmDialog.
+      void commitHistoryRetention(clamped);
+    },
+    [commitHistoryRetention, historyRetentionCommitted],
+  );
 
   // Reads the live trace footprint and formats it for the subtext. Kept in a
   // callback so both the "on expand" effect and the post-delete refresh share
   // one code path.
   const loadTracesStats = useCallback(async () => {
     try {
-      const stats = await invoke<TracesStats>('traces_stats');
+      const stats = await invoke<FootprintStats>('traces_stats');
       setTracesSubtext(formatTracesSubtext(stats.count, stats.bytes));
       setTracesCount(stats.count);
     } catch {
@@ -184,6 +374,18 @@ export function BehaviorTab({
   }, []);
 
   /**
+   * Green tick hold for Free chats after a successful wipe (same timing as
+   * Free traces). Skipped under reduced motion.
+   */
+  const startFreeChatsSuccess = useCallback(() => {
+    if (prefersReducedMotion()) return;
+    setFreeChatsSuccess(true);
+    freeChatsSuccessTimerRef.current = window.setTimeout(() => {
+      setFreeChatsSuccess(false);
+    }, FREE_SUCCESS_HOLD_MS);
+  }, []);
+
+  /**
    * Deletes on-disk traces, resyncs the footprint subtext, and plays the
    * success tick only when the delete itself succeeded.
    */
@@ -199,14 +401,48 @@ export function BehaviorTab({
     if (freed) startFreeSuccess();
   }, [loadTracesStats, startFreeSuccess]);
 
-  // Clear a pending success-hold timer if the tab unmounts mid-animation.
+  /**
+   * Wipes every saved chat after ConfirmDialog. On success: refresh stats,
+   * play the success tick first (so a failed `emit` never steals the green
+   * check), then broadcast `HISTORY_CLEARED_EVENT` so the live chat drops its
+   * saved identity without a second delete.
+   */
+  const freeAllChats = useCallback(async () => {
+    let freed = false;
+    try {
+      await invoke('clear_all_conversations');
+      freed = true;
+    } catch {
+      // Surface nothing destructive-looking; user can retry.
+    }
+    await loadHistoryStats();
+    if (freed) {
+      // Visual success first (same priority as Free traces). Emit is best-effort.
+      startFreeChatsSuccess();
+      try {
+        await emit(HISTORY_CLEARED_EVENT);
+      } catch {
+        // Overlay may miss the clear signal; wipe itself already succeeded.
+      }
+    }
+  }, [loadHistoryStats, startFreeChatsSuccess]);
+
+  // Clear pending success-hold timers if the tab unmounts mid-animation.
   useEffect(() => {
     return () => {
       if (freeSuccessTimerRef.current !== null) {
         window.clearTimeout(freeSuccessTimerRef.current);
       }
+      if (freeChatsSuccessTimerRef.current !== null) {
+        window.clearTimeout(freeChatsSuccessTimerRef.current);
+      }
     };
   }, []);
+
+  // History is always visible on Behavior: load footprint on mount.
+  useEffect(() => {
+    void loadHistoryStats();
+  }, [loadHistoryStats]);
 
   // Fetch the footprint only once the Diagnostics block is opened; a collapsed
   // block never touches disk.
@@ -255,7 +491,7 @@ export function BehaviorTab({
         <SaveField
           section="behavior"
           fieldKey="auto_replace"
-          label="Auto-replace"
+          label="Auto replace"
           helper={configHelp('behavior', 'auto_replace')}
           initialValue={config.behavior.auto_replace}
           resyncToken={resyncToken}
@@ -275,7 +511,7 @@ export function BehaviorTab({
         <SaveField
           section="behavior"
           fieldKey="auto_close"
-          label="Auto-close"
+          label="Auto close"
           helper={configHelp('behavior', 'auto_close')}
           initialValue={config.behavior.auto_close}
           resyncToken={resyncToken}
@@ -290,6 +526,143 @@ export function BehaviorTab({
             />
           )}
         />
+      </Section>
+
+      <Section heading="History" helper={HISTORY_SECTION_HELP}>
+        <div
+          data-testid="auto-save-conversations-row"
+          data-highlight={highlightAutoSaveActive ? 'true' : undefined}
+        >
+          <SaveField
+            section="behavior"
+            fieldKey="auto_save_conversations"
+            label="Auto save"
+            labelAccessory={
+              <PointingWiggle
+                key={highlightAutoSaveNonce}
+                active={highlightAutoSaveActive}
+                testId="auto-save-wiggle"
+              />
+            }
+            helper={configHelp('behavior', 'auto_save_conversations')}
+            initialValue={config.behavior.auto_save_conversations}
+            resyncToken={resyncToken}
+            onSaved={onSaved}
+            rightAlign
+            tooltipPlacement="top"
+            render={(value, setValue) => (
+              <Toggle
+                checked={value}
+                onChange={setValue}
+                ariaLabel="Auto-save completed chats to history"
+              />
+            )}
+          />
+        </div>
+        <SettingRow
+          label="Retention"
+          helper={configHelp('behavior', 'history_retention_days')}
+          tooltipPlacement="top"
+          rightAlign
+        >
+          <span className={styles.genWarmControls}>
+            <input
+              type="number"
+              className={`${styles.keepWarmNumberInput}${
+                historyRetentionError ? ` ${styles.inputError}` : ''
+              }`}
+              value={rawHistoryRetention}
+              min={-1}
+              max={3650}
+              aria-label="Days to keep saved chats"
+              aria-invalid={historyRetentionError ? true : undefined}
+              data-testid="history-retention-input"
+              onFocus={() => {
+                historyRetentionFocusedRef.current = true;
+              }}
+              onChange={(e) => {
+                const n = parseInt(e.target.value, 10);
+                if (Number.isNaN(n)) {
+                  setRawHistoryRetention(e.target.value);
+                  return;
+                }
+                const clamped = Math.max(-1, Math.min(3650, n));
+                setRawHistoryRetention(String(clamped));
+                // Clear stale error as soon as the draft is a valid number.
+                if (clamped !== 0) setHistoryRetentionError(null);
+              }}
+              onBlur={(e) => {
+                historyRetentionFocusedRef.current = false;
+                if (skipHistoryRetentionBlurRef.current) {
+                  skipHistoryRetentionBlurRef.current = false;
+                  return;
+                }
+                // Parse from the DOM value, not React state: blur can race the
+                // last onChange setState and commit a stale draft otherwise.
+                const n = parseInt(e.currentTarget.value, 10);
+                if (Number.isNaN(n)) {
+                  setRawHistoryRetention(String(historyRetentionCommitted));
+                  setHistoryRetentionError(null);
+                  return;
+                }
+                applyHistoryRetentionDraft(n);
+              }}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return;
+                // PreventDefault so Enter cannot also activate a newly focused
+                // dialog button; apply from currentTarget (not blur-only hope).
+                e.preventDefault();
+                e.stopPropagation();
+                historyRetentionFocusedRef.current = false;
+                const n = parseInt(e.currentTarget.value, 10);
+                if (Number.isNaN(n)) {
+                  setRawHistoryRetention(String(historyRetentionCommitted));
+                  setHistoryRetentionError(null);
+                  skipHistoryRetentionBlurRef.current = true;
+                  e.currentTarget.blur();
+                  return;
+                }
+                applyHistoryRetentionDraft(n);
+                // Blur for chrome/focus only; commit already ran above.
+                skipHistoryRetentionBlurRef.current = true;
+                e.currentTarget.blur();
+              }}
+            />
+            <span className={styles.keepWarmUnit}>days</span>
+          </span>
+          {historyRetentionError ? (
+            <div
+              className={styles.rowError}
+              role="alert"
+              data-testid="history-retention-error"
+            >
+              {historyRetentionError}
+            </div>
+          ) : null}
+        </SettingRow>
+        <SettingRow
+          label="Chats"
+          helper={FREE_CHATS_HELP}
+          tooltipPlacement="top"
+          rightAlign
+        >
+          <div className={styles.tracesActions}>
+            <button
+              type="button"
+              className={`${styles.button} ${styles.buttonDestructive}`}
+              data-testid="clear-all-history"
+              data-freed={freeChatsSuccess ? 'true' : undefined}
+              disabled={freeChatsSuccess || historyCount === 0}
+              aria-label={freeChatsSuccess ? 'Chats freed' : undefined}
+              onClick={() => setConfirmFreeChats(true)}
+            >
+              {freeChatsSuccess ? <DrawCheckIcon /> : 'Free chats…'}
+            </button>
+          </div>
+          {historySubtext !== null ? (
+            <div className={styles.tracesSubtext}>{historySubtext}</div>
+          ) : null}
+        </SettingRow>
       </Section>
 
       <div className={styles.devSection}>
@@ -323,7 +696,7 @@ export function BehaviorTab({
             <SaveField
               section="debug"
               fieldKey="trace_enabled"
-              label="Trace recording"
+              label="Auto record"
               helper={configHelp('debug', 'trace_enabled')}
               initialValue={config.debug.trace_enabled}
               resyncToken={resyncToken}
@@ -426,6 +799,46 @@ export function BehaviorTab({
           void freeAllTraces();
         }}
         onCancel={() => setConfirmFree(false)}
+      />
+
+      <ConfirmDialog
+        open={pendingHistoryRetention !== null}
+        title="Shorten chat history retention?"
+        message={
+          pendingHistoryRetention === null
+            ? ''
+            : `Chats with last activity older than ${pendingHistoryRetention} day${pendingHistoryRetention === 1 ? '' : 's'} will be permanently deleted. This cannot be undone. Back up anything you need first.`
+        }
+        confirmLabel="Acknowledge"
+        destructive
+        onConfirm={() => {
+          // Dialog only opens when pending is set; capture then clear before
+          // the async write so a second click cannot double-confirm.
+          const days = pendingHistoryRetention as number;
+          setPendingHistoryRetention(null);
+          setHistoryRetentionError(null);
+          void commitHistoryRetention(days);
+        }}
+        onCancel={() => {
+          setPendingHistoryRetention(null);
+          setRawHistoryRetention(String(historyRetentionCommitted));
+          setHistoryRetentionError(null);
+        }}
+      />
+
+      <ConfirmDialog
+        open={confirmFreeChats}
+        title="Free all saved chats?"
+        message="Every saved chat will be permanently deleted from this Mac. This cannot be undone."
+        confirmLabel="Free chats"
+        destructive
+        onConfirm={() => {
+          setConfirmFreeChats(false);
+          // Wipe, then refresh footprint so the subtext drops to empty. Only a
+          // clean delete plays the success tick and emits history-cleared.
+          void freeAllChats();
+        }}
+        onCancel={() => setConfirmFreeChats(false)}
       />
     </>
   );

@@ -53,6 +53,9 @@ const SAMPLE_CONFIG: RawAppConfig = {
     auto_close: false,
     auto_search: true,
     search_notice_acknowledged: false,
+    auto_save_conversations: true,
+    history_retention_days: -1,
+    auto_save_notice_acknowledged: false,
   },
   debug: {
     trace_enabled: false,

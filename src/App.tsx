@@ -74,6 +74,10 @@ import {
 } from './lib/exportSerializer';
 import { replaceSelection, shouldAutoReplace } from './utils/replaceSelection';
 import { cleanForRender } from './utils/sanitizeAssistantContent';
+import {
+  createConversationOnSubmit,
+  messagesForCreateSave,
+} from './utils/conversationAutoSave';
 import './App.css';
 
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
@@ -81,6 +85,12 @@ const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
 const ONBOARDING_EVENT = 'thuki://onboarding';
+
+/**
+ * Settings › Behavior "Clear all" succeeded. Local session must drop its
+ * conversation id so the UI no longer claims the wiped row is saved.
+ */
+const HISTORY_CLEARED_EVENT = 'thuki://history-cleared';
 
 /**
  * Strips control characters and enforces a length cap on externally-sourced
@@ -610,10 +620,13 @@ function App() {
 
   const {
     conversationId,
+    conversationIdRef,
     isSaved,
     save,
     unsave,
     persistTurn,
+    persistAssistant,
+    requestTitle,
     loadConversation,
     deleteConversation,
     listConversations,
@@ -635,6 +648,53 @@ function App() {
   const autoCloseRef = useRef(false);
 
   /**
+   * Mirror of `config.behavior.autoSaveConversations` for create-on-submit and
+   * turn-complete write paths.
+   */
+  const autoSaveRef = useRef(true);
+
+  /**
+   * When true, the one-shot auto-save chat notice may still show after first save.
+   * Seeded from config; flipped false on Acknowledge (optimistic + persist).
+   */
+  const autoSaveNoticeAckRef = useRef(false);
+
+  /** Active model slug for auto-save without rebinding handleTurnComplete. */
+  const activeModelRef = useRef<string | null>(null);
+
+  /**
+   * Serializes create-on-submit + Done persist so concurrent writes cannot race
+   * into two `save_conversation` rows or reorder user/assistant inserts.
+   */
+  const historyWriteChainRef = useRef(Promise.resolve());
+
+  /**
+   * User message ids already written by create-on-submit `save`. Done skips
+   * re-inserting those users and appends assistant only via `persistAssistant`.
+   */
+  const autoSavedUserMsgIdsRef = useRef(new Set<string>());
+
+  /**
+   * Bumped on Settings free-all (`HISTORY_CLEARED_EVENT`). Create-on-submit
+   * captures the value before `save` and discards a stamp that lands after a
+   * wipe so identity cannot reappear on a deleted DB.
+   */
+  const historyWipeEpochRef = useRef(0);
+
+  /**
+   * Session UI: show the auto-save tip under chat header after first auto-save
+   * while notice is still unacknowledged.
+   */
+  const [showAutoSaveNotice, setShowAutoSaveNotice] = useState(false);
+
+  /**
+   * Live message list for auto-save. Updated after `useModel` each render;
+   * declared here so `handleTurnComplete` can close over it before messages
+   * exist (same pattern as `performReplaceRef`).
+   */
+  const messagesRef = useRef<Message[]>([]);
+
+  /**
    * Sticky rewrite mode: the trigger of the most recent replaceable command
    * (`/rewrite` or `/refine`) in this conversation, or `null`. Plain follow-up
    * turns inherit it so refinements ("make it longer") keep the Replace button;
@@ -653,18 +713,105 @@ function App() {
   );
 
   /**
-   * Persist a completed user/assistant turn to SQLite if the conversation
-   * has been saved. Passed as `onTurnComplete` to `useModel`. When
-   * auto-replace is enabled and the turn was a `/rewrite` or `/refine` over a
-   * selection, dismiss the overlay and write the result back into the source
-   * app (the same flow as the manual Replace button).
+   * Persist a completed user/assistant turn to SQLite.
+   *
+   * When auto-save is on and create-on-submit already stored the user half,
+   * appends the assistant only. When the conversation is not yet saved
+   * (create failed or OCR path completed without streaming), performs a first
+   * full `save` of the in-memory transcript. Later turns with an id append via
+   * `persistTurn`. When auto-save is off, keeps the bookmark-only contract
+   * (`persistTurn` no-ops until Save). Concurrent completes share one write
+   * chain so first-save cannot double-create rows. Identity gates use
+   * `conversationIdRef` so a failed later persist does not drop the create
+   * path into a no-op `save` and lose turns.
+   *
+   * Also runs auto-replace for `/rewrite` / `/refine` when enabled.
    */
   const handleTurnComplete = useCallback(
     async (
       userMsg: Parameters<typeof persistTurn>[0],
       assistantMsg: Parameters<typeof persistTurn>[1],
     ) => {
-      await persistTurn(userMsg, assistantMsg);
+      const write = historyWriteChainRef.current.then(async () => {
+        try {
+          if (autoSaveRef.current) {
+            if (conversationIdRef.current == null) {
+              // Merge final assistant fields into the live list: Done may race
+              // React state for searchFailReason, so prefer onTurnComplete args.
+              const base = messagesRef.current;
+              // Stamp final assistant fields onto the live list. User rows stay
+              // as-is; Done races only matter for the assistant payload.
+              const merged = base.map((m) =>
+                m.id === assistantMsg.id
+                  ? {
+                      ...m,
+                      content: assistantMsg.content,
+                      thinkingContent: assistantMsg.thinkingContent,
+                      fromSearch: assistantMsg.fromSearch,
+                      searchSources: assistantMsg.searchSources,
+                      searchFailReason: assistantMsg.searchFailReason,
+                      modelName: assistantMsg.modelName ?? m.modelName,
+                    }
+                  : m,
+              );
+              // First turn: messagesRef may not yet include the pair if OCR path
+              // setMessages + onTurnComplete in the same tick; ensure both exist.
+              const hasUser = merged.some((m) => m.id === userMsg.id);
+              const hasAsst = merged.some((m) => m.id === assistantMsg.id);
+              const toSave = [
+                ...(hasUser ? [] : [userMsg]),
+                ...merged,
+                ...(hasAsst ? [] : [assistantMsg]),
+              ];
+              // Gate like canSave: need an assistant message body.
+              if (
+                !toSave.some((m) => m.role === 'assistant' && m.content) ||
+                activeModelRef.current == null
+              ) {
+                return;
+              }
+              await save(toSave, activeModelRef.current);
+              if (
+                conversationIdRef.current != null &&
+                !autoSaveNoticeAckRef.current
+              ) {
+                setShowAutoSaveNotice(true);
+              }
+            } else if (autoSavedUserMsgIdsRef.current.has(userMsg.id)) {
+              // Create-on-submit already inserted this user row.
+              autoSavedUserMsgIdsRef.current.delete(userMsg.id);
+              await persistAssistant(assistantMsg);
+            } else {
+              await persistTurn(userMsg, assistantMsg);
+            }
+          } else {
+            await persistTurn(userMsg, assistantMsg);
+          }
+
+          // Defer title LLM until after first assistant body is durable so it
+          // never races create-on-submit mid-stream. `requestTitle` no-ops when
+          // already fired (bookmark / full-save with generateTitle default) or
+          // identity is missing.
+          if (assistantMsg.content) {
+            const base = messagesRef.current;
+            const titleMsgs = base.some(
+              (m) => m.id === assistantMsg.id && m.content,
+            )
+              ? base
+              : [...base.filter((m) => m.id !== assistantMsg.id), assistantMsg];
+            requestTitle(titleMsgs, activeModelRef.current);
+          }
+        } catch {
+          // Best-effort: swallow so Done never surfaces an unhandled rejection.
+          // Do not clear identity here. Create already stamped conversationIdRef;
+          // wiping it would force the next turn into save() which no-ops while
+          // React still thinks isSaved, losing later turns. Failed create leaves
+          // the ref null so the next turn retries save().
+        }
+      });
+      historyWriteChainRef.current = write;
+      await write;
+
       if (shouldAutoReplace(autoReplaceRef.current, assistantMsg, userMsg)) {
         // Strip any stray turn-boundary tokens so auto-replace writes back the
         // exact bytes the bubble shows and the manual Replace button pastes
@@ -672,7 +819,7 @@ function App() {
         void performReplaceRef.current?.(cleanForRender(assistantMsg.content));
       }
     },
-    [persistTurn],
+    [conversationIdRef, persistAssistant, persistTurn, requestTitle, save],
   );
 
   const {
@@ -692,16 +839,54 @@ function App() {
   } = useModel(activeModel, handleTurnComplete);
 
   /**
-   * Mirror of `messages` as a ref so export handlers (and any future
-   * callback that needs a live snapshot of the conversation) can read
-   * the current value without joining the streaming token cadence as a
-   * `useCallback` dependency. `messages` updates on every Token chunk,
-   * which would otherwise reallocate `runFileExport` / `runClipboardCopy`
-   * hundreds of times during a long generation and defeat downstream
-   * memoization.
+   * Keep `messagesRef` current so export handlers and auto-save can read a
+   * live snapshot without joining the streaming token cadence as a
+   * `useCallback` dependency.
    */
-  const messagesRef = useRef(messages);
   messagesRef.current = messages;
+
+  /**
+   * Create-on-submit: when generation starts, try to bulk-insert the user half
+   * (and any prior completed turns) so the bookmark fills before Done.
+   * Guards (auto-save off, already saved, no model, empty user) live in
+   * {@link createConversationOnSubmit}; this effect only schedules the chain.
+   *
+   * Captures `historyWipeEpochRef` so a Free chats wipe that lands while
+   * `save` is in flight cannot leave a stale identity after the DB is empty.
+   */
+  useEffect(() => {
+    if (!isGenerating) return;
+
+    const snapshot = messagesForCreateSave(messagesRef.current);
+    const epoch = historyWipeEpochRef.current;
+    const write = historyWriteChainRef.current.then(async () => {
+      try {
+        await createConversationOnSubmit({
+          getConversationId: () => conversationIdRef.current,
+          isAutoSaveOn: () => autoSaveRef.current,
+          getModel: () => activeModelRef.current,
+          messages: snapshot,
+          save,
+          onUserPersisted: (id) => {
+            autoSavedUserMsgIdsRef.current.add(id);
+          },
+          onShowNotice: () => {
+            setShowAutoSaveNotice(true);
+          },
+          isNoticeAcked: () => autoSaveNoticeAckRef.current,
+        });
+        if (historyWipeEpochRef.current !== epoch) {
+          // Wipe won the race: drop any identity create just stamped.
+          await unsave();
+          autoSavedUserMsgIdsRef.current.clear();
+          setShowAutoSaveNotice(false);
+        }
+      } catch {
+        // Best-effort: Done path retries full save if create never stamped id.
+      }
+    });
+    historyWriteChainRef.current = write;
+  }, [isGenerating, conversationIdRef, save, unsave]);
 
   const inputRef = useRef<HTMLDivElement>(null);
 
@@ -779,12 +964,41 @@ function App() {
   const config = useConfig();
   const quote = config.quote;
 
-  // Keep the auto-replace ref in sync with the latest config so
-  // `handleTurnComplete` can read it without a `config` dependency.
+  // Keep behavior refs in sync so `handleTurnComplete` avoids a `config` dep.
   useEffect(() => {
     autoReplaceRef.current = config.behavior.autoReplace;
     autoCloseRef.current = config.behavior.autoClose;
+    autoSaveRef.current = config.behavior.autoSaveConversations;
+    autoSaveNoticeAckRef.current = config.behavior.autoSaveNoticeAcknowledged;
   }, [config]);
+
+  // Mirror model for the auto-save write path (identity lives on conversationIdRef).
+  useEffect(() => {
+    activeModelRef.current = activeModel;
+  }, [activeModel]);
+
+  /**
+   * Persist auto-save notice dismiss and hide the chat-header tip immediately.
+   */
+  const acknowledgeAutoSaveNotice = useCallback(() => {
+    setShowAutoSaveNotice(false);
+    autoSaveNoticeAckRef.current = true;
+    void invoke('set_config_field', {
+      section: 'behavior',
+      key: 'auto_save_notice_acknowledged',
+      value: true,
+    }).catch(() => {
+      autoSaveNoticeAckRef.current = false;
+      setShowAutoSaveNotice(true);
+    });
+  }, []);
+
+  /**
+   * Open Settings › Behavior with Auto-save highlighted. Does not flip the toggle.
+   */
+  const openAutoSaveNoticeSettings = useCallback(() => {
+    void invoke('open_settings_to_behavior_auto_save');
+  }, []);
 
   /**
    * True when the window is near the screen bottom and should grow upward.
@@ -809,9 +1023,9 @@ function App() {
   }, [isChatMode]);
 
   /**
-   * The bookmark save button is active once the AI has produced at least one
-   * complete response. We check for an assistant message rather than any message
-   * so the button never appears during the very first user-only half-turn.
+   * Manual first-save stays gated on a finished assistant reply. Auto-save can
+   * stamp `isSaved` earlier (create-on-submit with a user-only thread); the
+   * filled bookmark uses `isSaved`, not `canSave`.
    */
   const canSave = !isGenerating && messages.some((m) => m.role === 'assistant');
   const shouldRenderOverlay = overlayState === 'visible';
@@ -1248,6 +1462,7 @@ function App() {
       void refreshModels();
       reset();
       resetHistory();
+      autoSavedUserMsgIdsRef.current.clear();
       setOverlayState('visible');
     },
     [reset, resetHistory, refreshModels],
@@ -1893,6 +2108,7 @@ function App() {
     try {
       if (isSaved) {
         await unsave();
+        autoSavedUserMsgIdsRef.current.clear();
       } else {
         // `save` accepts `string | null` and short-circuits internally when
         // there is no active model, so the no-model guard lives in one
@@ -1918,6 +2134,7 @@ function App() {
         const loaded = await loadConversation(id);
         loadMessages(loaded);
         stickyReplaceCommandRef.current = null;
+        autoSavedUserMsgIdsRef.current.clear();
       } catch {
         // Load failed - current session is preserved intact.
       } finally {
@@ -1971,6 +2188,7 @@ function App() {
       await deleteConversation(id);
       if (id === conversationId) {
         resetHistory();
+        autoSavedUserMsgIdsRef.current.clear();
       }
     },
     [deleteConversation, conversationId, resetHistory],
@@ -1982,6 +2200,7 @@ function App() {
   const resetForNewConversation = useCallback(() => {
     reset();
     resetHistory();
+    autoSavedUserMsgIdsRef.current.clear();
     setIsHistoryOpen(false);
     setIsExportOpen(false);
     setQuery('');
@@ -3616,6 +3835,7 @@ function App() {
     let unlistenVisibility: (() => void) | undefined;
     let unlistenOnboarding: (() => void) | undefined;
     let unlistenAutoPrimeSkipped: (() => void) | undefined;
+    let unlistenHistoryCleared: (() => void) | undefined;
 
     const attachListeners = async () => {
       unlistenVisibility = await listen<OverlayVisibilityPayload>(
@@ -3659,6 +3879,15 @@ function App() {
           ceilingFraction: payload.ceiling_fraction,
         });
       });
+      // Settings cleared SQLite history: drop local conversation identity only
+      // (messages stay on screen; next save creates a fresh row). Bump wipe
+      // epoch first so in-flight create-on-submit discards a post-wipe stamp.
+      unlistenHistoryCleared = await listen(HISTORY_CLEARED_EVENT, () => {
+        historyWipeEpochRef.current += 1;
+        resetHistory();
+        autoSavedUserMsgIdsRef.current.clear();
+        setShowAutoSaveNotice(false);
+      });
       // All listeners registered - safe to let Rust decide what to show on launch.
       await invoke('notify_frontend_ready');
     };
@@ -3668,8 +3897,14 @@ function App() {
       unlistenVisibility?.();
       unlistenOnboarding?.();
       unlistenAutoPrimeSkipped?.();
+      unlistenHistoryCleared?.();
     };
-  }, [handleRestore, replayEntranceAnimation, requestHideOverlay]);
+  }, [
+    handleRestore,
+    replayEntranceAnimation,
+    requestHideOverlay,
+    resetHistory,
+  ]);
 
   /**
    * Combined close handler shared by the keyboard shortcut (Esc/Cmd+W)
@@ -4046,6 +4281,16 @@ function App() {
                                 }
                                 engineWarming={builtinEngineWarming}
                                 engineState={builtinEngineState}
+                                showAutoSaveNotice={
+                                  showAutoSaveNotice &&
+                                  !config.behavior.autoSaveNoticeAcknowledged
+                                }
+                                onAutoSaveNoticeAcknowledge={
+                                  acknowledgeAutoSaveNotice
+                                }
+                                onAutoSaveNoticeSettings={
+                                  openAutoSaveNoticeSettings
+                                }
                               />
                             ) : null}
                           </AnimatePresence>

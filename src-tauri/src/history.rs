@@ -238,6 +238,252 @@ pub fn delete_conversation(
     Ok(())
 }
 
+/// Flattens JSON `image_paths` column values into individual filesystem paths.
+///
+/// Invalid JSON rows are skipped so a corrupt cell cannot abort cleanup.
+///
+/// @param raws Stored `messages.image_paths` strings (JSON arrays).
+/// @returns Individual path strings for `images::remove_image`.
+/// Pure JSON flatten for message image path columns. Covered by unit tests.
+pub(crate) fn flatten_image_path_jsons(raws: &[String]) -> Vec<String> {
+    raws.iter()
+        .filter_map(|json| serde_json::from_str::<Vec<String>>(json).ok())
+        .flatten()
+        .collect()
+}
+
+/// Best-effort unlink of conversation image files under a base directory.
+///
+/// Failures (missing file, bad path) are ignored so prune/clear never fail
+/// solely because a blob was already gone. Does not log path contents as
+/// message bodies; only filesystem ops.
+///
+/// @param base_dir App data dir (images are stored relative to this root).
+/// @param paths Relative or absolute image paths stored on messages.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn remove_conversation_images_under(base_dir: &std::path::Path, paths: &[String]) {
+    for path in paths {
+        let _ = crate::images::remove_image(base_dir, path);
+    }
+}
+
+/// Resolves `app_data_dir` then unlinks conversation image paths.
+///
+/// Thin Tauri wiring: pure unlink logic is in
+/// [`remove_conversation_images_under`].
+#[cfg_attr(any(coverage, coverage_nightly), coverage(off))]
+fn remove_conversation_images(app_handle: &tauri::AppHandle, paths: &[String]) {
+    let Ok(base_dir) = app_handle.path().app_data_dir() else {
+        return;
+    };
+    remove_conversation_images_under(&base_dir, paths);
+}
+
+/// Deletes conversations older than the configured history retention window.
+///
+/// Invoked only after an explicit Settings confirm (or at startup). Forever
+/// (`-1`) and non-positive values are no-ops. Does **not** run from
+/// debounced `set_config_field` so Cancel on the retention dialog never
+/// prunes.
+///
+/// @returns Number of conversation rows deleted.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn prune_conversation_history(
+    app_handle: tauri::AppHandle,
+    db: State<'_, Database>,
+    app_config: State<'_, parking_lot::RwLock<AppConfig>>,
+) -> Result<u64, String> {
+    let retention_days = app_config.read().behavior.history_retention_days;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    prune_conversations_for_retention_with_images(&db, retention_days, now_ms, &app_handle)
+}
+
+/// How many saved chats would be deleted under a proposed retention window.
+///
+/// Settings uses this before opening the retention ConfirmDialog: when the
+/// count is zero the frontend commits immediately (no empty destructive
+/// confirm). Forever / non-positive `days` yields 0 (no prune window).
+///
+/// Thin I/O wrap (coverage-off): cutoff math is
+/// [`database::history_retention_cutoff_ms`]; the COUNT is
+/// [`database::count_conversations_older_than`] (unit-tested).
+///
+/// @param days Proposed retention days (`-1` forever, or positive).
+/// @returns Number of conversations with `updated_at` older than the cutoff.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn history_retention_prune_count(days: i64, db: State<'_, Database>) -> Result<u64, String> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let Some(cutoff_ms) = database::history_retention_cutoff_ms(days, now_ms) else {
+        return Ok(0);
+    };
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    database::count_conversations_older_than(&conn, cutoff_ms).map_err(|e| e.to_string())
+}
+
+/// Core retention prune against SQLite only: returns deleted count + raw
+/// image path JSON strings for optional filesystem cleanup.
+///
+/// Mutex + rusqlite error mapping is thin I/O wiring; the real retention logic
+/// lives in `database::history_retention_cutoff_ms`,
+/// `collect_image_paths_for_conversations_older_than`, and
+/// `delete_conversations_older_than` (fully unit-tested).
+///
+/// @param db Database mutex wrapper.
+/// @param retention_days Clamped days (`-1` forever, or positive).
+/// @param now_ms Injected clock (ms since epoch) for deterministic tests.
+/// @returns `(deleted_row_count, image_paths_json_rows)`.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn prune_conversations_for_retention(
+    db: &Database,
+    retention_days: i64,
+    now_ms: i64,
+) -> Result<(u64, Vec<String>), String> {
+    let Some(cutoff_ms) = database::history_retention_cutoff_ms(retention_days, now_ms) else {
+        return Ok((0, Vec::new()));
+    };
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let raw_paths = database::collect_image_paths_for_conversations_older_than(&conn, cutoff_ms)
+        .map_err(|e| e.to_string())?;
+    let deleted = database::delete_conversations_older_than(&conn, cutoff_ms)
+        .map_err(|e| e.to_string())? as u64;
+    Ok((deleted, raw_paths))
+}
+
+/// Prune + best-effort image unlink when an `AppHandle` is available.
+///
+/// Thin wrapper (coverage-off): DB work is in
+/// [`prune_conversations_for_retention`]; filesystem unlink needs Tauri paths.
+#[cfg_attr(any(coverage, coverage_nightly), coverage(off))]
+pub(crate) fn prune_conversations_for_retention_with_images(
+    db: &Database,
+    retention_days: i64,
+    now_ms: i64,
+    app_handle: &tauri::AppHandle,
+) -> Result<u64, String> {
+    let (deleted, raw_paths) = prune_conversations_for_retention(db, retention_days, now_ms)?;
+    let paths = flatten_image_path_jsons(&raw_paths);
+    remove_conversation_images(app_handle, &paths);
+    Ok(deleted)
+}
+
+/// Permanently deletes every saved conversation and their messages, then
+/// best-effort removes referenced image files.
+///
+/// Called only after a ConfirmDialog in Settings › Behavior. Irreversible.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn clear_all_conversations(
+    app_handle: tauri::AppHandle,
+    db: State<'_, Database>,
+) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let raw_paths = database::collect_all_message_image_paths(&conn).map_err(|e| e.to_string())?;
+    database::clear_all_conversations(&conn).map_err(|e| e.to_string())?;
+    drop(conn);
+    let paths = flatten_image_path_jsons(&raw_paths);
+    remove_conversation_images(&app_handle, &paths);
+    Ok(())
+}
+
+/// Saved-chat footprint returned to Settings › Behavior History.
+///
+/// `count` is the number of conversation rows. `bytes` is a best-effort sum of
+/// message text lengths plus on-disk sizes of referenced image files that still
+/// exist (missing files are skipped). This is not the whole `thuki.db` size.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct HistoryStats {
+    pub count: u64,
+    pub bytes: u64,
+}
+
+/// Sums byte lengths of image files that still exist on disk.
+///
+/// Missing paths and metadata errors are skipped so a single gone blob cannot
+/// fail the whole stats probe. Pure and unit-tested.
+///
+/// @param paths Individual filesystem paths from flattened `image_paths` JSON.
+/// @returns Sum of `metadata().len()` for paths that resolve as files.
+pub(crate) fn sum_existing_image_bytes(paths: &[String]) -> u64 {
+    let mut total: u64 = 0;
+    for path in paths {
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.is_file() {
+                total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    total
+}
+
+/// SQLite half of [`history_stats_for`]: conversation count, text lengths, and
+/// raw image path JSON rows. Separated so the SQL `?` chain stays one
+/// `rusqlite::Result` and the outer fn maps to `String` once.
+///
+/// @param conn Open SQLite connection (must have history schema).
+/// @returns `(count, text_bytes, image_paths_json_rows)`.
+fn history_stats_sql(conn: &Connection) -> rusqlite::Result<(u64, u64, Vec<String>)> {
+    let count = database::count_conversations(conn)?;
+    let text_bytes = database::sum_message_text_lengths(conn)?;
+    let raw_paths = database::collect_all_message_image_paths(conn)?;
+    Ok((count, text_bytes, raw_paths))
+}
+
+/// Computes saved-chat count and content+image footprint for Settings.
+///
+/// Pure relative to the open connection and the filesystem: count from
+/// `conversations`, text from message body fields, images from file metadata
+/// for paths still present. Unit-tested; the Tauri command is a thin lock wrap.
+///
+/// @param conn Open SQLite connection.
+/// @returns [`HistoryStats`] for the History Free chats subtext.
+pub(crate) fn history_stats_for(conn: &Connection) -> Result<HistoryStats, String> {
+    let (count, text_bytes, raw_paths) = history_stats_sql(conn).map_err(|e| e.to_string())?;
+    let image_bytes = sum_existing_image_bytes(&flatten_image_path_jsons(&raw_paths));
+    Ok(HistoryStats {
+        count,
+        bytes: text_bytes.saturating_add(image_bytes),
+    })
+}
+
+/// Reports saved-chat count and content/image footprint to Settings › Behavior.
+///
+/// Thin command wrapper (excluded from coverage): locks the DB and delegates to
+/// [`history_stats_for`], where the logic is unit-tested.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub fn history_stats(db: State<'_, Database>) -> Result<HistoryStats, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    history_stats_for(&conn)
+}
+
+/// One-shot startup prune using the stored `history_retention_days` value.
+///
+/// Best-effort: errors are logged without message bodies and never block
+/// launch. Forever retention skips the walk.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn prune_conversations_at_startup(
+    app: &tauri::AppHandle,
+    db: &Database,
+    app_config: &parking_lot::RwLock<AppConfig>,
+) {
+    let retention_days = app_config.read().behavior.history_retention_days;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    if let Err(e) = prune_conversations_for_retention_with_images(db, retention_days, now_ms, app) {
+        eprintln!("thuki: [history] startup prune failed: {e}");
+    }
+}
+
 /// Runs the title-generation LLM call against the resolved transport and
 /// returns the accumulated raw response. The native Ollama arm keeps the
 /// exact `stream_ollama_chat` parameters the title path has always sent;
@@ -674,5 +920,201 @@ mod tests {
         title.truncate(i + c.len_utf8());
         title.push_str("...");
         assert_eq!(title.len(), 103); // 100 + "..."
+    }
+
+    #[test]
+    fn flatten_image_path_jsons_skips_invalid() {
+        let raws = vec![
+            r#"["/a.jpg","/b.jpg"]"#.to_string(),
+            "not-json".to_string(),
+            r#"[]"#.to_string(),
+        ];
+        let paths = flatten_image_path_jsons(&raws);
+        assert_eq!(paths, vec!["/a.jpg".to_string(), "/b.jpg".to_string()]);
+    }
+
+    #[test]
+    fn prune_for_retention_forever_is_noop() {
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            database::create_conversation(&conn, Some("Keep"), "m").unwrap();
+        }
+        let (deleted, paths) =
+            prune_conversations_for_retention(&db, -1, 1_700_000_000_000).unwrap();
+        assert_eq!(deleted, 0);
+        assert!(paths.is_empty());
+        let conn = db.0.lock().unwrap();
+        assert_eq!(database::list_conversations(&conn, None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn prune_for_retention_deletes_stale_rows() {
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            let old = database::create_conversation(&conn, Some("Old"), "m").unwrap();
+            let fresh = database::create_conversation(&conn, Some("Fresh"), "m").unwrap();
+            conn.execute(
+                "UPDATE conversations SET updated_at = 1 WHERE id = ?1",
+                rusqlite::params![old],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE conversations SET updated_at = 9_000_000_000_000 WHERE id = ?1",
+                rusqlite::params![fresh],
+            )
+            .unwrap();
+        }
+        // 1 day retention, now far in the future → old row (updated_at=1) is expired.
+        let (deleted, _paths) = prune_conversations_for_retention(&db, 1, 86_400_000 * 10).unwrap();
+        assert_eq!(deleted, 1);
+        let conn = db.0.lock().unwrap();
+        let left = database::list_conversations(&conn, None).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].title.as_deref(), Some("Fresh"));
+    }
+
+    #[test]
+    fn prune_for_retention_returns_image_paths_of_deleted_rows() {
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            let old = database::create_conversation(&conn, Some("Old"), "m").unwrap();
+            database::insert_message(
+                &conn,
+                &old,
+                "user",
+                "pic",
+                None,
+                Some(r#"["/tmp/old.jpg"]"#),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE conversations SET updated_at = 1 WHERE id = ?1",
+                rusqlite::params![old],
+            )
+            .unwrap();
+        }
+        let (deleted, paths) = prune_conversations_for_retention(&db, 1, 86_400_000 * 10).unwrap();
+        assert_eq!(deleted, 1);
+        assert_eq!(paths, vec![r#"["/tmp/old.jpg"]"#.to_string()]);
+    }
+
+    #[test]
+    fn remove_conversation_images_under_is_best_effort() {
+        let dir = std::env::temp_dir().join(format!("thuki-hist-img-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Missing path must not panic.
+        remove_conversation_images_under(&dir, &["missing-blob.jpg".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn history_stats_for_empty_is_zero() {
+        let db = test_db();
+        let conn = db.0.lock().unwrap();
+        let stats = history_stats_for(&conn).unwrap();
+        assert_eq!(stats, HistoryStats { count: 0, bytes: 0 });
+    }
+
+    #[test]
+    fn history_stats_for_maps_sql_errors() {
+        // Bare connection with no schema: COUNT on conversations fails and must
+        // surface as String via map_err (covers the Err arms of history_stats_for).
+        let conn = Connection::open_in_memory().unwrap();
+        let err = history_stats_for(&conn).unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn history_stats_for_counts_rows_and_text_bytes() {
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            let a = database::create_conversation(&conn, Some("A"), "m").unwrap();
+            let b = database::create_conversation(&conn, Some("B"), "m").unwrap();
+            database::insert_message(
+                &conn,
+                &a,
+                "user",
+                "hello",
+                Some("quote"),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            database::insert_message(
+                &conn,
+                &b,
+                "assistant",
+                "world",
+                None,
+                None,
+                Some("think"),
+                None,
+                None,
+            )
+            .unwrap();
+        }
+        let conn = db.0.lock().unwrap();
+        let stats = history_stats_for(&conn).unwrap();
+        // "hello" (5) + "quote" (5) + "world" (5) + "think" (5) = 20
+        assert_eq!(stats.count, 2);
+        assert_eq!(stats.bytes, 20);
+    }
+
+    #[test]
+    fn history_stats_for_adds_existing_image_bytes_skips_missing() {
+        let dir = std::env::temp_dir().join(format!("thuki-hist-stats-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("blob.jpg");
+        std::fs::write(&img, b"0123456789").unwrap(); // 10 bytes
+        let img_path = img.to_str().unwrap().to_string();
+        let missing = dir.join("gone.jpg").to_str().unwrap().to_string();
+
+        let db = test_db();
+        {
+            let conn = db.0.lock().unwrap();
+            let id = database::create_conversation(&conn, Some("Pic"), "m").unwrap();
+            let paths_json = serde_json::to_string(&vec![img_path.clone(), missing]).unwrap();
+            database::insert_message(
+                &conn,
+                &id,
+                "user",
+                "ab", // 2 chars
+                None,
+                Some(&paths_json),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        }
+        let conn = db.0.lock().unwrap();
+        let stats = history_stats_for(&conn).unwrap();
+        assert_eq!(stats.count, 1);
+        assert_eq!(stats.bytes, 12); // 2 text + 10 image; missing skipped
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sum_existing_image_bytes_skips_missing_and_dirs() {
+        let dir = std::env::temp_dir().join(format!("thuki-hist-sum-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("f.bin");
+        std::fs::write(&file, b"xyz").unwrap();
+        let paths = vec![
+            file.to_str().unwrap().to_string(),
+            dir.to_str().unwrap().to_string(), // directory: skipped
+            "/no/such/path.bin".to_string(),
+        ];
+        assert_eq!(sum_existing_image_bytes(&paths), 3);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
