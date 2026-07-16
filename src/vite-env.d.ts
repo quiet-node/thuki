@@ -1,5 +1,11 @@
 /// <reference types="vite/client" />
 
+/** Vite `?raw` import of a markdown file as a string. */
+declare module '*.md?raw' {
+  const content: string;
+  export default content;
+}
+
 interface ImportMetaEnv {
   readonly VITE_QUOTE_MAX_DISPLAY_LINES: string | undefined;
   readonly VITE_QUOTE_MAX_DISPLAY_CHARS: string | undefined;

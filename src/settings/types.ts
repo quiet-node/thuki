@@ -77,7 +77,12 @@ export interface CorruptMarker {
 }
 
 /** Identifier for the active Settings tab. */
-export type SettingsTabId = 'general' | 'behavior' | 'display' | 'about';
+export type SettingsTabId =
+  | 'general'
+  | 'behavior'
+  | 'display'
+  | 'changelog'
+  | 'about';
 
 /**
  * Returns a human-friendly description of a Tauri-side `ConfigError`. Used

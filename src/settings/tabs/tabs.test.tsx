@@ -1,5 +1,5 @@
 /**
- * Smoke + interaction tests for the five Settings tabs.
+ * Smoke + interaction tests for the Settings tabs.
  *
  * Each tab's body is mostly declarative `SaveField` markup whose behavior
  * is unit-tested in `components.test`, `SaveField.test`, and

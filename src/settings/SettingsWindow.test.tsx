@@ -113,7 +113,7 @@ describe('SettingsWindow', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('renders the five tab labels after config loads', async () => {
+  it('renders the six tab labels after config loads', async () => {
     render(<SettingsWindow />);
     await waitFor(() =>
       expect(screen.getByRole('tab', { name: /Models/ })).toBeInTheDocument(),
@@ -123,7 +123,39 @@ describe('SettingsWindow', () => {
       screen.queryByRole('tab', { name: /^Web$/ }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Display/ })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Changelog/ })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /About/ })).toBeInTheDocument();
+  });
+
+  it('orders sidebar tabs Display then Changelog then About', async () => {
+    render(<SettingsWindow />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole('tab', { name: /Changelog/ }),
+      ).toBeInTheDocument(),
+    );
+    const tabs = screen
+      .getByRole('tablist', { name: 'Settings sections' })
+      .querySelectorAll('[role="tab"]');
+    const labels = Array.from(tabs).map((t) => t.textContent ?? '');
+    const displayIdx = labels.findIndex((l) => /Display/.test(l));
+    const changelogIdx = labels.findIndex((l) => /Changelog/.test(l));
+    const aboutIdx = labels.findIndex((l) => /About/.test(l));
+    expect(displayIdx).toBeGreaterThanOrEqual(0);
+    expect(changelogIdx).toBe(displayIdx + 1);
+    expect(aboutIdx).toBe(changelogIdx + 1);
+  });
+
+  it('switching to Changelog shows the release history panel', async () => {
+    render(<SettingsWindow />);
+    await waitFor(() => screen.getByRole('tab', { name: /Changelog/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /Changelog/ }));
+    expect(screen.getByRole('tab', { name: /Changelog/ })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByTestId('changelog-notes')).toBeInTheDocument();
+    expect(screen.getByText('Release history')).toBeInTheDocument();
   });
 
   it('drops a sidebar tab on programmatic refocus so no ring lingers on reopen', async () => {

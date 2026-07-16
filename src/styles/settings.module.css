@@ -2043,6 +2043,22 @@
   background: rgba(94, 201, 138, 0.06);
 }
 
+/* ─── Changelog tab: notes card (mirrors About .updateHero / What's New .update-notes) ─── */
+
+.changelogNotes {
+  padding: 4px 14px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.changelogEmpty {
+  padding: 14px 4px 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--t2);
+}
+
 /* ─── Providers section (legacy OpenAI card) ─────────────────────────────── */
 .providerName {
   font-size: 13px;
