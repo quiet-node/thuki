@@ -113,14 +113,13 @@ const CACHE_BREVITY_DIRECTIVE: &str = "The user is asking again about the answer
 /// same string as a strict trimmed prefix before any token reaches the user.
 pub(crate) const INSUFFICIENT_EVIDENCE_SENTINEL: &str = "INSUFFICIENT_EVIDENCE";
 
-/// Cache-tier-only sufficiency contract: layer 2 of the reuse grounding gate
-/// (layer 1 is the sufficiency judge; see
+/// Cache-tier-only sufficiency contract: the sole reuse grounding gate (see
 /// [`crate::websearch::orchestrator::reuse_or_escalate`]). When the reused
 /// sources do not carry the asked information, the writer must emit ONLY the
 /// [`INSUFFICIENT_EVIDENCE_SENTINEL`] line, which the orchestrator catches from
 /// the buffered synthesis before any token reaches the user and turns into a
-/// fresh web search. A judge false positive on an on-topic page that lacks the
-/// specific detail is caught here rather than served as a degraded caveat.
+/// fresh web search. An on-topic page that lacks the specific detail is caught
+/// here rather than served as a degraded caveat.
 const CACHE_INSUFFICIENT_DIRECTIVE: &str = "If the provided sources do not contain the information needed to answer the question, output exactly the single line INSUFFICIENT_EVIDENCE and nothing else. Never invent the missing part. Information directly derivable from the sources counts as contained: for example an age from a stated birth date and today's date. Derive it and answer.";
 
 /// Fresh-retrieval sufficiency contract: answer with the relevant information
@@ -219,7 +218,7 @@ pub(crate) fn build_writer_appendix(
 ) -> String {
     let (open, close) = delimiters(nonce);
     // Cache-tier answers must decline with the INSUFFICIENT_EVIDENCE sentinel
-    // (layer 2 of the reuse gate) rather than serving a caveated partial; fresh
+    // (sole reuse grounding gate) rather than serving a caveated partial; fresh
     // retrievals keep the partial-answer contract (see the two directive docs).
     let sufficiency_directive = if is_cache_tier {
         CACHE_INSUFFICIENT_DIRECTIVE
@@ -705,7 +704,7 @@ mod tests {
 
     #[test]
     fn appendix_uses_the_insufficient_evidence_contract_for_the_cache_tier() {
-        // Cache tier (layer 2 of the reuse gate): decline with the sentinel
+        // Cache tier (sole reuse grounding gate): decline with the sentinel
         // rather than the fresh partial-answer caveat, so the orchestrator can
         // catch it buffered and escalate to a fresh search.
         let blocks = vec![block(1, "https://a/", "T", "body")];

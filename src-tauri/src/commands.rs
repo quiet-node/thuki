@@ -906,10 +906,11 @@ fn capped_trace_final_content(content: &str) -> String {
 /// [`stream_builtin_chat`] with a swallowing sink so the cache-reuse answer is
 /// generated BUFFERED (no user tokens), surfacing the accumulated text or the
 /// cancel/error signal the stream reports out of band. Only the fully-tested
-/// [`crate::websearch::orchestrator::reuse_or_escalate`] gate calls it, and only
-/// after the sufficiency judge cleared the reused sources. Coverage-excluded:
-/// thin glue over the tested `stream_builtin_chat` (see the coverage-off impl
-/// below).
+/// [`crate::websearch::orchestrator::reuse_or_escalate`] gate calls it. The sole
+/// reuse grounding gate is this buffered writer plus its
+/// `INSUFFICIENT_EVIDENCE` sentinel (the sufficiency judge is not on the reuse
+/// path). Coverage-excluded: thin glue over the tested `stream_builtin_chat`
+/// (see the coverage-off impl below).
 struct BuiltinSynthesizer<'a> {
     engine: &'a crate::engine::runner::EngineHandle,
     target: crate::engine::state::Target,
