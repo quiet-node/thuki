@@ -1,6 +1,7 @@
 import { render, screen, fireEvent } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 
+import { mockReducedMotion } from '../../../testUtils/mocks/framer-motion';
 import { ChangelogAccordion } from '../ChangelogAccordion';
 import type { ChangelogSection } from '../changelog';
 
@@ -14,6 +15,10 @@ const SECTIONS: ChangelogSection[] = [
 ];
 
 describe('ChangelogAccordion', () => {
+  afterEach(() => {
+    mockReducedMotion.current = false;
+  });
+
   it('renders a row per version with the version label', () => {
     render(<ChangelogAccordion sections={SECTIONS} />);
     expect(screen.getByText('0.14.0')).toBeInTheDocument();
@@ -73,5 +78,21 @@ describe('ChangelogAccordion', () => {
     expect(
       screen.getByRole('button', { name: /0\.13\.0/ }),
     ).not.toHaveTextContent('Latest');
+  });
+
+  it('toggles expand/collapse under prefers-reduced-motion without sticking open', () => {
+    mockReducedMotion.current = true;
+    render(<ChangelogAccordion sections={SECTIONS} />);
+    // Instant path: chevron uses duration-0; body initial/exit are non-animated.
+    expect(document.querySelector('svg.duration-0')).toBeTruthy();
+
+    const oldest = screen.getByRole('button', { name: /0\.13\.0/ });
+    fireEvent.click(oldest);
+    expect(screen.getByText('older fix')).toBeInTheDocument();
+    expect(oldest).toHaveAttribute('aria-expanded', 'true');
+
+    fireEvent.click(oldest);
+    expect(screen.queryByText('older fix')).not.toBeInTheDocument();
+    expect(oldest).toHaveAttribute('aria-expanded', 'false');
   });
 });
