@@ -92,6 +92,22 @@ impl SufficiencyJudge for AlwaysSufficientJudge {
     }
 }
 
+/// A synthesizer that returns a fixed grounded answer. The cache-reuse gate is
+/// never reached in these fresh-question live turns (empty per-run cache), so it
+/// is inert; it exists only to satisfy the `SearchDeps` contract.
+struct AlwaysGroundedSynthesizer;
+
+#[async_trait]
+impl thuki_agent_lib::websearch::orchestrator::Synthesizer for AlwaysGroundedSynthesizer {
+    async fn synthesize(
+        &self,
+        _messages: &[thuki_agent_lib::commands::ChatMessage],
+        _cancel: &CancellationToken,
+    ) -> Result<String, InferenceError> {
+        Ok("reused answer [1]".to_string())
+    }
+}
+
 /// Runs one live turn through the production pipeline and returns the outcome.
 async fn live_turn(
     latest_user: &str,
@@ -134,9 +150,11 @@ async fn live_turn_with_lang(
         128,
     );
     let timings = thuki_agent_lib::websearch::stage_timing::TimingBag::new();
+    let synthesizer = AlwaysGroundedSynthesizer;
     let deps = SearchDeps {
         prepass: &prepass,
         judge: &judge,
+        synthesizer: &synthesizer,
         transport: &transport,
         reachability: &DnsReachability,
         scorer: &Bm25Scorer,
@@ -176,6 +194,13 @@ fn expect_answer(outcome: SearchOutcome, label: &str) {
             eprintln!(
                 "[smoke] writer turn tail: ...{}",
                 &last.content[last.content.len().saturating_sub(300)..]
+            );
+            assert!(!sources.is_empty(), "{label}: no sources");
+        }
+        SearchOutcome::AnswerReused { sources, .. } => {
+            eprintln!(
+                "[smoke] {label}: REUSED ANSWER with {} source(s)",
+                sources.len()
             );
             assert!(!sources.is_empty(), "{label}: no sources");
         }

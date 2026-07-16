@@ -101,6 +101,22 @@ impl SufficiencyJudge for AlwaysSufficientJudge {
     }
 }
 
+/// A synthesizer that returns a fixed grounded answer. The cache-reuse gate is
+/// never reached in these fresh-question capture turns (empty per-run cache), so
+/// it is inert; it exists only to satisfy the `SearchDeps` contract.
+struct AlwaysGroundedSynthesizer;
+
+#[async_trait]
+impl thuki_agent_lib::websearch::orchestrator::Synthesizer for AlwaysGroundedSynthesizer {
+    async fn synthesize(
+        &self,
+        _messages: &[thuki_agent_lib::commands::ChatMessage],
+        _cancel: &CancellationToken,
+    ) -> Result<String, InferenceError> {
+        Ok("reused answer [1]".to_string())
+    }
+}
+
 /// Runs one live turn through the production pipeline and returns the outcome.
 async fn live_turn(
     latest_user: &str,
@@ -128,9 +144,11 @@ async fn live_turn(
         128,
     );
     let timings = thuki_agent_lib::websearch::stage_timing::TimingBag::new();
+    let synthesizer = AlwaysGroundedSynthesizer;
     let deps = SearchDeps {
         prepass: &prepass,
         judge: &judge,
+        synthesizer: &synthesizer,
         transport: &transport,
         reachability: &DnsReachability,
         scorer: &Bm25Scorer,
@@ -326,6 +344,28 @@ async fn live_capture_answers_over_volatility_slice() {
                     question: q.question,
                     volatility: q.volatility,
                     outcome_kind: "answer",
+                    sources,
+                    writer_user_turn,
+                }
+            }
+            SearchOutcome::AnswerReused {
+                messages, sources, ..
+            } => {
+                let writer_user_turn = messages
+                    .last()
+                    .map(|m| m.content.clone())
+                    .unwrap_or_default();
+                let sources = sources
+                    .into_iter()
+                    .map(|s| SourceRef {
+                        url: s.url,
+                        title: s.title,
+                    })
+                    .collect();
+                CaptureRecord {
+                    question: q.question,
+                    volatility: q.volatility,
+                    outcome_kind: "reused",
                     sources,
                     writer_user_turn,
                 }

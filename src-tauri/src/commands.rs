@@ -590,6 +590,20 @@ enum BuiltinSearchResult {
         /// writer TTFT (submit → first answer token) once streaming begins.
         search_submit: std::time::Instant,
     },
+    /// Cache reuse: the answer was already synthesized (buffered) by the
+    /// orchestrator so the `INSUFFICIENT_EVIDENCE` sentinel could be caught
+    /// before any token reached the user (see
+    /// `crate::websearch::orchestrator::reuse_or_escalate`). `content` is emitted
+    /// at once (cache answers are short by contract), then the same citation
+    /// audit + repair path a streamed answer gets runs over it. `messages` is
+    /// the writer prompt that produced it, kept for that repair; `sources` is the
+    /// citation metadata.
+    Reused {
+        content: String,
+        messages: Vec<ChatMessage>,
+        sources: Vec<crate::websearch::assemble::SourceBlock>,
+        search_submit: std::time::Instant,
+    },
     /// No search this turn (a `no` decision, an infra failure, or nothing worth
     /// citing): stream the original plain messages.
     Plain,
@@ -777,16 +791,16 @@ async fn resolve_clock_place_time(message: &str) -> Option<String> {
 /// completing instantly with zero tokens): the auto-search pre-pass shares the
 /// engine port and cancel token with the writer, so naming which search path
 /// resolved lets a live zero-token occurrence be correlated with the branch
-/// that ran. A cache hit is not distinguished here by design: it resolves into
-/// `Answer` inside the fully-tested `run_search`, so surfacing it would mean
-/// instrumenting a different function. Pure so it stays unit-tested while its
-/// coverage-excluded call site does not.
+/// that ran. A cache reuse resolves into `AnswerReused` inside the fully-tested
+/// `run_search`. Pure so it stays unit-tested while its coverage-excluded call
+/// site does not.
 fn builtin_search_outcome_label(
     outcome: &crate::websearch::orchestrator::SearchOutcome,
 ) -> &'static str {
     use crate::websearch::orchestrator::SearchOutcome;
     match outcome {
         SearchOutcome::Answer { .. } => "Answer",
+        SearchOutcome::AnswerReused { .. } => "AnswerReused",
         SearchOutcome::Unreachable { .. } => "Unreachable",
         SearchOutcome::NoSearch => "NoSearch",
         SearchOutcome::Cancelled => "Cancelled",
@@ -888,6 +902,67 @@ fn capped_trace_final_content(content: &str) -> String {
 /// regardless of the pre-pass decision, with cache read-bypass, write-through
 /// semantics; `false` lets the invisible auto-search pre-pass decide.
 ///
+/// Production [`crate::websearch::orchestrator::Synthesizer`]: wraps
+/// [`stream_builtin_chat`] with a swallowing sink so the cache-reuse answer is
+/// generated BUFFERED (no user tokens), surfacing the accumulated text or the
+/// cancel/error signal the stream reports out of band. Only the fully-tested
+/// [`crate::websearch::orchestrator::reuse_or_escalate`] gate calls it, and only
+/// after the sufficiency judge cleared the reused sources. Coverage-excluded:
+/// thin glue over the tested `stream_builtin_chat` (see the coverage-off impl
+/// below).
+struct BuiltinSynthesizer<'a> {
+    engine: &'a crate::engine::runner::EngineHandle,
+    target: crate::engine::state::Target,
+    model_id: String,
+    think: bool,
+    client: &'a reqwest::Client,
+    warm_state: &'a crate::warmup::BuiltinWarmState,
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[async_trait::async_trait]
+impl crate::websearch::orchestrator::Synthesizer for BuiltinSynthesizer<'_> {
+    async fn synthesize(
+        &self,
+        messages: &[ChatMessage],
+        cancel: &CancellationToken,
+    ) -> Result<String, crate::websearch::prepass::InferenceError> {
+        use crate::websearch::prepass::InferenceError;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // The stream reports cancel/error only through `on_chunk`; capture them
+        // so the buffered content can be distinguished from a failed generation.
+        let cancelled = AtomicBool::new(false);
+        let errored = AtomicBool::new(false);
+        let content = stream_builtin_chat(
+            self.engine,
+            self.target.clone(),
+            self.model_id.clone(),
+            self.think,
+            messages.to_vec(),
+            self.client,
+            cancel.clone(),
+            self.warm_state,
+            || {},
+            |chunk| match chunk {
+                StreamChunk::Cancelled => cancelled.store(true, Ordering::Relaxed),
+                StreamChunk::Error(_) => errored.store(true, Ordering::Relaxed),
+                // Swallow tokens: buffered synthesis never streams to the user.
+                _ => {}
+            },
+        )
+        .await;
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(InferenceError::Cancelled);
+        }
+        if errored.load(Ordering::Relaxed) {
+            return Err(InferenceError::Request(
+                "cache-reuse synthesis stream error".to_string(),
+            ));
+        }
+        Ok(content)
+    }
+}
+
 /// Coverage-excluded: glue that wires the real engine port, HTTP transport, and
 /// BM25 scorer into the fully-tested [`crate::websearch::orchestrator::run_search`]
 /// and maps its outcome to a wire result. Every decision lives in `run_search`.
@@ -908,6 +983,11 @@ async fn run_builtin_search(
     cancel: &CancellationToken,
     recorder: &std::sync::Arc<crate::trace::BoundRecorder>,
     on_chunk: &(impl Fn(StreamChunk) + Send + Sync),
+    // Reasoning toggle and warm-state, threaded through only so the cache-reuse
+    // synthesizer generates with the same settings the downstream writer stream
+    // would (see `BuiltinSynthesizer`).
+    think: bool,
+    warm_state: &crate::warmup::BuiltinWarmState,
     cache_scope: u64,
     force_search: bool,
 ) -> BuiltinSearchResult {
@@ -954,9 +1034,21 @@ async fn run_builtin_search(
     // One timing bag per search turn: orchestrator records stage ms and flushes
     // SearchTimings; writer_ttft is appended on the first answer token below.
     let timing_bag = crate::websearch::stage_timing::TimingBag::new();
+    // Buffered answer synthesis for the cache-reuse gate: same engine, model,
+    // and reasoning toggle as the downstream writer stream, but with a
+    // swallowing sink so nothing reaches the user before the sentinel check.
+    let synthesizer = BuiltinSynthesizer {
+        engine,
+        target: target.clone(),
+        model_id: model_id.to_string(),
+        think,
+        client,
+        warm_state,
+    };
     let deps = crate::websearch::orchestrator::SearchDeps {
         prepass: &prepass,
         judge: &judge,
+        synthesizer: &synthesizer,
         transport: &transport,
         reachability: &reachability,
         scorer: &scorer,
@@ -1021,6 +1113,22 @@ async fn run_builtin_search(
         crate::websearch::orchestrator::SearchOutcome::Answer { messages, sources } => {
             on_chunk(StreamChunk::SearchSources(source_metas(&sources)));
             BuiltinSearchResult::Grounded {
+                messages,
+                sources,
+                search_submit,
+            }
+        }
+        // Cache reuse already synthesized (buffered) so the sentinel could be
+        // caught before any token reached the user: attach the same sources pill
+        // a fresh grounded answer gets, then emit the buffered content at once.
+        crate::websearch::orchestrator::SearchOutcome::AnswerReused {
+            content,
+            messages,
+            sources,
+        } => {
+            on_chunk(StreamChunk::SearchSources(source_metas(&sources)));
+            BuiltinSearchResult::Reused {
+                content,
                 messages,
                 sources,
                 search_submit,
@@ -2459,6 +2567,8 @@ pub async fn ask_model(
                                 &cancel_token,
                                 &bound_recorder,
                                 &pump,
+                                think,
+                                &warm_state,
                                 epoch_at_start,
                                 force,
                             )
@@ -2475,14 +2585,24 @@ pub async fn ask_model(
                             // Keep the resolved sources (empty on a plain or
                             // unreachable turn) so the streamed answer can be
                             // citation-audited after the stream completes.
-                            let (stream_messages, audit_sources, search_submit) =
+                            // `pregenerated` is `Some` only for a cache reuse: the
+                            // answer was already synthesized (buffered) by the
+                            // orchestrator, so it is emitted at once instead of
+                            // streamed from the engine below.
+                            let (stream_messages, audit_sources, search_submit, pregenerated) =
                                 match grounded_or_plain {
                                     BuiltinSearchResult::Grounded {
                                         messages,
                                         sources,
                                         search_submit,
-                                    } => (messages, sources, Some(search_submit)),
-                                    _ => (messages, Vec::new(), None),
+                                    } => (messages, sources, Some(search_submit), None),
+                                    BuiltinSearchResult::Reused {
+                                        content,
+                                        messages,
+                                        sources,
+                                        search_submit,
+                                    } => (messages, sources, Some(search_submit), Some(content)),
+                                    _ => (messages, Vec::new(), None, None),
                                 };
                             // Observe whether reasoning streamed this turn so the
                             // runtime backstop can mark a model that reasons even
@@ -2522,21 +2642,32 @@ pub async fn ask_model(
                                 pump(chunk);
                             };
                             let writer_messages_for_repair = stream_messages.clone();
-                            let streamed_content = stream_builtin_chat(
-                                &engine,
-                                target.clone(),
-                                model_id.clone(),
-                                think,
-                                stream_messages,
-                                &client,
-                                cancel_token.clone(),
-                                &warm_state,
-                                || {
-                                    let _ = app.emit("warmup:builtin-warmed", ());
-                                },
-                                builtin_pump,
-                            )
-                            .await;
+                            let streamed_content = if let Some(content) = pregenerated {
+                                // Cache reuse: emit the buffered answer at once
+                                // through the same pump (records writer TTFT and
+                                // marks the withheld Done), then fall into the
+                                // shared citation-audit + finalize path below so
+                                // the UI renders identically to a streamed answer.
+                                builtin_pump(StreamChunk::Token(content.clone()));
+                                builtin_pump(StreamChunk::Done);
+                                content
+                            } else {
+                                stream_builtin_chat(
+                                    &engine,
+                                    target.clone(),
+                                    model_id.clone(),
+                                    think,
+                                    stream_messages,
+                                    &client,
+                                    cancel_token.clone(),
+                                    &warm_state,
+                                    || {
+                                        let _ = app.emit("warmup:builtin-warmed", ());
+                                    },
+                                    builtin_pump,
+                                )
+                                .await
+                            };
                             backstop_mark_reasoning_always(
                                 &db,
                                 &backstop_model_id,
@@ -2746,6 +2877,14 @@ mod tests {
                 sources: vec![],
             }),
             "Answer"
+        );
+        assert_eq!(
+            builtin_search_outcome_label(&SearchOutcome::AnswerReused {
+                content: String::new(),
+                messages: vec![],
+                sources: vec![],
+            }),
+            "AnswerReused"
         );
         assert_eq!(
             builtin_search_outcome_label(&SearchOutcome::Unreachable {

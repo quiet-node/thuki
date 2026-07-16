@@ -97,7 +97,10 @@ use crate::websearch::stage_timing::{
     STAGE_WRITER_PREPARE,
 };
 use crate::websearch::weather::{fetch_weather, is_weather_intent};
-use crate::websearch::writer::{unreachable_messages, writer_messages};
+use crate::websearch::writer::{
+    unreachable_messages, writer_messages, INSUFFICIENT_EVIDENCE_SENTINEL,
+};
+use async_trait::async_trait;
 
 /// Progress phase reported to the UI while the pipeline runs, before any answer
 /// token streams.
@@ -123,6 +126,19 @@ pub enum SearchOutcome {
     /// Answer with the source-grounded writer prompt. `messages` already embeds
     /// the delimited sources; `sources` is the citation metadata for the UI.
     Answer {
+        messages: Vec<ChatMessage>,
+        sources: Vec<SourceBlock>,
+    },
+    /// A cache-tier reuse answer the orchestrator already synthesized (buffered)
+    /// so the `INSUFFICIENT_EVIDENCE` sentinel could be caught before any token
+    /// reached the user (layer 2 of the reuse grounding gate, see
+    /// [`reuse_or_escalate`]). `content` is the complete answer to emit at once
+    /// (cache answers are short by contract, so they are not token-streamed).
+    /// `messages` is the writer prompt that produced it, kept so the downstream
+    /// citation audit and repair run identically to a streamed answer.
+    /// `sources` is the citation metadata for the UI.
+    AnswerReused {
+        content: String,
         messages: Vec<ChatMessage>,
         sources: Vec<SourceBlock>,
     },
@@ -163,9 +179,37 @@ pub enum SearchFailReason {
     WeatherUnavailable,
 }
 
+/// Buffered grounded-answer synthesis for the cache-tier reuse gate. The
+/// orchestrator depends on this trait so its layer-2 sentinel branch is unit
+/// tested with a fake synthesizer; the builtin-engine backing lives in the
+/// coverage-excluded production wiring (`commands::run_builtin_search`).
+///
+/// The answer is generated BUFFERED (nothing streamed to the user) so
+/// [`reuse_or_escalate`] can inspect the first output for the
+/// [`crate::websearch::writer::INSUFFICIENT_EVIDENCE_SENTINEL`] before any token
+/// reaches the user channel. `Err` distinguishes a cancellation (short-circuit
+/// the turn) from a transport failure (escalate to a fresh search), mirroring
+/// [`SufficiencyJudge::judge`].
+#[async_trait]
+pub trait Synthesizer: Send + Sync {
+    /// Generates the complete grounded answer for `messages`, returning the full
+    /// buffered text. Never streams a token to the user.
+    async fn synthesize(
+        &self,
+        messages: &[ChatMessage],
+        cancel: &CancellationToken,
+    ) -> Result<String, InferenceError>;
+}
+
 /// The injected effectful dependencies of the pipeline.
 pub struct SearchDeps<'a> {
     pub prepass: &'a dyn PrePass,
+    /// Buffered answer synthesis for the cache-tier reuse gate (see
+    /// [`Synthesizer`]). Only [`reuse_or_escalate`] calls it, and only after the
+    /// sufficiency judge has cleared the reused sources: it is the second,
+    /// writer-level grounding check whose `INSUFFICIENT_EVIDENCE` sentinel forces
+    /// a fresh search.
+    pub synthesizer: &'a dyn Synthesizer,
     /// The sufficiency judge, run both after a keyless vertical answers (see
     /// [`commit_or_escalate`]) and after the general engine tier assembles its
     /// own sources (see [`judge_and_requery`]), deciding whether the block in
@@ -1080,37 +1124,87 @@ async fn reuse_or_escalate(
             deps.timings.record(STAGE_JUDGE, judge_start);
             match verdict {
                 Ok(v) if v.sufficient => {
-                    eprintln!("[search] cache reuse sufficient -> serving from stored sources");
-                    // Records the reuse commit on the same escalation trace the
-                    // verticals use, with the synthetic tier "cache": sufficient,
-                    // not escalated. `grounded_answer` then emits the terminal
-                    // SearchRetrieved{tier:"cache"} and skips the cache write (a
-                    // reuse is not a new search).
-                    deps.recorder.record(RecorderEvent::SearchEscalated {
-                        from_tier: "cache".to_string(),
-                        sufficient: true,
-                        missing: String::new(),
-                        escalated: false,
-                        escalation_hit: false,
-                    });
-                    return grounded_answer(
-                        deps,
-                        "cache",
+                    // Layer 1 (the judge) cleared the union. Layer 2: the writer
+                    // itself is the final grounding check. Synthesize the answer
+                    // BUFFERED under the cache-tier INSUFFICIENT_EVIDENCE contract
+                    // (see `crate::websearch::writer`) so the sentinel is caught
+                    // before any token reaches the user. The writer messages are
+                    // built once here, both fed to the synthesizer and returned
+                    // for the downstream citation audit/repair.
+                    let writer_start = Instant::now();
+                    let messages = writer_messages(
                         chat_system_prompt,
                         history,
                         latest_user,
-                        standalone_question,
-                        union,
+                        &union,
                         today,
                         locale,
                         lang,
-                        Vec::new(),
-                        // A cache reuse is never a conflict commit: the reuse
-                        // judge is a plain sufficiency check, not the engine
-                        // tier's conflict-aware judge.
+                        // Cache tier: brevity + the INSUFFICIENT_EVIDENCE contract.
+                        true,
+                        // A cache reuse is never a conflict commit (a plain
+                        // sufficiency judge ran, not the engine tier's
+                        // conflict-aware judge), and never carries still_missing.
                         false,
                         None,
+                        deps.latest_images,
                     );
+                    deps.timings.record(STAGE_WRITER_PREPARE, writer_start);
+                    match deps.synthesizer.synthesize(&messages, cancel).await {
+                        // The writer grounded the answer: commit the reuse. Record
+                        // the same escalation trace the verticals use, with the
+                        // synthetic tier "cache" (sufficient, not escalated), emit
+                        // the terminal SearchRetrieved{tier:"cache"}, and return
+                        // the buffered answer for the caller to emit at once. No
+                        // cache write: a reuse is not a new search.
+                        Ok(answer) if !reuse_answer_is_insufficient(&answer) => {
+                            eprintln!("[search] cache reuse grounded -> serving buffered answer");
+                            deps.recorder.record(RecorderEvent::SearchEscalated {
+                                from_tier: "cache".to_string(),
+                                sufficient: true,
+                                missing: String::new(),
+                                escalated: false,
+                                escalation_hit: false,
+                            });
+                            record_retrieved(deps, "cache", &union, Vec::new());
+                            return SearchOutcome::AnswerReused {
+                                content: answer,
+                                messages,
+                                sources: union,
+                            };
+                        }
+                        // The writer emitted the INSUFFICIENT_EVIDENCE sentinel (a
+                        // judge false positive on an on-topic page lacking the
+                        // asked detail) or nothing at all: escalate to a fresh
+                        // search. No token was ever emitted (buffered synthesis),
+                        // so nothing to retract.
+                        Ok(_) => {
+                            eprintln!("[search] cache reuse writer declined (INSUFFICIENT_EVIDENCE or empty) -> fresh search");
+                            deps.recorder.record(RecorderEvent::SearchEscalated {
+                                from_tier: "cache".to_string(),
+                                sufficient: false,
+                                missing: "insufficient_evidence".to_string(),
+                                escalated: true,
+                                escalation_hit: false,
+                            });
+                        }
+                        Err(InferenceError::Cancelled) => return SearchOutcome::Cancelled,
+                        // A synthesis transport failure fails toward a fresh
+                        // search (the fail-safe direction), the same bias as an
+                        // insufficient judge below.
+                        Err(InferenceError::Request(reason)) => {
+                            eprintln!(
+                                "[search] cache reuse synthesis error: {reason} -> fresh search"
+                            );
+                            deps.recorder.record(RecorderEvent::SearchEscalated {
+                                from_tier: "cache".to_string(),
+                                sufficient: false,
+                                missing: String::new(),
+                                escalated: true,
+                                escalation_hit: false,
+                            });
+                        }
+                    }
                 }
                 Ok(v) => {
                     eprintln!(
@@ -1165,6 +1259,17 @@ async fn reuse_or_escalate(
         preloaded_serp,
     )
     .await
+}
+
+/// Whether a buffered cache-reuse synthesis declined to answer, forcing a fresh
+/// search. True when the answer is empty, or when it begins with the
+/// [`INSUFFICIENT_EVIDENCE_SENTINEL`] as a strict prefix after leading
+/// whitespace is trimmed (the writer's cache-tier contract, see
+/// [`crate::websearch::writer`]). A legitimate grounded answer never starts with
+/// the sentinel, and the fail-safe direction is a needless fresh search.
+fn reuse_answer_is_insufficient(answer: &str) -> bool {
+    let trimmed = answer.trim_start();
+    trimmed.is_empty() || trimmed.starts_with(INSUFFICIENT_EVIDENCE_SENTINEL)
 }
 
 /// Maps a retrieval tier label (the answering source, as passed to
@@ -1993,19 +2098,20 @@ async fn commit_or_escalate(
     }
 }
 
-/// Records the retrieval tier to the trace, caches a freshly retrieved
+/// Records the retrieval tier to the trace, caches the freshly retrieved
 /// source set for a later `cached` decision to reuse, and builds the
 /// source-grounded [`SearchOutcome::Answer`]. `tier` is the source that
-/// answered the turn ("weather", "sports", "news", "wiki", "engine", or
-/// "cache"); the recorded URLs are the cited sources', so a trace shows
-/// exactly what grounded the reply. `engine_stats` is the general
-/// scraped-engine tier's per-query, per-engine outcome summary (see
-/// [`EngineStat`]); callers answering from a vertical or the cache pass an
-/// empty vec, since only the engine tier ever races the keyless engines.
+/// answered the turn ("weather", "sports", "news", "wiki", or "engine"); the
+/// recorded URLs are the cited sources', so a trace shows exactly what grounded
+/// the reply. `engine_stats` is the general scraped-engine tier's per-query,
+/// per-engine outcome summary (see [`EngineStat`]); callers answering from a
+/// vertical pass an empty vec, since only the engine tier ever races the keyless
+/// engines.
 ///
-/// The cache write is skipped for tier `"cache"` itself (an answer served
-/// from the cache is not a new search, so it must not reset the entry's TTL
-/// or overwrite it with the same sources).
+/// Never reached for a cache reuse: that path synthesizes and returns
+/// [`SearchOutcome::AnswerReused`] directly (see [`reuse_or_escalate`]), so a
+/// reuse never re-stores its own sources. Every tier here is therefore a fresh
+/// answer, and the cache write always runs.
 ///
 /// `conflict` and `still_missing` are forwarded to the writer prompt (see
 /// [`crate::websearch::writer::writer_messages`]): `conflict` is `true` only on
@@ -2028,6 +2134,51 @@ fn grounded_answer(
     conflict: bool,
     still_missing: Option<String>,
 ) -> SearchOutcome {
+    record_retrieved(deps, tier, &sources, engine_stats);
+    // Every fresh answer of any tier writes its sources into the multi-turn
+    // cache, recording the route that produced them (see `CachedSearch::route`).
+    // The cache-reuse path never reaches `grounded_answer` (it synthesizes and
+    // returns [`SearchOutcome::AnswerReused`] directly, see
+    // [`reuse_or_escalate`]), so a reuse never re-stores and no tier here is
+    // ever the synthetic "cache".
+    deps.cache.store(
+        deps.cache_scope,
+        CachedSearch {
+            standalone_question: standalone_question.to_string(),
+            sources: sources.clone(),
+            route: route_for_tier(tier),
+        },
+    );
+    let writer_start = Instant::now();
+    let messages = writer_messages(
+        chat_system_prompt,
+        history,
+        latest_user,
+        &sources,
+        today,
+        locale,
+        lang,
+        false,
+        conflict,
+        still_missing.as_deref(),
+        deps.latest_images,
+    );
+    deps.timings.record(STAGE_WRITER_PREPARE, writer_start);
+    SearchOutcome::Answer { messages, sources }
+}
+
+/// Records the turn's terminal [`RecorderEvent::SearchRetrieved`] for a grounded
+/// answer (see the event's rustdoc). Shared by [`grounded_answer`] and the
+/// cache-reuse commit in [`reuse_or_escalate`], which build their writer prompts
+/// differently but record the same retrieval shape. `engine_stats` is the
+/// general scraped-engine tier's per-query summary (empty for a vertical or a
+/// cache reuse).
+fn record_retrieved(
+    deps: &SearchDeps<'_>,
+    tier: &str,
+    sources: &[SourceBlock],
+    engine_stats: Vec<EngineStat>,
+) {
     deps.recorder.record(RecorderEvent::SearchRetrieved {
         tier: tier.to_string(),
         sources: sources
@@ -2046,35 +2197,6 @@ fn grounded_answer(
         // fires (see its docs).
         round: None,
     });
-    let is_cache_tier = tier == "cache";
-    if !is_cache_tier {
-        deps.cache.store(
-            deps.cache_scope,
-            CachedSearch {
-                standalone_question: standalone_question.to_string(),
-                sources: sources.clone(),
-                // The route the answering tier maps to, recorded as provenance
-                // on the entry (see `CachedSearch::route`).
-                route: route_for_tier(tier),
-            },
-        );
-    }
-    let writer_start = Instant::now();
-    let messages = writer_messages(
-        chat_system_prompt,
-        history,
-        latest_user,
-        &sources,
-        today,
-        locale,
-        lang,
-        is_cache_tier,
-        conflict,
-        still_missing.as_deref(),
-        deps.latest_images,
-    );
-    deps.timings.record(STAGE_WRITER_PREPARE, writer_start);
-    SearchOutcome::Answer { messages, sources }
 }
 
 /// Merges two source-block lists, `first` kept whole and ahead of `second`,
@@ -2603,6 +2725,38 @@ mod tests {
     use time::format_description::well_known::Rfc3339;
     use time::OffsetDateTime;
 
+    /// Scriptable [`Synthesizer`] for the cache-reuse gate tests: returns a fixed
+    /// buffered answer or error so the sentinel/empty/error/normal branches are
+    /// driven without a live engine.
+    struct FakeSynthesizer {
+        result: Result<String, InferenceError>,
+    }
+
+    impl FakeSynthesizer {
+        fn returning(result: Result<String, InferenceError>) -> Self {
+            Self { result }
+        }
+
+        /// A synthesizer that always returns `text` as a grounded answer, for
+        /// deps builders whose tests never exercise the reuse-decline paths.
+        fn answering(text: &str) -> Self {
+            Self {
+                result: Ok(text.to_string()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Synthesizer for FakeSynthesizer {
+        async fn synthesize(
+            &self,
+            _messages: &[ChatMessage],
+            _cancel: &CancellationToken,
+        ) -> Result<String, InferenceError> {
+            self.result.clone()
+        }
+    }
+
     /// A transport that cancels `token` on every send (after returning the SERP),
     /// so the orchestrator's mid-pipeline cancellation checks are exercised.
     struct CancelOnSend {
@@ -2772,6 +2926,12 @@ mod tests {
             // `SearchDeps` directly with a scripted judge and health (see
             // `deps_for_escalation`).
             judge: Box::leak(Box::new(FakeSufficiencyJudge::sufficient())),
+            // Reuse-gate tests that need a scripted synthesizer build
+            // `SearchDeps` via `deps_for_reuse`; the default path never
+            // synthesizes, so a fixed grounded answer is inert here.
+            synthesizer: Box::leak(Box::new(FakeSynthesizer::answering(
+                "cache reuse answer [1]",
+            ))),
             transport,
             reachability: reachable(),
             scorer,
@@ -2814,6 +2974,9 @@ mod tests {
         SearchDeps {
             prepass,
             judge,
+            synthesizer: Box::leak(Box::new(FakeSynthesizer::answering(
+                "cache reuse answer [1]",
+            ))),
             transport,
             reachability: reachable(),
             scorer,
@@ -2853,6 +3016,9 @@ mod tests {
         SearchDeps {
             prepass,
             judge,
+            synthesizer: Box::leak(Box::new(FakeSynthesizer::answering(
+                "cache reuse answer [1]",
+            ))),
             transport,
             reachability: reachable(),
             scorer,
@@ -2872,16 +3038,18 @@ mod tests {
     }
 
     /// `SearchDeps` for the multi-turn reuse-gate tests: a caller-supplied cache
-    /// (pre-loaded with stored searches), sufficiency judge (the reuse grounding
-    /// gate), engine health (whether an escalation can reach the engines), and
-    /// scope, the inputs that decide whether a `cached` decision reuses stored
-    /// sources or escalates to a fresh search.
+    /// (pre-loaded with stored searches), sufficiency judge (layer 1 of the reuse
+    /// grounding gate), synthesizer (layer 2, whose `INSUFFICIENT_EVIDENCE`
+    /// sentinel forces a fresh search), engine health (whether an escalation can
+    /// reach the engines), and scope, the inputs that decide whether a `cached`
+    /// decision reuses stored sources or escalates to a fresh search.
     #[allow(clippy::too_many_arguments)]
     fn deps_for_reuse<'a>(
         prepass: &'a dyn PrePass,
         transport: &'a dyn HttpTransport,
         scorer: &'a dyn Scorer,
         judge: &'a dyn SufficiencyJudge,
+        synthesizer: &'a dyn Synthesizer,
         health: &'a EngineHealth,
         recorder: &'a crate::trace::BoundRecorder,
         cache: &'a dyn SourceCache,
@@ -2890,6 +3058,7 @@ mod tests {
         SearchDeps {
             prepass,
             judge,
+            synthesizer,
             transport,
             reachability: reachable(),
             scorer,
@@ -6050,9 +6219,13 @@ mod tests {
             &status,
         )
         .await;
+        // The reuse is served as a buffered AnswerReused: the writer prompt that
+        // produced it still embeds the cached source text and ends on the user's
+        // question, and the buffered content is the synthesized answer.
         assert!(
-            matches!(&outcome, SearchOutcome::Answer { messages, sources }
-            if sources.len() == 1
+            matches!(&outcome, SearchOutcome::AnswerReused { content, messages, sources }
+            if content == "cache reuse answer [1]"
+                && sources.len() == 1
                 && sources[0].url == "https://blog.rust-lang.org/"
                 && messages.first().is_some_and(|m| m.role == "system"
                     && m.content.contains("Rust 1.90.0 is the latest stable release"))
@@ -6065,9 +6238,11 @@ mod tests {
         );
         // A `cached`-tier answer carries the cache-brevity directive on system:
         // the user is re-asking about the answer just given.
-        assert!(matches!(&outcome, SearchOutcome::Answer { messages, .. }
+        assert!(
+            matches!(&outcome, SearchOutcome::AnswerReused { messages, .. }
             if messages.first().is_some_and(|m| m.content
-                .contains("asking again about the answer you just gave"))));
+                .contains("asking again about the answer you just gave")))
+        );
         let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
         assert!(events.iter().any(|e| matches!(
             e,
@@ -6313,6 +6488,7 @@ mod tests {
                 &transport,
                 &Bm25Scorer,
                 &judge,
+                &FakeSynthesizer::answering("cache reuse answer [1]"),
                 &health,
                 &bound,
                 &cache,
@@ -6328,13 +6504,17 @@ mod tests {
             &status,
         )
         .await;
-        // The union, most recent first, renumbered contiguously from 1.
-        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
-            if sources.len() == 2
+        // The buffered answer is emitted at once (AnswerReused), grounded on the
+        // union, most recent first, renumbered contiguously from 1.
+        assert!(
+            matches!(&outcome, SearchOutcome::AnswerReused { content, sources, .. }
+            if content == "cache reuse answer [1]"
+                && sources.len() == 2
                 && sources[0].index == 1
                 && sources[0].url == "https://newer.example/"
                 && sources[1].index == 2
-                && sources[1].url == "https://older.example/"));
+                && sources[1].url == "https://older.example/")
+        );
         assert!(transport.calls().is_empty(), "a reuse must not retrieve");
         let events: Vec<RecorderEvent> = mock.snapshot().into_iter().map(|(_, e)| e).collect();
         assert!(events.iter().any(|e| matches!(
@@ -6402,6 +6582,7 @@ mod tests {
                 &transport,
                 &Bm25Scorer,
                 &judge,
+                &FakeSynthesizer::answering("cache reuse answer [1]"),
                 &health,
                 &bound,
                 &cache,
@@ -6418,8 +6599,10 @@ mod tests {
         )
         .await;
         // Only the web-tier source survives; the news-tier source is excluded.
-        assert!(matches!(&outcome, SearchOutcome::Answer { sources, .. }
-            if sources.len() == 1 && sources[0].url == "https://web.example/"));
+        assert!(
+            matches!(&outcome, SearchOutcome::AnswerReused { sources, .. }
+            if sources.len() == 1 && sources[0].url == "https://web.example/")
+        );
         assert!(transport.calls().is_empty(), "a reuse must not retrieve");
     }
 
@@ -6463,6 +6646,7 @@ mod tests {
                 &transport,
                 &Bm25Scorer,
                 &judge,
+                &FakeSynthesizer::answering("cache reuse answer [1]"),
                 &health,
                 &bound,
                 &cache,
@@ -6525,6 +6709,7 @@ mod tests {
                 &transport,
                 &Bm25Scorer,
                 &judge,
+                &FakeSynthesizer::answering("cache reuse answer [1]"),
                 &health,
                 &bound,
                 &cache,
@@ -6593,6 +6778,7 @@ mod tests {
                 &transport,
                 &Bm25Scorer,
                 &judge,
+                &FakeSynthesizer::answering("cache reuse answer [1]"),
                 &health,
                 &bound,
                 &cache,
@@ -6651,6 +6837,7 @@ mod tests {
                 &transport,
                 &Bm25Scorer,
                 &judge,
+                &FakeSynthesizer::answering("cache reuse answer [1]"),
                 &health,
                 &bound,
                 &cache,
@@ -6715,6 +6902,7 @@ mod tests {
                 &transport,
                 &Bm25Scorer,
                 &judge,
+                &FakeSynthesizer::answering("cache reuse answer [1]"),
                 &health,
                 &bound,
                 &cache,
@@ -6734,6 +6922,159 @@ mod tests {
         assert!(
             transport.calls().is_empty(),
             "a cancelled reuse must not search fresh"
+        );
+    }
+
+    /// Builds a reuse turn whose judge clears the union but whose scripted
+    /// synthesizer is the variable under test, with a fresh-search transport
+    /// ready for the escalation paths. Returns the `SearchOutcome` and the
+    /// recorded events. Scope 7, one web-route entry (`cached.example`).
+    async fn run_reuse_with_synthesizer(
+        synthesizer: &dyn Synthesizer,
+        transport: &dyn HttpTransport,
+    ) -> (SearchOutcome, Vec<RecorderEvent>) {
+        let cache = TtlSourceCache::new(std::time::Duration::from_secs(600), 4);
+        cache.store(
+            7,
+            CachedSearch {
+                standalone_question: "prior".into(),
+                sources: vec![SourceBlock {
+                    index: 1,
+                    url: "https://cached.example/".into(),
+                    title: "Cached".into(),
+                    text: "a stale cached answer".into(),
+                }],
+                route: SearchRoute::Web,
+            },
+        );
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::Cached,
+            route: SearchRoute::Web,
+            standalone_question: "when was the treaty of versailles signed in paris".into(),
+            queries: vec!["treaty versailles".into()],
+            explicit_search: false,
+            lang: "en".into(),
+        }));
+        let health = EngineHealth::new();
+        // Sufficient for BOTH the reuse gate (layer 1) and, on escalation, the
+        // engine tier's own judge, so a declined synthesis lands on a committed
+        // fresh answer.
+        let judge = FakeSufficiencyJudge::sufficient();
+        let (mock, bound) = mock_recorder();
+        let (_p, status) = recorder();
+        let outcome = run_search(
+            &deps_for_reuse(
+                &prepass,
+                transport,
+                &Bm25Scorer,
+                &judge,
+                synthesizer,
+                &health,
+                &bound,
+                &cache,
+                7,
+            ),
+            "sys",
+            &[],
+            "q",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        let events = mock.snapshot().into_iter().map(|(_, e)| e).collect();
+        (outcome, events)
+    }
+
+    /// Asserts a declined-synthesis escalation: a fresh answer (not the stale
+    /// cached source), a real request, and the cache-gate escalation event.
+    fn assert_reuse_escalated(
+        outcome: &SearchOutcome,
+        events: &[RecorderEvent],
+        transport_hit: bool,
+    ) {
+        assert!(matches!(outcome, SearchOutcome::Answer { sources, .. }
+            if sources.iter().all(|s| s.url != "https://cached.example/")
+                && sources.iter().any(|s| s.url == "https://match.example/")));
+        assert!(transport_hit, "the escalation must run a fresh search");
+        assert!(events.iter().any(|e| matches!(
+            e,
+            RecorderEvent::SearchEscalated { from_tier, sufficient, escalated, .. }
+            if from_tier == "cache" && !*sufficient && *escalated
+        )));
+    }
+
+    #[tokio::test]
+    async fn cached_reuse_escalates_when_the_writer_emits_the_insufficient_evidence_sentinel() {
+        // Layer 2: the judge cleared the union but the writer, seeing the sources
+        // do not carry the asked detail, emits the sentinel. No token reached the
+        // user (buffered), so the turn escalates to a fresh search.
+        let transport = transport_with_serp_and_page();
+        let synth = FakeSynthesizer::returning(Ok(INSUFFICIENT_EVIDENCE_SENTINEL.to_string()));
+        let (outcome, events) = run_reuse_with_synthesizer(&synth, &transport).await;
+        assert_reuse_escalated(
+            &outcome,
+            &events,
+            transport.calls().iter().any(|c| c.url == DDG_ENDPOINT),
+        );
+    }
+
+    #[tokio::test]
+    async fn cached_reuse_escalates_when_the_sentinel_follows_leading_whitespace() {
+        // The prefix match trims leading whitespace first: a sentinel preceded by
+        // blank lines still declines and escalates.
+        let transport = transport_with_serp_and_page();
+        let synth = FakeSynthesizer::returning(Ok(format!(
+            "  \n\t{INSUFFICIENT_EVIDENCE_SENTINEL}\nnothing else matters"
+        )));
+        let (outcome, events) = run_reuse_with_synthesizer(&synth, &transport).await;
+        assert_reuse_escalated(
+            &outcome,
+            &events,
+            transport.calls().iter().any(|c| c.url == DDG_ENDPOINT),
+        );
+    }
+
+    #[tokio::test]
+    async fn cached_reuse_escalates_when_the_writer_returns_empty_output() {
+        // An empty synthesis (whitespace-only) also declines the reuse.
+        let transport = transport_with_serp_and_page();
+        let synth = FakeSynthesizer::returning(Ok("   \n  ".to_string()));
+        let (outcome, events) = run_reuse_with_synthesizer(&synth, &transport).await;
+        assert_reuse_escalated(
+            &outcome,
+            &events,
+            transport.calls().iter().any(|c| c.url == DDG_ENDPOINT),
+        );
+    }
+
+    #[tokio::test]
+    async fn cached_reuse_escalates_when_the_synthesizer_fails() {
+        // A synthesis transport failure fails toward a fresh search, never toward
+        // serving an answer the gate could not produce.
+        let transport = transport_with_serp_and_page();
+        let synth = FakeSynthesizer::returning(Err(InferenceError::Request("boom".into())));
+        let (outcome, events) = run_reuse_with_synthesizer(&synth, &transport).await;
+        assert_reuse_escalated(
+            &outcome,
+            &events,
+            transport.calls().iter().any(|c| c.url == DDG_ENDPOINT),
+        );
+    }
+
+    #[tokio::test]
+    async fn cached_reuse_is_cancelled_when_the_synthesizer_is_cancelled() {
+        // A cancellation during buffered synthesis short-circuits the turn: no
+        // fresh search runs, no answer is served.
+        let transport = FakeHttpTransport::new();
+        let synth = FakeSynthesizer::returning(Err(InferenceError::Cancelled));
+        let (outcome, _events) = run_reuse_with_synthesizer(&synth, &transport).await;
+        assert!(matches!(outcome, SearchOutcome::Cancelled));
+        assert!(
+            transport.calls().is_empty(),
+            "a cancelled synthesis must not search fresh"
         );
     }
 
