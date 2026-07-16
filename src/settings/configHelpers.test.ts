@@ -27,6 +27,10 @@ describe('configHelp', () => {
       ['quote', 'max_context_length'],
       ['behavior', 'auto_replace'],
       ['behavior', 'auto_close'],
+      ['behavior', 'auto_search'],
+      ['behavior', 'auto_save_conversations'],
+      ['behavior', 'history_retention_days'],
+      ['behavior', 'auto_save_notice_acknowledged'],
       ['debug', 'trace_enabled'],
       ['debug', 'trace_retention_days'],
     ];

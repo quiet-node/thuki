@@ -12,7 +12,7 @@
  * the chat messages area below.
  */
 
-import { memo } from 'react';
+import { memo, type RefObject } from 'react';
 import { Tooltip } from './Tooltip';
 import { blurOnProgrammaticFocus } from '../utils/blurOnProgrammaticFocus';
 
@@ -188,6 +188,16 @@ interface WindowControlsProps {
    * the popover's open state.
    */
   isExportOpen?: boolean;
+  /**
+   * Optional ref attached to the bookmark (save) button so hosts can
+   * position floating UI (e.g. the auto-save notice tip) under it.
+   */
+  bookmarkButtonRef?: RefObject<HTMLButtonElement | null>;
+  /**
+   * Optional data-testid on the bookmark button for tests that measure or
+   * query the save control directly.
+   */
+  saveButtonTestId?: string;
 }
 
 /** Decorative dot color for inactive buttons. */
@@ -207,6 +217,8 @@ export const WindowControls = memo(function WindowControls({
   onMinimize,
   onExportToggle,
   isExportOpen = false,
+  bookmarkButtonRef,
+  saveButtonTestId,
 }: WindowControlsProps) {
   // Disabled only when there is nothing to save yet and the conversation hasn't
   // been saved. Once saved the button stays active so the user can unsave.
@@ -336,9 +348,11 @@ export const WindowControls = memo(function WindowControls({
               label={isSaved ? 'Remove from history' : 'Save conversation'}
             >
               <button
+                ref={bookmarkButtonRef}
                 type="button"
                 onClick={onSave}
                 disabled={saveDisabled}
+                data-testid={saveButtonTestId}
                 aria-label={
                   isSaved ? 'Remove from history' : 'Save conversation'
                 }

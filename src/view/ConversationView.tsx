@@ -1,5 +1,6 @@
 import { motion } from 'framer-motion';
 import { useCallback, useRef, useEffect } from 'react';
+import { AutoSaveNoticeTip } from '../components/AutoSaveNoticeTip';
 import { ChatBubble } from '../components/ChatBubble';
 import { RequestStatusStrip } from '../components/RequestStatusStrip';
 import { WindowControls } from '../components/WindowControls';
@@ -144,6 +145,15 @@ interface ConversationViewProps {
    * moment a turn began.
    */
   engineState?: string;
+  /**
+   * When true, show the compact floating auto-save tip under the bookmark.
+   * Host owns persistence of dismiss. Tip does not insert a chat strip.
+   */
+  showAutoSaveNotice?: boolean;
+  /** Persist dismiss for the auto-save notice and hide it. */
+  onAutoSaveNoticeAcknowledge?: () => void;
+  /** Open Settings › Behavior with Auto-save highlighted. */
+  onAutoSaveNoticeSettings?: () => void;
 }
 
 /**
@@ -178,11 +188,16 @@ export function ConversationView({
   onMinimize,
   onExportToggle,
   isExportOpen,
+  showAutoSaveNotice = false,
+  onAutoSaveNoticeAcknowledge,
+  onAutoSaveNoticeSettings,
   providerKind = '',
   engineWarming = false,
   engineState = 'stopped',
 }: ConversationViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  /** Bookmark button for floating auto-save tip caret alignment. */
+  const bookmarkButtonRef = useRef<HTMLButtonElement>(null);
 
   // True while the trailing assistant message is waiting on its first token
   // (or, for a /think turn, its first thinking token) from a non-search chat
@@ -363,6 +378,15 @@ export function ConversationView({
         onMinimize={onMinimize}
         onExportToggle={onExportToggle}
         isExportOpen={isExportOpen}
+        bookmarkButtonRef={bookmarkButtonRef}
+        saveButtonTestId="auto-save-bookmark"
+      />
+
+      <AutoSaveNoticeTip
+        open={showAutoSaveNotice}
+        anchorRef={bookmarkButtonRef}
+        onAcknowledge={() => onAutoSaveNoticeAcknowledge?.()}
+        onOpenSettings={() => onAutoSaveNoticeSettings?.()}
       />
 
       <div

@@ -392,6 +392,36 @@ pub const DEFAULT_AUTO_SEARCH: bool = true;
 /// (or equivalent) so the card never returns. Independent of `auto_search`.
 pub const DEFAULT_SEARCH_NOTICE_ACKNOWLEDGED: bool = false;
 
+/// When `true` (default), completed chat turns are written to SQLite history
+/// automatically without a bookmark click. When `false`, only an explicit Save
+/// persists the conversation. Default on so the first-turn auto-save notice
+/// copy is honest. Toggleable from Settings › Behavior.
+pub const DEFAULT_AUTO_SAVE_CONVERSATIONS: bool = true;
+
+/// How many days saved conversations are retained before a startup / confirmed
+/// retention-change prune deletes them by `conversations.updated_at`. Default
+/// `-1` (forever). Finite values are bounded by
+/// [`BOUNDS_HISTORY_RETENTION_DAYS`]. Signed so the forever sentinel is
+/// representable. Toggleable from Settings › Behavior.
+pub const DEFAULT_HISTORY_RETENTION_DAYS: i64 = -1;
+
+/// Accepted positive range for `history_retention_days` (in days). One day
+/// floor, ten-year ceiling. The [`HISTORY_RETENTION_FOREVER`] sentinel is
+/// handled separately and is intentionally outside this range; every other
+/// value outside it (including `0`) resets to [`DEFAULT_HISTORY_RETENTION_DAYS`].
+pub const BOUNDS_HISTORY_RETENTION_DAYS: (i64, i64) = (1, 3650);
+
+/// Sentinel `history_retention_days` value meaning "keep conversations forever"
+/// (never prune). Named so the loader clamp and prune caller agree on the
+/// magic number rather than both hardcoding `-1`.
+pub const HISTORY_RETENTION_FOREVER: i64 = -1;
+
+/// When `false` (default), the chat header can show a one-shot notice after the
+/// first auto-saved turn explaining that conversations are being saved. Set
+/// `true` after Acknowledge so the card never returns. Independent of
+/// `auto_save_conversations`.
+pub const DEFAULT_AUTO_SAVE_NOTICE_ACKNOWLEDGED: bool = false;
+
 // Ollama API baked-in limits: not exposed in config.toml because they bound
 // attacker-controlled data (response bodies from the local Ollama daemon) and
 // keep the UI responsive when the daemon is hung. Changing either timeout
@@ -556,6 +586,9 @@ pub const ALLOWED_FIELDS: &[(&str, &str)] = &[
     ("behavior", "auto_close"),
     ("behavior", "auto_search"),
     ("behavior", "search_notice_acknowledged"),
+    ("behavior", "auto_save_conversations"),
+    ("behavior", "history_retention_days"),
+    ("behavior", "auto_save_notice_acknowledged"),
     // [debug]
     ("debug", "trace_enabled"),
     ("debug", "trace_retention_days"),

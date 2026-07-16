@@ -60,6 +60,9 @@ const SAMPLE: RawAppConfig = {
     auto_close: false,
     auto_search: true,
     search_notice_acknowledged: false,
+    auto_save_conversations: true,
+    history_retention_days: -1,
+    auto_save_notice_acknowledged: false,
   },
   debug: {
     trace_enabled: false,
@@ -233,6 +236,42 @@ describe('SettingsWindow', () => {
       'data-highlight',
       'true',
     );
+
+    unmount();
+    vi.useRealTimers();
+    await act(async () => {
+      await Promise.resolve();
+    });
+  });
+
+  it('jumps to Behavior and highlights Auto-save on show-behavior-auto-save event', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { unmount } = render(<SettingsWindow />);
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: /Models/ })).toBeInTheDocument(),
+    );
+
+    await act(async () => {
+      emitTauriEvent('thuki://settings-show-behavior-auto-save', undefined);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole('tab', { name: /Behavior/ })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByTestId('auto-save-conversations-row')).toHaveAttribute(
+      'data-highlight',
+      'true',
+    );
+    expect(screen.getByTestId('auto-save-wiggle')).toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(7500);
+    });
+    expect(
+      screen.getByTestId('auto-save-conversations-row'),
+    ).not.toHaveAttribute('data-highlight');
 
     unmount();
     vi.useRealTimers();
@@ -497,6 +536,27 @@ describe('SettingsWindow', () => {
     fireEvent.mouseDown(root, { target: root });
     // The root is a div; not in INTERACTIVE_TAGS, so dragging fires.
     expect(__mockWindow.startDragging).toHaveBeenCalled();
+  });
+
+  it('mousedown on chrome blurs a focused form field before startDragging', async () => {
+    render(<SettingsWindow />);
+    await waitFor(() => screen.getByRole('tab', { name: /Behavior/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /Behavior/ }));
+    const input = (await screen.findByTestId(
+      'history-retention-input',
+    )) as HTMLInputElement;
+    input.focus();
+    expect(document.activeElement).toBe(input);
+    const blurSpy = vi.spyOn(input, 'blur');
+    __mockWindow.startDragging.mockClear();
+    const root = screen
+      .getByRole('tab', { name: /Behavior/ })
+      .closest('[role="tablist"]')!.parentElement!;
+    fireEvent.mouseDown(root, { target: root, button: 0 });
+    // preventDefault would cancel browser blur; we blur explicitly first.
+    expect(blurSpy).toHaveBeenCalled();
+    expect(__mockWindow.startDragging).toHaveBeenCalled();
+    blurSpy.mockRestore();
   });
 
   it('mousedown that originates from an interactive element does NOT trigger drag', async () => {

@@ -30,3 +30,21 @@ export const V016_AUTO_SEARCH_ANNOUNCEMENT = {
 export function v016AutoSearchSettingsCta(autoSearchOn: boolean): string {
   return autoSearchOn ? 'Turn off in Settings' : 'Turn on in Settings';
 }
+
+/**
+ * One-shot chat-header notice after the first auto-saved conversation.
+ * Shown until `behavior.auto_save_notice_acknowledged` is true.
+ */
+export const AUTO_SAVE_NOTICE_ANNOUNCEMENT = {
+  title: 'Chats are now auto-saved',
+  body: 'Turn auto-save off if you prefer to bookmark only what matters.',
+} as const;
+
+/**
+ * Settings CTA label for the auto-save chat notice tip.
+ *
+ * @returns Fixed deep-link copy (opens Settings; does not toggle auto-save).
+ */
+export function autoSaveNoticeSettingsCta(): string {
+  return 'Turn off in Settings';
+}

@@ -197,6 +197,7 @@ export function SettingsWindow() {
    * was skipping the animation on repeat Turn on/off in Settings clicks).
    */
   const [autoSearchHighlightNonce, setAutoSearchHighlightNonce] = useState(0);
+  const [autoSaveHighlightNonce, setAutoSaveHighlightNonce] = useState(0);
   const [savedVisible, setSavedVisible] = useState(false);
   const [marker, setMarker] = useState<CorruptMarker | null>(null);
   const [markerDismissed, setMarkerDismissed] = useState(false);
@@ -285,6 +286,20 @@ export function SettingsWindow() {
     };
   }, []);
 
+  // Auto-save chat notice Settings CTA opens Behavior and wiggles Auto-save.
+  useEffect(() => {
+    const unlistenPromise = listen(
+      'thuki://settings-show-behavior-auto-save',
+      () => {
+        setActiveTab('behavior');
+        setAutoSaveHighlightNonce((n) => n + 1);
+      },
+    );
+    return () => {
+      void unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
+
   // Keyboard shortcuts scoped to the Settings window.
   // Cmd+,: re-focus/re-raise (mac convention for "already open").
   // Cmd+W: hide the window (mac convention for closing a panel).
@@ -329,6 +344,17 @@ export function SettingsWindow() {
    * clicks pass through so context menus and middle-click behaviors
    * are unaffected.
    */
+  /**
+   * Window-level drag region for the frameless Settings chrome.
+   *
+   * Skips interactive / text targets so clicks still work. Before calling
+   * `preventDefault` + `startDragging`, blurs any focused form field so
+   * number inputs (Retention, etc.) still receive `blur` and can commit:
+   * without this, `preventDefault` on mousedown cancels the browser blur and
+   * drafts never apply when the user clicks empty chrome to dismiss focus.
+   *
+   * @param e Primary-button mousedown on the window root.
+   */
   const handleDragStart = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
     const el = e.target as HTMLElement;
@@ -359,6 +385,19 @@ export function SettingsWindow() {
       ) {
         return;
       }
+    }
+
+    // Commit focused form fields before preventDefault cancels blur.
+    const active = document.activeElement;
+    if (
+      active instanceof HTMLElement &&
+      active !== el &&
+      (active.tagName === 'INPUT' ||
+        active.tagName === 'TEXTAREA' ||
+        active.tagName === 'SELECT' ||
+        active.isContentEditable)
+    ) {
+      active.blur();
     }
 
     e.preventDefault();
@@ -493,6 +532,8 @@ export function SettingsWindow() {
                     onHighlightAutoSearchDone={() =>
                       setAutoSearchHighlightNonce(0)
                     }
+                    highlightAutoSaveNonce={autoSaveHighlightNonce}
+                    onHighlightAutoSaveDone={() => setAutoSaveHighlightNonce(0)}
                   />
                 ) : null}
                 {activeTab === 'display' ? (

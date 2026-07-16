@@ -14,16 +14,18 @@
 use serde::{Deserialize, Serialize};
 
 use super::defaults::{
-    DEFAULT_ACTIVE_PROVIDER, DEFAULT_AUTO_CLOSE, DEFAULT_AUTO_REPLACE, DEFAULT_AUTO_SEARCH,
-    DEFAULT_BUILTIN_LABEL, DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
-    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_LABEL,
-    DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH,
-    DEFAULT_QUOTE_MAX_DISPLAY_CHARS, DEFAULT_QUOTE_MAX_DISPLAY_LINES,
-    DEFAULT_SEARCH_NOTICE_ACKNOWLEDGED, DEFAULT_SYSTEM_CUSTOMIZED, DEFAULT_SYSTEM_PROMPT_BASE,
-    DEFAULT_TEXT_BASE_PX, DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX,
-    DEFAULT_TEXT_LINE_HEIGHT, DEFAULT_TRACE_RETENTION_DAYS, DEFAULT_UPDATER_AUTO_CHECK,
-    DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL, PROVIDER_ID_BUILTIN,
-    PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA, PROVIDER_KIND_OPENAI,
+    DEFAULT_ACTIVE_PROVIDER, DEFAULT_AUTO_CLOSE, DEFAULT_AUTO_REPLACE,
+    DEFAULT_AUTO_SAVE_CONVERSATIONS, DEFAULT_AUTO_SAVE_NOTICE_ACKNOWLEDGED, DEFAULT_AUTO_SEARCH,
+    DEFAULT_BUILTIN_LABEL, DEFAULT_DEBUG_TRACE_ENABLED, DEFAULT_HISTORY_RETENTION_DAYS,
+    DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES,
+    DEFAULT_NUM_CTX, DEFAULT_OLLAMA_LABEL, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_SEARCH_NOTICE_ACKNOWLEDGED, DEFAULT_SYSTEM_CUSTOMIZED,
+    DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX, DEFAULT_TEXT_FONT_WEIGHT,
+    DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT, DEFAULT_TRACE_RETENTION_DAYS,
+    DEFAULT_UPDATER_AUTO_CHECK, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_UPDATER_MANIFEST_URL,
+    PROVIDER_ID_BUILTIN, PROVIDER_ID_OLLAMA, PROVIDER_KIND_BUILTIN, PROVIDER_KIND_OLLAMA,
+    PROVIDER_KIND_OPENAI,
 };
 
 /// A single configured inference provider. Exactly one is active at a time
@@ -306,6 +308,15 @@ pub struct BehaviorSection {
     /// When `true`, the first-use web-search notice has been dismissed and
     /// should not show again. Default `false` until the user acknowledges it.
     pub search_notice_acknowledged: bool,
+    /// When `true` (default), completed turns are persisted to history without
+    /// a bookmark click. When `false`, only an explicit Save persists.
+    pub auto_save_conversations: bool,
+    /// Days to keep saved conversations by last activity (`updated_at`); `-1`
+    /// keeps forever. Finite values prune older rows after confirm / at startup.
+    pub history_retention_days: i64,
+    /// When `true`, the one-shot auto-save chat notice has been dismissed and
+    /// should not show again. Default `false` until the user acknowledges it.
+    pub auto_save_notice_acknowledged: bool,
 }
 
 impl Default for BehaviorSection {
@@ -315,6 +326,9 @@ impl Default for BehaviorSection {
             auto_close: DEFAULT_AUTO_CLOSE,
             auto_search: DEFAULT_AUTO_SEARCH,
             search_notice_acknowledged: DEFAULT_SEARCH_NOTICE_ACKNOWLEDGED,
+            auto_save_conversations: DEFAULT_AUTO_SAVE_CONVERSATIONS,
+            history_retention_days: DEFAULT_HISTORY_RETENTION_DAYS,
+            auto_save_notice_acknowledged: DEFAULT_AUTO_SAVE_NOTICE_ACKNOWLEDGED,
         }
     }
 }

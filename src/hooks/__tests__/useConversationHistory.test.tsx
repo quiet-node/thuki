@@ -61,6 +61,19 @@ describe('useConversationHistory', () => {
     });
   });
 
+  it('save() rejects when save_conversation returns no conversation id', async () => {
+    invoke.mockResolvedValueOnce(undefined);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    await expect(
+      act(async () => {
+        await result.current.save(MESSAGES, MODEL);
+      }),
+    ).rejects.toThrow(/no conversation id/);
+    expect(result.current.isSaved).toBe(false);
+  });
+
   it('save() sets isSaved to true and stores conversationId', async () => {
     invoke.mockResolvedValueOnce({ conversation_id: 'conv-123' });
     invoke.mockResolvedValue(undefined);
@@ -111,6 +124,74 @@ describe('useConversationHistory', () => {
     });
   });
 
+  it('save({ generateTitle: false }) skips generate_title', async () => {
+    invoke.mockResolvedValueOnce({ conversation_id: 'conv-no-title' });
+    invoke.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.save(MESSAGES, MODEL, { generateTitle: false });
+    });
+
+    expect(result.current.isSaved).toBe(true);
+    expect(result.current.conversationId).toBe('conv-no-title');
+    expect(invoke).toHaveBeenCalledWith('save_conversation', expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(
+      'generate_title',
+      expect.anything(),
+    );
+  });
+
+  it('requestTitle fires generate_title once then no-ops', async () => {
+    invoke.mockResolvedValueOnce({ conversation_id: 'conv-req' });
+    invoke.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.save(MESSAGES, MODEL, { generateTitle: false });
+    });
+    invoke.mockClear();
+    invoke.mockResolvedValue(undefined);
+
+    act(() => {
+      result.current.requestTitle(MESSAGES, MODEL);
+    });
+    expect(invoke).toHaveBeenCalledWith('generate_title', {
+      conversationId: 'conv-req',
+      messages: expect.any(Array),
+      model: MODEL,
+    });
+
+    invoke.mockClear();
+    act(() => {
+      result.current.requestTitle(MESSAGES, MODEL);
+    });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('requestTitle no-ops without identity or model', async () => {
+    const { result } = renderHook(() => useConversationHistory());
+
+    act(() => {
+      result.current.requestTitle(MESSAGES, MODEL);
+    });
+    expect(invoke).not.toHaveBeenCalled();
+
+    invoke.mockResolvedValueOnce({ conversation_id: 'conv-x' });
+    invoke.mockResolvedValue(undefined);
+    await act(async () => {
+      await result.current.save(MESSAGES, MODEL, { generateTitle: false });
+    });
+    invoke.mockClear();
+
+    act(() => {
+      result.current.requestTitle(MESSAGES, null);
+    });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it('save() is a no-op when already saved', async () => {
     invoke.mockResolvedValueOnce({ conversation_id: 'conv-123' });
     invoke.mockResolvedValue(undefined);
@@ -153,6 +234,53 @@ describe('useConversationHistory', () => {
     });
 
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('persistAssistant() is a no-op when not saved', async () => {
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.persistAssistant(MESSAGES[1]);
+    });
+
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('persistAssistant() invokes persist_message for assistant only when saved', async () => {
+    invoke.mockResolvedValueOnce({ conversation_id: 'conv-123' });
+    invoke.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.save([MESSAGES[0]], MODEL);
+    });
+
+    invoke.mockClear();
+
+    const assistantMsg: Message = {
+      id: 'a1',
+      role: 'assistant',
+      content: 'Hi there',
+      thinkingContent: 'reason',
+      // omit modelName → null on the wire
+    };
+
+    await act(async () => {
+      await result.current.persistAssistant(assistantMsg);
+    });
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith('persist_message', {
+      conversationId: 'conv-123',
+      role: 'assistant',
+      content: 'Hi there',
+      quotedText: null,
+      imagePaths: null,
+      thinkingContent: 'reason',
+      searchSources: null,
+      modelName: null,
+    });
   });
 
   it('persistTurn() invokes persist_message for both messages when saved', async () => {
@@ -203,6 +331,120 @@ describe('useConversationHistory', () => {
       searchSources: null,
       modelName: null,
     });
+  });
+
+  it('save then persistTurn in one chain both hit IPC via conversationIdRef', async () => {
+    invoke.mockResolvedValueOnce({ conversation_id: 'conv-chain' });
+    invoke.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    const userMsg: Message = {
+      id: 'u2',
+      role: 'user',
+      content: 'Follow up',
+    };
+    const assistantMsg: Message = {
+      id: 'a2',
+      role: 'assistant',
+      content: 'Reply',
+    };
+
+    // Same async chain: after await save, persistTurn must not wait on React state.
+    await act(async () => {
+      await result.current.save(MESSAGES, MODEL);
+      await result.current.persistTurn(userMsg, assistantMsg);
+    });
+
+    expect(invoke).toHaveBeenCalledWith(
+      'save_conversation',
+      expect.objectContaining({ messages: expect.any(Array) }),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      'persist_message',
+      expect.objectContaining({
+        conversationId: 'conv-chain',
+        role: 'user',
+        content: 'Follow up',
+      }),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      'persist_message',
+      expect.objectContaining({
+        conversationId: 'conv-chain',
+        role: 'assistant',
+        content: 'Reply',
+      }),
+    );
+    expect(result.current.conversationIdRef.current).toBe('conv-chain');
+  });
+
+  it('persistTurn failure keeps conversationId; next turn still persists', async () => {
+    invoke.mockResolvedValueOnce({ conversation_id: 'conv-retry' });
+    invoke.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useConversationHistory());
+
+    await act(async () => {
+      await result.current.save(MESSAGES, MODEL);
+    });
+
+    expect(result.current.conversationId).toBe('conv-retry');
+    expect(result.current.conversationIdRef.current).toBe('conv-retry');
+
+    invoke.mockClear();
+    invoke.mockRejectedValueOnce(new Error('db busy'));
+
+    const userFail: Message = {
+      id: 'u-fail',
+      role: 'user',
+      content: 'lost?',
+    };
+    const asstFail: Message = {
+      id: 'a-fail',
+      role: 'assistant',
+      content: 'maybe',
+    };
+
+    await expect(
+      act(async () => {
+        await result.current.persistTurn(userFail, asstFail);
+      }),
+    ).rejects.toThrow(/db busy/);
+
+    // Identity must survive so later turns still attempt persist_message.
+    expect(result.current.conversationId).toBe('conv-retry');
+    expect(result.current.conversationIdRef.current).toBe('conv-retry');
+    expect(result.current.isSaved).toBe(true);
+
+    invoke.mockReset();
+    invoke.mockResolvedValue(undefined);
+
+    const userOk: Message = { id: 'u-ok', role: 'user', content: 'retry' };
+    const asstOk: Message = {
+      id: 'a-ok',
+      role: 'assistant',
+      content: 'ok',
+    };
+
+    await act(async () => {
+      await result.current.persistTurn(userOk, asstOk);
+    });
+
+    expect(invoke).toHaveBeenCalledWith(
+      'persist_message',
+      expect.objectContaining({
+        conversationId: 'conv-retry',
+        content: 'retry',
+      }),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      'persist_message',
+      expect.objectContaining({
+        conversationId: 'conv-retry',
+        content: 'ok',
+      }),
+    );
   });
 
   it('persistTurn() passes null for undefined quotedText on userMsg', async () => {

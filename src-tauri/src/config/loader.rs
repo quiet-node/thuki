@@ -22,17 +22,19 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::defaults::{
-    ALLOWED_FONT_WEIGHTS, BOUNDS_KEEP_WARM_INACTIVITY_MINUTES, BOUNDS_MAX_CHAT_HEIGHT,
-    BOUNDS_MAX_IMAGES, BOUNDS_NUM_CTX, BOUNDS_OVERLAY_WIDTH, BOUNDS_QUOTE_MAX_CONTEXT_LENGTH,
-    BOUNDS_QUOTE_MAX_DISPLAY_CHARS, BOUNDS_QUOTE_MAX_DISPLAY_LINES, BOUNDS_TEXT_BASE_PX,
-    BOUNDS_TEXT_LETTER_SPACING_PX, BOUNDS_TEXT_LINE_HEIGHT, BOUNDS_TRACE_RETENTION_DAYS,
-    BOUNDS_UPDATER_CHECK_INTERVAL_HOURS, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES,
-    DEFAULT_MAX_CHAT_HEIGHT, DEFAULT_MAX_IMAGES, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL,
-    DEFAULT_OVERLAY_WIDTH, DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
+    ALLOWED_FONT_WEIGHTS, BOUNDS_HISTORY_RETENTION_DAYS, BOUNDS_KEEP_WARM_INACTIVITY_MINUTES,
+    BOUNDS_MAX_CHAT_HEIGHT, BOUNDS_MAX_IMAGES, BOUNDS_NUM_CTX, BOUNDS_OVERLAY_WIDTH,
+    BOUNDS_QUOTE_MAX_CONTEXT_LENGTH, BOUNDS_QUOTE_MAX_DISPLAY_CHARS,
+    BOUNDS_QUOTE_MAX_DISPLAY_LINES, BOUNDS_TEXT_BASE_PX, BOUNDS_TEXT_LETTER_SPACING_PX,
+    BOUNDS_TEXT_LINE_HEIGHT, BOUNDS_TRACE_RETENTION_DAYS, BOUNDS_UPDATER_CHECK_INTERVAL_HOURS,
+    DEFAULT_HISTORY_RETENTION_DAYS, DEFAULT_KEEP_WARM_INACTIVITY_MINUTES, DEFAULT_MAX_CHAT_HEIGHT,
+    DEFAULT_MAX_IMAGES, DEFAULT_NUM_CTX, DEFAULT_OLLAMA_URL, DEFAULT_OVERLAY_WIDTH,
+    DEFAULT_QUOTE_MAX_CONTEXT_LENGTH, DEFAULT_QUOTE_MAX_DISPLAY_CHARS,
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX,
     DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT,
     DEFAULT_TRACE_RETENTION_DAYS, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS,
-    DEFAULT_UPDATER_MANIFEST_URL, SLASH_COMMAND_PROMPT_APPENDIX, TRACE_RETENTION_FOREVER,
+    DEFAULT_UPDATER_MANIFEST_URL, HISTORY_RETENTION_FOREVER, SLASH_COMMAND_PROMPT_APPENDIX,
+    TRACE_RETENTION_FOREVER,
 };
 use super::error::ConfigError;
 use super::schema::AppConfig;
@@ -211,13 +213,23 @@ pub(crate) fn resolve(config: &mut AppConfig) {
         "quote.max_context_length",
     );
 
-    // Behavior section: boolean flag has no resolution step (any value is valid).
+    // Behavior section: bools need no resolution; history retention mirrors the
+    // trace retention sentinel-or-range contract (`-1` or `1..=3650`).
+    clamp_retention_days(
+        &mut config.behavior.history_retention_days,
+        DEFAULT_HISTORY_RETENTION_DAYS,
+        HISTORY_RETENTION_FOREVER,
+        BOUNDS_HISTORY_RETENTION_DAYS,
+        "behavior.history_retention_days",
+    );
 
     // Debug section: trace_enabled is a boolean (any value valid); the
     // retention window is clamped to its sentinel-or-range contract.
-    clamp_trace_retention_days(
+    clamp_retention_days(
         &mut config.debug.trace_retention_days,
         DEFAULT_TRACE_RETENTION_DAYS,
+        TRACE_RETENTION_FOREVER,
+        BOUNDS_TRACE_RETENTION_DAYS,
         "debug.trace_retention_days",
     );
 
@@ -415,17 +427,27 @@ fn clamp_keep_warm_inactivity(value: &mut i32, default: i32, field: &str) {
     }
 }
 
-fn clamp_trace_retention_days(value: &mut i64, default: i64, field: &str) {
-    // Valid: -1 (keep trace files forever) or 1..=3650 (an explicit retention
-    // window in days). Invalid: 0, below -1, or above 3650: reset to the
-    // compiled default. Mirrors `clamp_keep_warm_inactivity`: out-of-range
-    // resets to the default rather than saturating to a bound.
-    let (lo, hi) = BOUNDS_TRACE_RETENTION_DAYS;
-    if *value != TRACE_RETENTION_FOREVER && !(lo..=hi).contains(value) {
+/// Clamps a retention-days field that accepts a forever sentinel (`-1`) or a
+/// positive day window. Out-of-range values (including `0`) reset to `default`
+/// rather than saturating. Shared by trace and conversation history retention.
+///
+/// @param value Mutable field value from deserialized config.
+/// @param default Compiled default used when `value` is out of range.
+/// @param forever Sentinel that disables pruning (must be outside `bounds`).
+/// @param bounds Inclusive positive day range `(lo, hi)`.
+/// @param field Field path for the stderr warning (e.g. `debug.trace_retention_days`).
+fn clamp_retention_days(
+    value: &mut i64,
+    default: i64,
+    forever: i64,
+    bounds: (i64, i64),
+    field: &str,
+) {
+    let (lo, hi) = bounds;
+    if *value != forever && !(lo..=hi).contains(value) {
         eprintln!(
             "thuki: [config] {field}={value} out of bounds (must be {forever} or {lo}..={hi}); using default {default}",
             value = *value,
-            forever = TRACE_RETENTION_FOREVER
         );
         *value = default;
     }

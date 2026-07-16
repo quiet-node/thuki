@@ -435,6 +435,24 @@ export function prefersReducedMotion(): boolean {
  */
 export const DIALOG_EXIT_MS = 160;
 
+/**
+ * Modal confirm used for irreversible or high-impact Settings actions.
+ *
+ * Focus policy: non-destructive dialogs autofocus the confirm button (Enter
+ * affirms). Destructive dialogs autofocus Cancel instead so a held/repeated
+ * Enter from the field that opened the dialog cannot activate the destructive
+ * action (common form+dialog race).
+ *
+ * @param open Whether the dialog is open (exit animation defers unmount).
+ * @param title Dialog title (`aria-labelledby` target).
+ * @param message Body copy explaining the consequence.
+ * @param confirmLabel Label for the affirmative button.
+ * @param cancelLabel Label for the dismiss button. Default `Cancel`.
+ * @param destructive When true, styles confirm as destructive and autofocuses Cancel.
+ * @param primary Accent-fill confirm when not destructive.
+ * @param onConfirm Affirmative action callback.
+ * @param onCancel Dismiss callback (also Escape).
+ */
 export function ConfirmDialog({
   open,
   title,
@@ -514,6 +532,8 @@ export function ConfirmDialog({
             type="button"
             className={`${styles.button} ${styles.buttonGhost}`}
             onClick={onCancel}
+            // Destructive: land focus on Cancel so Enter cannot chain-confirm.
+            autoFocus={destructive}
           >
             {cancelLabel}
           </button>
@@ -527,7 +547,9 @@ export function ConfirmDialog({
                   : ''
             }`}
             onClick={onConfirm}
-            autoFocus
+            // Non-destructive only: Enter affirms. Destructive never autofocuses
+            // the wipe/ack button (see component JSDoc focus policy).
+            autoFocus={!destructive}
           >
             {confirmLabel}
           </button>

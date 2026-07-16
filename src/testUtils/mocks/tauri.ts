@@ -98,6 +98,22 @@ export function enableChannelCapture() {
       if (cmd === 'get_updater_state') {
         return DEFAULT_UPDATER_STATE;
       }
+      // Auto-save default ON: completed turns call save_conversation.
+      if (cmd === 'save_conversation') {
+        return { conversation_id: 'auto-saved-conv' };
+      }
+      if (cmd === 'generate_title') {
+        return;
+      }
+      if (cmd === 'persist_message') {
+        return;
+      }
+      if (cmd === 'prune_conversation_history') {
+        return 0;
+      }
+      if (cmd === 'clear_all_conversations') {
+        return;
+      }
     },
   );
 }
@@ -138,6 +154,21 @@ export function enableChannelCaptureWithResponses(
       if (cmd === 'get_updater_state') {
         return DEFAULT_UPDATER_STATE;
       }
+      if (cmd === 'save_conversation') {
+        return { conversation_id: 'auto-saved-conv' };
+      }
+      if (cmd === 'generate_title') {
+        return;
+      }
+      if (cmd === 'persist_message') {
+        return;
+      }
+      if (cmd === 'prune_conversation_history') {
+        return 0;
+      }
+      if (cmd === 'clear_all_conversations') {
+        return;
+      }
     },
   );
 }
@@ -167,6 +198,16 @@ export const listen = vi.fn(
     };
   },
 );
+
+/**
+ * Tauri event emit mock: delivers to handlers registered via `listen`.
+ *
+ * @param event Event name.
+ * @param payload Optional payload (defaults to null).
+ */
+export const emit = vi.fn(async <T>(event: string, payload?: T) => {
+  emitTauriEvent(event, (payload ?? null) as T);
+});
 
 export function emitTauriEvent<T>(event: string, payload: T) {
   const handlers = eventHandlers.get(event);

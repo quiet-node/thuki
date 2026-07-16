@@ -336,6 +336,121 @@ pub fn delete_conversation(conn: &Connection, conversation_id: &str) -> SqlResul
     Ok(())
 }
 
+/// Collects JSON `image_paths` values for messages belonging to conversations
+/// whose `updated_at` is strictly older than `cutoff_ms`.
+///
+/// Used before a retention prune so image files can be unlinked after the
+/// CASCADE delete. Does not parse JSON; callers flatten the stored strings.
+///
+/// @param conn Open SQLite connection.
+/// @param cutoff_ms Exclusive upper bound on `conversations.updated_at` (ms).
+/// @returns Raw `image_paths` column values (JSON arrays as strings).
+pub fn collect_image_paths_for_conversations_older_than(
+    conn: &Connection,
+    cutoff_ms: i64,
+) -> SqlResult<Vec<String>> {
+    // Single-line prepare so llvm-cov attributes the `?` Ok path to an
+    // executed line (multi-line `)?;` only counted the Err branch).
+    let sql = "SELECT m.image_paths FROM messages m INNER JOIN conversations c ON c.id = m.conversation_id WHERE c.updated_at < ?1 AND m.image_paths IS NOT NULL";
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params![cutoff_ms], |row| row.get::<_, String>(0))?;
+    rows.collect()
+}
+
+/// Deletes every conversation with `updated_at < cutoff_ms` (messages CASCADE).
+///
+/// @param conn Open SQLite connection.
+/// @param cutoff_ms Exclusive upper bound on `conversations.updated_at` (ms).
+/// @returns Number of conversation rows removed.
+pub fn delete_conversations_older_than(conn: &Connection, cutoff_ms: i64) -> SqlResult<usize> {
+    // Single-expression form keeps llvm-cov on the Ok path (multi-line
+    // `)?;` only attributed the Err branch of `?` in prior coverage runs).
+    let sql = "DELETE FROM conversations WHERE updated_at < ?1";
+    conn.execute(sql, params![cutoff_ms])
+}
+
+/// Collects all non-null `image_paths` JSON strings across every message.
+///
+/// Used before a clear-all so referenced image files can be removed after the
+/// bulk conversation delete.
+///
+/// @param conn Open SQLite connection.
+/// @returns Raw `image_paths` column values (JSON arrays as strings).
+pub fn collect_all_message_image_paths(conn: &Connection) -> SqlResult<Vec<String>> {
+    let mut stmt =
+        conn.prepare("SELECT image_paths FROM messages WHERE image_paths IS NOT NULL")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    rows.collect()
+}
+
+/// Deletes every conversation row (messages CASCADE via foreign keys).
+///
+/// @param conn Open SQLite connection.
+/// @returns Number of conversation rows removed.
+pub fn clear_all_conversations(conn: &Connection) -> SqlResult<usize> {
+    let n = conn.execute("DELETE FROM conversations", [])?;
+    Ok(n)
+}
+
+/// Counts rows in the `conversations` table.
+///
+/// @param conn Open SQLite connection.
+/// @returns Number of saved chat rows.
+pub fn count_conversations(conn: &Connection) -> SqlResult<u64> {
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM conversations", [], |row| row.get(0))?;
+    Ok(n as u64)
+}
+
+/// Counts conversations whose `updated_at` is strictly older than `cutoff_ms`.
+///
+/// Used by Settings to decide whether shortening history retention would
+/// actually delete any chats (skip ConfirmDialog when the count is zero).
+/// Single indexed `COUNT(*)` on `updated_at`; no row payloads loaded.
+///
+/// @param conn Open SQLite connection.
+/// @param cutoff_ms Exclusive upper bound on `conversations.updated_at` (ms).
+/// @returns Number of conversation rows with `updated_at < cutoff_ms`.
+pub fn count_conversations_older_than(conn: &Connection, cutoff_ms: i64) -> SqlResult<u64> {
+    // Single-expression form keeps llvm-cov on the Ok path (multi-line
+    // `)?;` only attributed the Err branch of `?` in prior coverage runs).
+    let sql = "SELECT COUNT(*) FROM conversations WHERE updated_at < ?1";
+    let n: i64 = conn.query_row(sql, params![cutoff_ms], |row| row.get(0))?;
+    Ok(n as u64)
+}
+
+/// Best-effort UTF-8 character length sum of message text fields used for the
+/// History footprint subtext (not the whole DB file size).
+///
+/// Sums `LENGTH(content)` plus optional `thinking_content` and `quoted_text`
+/// when present. SQLite `LENGTH` on text is character count; for typical chat
+/// content that is close enough to on-disk payload size for a Settings label.
+///
+/// @param conn Open SQLite connection.
+/// @returns Sum of text field lengths across all messages (0 when empty).
+pub fn sum_message_text_lengths(conn: &Connection) -> SqlResult<u64> {
+    // Single-line prepare so llvm-cov attributes the Ok path (multi-line `)?;`
+    // has historically only counted Err for similar queries).
+    let sql = "SELECT COALESCE(SUM(LENGTH(content) + LENGTH(COALESCE(thinking_content, '')) + LENGTH(COALESCE(quoted_text, ''))), 0) FROM messages";
+    let n: i64 = conn.query_row(sql, [], |row| row.get(0))?;
+    Ok(n as u64)
+}
+
+/// Maps a clamped `history_retention_days` value to a cutoff timestamp in ms.
+///
+/// Returns `None` when retention is the forever sentinel or otherwise
+/// non-positive (no prune). Injects `now_ms` so tests are deterministic.
+///
+/// @param retention_days Clamped days (`-1` forever, or `1..=3650`).
+/// @param now_ms Wall-clock milliseconds since Unix epoch.
+/// @returns Cutoff such that rows with `updated_at < cutoff` are expired.
+pub fn history_retention_cutoff_ms(retention_days: i64, now_ms: i64) -> Option<i64> {
+    if retention_days < 1 {
+        return None;
+    }
+    let window_ms = retention_days.saturating_mul(86_400_000);
+    Some(now_ms.saturating_sub(window_ms))
+}
+
 // ─── Message CRUD ───────────────────────────────────────────────────────────
 
 /// Inserts a single message and touches the conversation's `updated_at`.
@@ -598,6 +713,213 @@ mod tests {
 
         let msgs = load_messages(&conn, &id).unwrap();
         assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn history_retention_cutoff_forever_is_none() {
+        assert_eq!(history_retention_cutoff_ms(-1, 1_700_000_000_000), None);
+        assert_eq!(history_retention_cutoff_ms(0, 1_700_000_000_000), None);
+    }
+
+    #[test]
+    fn history_retention_cutoff_finite_days() {
+        let now = 1_700_000_000_000_i64;
+        let cutoff = history_retention_cutoff_ms(7, now).expect("finite");
+        assert_eq!(cutoff, now - 7 * 86_400_000);
+    }
+
+    #[test]
+    fn delete_conversations_older_than_prunes_stale_only() {
+        let conn = open_in_memory().unwrap();
+        let old_id = create_conversation(&conn, Some("Old"), "gemma4:e2b").unwrap();
+        let new_id = create_conversation(&conn, Some("New"), "gemma4:e2b").unwrap();
+        // Force updated_at: old = far past, new = far future relative to cutoff.
+        conn.execute(
+            "UPDATE conversations SET updated_at = 1000 WHERE id = ?1",
+            params![old_id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE conversations SET updated_at = 9_000_000_000_000 WHERE id = ?1",
+            params![new_id],
+        )
+        .unwrap();
+        insert_message(&conn, &old_id, "user", "old", None, None, None, None, None).unwrap();
+        // insert_message touches updated_at; re-pin the new conversation after
+        // inserting so the prune cutoff still treats it as fresh.
+        insert_message(&conn, &new_id, "user", "new", None, None, None, None, None).unwrap();
+        conn.execute(
+            "UPDATE conversations SET updated_at = 9_000_000_000_000 WHERE id = ?1",
+            params![new_id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE conversations SET updated_at = 1000 WHERE id = ?1",
+            params![old_id],
+        )
+        .unwrap();
+
+        let deleted = delete_conversations_older_than(&conn, 5_000).unwrap();
+        assert_eq!(deleted, 1);
+        let left = list_conversations(&conn, None).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].id, new_id);
+        assert!(load_messages(&conn, &old_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn collect_image_paths_for_older_conversations() {
+        let conn = open_in_memory().unwrap();
+        let old_id = create_conversation(&conn, Some("Old"), "gemma4:e2b").unwrap();
+        let new_id = create_conversation(&conn, Some("New"), "gemma4:e2b").unwrap();
+        insert_message(
+            &conn,
+            &old_id,
+            "user",
+            "pic",
+            None,
+            Some(r#"["/tmp/old.jpg"]"#),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        insert_message(
+            &conn,
+            &new_id,
+            "user",
+            "pic",
+            None,
+            Some(r#"["/tmp/new.jpg"]"#),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE conversations SET updated_at = 1000 WHERE id = ?1",
+            params![old_id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE conversations SET updated_at = 9_000_000_000_000 WHERE id = ?1",
+            params![new_id],
+        )
+        .unwrap();
+
+        let paths = collect_image_paths_for_conversations_older_than(&conn, 5_000).unwrap();
+        assert_eq!(paths, vec![r#"["/tmp/old.jpg"]"#.to_string()]);
+    }
+
+    #[test]
+    fn clear_all_conversations_wipes_history() {
+        let conn = open_in_memory().unwrap();
+        let a = create_conversation(&conn, Some("A"), "gemma4:e2b").unwrap();
+        let b = create_conversation(&conn, Some("B"), "gemma4:e2b").unwrap();
+        insert_message(&conn, &a, "user", "a", None, None, None, None, None).unwrap();
+        insert_message(&conn, &b, "user", "b", None, None, None, None, None).unwrap();
+        let n = clear_all_conversations(&conn).unwrap();
+        assert_eq!(n, 2);
+        assert!(list_conversations(&conn, None).unwrap().is_empty());
+        assert!(load_messages(&conn, &a).unwrap().is_empty());
+    }
+
+    #[test]
+    fn count_conversations_empty_and_with_rows() {
+        let conn = open_in_memory().unwrap();
+        assert_eq!(count_conversations(&conn).unwrap(), 0);
+        create_conversation(&conn, Some("A"), "m").unwrap();
+        create_conversation(&conn, Some("B"), "m").unwrap();
+        assert_eq!(count_conversations(&conn).unwrap(), 2);
+    }
+
+    #[test]
+    fn count_conversations_older_than_empty_is_zero() {
+        let conn = open_in_memory().unwrap();
+        assert_eq!(count_conversations_older_than(&conn, 5_000).unwrap(), 0);
+    }
+
+    #[test]
+    fn count_conversations_older_than_counts_stale_only() {
+        let conn = open_in_memory().unwrap();
+        let old_id = create_conversation(&conn, Some("Old"), "m").unwrap();
+        let new_id = create_conversation(&conn, Some("New"), "m").unwrap();
+        conn.execute(
+            "UPDATE conversations SET updated_at = 1000 WHERE id = ?1",
+            params![old_id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE conversations SET updated_at = 9_000_000_000_000 WHERE id = ?1",
+            params![new_id],
+        )
+        .unwrap();
+        assert_eq!(count_conversations_older_than(&conn, 5_000).unwrap(), 1);
+    }
+
+    #[test]
+    fn count_conversations_older_than_none_old_is_zero() {
+        let conn = open_in_memory().unwrap();
+        let id = create_conversation(&conn, Some("Fresh"), "m").unwrap();
+        conn.execute(
+            "UPDATE conversations SET updated_at = 9_000_000_000_000 WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+        assert_eq!(count_conversations_older_than(&conn, 5_000).unwrap(), 0);
+    }
+
+    #[test]
+    fn sum_message_text_lengths_includes_optional_fields() {
+        let conn = open_in_memory().unwrap();
+        assert_eq!(sum_message_text_lengths(&conn).unwrap(), 0);
+        let id = create_conversation(&conn, Some("T"), "m").unwrap();
+        insert_message(
+            &conn,
+            &id,
+            "user",
+            "hi",
+            Some("q"),
+            None,
+            Some("th"),
+            None,
+            None,
+        )
+        .unwrap();
+        // "hi" (2) + "q" (1) + "th" (2) = 5
+        assert_eq!(sum_message_text_lengths(&conn).unwrap(), 5);
+    }
+
+    #[test]
+    fn collect_all_message_image_paths_returns_every_row() {
+        let conn = open_in_memory().unwrap();
+        let id = create_conversation(&conn, Some("C"), "gemma4:e2b").unwrap();
+        insert_message(
+            &conn,
+            &id,
+            "user",
+            "x",
+            None,
+            Some(r#"["/a.jpg"]"#),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        insert_message(
+            &conn,
+            &id,
+            "user",
+            "y",
+            None,
+            Some(r#"["/b.jpg"]"#),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let paths = collect_all_message_image_paths(&conn).unwrap();
+        assert_eq!(paths.len(), 2);
     }
 
     #[test]

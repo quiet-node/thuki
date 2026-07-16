@@ -54,6 +54,15 @@ export interface RawAppConfig {
     auto_search: boolean;
     /** When true, first-use web-search notice has been dismissed forever. */
     search_notice_acknowledged: boolean;
+    /** When true, completed turns auto-persist to SQLite history. */
+    auto_save_conversations: boolean;
+    /**
+     * Days to keep saved conversations by last activity; `-1` forever.
+     * Finite values prune older rows after confirm / at startup.
+     */
+    history_retention_days: number;
+    /** When true, one-shot auto-save chat notice has been dismissed forever. */
+    auto_save_notice_acknowledged: boolean;
   };
   debug: {
     trace_enabled: boolean;

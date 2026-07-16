@@ -100,6 +100,12 @@ auto_search = true
 # Set true after the first-use web-search notice is dismissed ("Acknowledge").
 # Default false so new installs see the notice once.
 search_notice_acknowledged = false
+# When true (default), completed turns are saved to history without a bookmark click.
+auto_save_conversations = true
+# Days to keep saved conversations by last activity; -1 keeps forever.
+history_retention_days = -1
+# Set true after the one-shot auto-save chat notice is dismissed ("Acknowledge").
+auto_save_notice_acknowledged = false
 
 [debug]
 # Records every chat conversation, including its built-in web-search turns, to
@@ -245,6 +251,9 @@ Controls rewrite/replace dismiss behavior and whether the built-in engine may op
 | `auto_close`   | `false` | Yes      | —               | —      | When on, the Thuki overlay closes itself right after a `/rewrite` or `/refine` result is replaced back into the source app, whether the replace happened automatically (`auto_replace`) or from a manual Replace click. Only closes on a successful replace. Independent of `auto_replace`. Turn on for a one-shot rewrite-and-dismiss flow; leave off to keep Thuki open and replace repeatedly. |
 | `auto_search`  | `true`  | Yes      | —               | —      | On (default): search the web when a plain message needs live facts. Off: stay local unless you type `/search`. Toggle from Settings › Behavior. |
 | `search_notice_acknowledged` | `false` | Yes | — | — | When false, Thuki shows the one-time v0.16 ask-bar version announcement (Auto search spotlight). Set true when the user taps Acknowledge; the announcement never returns. Key name is historical; behavior is announcement dismiss, independent of `auto_search` (CTA still adapts Turn on/off). |
+| `auto_save_conversations` | `true` | Yes | — | — | On (default): each completed turn is written to local history without a bookmark click. Off: only an explicit Save persists the chat. Toggle from Settings › Behavior. |
+| `history_retention_days` | `-1` | Yes | n/a | `-1` or `1`..`3650` | How many days saved chats are kept by last activity (`updated_at`) before a startup or confirmed retention-change prune deletes them. Raise to keep history longer; lower to reclaim disk sooner; `-1` to keep forever. `0` and other out-of-range values reset to the default. Changing to a finite window asks for confirmation before write + prune. |
+| `auto_save_notice_acknowledged` | `false` | Yes | — | — | When false, after the first auto-saved turn Thuki can show a one-shot chat-header notice that chats are being saved. Set true on Acknowledge; the notice never returns. Independent of `auto_save_conversations`. |
 
 ### Web search
 

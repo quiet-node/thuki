@@ -295,6 +295,11 @@ const SETTINGS_SHOW_PROVIDERS_EVENT: &str = "thuki://settings-show-providers";
 /// `open_settings_to_behavior` from the first-use web-search notice.
 const SETTINGS_SHOW_BEHAVIOR_EVENT: &str = "thuki://settings-show-behavior";
 
+/// Frontend event that asks the Settings window to jump to the Behavior tab
+/// and briefly highlight the Auto-save conversations row. Emitted by
+/// `open_settings_to_behavior_auto_save` from the one-shot auto-save notice.
+const SETTINGS_SHOW_BEHAVIOR_AUTO_SAVE_EVENT: &str = "thuki://settings-show-behavior-auto-save";
+
 /// Logical dimensions of the onboarding window (centered). The permission
 /// and intro steps use the compact base size; the model-picker step widens
 /// to fit the three-column comparison matrix. Steps smaller than the frame
@@ -982,6 +987,15 @@ fn open_settings_to_providers(app_handle: tauri::AppHandle) {
 fn open_settings_to_behavior(app_handle: tauri::AppHandle) {
     show_settings_window(&app_handle);
     let _ = app_handle.emit(SETTINGS_SHOW_BEHAVIOR_EVENT, ());
+}
+
+/// Opens Settings on the Behavior tab and flashes the Auto-save conversations
+/// row. Called from the chat-chrome one-shot auto-save notice.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn open_settings_to_behavior_auto_save(app_handle: tauri::AppHandle) {
+    show_settings_window(&app_handle);
+    let _ = app_handle.emit(SETTINGS_SHOW_BEHAVIOR_AUTO_SAVE_EVENT, ());
 }
 
 /// Closes (hides) the Settings window from the frontend and drops the Dock icon.
@@ -2919,6 +2933,14 @@ pub fn run() {
             models::heal_unclassified_reasoning(&db_conn, &model_store);
 
             app.manage(history::Database(std::sync::Mutex::new(db_conn)));
+            // Enforce `[behavior] history_retention_days` once at startup.
+            // Forever (-1) skips; finite windows delete stale conversations
+            // (and best-effort image blobs). Never blocks launch on failure.
+            {
+                let db = app.state::<history::Database>();
+                let cfg = app.state::<parking_lot::RwLock<crate::config::AppConfig>>();
+                history::prune_conversations_at_startup(app.handle(), &db, &cfg);
+            }
             app.manage(model_store);
             app.manage(models::DownloadState::default());
 
@@ -3075,6 +3097,14 @@ pub fn run() {
             #[cfg(not(coverage))]
             history::delete_conversation,
             #[cfg(not(coverage))]
+            history::prune_conversation_history,
+            #[cfg(not(coverage))]
+            history::history_retention_prune_count,
+            #[cfg(not(coverage))]
+            history::clear_all_conversations,
+            #[cfg(not(coverage))]
+            history::history_stats,
+            #[cfg(not(coverage))]
             history::generate_title,
             #[cfg(not(coverage))]
             images::save_image_command,
@@ -3122,6 +3152,7 @@ pub fn run() {
             open_settings_window,
             open_settings_to_providers,
             open_settings_to_behavior,
+            open_settings_to_behavior_auto_save,
             hide_settings_window,
             #[cfg(not(coverage))]
             warmup::warm_up_model,

@@ -66,6 +66,12 @@ const HELPERS = {
       'On (default): search the web when a plain message needs live facts. Off: stay local unless you type /search.',
     search_notice_acknowledged:
       'Internal flag set after you dismiss the first-use web-search notice. You do not need to edit this; use Auto search to control searching.',
+    auto_save_conversations:
+      'On (default): each completed turn is saved to local history without a bookmark click. Off: only an explicit Save keeps the chat.',
+    history_retention_days:
+      'How many days saved chats are kept by last activity before Thuki prunes them at startup or when you confirm a shorter window. Raise to keep history longer; lower to reclaim disk sooner; set -1 to keep them forever. 0 and other out-of-range values reset to the default of -1.',
+    auto_save_notice_acknowledged:
+      'Internal flag set after you dismiss the one-shot auto-save chat notice. You do not need to edit this; use Auto-save chats to control saving.',
   },
   debug: {
     trace_enabled:

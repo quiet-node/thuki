@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { Message } from './useModel';
 import type { SearchResultPreview } from '../types/search';
@@ -8,6 +8,21 @@ import type {
   SaveConversationResponse,
   SaveMessagePayload,
 } from '../types/history';
+
+/**
+ * Optional flags for {@link useConversationHistory}'s `save`.
+ *
+ * Create-on-submit passes `{ generateTitle: false }` so the title LLM does
+ * not race the live chat stream; the Done path calls `requestTitle` once.
+ * Bookmark / full-save keeps the default (title generation on).
+ */
+export type SaveOptions = {
+  /**
+   * When true (default), fire `generate_title` after a successful first save.
+   * Pass false for create-on-submit mid-stream.
+   */
+  generateTitle?: boolean;
+};
 
 /**
  * Maps a frontend `Message` to the `SaveMessagePayload` shape expected by
@@ -61,25 +76,76 @@ function fromPersisted(msg: PersistedMessage): Message {
  * no knowledge of streaming state or window management - those live in App.tsx
  * and `useModel`.
  *
+ * Identity for the write chain (`save` / `persistTurn`) is kept on
+ * `conversationIdRef`, updated synchronously on create / load / unsave /
+ * reset so sequential turns after the first auto-save do not close over stale
+ * React state and skip `persist_message`.
+ *
  * @returns An object containing the current persistence state and all
  *   history operation callbacks.
  */
 export function useConversationHistory() {
   const [conversationId, setConversationId] = useState<string | null>(null);
+  /**
+   * Synchronous mirror of `conversationId` for the auto-save write chain.
+   * React state alone is too late after `await save()` for the next chained
+   * `persistTurn` in the same tick.
+   */
+  const conversationIdRef = useRef<string | null>(null);
+
+  /**
+   * True after `generate_title` has been requested for the current identity
+   * (or a loaded conversation that already has a title). Prevents a second
+   * title LLM call on later Done / re-save paths.
+   */
+  const titleRequestedRef = useRef(false);
 
   /** True once the conversation has been saved to SQLite for the first time. */
   const isSaved = conversationId !== null;
 
   /**
-   * Persists the current conversation to SQLite for the first time.
-   * Subsequent calls while `isSaved` is true are no-ops - the bookmark
-   * icon on the frontend enforces single-save semantics.
+   * Writes identity to the ref and React state together.
    *
-   * Fires `generate_title` as a fire-and-forget background task after saving,
-   * threading the active model slug through so the title is produced by the
-   * same model that produced the conversation. The frontend should schedule a
-   * `listConversations` refresh to pick up the AI-generated title once it
-   * arrives (~2-5 seconds).
+   * @param id New conversation UUID, or null when unsaved / cleared.
+   */
+  const setConversationIdentity = useCallback((id: string | null) => {
+    conversationIdRef.current = id;
+    setConversationId(id);
+  }, []);
+
+  /**
+   * Fire-and-forget `generate_title` once per conversation id.
+   * No-op without identity, model, or if a title was already requested.
+   *
+   * @param messages Transcript snapshot for the title prompt.
+   * @param model Active model slug that should produce the title.
+   */
+  const requestTitle = useCallback(
+    (messages: Message[], model: string | null): void => {
+      const id = conversationIdRef.current;
+      if (id === null || model == null || titleRequestedRef.current) return;
+      titleRequestedRef.current = true;
+      void invoke('generate_title', {
+        conversationId: id,
+        messages: messages.map(toPayload),
+        model,
+      });
+    },
+    [],
+  );
+
+  /**
+   * Persists the current conversation to SQLite for the first time.
+   * Subsequent calls while a conversation id is already held are no-ops -
+   * the bookmark icon on the frontend enforces single-save semantics.
+   *
+   * Gates on `conversationIdRef` (not React `isSaved`) so a second call in the
+   * same write chain after a successful create does not double-insert.
+   *
+   * By default fires `generate_title` as a fire-and-forget background task
+   * after saving (bookmark / full-save). Create-on-submit should pass
+   * `{ generateTitle: false }` and call `requestTitle` after the first Done
+   * so the title LLM does not race the live chat stream.
    *
    * @param messages The complete message history to persist.
    * @param model The active Ollama model slug used for title generation,
@@ -87,10 +153,15 @@ export function useConversationHistory() {
    *   save (no conversation can be attributed to a missing model). The
    *   backend `save_conversation` command also enforces this contract;
    *   gating here keeps the IPC surface clean.
+   * @param options Optional save flags; see {@link SaveOptions}.
    */
   const save = useCallback(
-    async (messages: Message[], model: string | null): Promise<void> => {
-      if (isSaved) return;
+    async (
+      messages: Message[],
+      model: string | null,
+      options?: SaveOptions,
+    ): Promise<void> => {
+      if (conversationIdRef.current !== null) return;
       if (model == null) return;
 
       const payloads = messages.map(toPayload);
@@ -102,34 +173,45 @@ export function useConversationHistory() {
         },
       );
 
-      setConversationId(response.conversation_id);
+      if (response == null || typeof response.conversation_id !== 'string') {
+        throw new Error('save_conversation returned no conversation id');
+      }
 
-      // Fire-and-forget: ask Rust to generate an AI title for the conversation.
-      // The frontend can poll `list_conversations` after a delay to pick up the result.
-      void invoke('generate_title', {
-        conversationId: response.conversation_id,
-        messages: payloads,
-        model,
-      });
+      setConversationIdentity(response.conversation_id);
+
+      // Default true: bookmark / Done full-save. Create-on-submit opts out so
+      // title generation waits until the first completed assistant turn.
+      if (options?.generateTitle !== false) {
+        titleRequestedRef.current = true;
+        void invoke('generate_title', {
+          conversationId: response.conversation_id,
+          messages: payloads,
+          model,
+        });
+      }
     },
-    [isSaved],
+    [setConversationIdentity],
   );
 
   /**
    * Appends a completed user/assistant turn to the already-saved conversation.
-   * No-op if the conversation has not been saved yet - partial conversations
-   * are only persisted after an explicit save.
+   * No-op if no conversation id is held yet - partial conversations are only
+   * persisted after an explicit or auto first save.
+   *
+   * Reads `conversationIdRef` so chained turns after `await save()` still
+   * invoke `persist_message` even when React state has not re-rendered.
    *
    * @param userMsg The user message from the completed turn.
    * @param assistantMsg The assistant response from the completed turn.
    */
   const persistTurn = useCallback(
     async (userMsg: Message, assistantMsg: Message): Promise<void> => {
-      if (!isSaved || conversationId === null) return;
+      const id = conversationIdRef.current;
+      if (id === null) return;
 
       await Promise.all([
         invoke('persist_message', {
-          conversationId,
+          conversationId: id,
           role: userMsg.role,
           content: userMsg.content,
           quotedText: userMsg.quotedText ?? null,
@@ -139,7 +221,7 @@ export function useConversationHistory() {
           modelName: null,
         }),
         invoke('persist_message', {
-          conversationId,
+          conversationId: id,
           role: assistantMsg.role,
           content: assistantMsg.content,
           quotedText: assistantMsg.quotedText ?? null,
@@ -150,7 +232,33 @@ export function useConversationHistory() {
         }),
       ]);
     },
-    [isSaved, conversationId],
+    [],
+  );
+
+  /**
+   * Appends only the assistant half of a turn when the user message was already
+   * written by create-on-submit (`save` with a user-only or partial transcript).
+   * No-op without a conversation id.
+   *
+   * @param assistantMsg Completed assistant message to append.
+   */
+  const persistAssistant = useCallback(
+    async (assistantMsg: Message): Promise<void> => {
+      const id = conversationIdRef.current;
+      if (id === null) return;
+
+      await invoke('persist_message', {
+        conversationId: id,
+        role: assistantMsg.role,
+        content: assistantMsg.content,
+        quotedText: assistantMsg.quotedText ?? null,
+        imagePaths: null,
+        thinkingContent: assistantMsg.thinkingContent ?? null,
+        searchSources: assistantMsg.searchSources ?? null,
+        modelName: assistantMsg.modelName ?? null,
+      });
+    },
+    [],
   );
 
   /**
@@ -168,10 +276,12 @@ export function useConversationHistory() {
       const persisted = await invoke<PersistedMessage[]>('load_conversation', {
         conversationId: id,
       });
-      setConversationId(id);
+      // Loaded rows already have a title (or a prior request); do not re-fire.
+      titleRequestedRef.current = true;
+      setConversationIdentity(id);
       return persisted.map(fromPersisted);
     },
-    [],
+    [setConversationIdentity],
   );
 
   /**
@@ -189,10 +299,12 @@ export function useConversationHistory() {
    * session is treated as unsaved again (the user can re-save if desired).
    */
   const unsave = useCallback(async (): Promise<void> => {
-    if (!isSaved || conversationId === null) return;
-    await invoke('delete_conversation', { conversationId });
-    setConversationId(null);
-  }, [isSaved, conversationId]);
+    const id = conversationIdRef.current;
+    if (id === null) return;
+    await invoke('delete_conversation', { conversationId: id });
+    titleRequestedRef.current = false;
+    setConversationIdentity(null);
+  }, [setConversationIdentity]);
 
   /**
    * Fetches the list of saved conversations, optionally filtered by title.
@@ -217,20 +329,29 @@ export function useConversationHistory() {
    * Does NOT call `reset_conversation` on the backend. When clearing the
    * full session (new conversation), call `useModel.reset()` alongside this
    * so the backend history is also wiped. When only marking a conversation as
-   * unsaved while keeping messages visible (e.g. after deletion from history),
-   * calling this alone is correct - `persistTurn` will no-op and the backend
-   * context is rebuilt from the frontend messages on the next request.
+   * unsaved while keeping messages visible (e.g. after deletion from history
+   * or Settings Clear all), calling this alone is correct - `persistTurn` will
+   * no-op and the backend context is rebuilt from the frontend messages on the
+   * next request.
    */
   const reset = useCallback(() => {
-    setConversationId(null);
-  }, []);
+    titleRequestedRef.current = false;
+    setConversationIdentity(null);
+  }, [setConversationIdentity]);
 
   return {
     conversationId,
+    /**
+     * Live conversation UUID for write-chain gates (sync; prefer over state
+     * after `await save()`).
+     */
+    conversationIdRef,
     isSaved,
     save,
     unsave,
     persistTurn,
+    persistAssistant,
+    requestTitle,
     loadConversation,
     deleteConversation,
     listConversations,

@@ -116,6 +116,9 @@ describe('ConfigContext', () => {
           auto_close: true,
           auto_search: true,
           search_notice_acknowledged: false,
+          auto_save_conversations: true,
+          history_retention_days: -1,
+          auto_save_notice_acknowledged: false,
         },
       });
 
@@ -177,6 +180,9 @@ describe('ConfigContext', () => {
           auto_close: false,
           auto_search: true,
           search_notice_acknowledged: false,
+          auto_save_conversations: true,
+          history_retention_days: -1,
+          auto_save_notice_acknowledged: false,
         },
       });
 
@@ -225,6 +231,9 @@ describe('ConfigContext', () => {
           auto_close: false,
           auto_search: true,
           search_notice_acknowledged: false,
+          auto_save_conversations: true,
+          history_retention_days: -1,
+          auto_save_notice_acknowledged: false,
         },
       });
 
@@ -315,6 +324,9 @@ describe('ConfigContext', () => {
           auto_replace: false,
           auto_search: true,
           search_notice_acknowledged: false,
+          auto_save_conversations: true,
+          history_retention_days: -1,
+          auto_save_notice_acknowledged: false,
         },
       };
       const updated = {
@@ -367,6 +379,9 @@ describe('ConfigContext', () => {
           auto_close: false,
           auto_search: true,
           search_notice_acknowledged: false,
+          auto_save_conversations: true,
+          history_retention_days: -1,
+          auto_save_notice_acknowledged: false,
         },
       };
       const updated = {
@@ -414,6 +429,9 @@ describe('ConfigContext', () => {
           auto_close: false,
           auto_search: true,
           search_notice_acknowledged: false,
+          auto_save_conversations: true,
+          history_retention_days: -1,
+          auto_save_notice_acknowledged: false,
         },
       };
       invoke.mockResolvedValue(initial);
@@ -463,6 +481,9 @@ describe('ConfigContext', () => {
           auto_replace: false,
           auto_search: true,
           search_notice_acknowledged: false,
+          auto_save_conversations: true,
+          history_retention_days: -1,
+          auto_save_notice_acknowledged: false,
         },
       };
       invoke
@@ -518,6 +539,9 @@ describe('ConfigContext', () => {
           auto_replace: false,
           auto_search: true,
           search_notice_acknowledged: false,
+          auto_save_conversations: true,
+          history_retention_days: -1,
+          auto_save_notice_acknowledged: false,
         },
       });
 
@@ -563,6 +587,9 @@ describe('ConfigContext', () => {
           auto_replace: false,
           auto_search: true,
           search_notice_acknowledged: false,
+          auto_save_conversations: true,
+          history_retention_days: -1,
+          auto_save_notice_acknowledged: false,
         },
       });
 
@@ -672,6 +699,9 @@ describe('ConfigContext', () => {
           auto_replace: false,
           auto_search: true,
           search_notice_acknowledged: false,
+          auto_save_conversations: true,
+          history_retention_days: -1,
+          auto_save_notice_acknowledged: false,
         },
       });
 
