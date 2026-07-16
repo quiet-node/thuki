@@ -2,6 +2,8 @@
 
 Dev-time tooling for measuring three different things about the built-in search pipeline: whether it decides to search at all (`live_classifier_eval.rs`), what it answers once it does (`live_answer_capture.rs`), and whether that answer is actually *correct* (`live_answer_quality_eval.rs`, this doc's newest addition). None of the three is a CI gate; all are `#[ignore]`d integration tests run by hand against a live `llama-server` and the live internet.
 
+Product and pipeline context (not this eval doc): [built-in-web-search.md](./built-in-web-search.md), baked-in constants in [configurations.md](./configurations.md) (Built-in web search), user-facing `/search` and Auto search in [commands.md](./commands.md) and [privacy.md](./privacy.md).
+
 ## The corpus
 
 `src-tauri/src/websearch/search_decision_eval.jsonl` is the labelled should-search / should-not-search set: one JSON object per line, no wrapping array (JSONL). Fields:

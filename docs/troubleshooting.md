@@ -30,4 +30,4 @@ Common issues and how to fix them. If none of these match, open an issue at [git
 
 ## Network
 
-**Thuki works offline, except downloads and optional web search.** Once a model is installed, chatting needs no internet. Network use beyond that is: downloading a model from Hugging Face; Auto search (Settings → Behavior, on by default) when a plain turn needs live facts; and any `/search` look-up. Turn Auto search off to keep plain chat local and use `/search` only on demand. If a download will not start, check your connection and that you can reach the Hugging Face Hub.
+**Thuki works offline, except downloads and optional web search.** Once a model is installed, chatting needs no internet. Network use beyond that is: downloading a model from Hugging Face; Auto search (Settings → Behavior, on by default) when a plain turn needs live facts; and any `/search` look-up. Turn Auto search off to keep plain chat local and use `/search` only on demand. Details: [privacy.md](./privacy.md), [commands.md](./commands.md). If a download will not start, check your connection and that you can reach the Hugging Face Hub.

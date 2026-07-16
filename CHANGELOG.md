@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Built-in web search design handbook.** Technical guide for the in-app search pipeline: decision stages, engines, language parity, conversation page reuse, security, and UI. See [docs/built-in-web-search.md](docs/built-in-web-search.md). User-facing egress copy: [docs/search-privacy.md](docs/search-privacy.md) (renamed from `search-disclosure.md`).
+- **Built-in web search.** Keyless search on the bundled engine: Auto search (Settings → Behavior, default on) may open the web when a plain turn needs live facts; `/search` forces a look-up. Pipeline includes intent verticals, scraped engines, citation audit, progressive search status in chat, and SSRF-safe outbound HTTP. See [docs/built-in-web-search.md](docs/built-in-web-search.md), [docs/configurations.md](docs/configurations.md), and [docs/search-eval.md](docs/search-eval.md). ([#312](https://github.com/quiet-node/thuki/pull/312))
 - **Unified trace recorder.** Records every chat conversation (including built-in web-search turns) as JSON-Lines under `app_data_dir/traces/chat/<conversation_id>.jsonl`. Off by default; toggle from Settings or set `[debug] trace_enabled = true` in `config.toml`.
 
 ### Changed
