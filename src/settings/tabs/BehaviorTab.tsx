@@ -183,6 +183,22 @@ export function BehaviorTab({
     }, FREE_SUCCESS_HOLD_MS);
   }, []);
 
+  /**
+   * Deletes on-disk traces, resyncs the footprint subtext, and plays the
+   * success tick only when the delete itself succeeded.
+   */
+  const freeAllTraces = useCallback(async () => {
+    let freed = false;
+    try {
+      await invoke('free_traces');
+      freed = true;
+    } catch {
+      // Deletion failed; the reload below reflects the real state.
+    }
+    await loadTracesStats();
+    if (freed) startFreeSuccess();
+  }, [loadTracesStats, startFreeSuccess]);
+
   // Clear a pending success-hold timer if the tab unmounts mid-animation.
   useEffect(() => {
     return () => {
@@ -407,17 +423,7 @@ export function BehaviorTab({
           // subtext always resyncs to the true on-disk state and no rejection
           // escapes into an unhandled promise. Only a clean delete plays the
           // success tick; a failure just resyncs quietly.
-          void (async () => {
-            let freed = false;
-            try {
-              await invoke('free_traces');
-              freed = true;
-            } catch {
-              // Deletion failed; the reload below reflects the real state.
-            }
-            await loadTracesStats();
-            if (freed) startFreeSuccess();
-          })();
+          void freeAllTraces();
         }}
         onCancel={() => setConfirmFree(false)}
       />

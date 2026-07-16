@@ -183,6 +183,22 @@ When a GStack design skill (`/design-shotgun`, `/design-html`, etc.) fails becau
 - **macOS only** — uses NSPanel, Core Graphics event taps, macOS Control key
 - **Privacy-first**: all inference is local (bundled llama.cpp engine by default; optional local Ollama or OpenAI-compatible servers)
 - **Two permissions required** — Accessibility (CGEventTap creation), Screen Recording (/screen command)
+- **Motion must feel premium** — see "Motion and animation" below. Never ship hard cuts where a surface opens, closes, expands, or collapses.
+
+### Motion and animation
+
+Any UI that transitions (expand/collapse, show/hide, morph, enter/exit, size change) **must** use a smooth, premium animation that matches Thuki's existing motion language. Instant pop-in/pop-out is a bug, not a default.
+
+**Rules:**
+
+1. **No hard cuts for state chrome.** Accordion bodies, popovers, sheets, dialogs, footers, and similar surfaces animate open and closed. Prefer Framer Motion `AnimatePresence` + height/opacity (or an equivalent CSS transition) over mount/unmount with no transition.
+2. **Reuse the house ease.** Signature decelerate curve used across the app: `cubic-bezier(0.16, 1, 0.3, 1)` (also written `[0.16, 1, 0.3, 1]` in Framer). Height/size ~200–280ms; opacity slightly shorter (~150–200ms). Settings sidebar chrome uses ~150–160ms ease on color/background. Dialogs use calm ~180ms ease-out enter / ~160ms ease-in exit with a small `translateY` + scale settle, no bounce.
+3. **Match nearby surfaces.** Before inventing a new curve or duration, copy the closest existing pattern (`AskBarView` command suggestions and version announcement height morph, overlay spring morph, Settings `sideItem` / confirm dialog CSS). New motion should feel like the same product, not a second design system.
+4. **Keep it elegant.** Subtle opacity and soft height, not flashy bounce or long theatrical delays. Prefer ease-out / custom decelerate over linear. No janky layout thrash: animate height with `overflow: hidden` (or layout-safe Framer patterns), not abrupt max-height snaps without easing.
+5. **Respect reduced motion.** Where CSS keyframes are used (e.g. confirm dialogs), suppress under `prefers-reduced-motion`. Framer paths should remain correct when motion is reduced (instant or minimal is fine; broken mid-state is not).
+6. **Tests.** Vitest stubs `framer-motion` (`src/testUtils/mocks/framer-motion.tsx`). Assertions stay on structure and state; do not depend on real animation frames.
+
+**Reference implementations:** ask-bar command suggestion / version announcement height morph (`AskBarView.tsx`), main overlay morph (`App.tsx`), Settings confirm dialog enter/exit (`settings.module.css`), Changelog version accordion (`ChangelogAccordion.tsx`).
 
 ### CGEventTap configuration — DO NOT CHANGE these two settings
 
