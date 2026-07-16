@@ -1,7 +1,20 @@
 import { useCallback, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 
 import { MarkdownRenderer } from '../../components/MarkdownRenderer';
 import type { ChangelogSection } from './changelog';
+
+/**
+ * Thuki signature ease: calm decelerate used by the ask-bar morph and
+ * command-suggestion expand (cubic-bezier(0.16, 1, 0.3, 1)).
+ */
+const THUKI_EASE = [0.16, 1, 0.3, 1] as const;
+
+/** Expand/collapse timing for version bodies: height leads, opacity soft-follows. */
+const BODY_TRANSITION = {
+  height: { duration: 0.28, ease: THUKI_EASE },
+  opacity: { duration: 0.2, ease: 'easeOut' as const },
+};
 
 interface ChangelogAccordionProps {
   sections: ChangelogSection[];
@@ -14,8 +27,9 @@ interface ChangelogAccordionProps {
 
 /**
  * Collapsible per-version release notes for What's New and Settings Changelog.
- * Newest section starts expanded; older rows stay collapsed. Body reuses
- * `MarkdownRenderer` so links open in the system browser.
+ * Newest section starts expanded; older rows stay collapsed. Bodies animate
+ * open/closed with the same height+opacity ease as the ask-bar popovers so
+ * the motion matches the rest of Thuki. Content reuses `MarkdownRenderer`.
  */
 export function ChangelogAccordion({
   sections,
@@ -56,7 +70,7 @@ export function ChangelogAccordion({
               <svg
                 viewBox="0 0 16 16"
                 aria-hidden="true"
-                className={`h-3 w-3 shrink-0 text-text-secondary transition-transform duration-150 ${
+                className={`h-3 w-3 shrink-0 text-text-secondary transition-transform duration-[280ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${
                   isOpen ? 'rotate-90' : ''
                 }`}
               >
@@ -86,11 +100,24 @@ export function ChangelogAccordion({
                 </span>
               ) : null}
             </button>
-            {isOpen ? (
-              <div className="pb-3 pl-5">
-                <MarkdownRenderer content={section.body} />
-              </div>
-            ) : null}
+            {/* initial={false}: skip entrance on first paint for the
+                pre-expanded newest row; still animate every user toggle. */}
+            <AnimatePresence initial={false}>
+              {isOpen ? (
+                <motion.div
+                  key={`${section.version}-body`}
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={BODY_TRANSITION}
+                  style={{ overflow: 'hidden' }}
+                >
+                  <div className="pb-3 pl-5">
+                    <MarkdownRenderer content={section.body} />
+                  </div>
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
           </div>
         );
       })}
