@@ -5,8 +5,9 @@
  * persistence; this module holds copy and learn URLs only.
  */
 
-/** Blog index placeholder until the dedicated post slug lands (issue #320). */
-export const V016_AUTO_SEARCH_LEARN_URL = 'https://thuki.app/blog';
+/** Public blog post for Auto search / built-in web search disclosure. */
+export const V016_AUTO_SEARCH_LEARN_URL =
+  'https://thuki.app/blog/thuki-built-in-web-search';
 
 /**
  * v0.16.0 Auto search spotlight shown on the ask bar until the user
