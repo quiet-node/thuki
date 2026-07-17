@@ -258,6 +258,13 @@ pub fn builtin_target(
                 .to_string(),
         });
     };
+    // Refuse projector/helper rows left over from older installs or bypasses.
+    if let Err(message) = crate::models::validate_primary_install(&model.file_name, None) {
+        return Err(EngineError {
+            kind: EngineErrorKind::ModelUnsupported,
+            message,
+        });
+    }
     let model_path = if model.parts.is_empty() {
         store.blob_path(&model.sha256)
     } else {
@@ -446,7 +453,20 @@ fn is_os_incompatible(lower_detail: &str) -> bool {
 /// runtime. Shared by `stream_builtin_chat` and `resolve_llm_transport`.
 pub fn engine_start_error(detail: &str) -> EngineError {
     let lower = detail.to_ascii_lowercase();
-    if lower.contains("unknown model architecture") || lower.contains("unknown architecture") {
+    // Projector GGUF loaded as `-m` (CLIP): clear product copy, not a vague start fail.
+    if lower.contains("architecture: 'clip'")
+        || lower.contains("architecture: \"clip\"")
+        || lower.contains("architecture: clip")
+    {
+        EngineError {
+            kind: EngineErrorKind::ModelUnsupported,
+            message: "This file is a vision projector, not a chat model.\nDownload a text model GGUF; Thuki attaches the projector automatically when the repo includes one.".to_string(),
+        }
+    } else if lower.contains("unknown model architecture")
+        || lower.contains("unknown architecture")
+        || lower.contains("unsupported model architecture")
+        || lower.contains("unsupported architecture")
+    {
         EngineError {
             kind: EngineErrorKind::ModelUnsupported,
             message: "Unsupported model\nThuki's engine doesn't support this model's architecture yet. Try another model; support expands as the engine updates.".to_string(),
@@ -3174,6 +3194,19 @@ mod tests {
     }
 
     #[test]
+    fn engine_start_error_clip_architecture_is_projector_copy() {
+        let err = engine_start_error(
+            "0.00.050.233 E llama_model_load: error loading model: unsupported model architecture: 'clip'",
+        );
+        assert_eq!(err.kind, EngineErrorKind::ModelUnsupported);
+        assert!(
+            err.message.contains("vision projector"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
     fn engine_start_error_unknown_architecture_is_model_unsupported() {
         let err = engine_start_error(
             "error loading model: unknown model architecture: 'deepseek4_mtp_support'",
@@ -5296,6 +5329,25 @@ mod tests {
         let err = builtin_target(&conn, &store, "org/repo:gone.gguf", 4096).unwrap_err();
         assert_eq!(err.kind, EngineErrorKind::ModelNotFound);
         assert!(err.message.contains("Settings"));
+    }
+
+    /// A leftover projector install cannot be resolved as a chat target.
+    #[test]
+    fn builtin_target_rejects_projector_file_name() {
+        let conn = crate::database::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::models::storage::ModelStore::new(dir.path().to_path_buf()).unwrap();
+        let mut row = installed_model("org/repo:Bonsai-27B-mmproj-Q8_0.gguf", "sha_p", None);
+        row.file_name = "Bonsai-27B-mmproj-Q8_0.gguf".to_string();
+        crate::models::manifest::insert(&conn, &row).unwrap();
+        let err = builtin_target(&conn, &store, "org/repo:Bonsai-27B-mmproj-Q8_0.gguf", 4096)
+            .unwrap_err();
+        assert_eq!(err.kind, EngineErrorKind::ModelUnsupported);
+        assert!(
+            err.message.contains("vision projector"),
+            "got: {}",
+            err.message
+        );
     }
 
     #[test]

@@ -32,7 +32,7 @@ const GGUF_TYPE_STRING: u32 = 8;
 /// GGUF value type tag for an array (`elem_type(u32) | count(u64) | elements`).
 const GGUF_TYPE_ARRAY: u32 = 9;
 
-/// Metadata extracted from a GGUF header. Either field is `None` when the
+/// Metadata extracted from a GGUF header. Each field is `None` when the
 /// model does not carry it (or the reader stopped before reaching it).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct GgufMetadata {
@@ -40,13 +40,16 @@ pub struct GgufMetadata {
     pub chat_template: Option<String>,
     /// The model architecture (`general.architecture`, e.g. `qwen3`, `gpt-oss`).
     pub architecture: Option<String>,
+    /// File role hint (`general.type`, e.g. `model`, `mmproj`, `adapter`).
+    pub general_type: Option<String>,
 }
 
-/// Reads `general.architecture` and `tokenizer.chat_template` from a GGUF
-/// stream. Returns `None` only when the stream is not a GGUF the reader
-/// understands (bad magic, unsupported version, or a header too short to carry
-/// the counts); a stream that is a valid GGUF but is truncated or malformed
-/// partway through returns `Some` with whatever was decoded before the fault.
+/// Reads `general.architecture`, `general.type`, and `tokenizer.chat_template`
+/// from a GGUF stream. Returns `None` only when the stream is not a GGUF the
+/// reader understands (bad magic, unsupported version, or a header too short to
+/// carry the counts); a stream that is a valid GGUF but is truncated or
+/// malformed partway through returns `Some` with whatever was decoded before
+/// the fault.
 ///
 /// Generic over [`Read`] + [`Seek`] so it is driven by an in-memory
 /// [`std::io::Cursor`] in tests and a [`std::io::BufReader`] over the blob
@@ -96,12 +99,26 @@ pub fn read_gguf_metadata<R: Read + Seek>(r: &mut R) -> Option<GgufMetadata> {
                 Some(s) => meta.architecture = Some(s),
                 None => break,
             }
+        } else if value_type == GGUF_TYPE_STRING && key == b"general.type" {
+            match read_string_value(r) {
+                Some(s) => meta.general_type = Some(s),
+                None => break,
+            }
         } else if skip_value(r, value_type).is_none() {
             break;
         }
 
-        // Both targets found: no reason to walk the rest of the header.
-        if meta.chat_template.is_some() && meta.architecture.is_some() {
+        // Role-critical fields plus template: stop walking once we have enough
+        // for both reasoning classification and primary-vs-projector gating.
+        if meta.chat_template.is_some()
+            && meta.architecture.is_some()
+            && meta.general_type.is_some()
+        {
+            break;
+        }
+        // Projectors often lack a chat template; architecture alone (clip) or
+        // architecture + type is enough to stop after a reasonable scan.
+        if meta.architecture.as_deref() == Some("clip") && meta.general_type.is_some() {
             break;
         }
     }
@@ -354,6 +371,47 @@ mod tests {
         let meta = read(&bytes).unwrap();
         assert_eq!(meta.architecture.as_deref(), Some("gemma3"));
         assert_eq!(meta.chat_template, None);
+    }
+
+    #[test]
+    fn extracts_general_type() {
+        let bytes = build_gguf(
+            3,
+            &[
+                kv_string("general.architecture", b"clip"),
+                kv_string("general.type", b"mmproj"),
+            ],
+        );
+        let meta = read(&bytes).unwrap();
+        assert_eq!(meta.architecture.as_deref(), Some("clip"));
+        assert_eq!(meta.general_type.as_deref(), Some("mmproj"));
+    }
+
+    #[test]
+    fn stops_after_template_arch_and_type_ignoring_trailing_malformed() {
+        let bad_nested = kv_array("trailing.bad", GGUF_TYPE_ARRAY, 1, &[]);
+        let bytes = build_gguf(
+            3,
+            &[
+                kv_string("general.architecture", b"qwen3"),
+                kv_string("general.type", b"model"),
+                kv_string("tokenizer.chat_template", b"<think>"),
+                bad_nested,
+            ],
+        );
+        let meta = read(&bytes).unwrap();
+        assert_eq!(meta.architecture.as_deref(), Some("qwen3"));
+        assert_eq!(meta.general_type.as_deref(), Some("model"));
+        assert_eq!(meta.chat_template.as_deref(), Some("<think>"));
+    }
+
+    #[test]
+    fn general_type_string_too_large_stops_scan() {
+        let mut kv = enc_string(b"general.type");
+        kv.extend_from_slice(&GGUF_TYPE_STRING.to_le_bytes());
+        kv.extend_from_slice(&(MAX_GGUF_STRING_BYTES + 1).to_le_bytes());
+        let bytes = build_gguf(3, &[kv]);
+        assert_eq!(read(&bytes), Some(GgufMetadata::default()));
     }
 
     #[test]
