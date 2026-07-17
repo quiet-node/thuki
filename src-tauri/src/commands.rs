@@ -258,15 +258,18 @@ pub fn builtin_target(
                 .to_string(),
         });
     };
-    // Refuse projector/helper rows left over from older installs or bypasses.
-    if let Err(message) = crate::models::validate_primary_install(&model.file_name, None) {
+    // Refuse projector/helper/denied-arch rows: re-read the local blob header
+    // so a renamed companion or embedding GGUF cannot load as chat primary.
+    let weights_blob = store.blob_path(&model.sha256);
+    let meta = crate::models::gguf::read_gguf_metadata_from_file(&weights_blob);
+    if let Err(message) = crate::models::validate_primary_install(&model.file_name, meta.as_ref()) {
         return Err(EngineError {
             kind: EngineErrorKind::ModelUnsupported,
             message,
         });
     }
     let model_path = if model.parts.is_empty() {
-        store.blob_path(&model.sha256)
+        weights_blob
     } else {
         store
             .materialize_split_shim(&model.parts)
@@ -287,12 +290,32 @@ pub fn builtin_target(
     })
 }
 
+/// Resolves projector on-disk size for an installed row: blob length when the
+/// mmproj is present in the store, else the curated registry size, else 0.
+/// Coverage-off: thin filesystem + registry lookup over pure memory helpers.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn mmproj_bytes_for_row(
+    store: &crate::models::storage::ModelStore,
+    row: &crate::models::manifest::InstalledModel,
+) -> u64 {
+    let hint = row.mmproj_sha256.as_deref().and_then(|sha| {
+        std::fs::metadata(store.blob_path(sha))
+            .ok()
+            .map(|m| m.len())
+            .or_else(|| {
+                crate::models::registry::by_repo_file(&row.repo, &row.file_name)
+                    .map(|s| s.mmproj_bytes)
+            })
+    });
+    crate::models::memory::resolve_mmproj_bytes(row, hint)
+}
+
 /// Runs the pre-load memory gate (issue #296) for the built-in model
 /// `model_id` about to be loaded at `target_path`. Assembles the inputs the
 /// pure [`crate::models::memory::decide_load_gate`] needs and delegates every
 /// decision to it (the single source of the block decision, shared with the
 /// frontend fit affordance so the two can never drift, issue #296):
-/// - the target's weights bytes from the manifest,
+/// - the target's weights bytes from the manifest (plus mmproj when known),
 /// - live available memory from the mach VM statistics,
 /// - the currently-resident model's path (so a same-model reload is a no-op and
 ///   a different resident model's footprint is credited back, since the engine
@@ -317,9 +340,14 @@ pub(crate) fn preflight_memory_gate(
     // Read the live engine status once: it feeds both the already-loading bypass
     // and the resident-credit path, both applied inside `decide_load_gate`.
     let status = engine.current_status();
-    // Cannot size the target -> do not block on a database hiccup.
+    // Cannot size the target -> do not block on a database hiccup. Fold mmproj
+    // blob length (or registry hint) when present so vision loads estimate true
+    // footprint.
     let target_weights = match crate::models::manifest::get(conn, model_id) {
-        Ok(Some(row)) => memory::model_weights_bytes(&row),
+        Ok(Some(row)) => {
+            let mm = mmproj_bytes_for_row(store, &row);
+            memory::model_load_bytes(&row, mm)
+        }
         _ => return memory::MemoryGate::Proceed,
     };
     // Map every installed row to (weights_bytes, weights blob path) so a
@@ -328,8 +356,9 @@ pub(crate) fn preflight_memory_gate(
         .unwrap_or_default()
         .into_iter()
         .map(|row| {
+            let mm = mmproj_bytes_for_row(store, &row);
             (
-                memory::model_weights_bytes(&row),
+                memory::model_load_bytes(&row, mm),
                 store.blob_path(&row.sha256),
             )
         })
@@ -462,6 +491,12 @@ pub fn engine_start_error(detail: &str) -> EngineError {
             kind: EngineErrorKind::ModelUnsupported,
             message: "This file is a vision projector, not a chat model.\nDownload a text model GGUF; Thuki attaches the projector automatically when the repo includes one.".to_string(),
         }
+    } else if is_mmproj_mismatch(&lower) {
+        // Wrong projector paired with text weights (n_embd / dim mismatch).
+        EngineError {
+            kind: EngineErrorKind::EngineStartFailed,
+            message: "Vision projector mismatch\nThis model's projector does not match the text weights. Re-download the model so Thuki can pick a matching mmproj, or choose another vision model.".to_string(),
+        }
     } else if lower.contains("unknown model architecture")
         || lower.contains("unknown architecture")
         || lower.contains("unsupported model architecture")
@@ -482,6 +517,26 @@ pub fn engine_start_error(detail: &str) -> EngineError {
             message: concise_detail(detail),
         }
     }
+}
+
+/// True when llama.cpp stderr indicates a vision projector / embedding mismatch.
+///
+/// Matches common `n_embd` and mmproj compatibility failures so the UI can show
+/// a fixable message instead of a raw engine line.
+fn is_mmproj_mismatch(lower: &str) -> bool {
+    let n_embd = lower.contains("n_embd")
+        && (lower.contains("mismatch")
+            || lower.contains("does not match")
+            || lower.contains("incompatible")
+            || lower.contains("mmproj")
+            || lower.contains("projector"));
+    let mmproj_fail = (lower.contains("mmproj") || lower.contains("projector"))
+        && (lower.contains("incompatible")
+            || lower.contains("not compatible")
+            || lower.contains("wrong")
+            || lower.contains("mismatch")
+            || lower.contains("failed to load mmproj"));
+    n_embd || mmproj_fail
 }
 
 /// Runs the built-in-engine stage of a chat turn: mark activity, ensure the
@@ -3204,6 +3259,27 @@ mod tests {
             "got: {}",
             err.message
         );
+    }
+
+    #[test]
+    fn engine_start_error_n_embd_mmproj_mismatch() {
+        // Each n_embd OR-arm and the mmproj_fail path must be hit for coverage.
+        for detail in [
+            "clip: n_embd (2048) does not match model n_embd (4096)",
+            "error: n_embd values are incompatible between tensors",
+            "load failed: n_embd and mmproj size disagree",
+            "load failed: n_embd and projector size disagree",
+            "failed to load mmproj: projector is not compatible",
+            "wrong mmproj for this model",
+        ] {
+            let err = engine_start_error(detail);
+            assert_eq!(err.kind, EngineErrorKind::EngineStartFailed, "{detail}");
+            assert!(
+                err.message.contains("Vision projector mismatch"),
+                "detail={detail} got={}",
+                err.message
+            );
+        }
     }
 
     #[test]
