@@ -16,6 +16,7 @@
  * so list-time and incomplete headers never brick installs.
  */
 
+use crate::config::defaults::DENIED_PRIMARY_ARCHES;
 use crate::models::gguf::GgufMetadata;
 
 /// Role of a GGUF file relative to Thuki's chat load path (`llama-server -m`).
@@ -28,29 +29,6 @@ pub enum GgufRole {
     /// Non-chat companion (draft, MTP, dspark, adapter, imatrix, embedder, etc.).
     Helper,
 }
-
-/// Architectures that must never load as primary chat under the pinned engine.
-///
-/// Pragmatic denylist of known non-chat families (embedding, encoder-only,
-/// audio tokenizers). Chat arches (llama*, gemma*, qwen*, phi*, mistral*,
-/// deepseek*, gpt-oss, ...) are intentionally absent so they pass. When
-/// architecture is missing, validation skips this list and keeps the soft
-/// name path. Update when the engine pin adds families that should stay out
-/// of the primary chat load path.
-pub const DENIED_PRIMARY_ARCHES: &[&str] = &[
-    "bert",
-    "nomic-bert",
-    "jina-bert-v2",
-    "jina-bert-v3",
-    "jina-bert",
-    "t5",
-    "t5encoder",
-    "clip",
-    "wavtokenizer-dec",
-    "wavtokenizer",
-    "roberta",
-    "jina-code-embeddings",
-];
 
 /// Classifies a GGUF using optional header metadata plus the file name.
 ///

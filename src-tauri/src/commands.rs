@@ -290,26 +290,6 @@ pub fn builtin_target(
     })
 }
 
-/// Resolves projector on-disk size for an installed row: blob length when the
-/// mmproj is present in the store, else the curated registry size, else 0.
-/// Coverage-off: thin filesystem + registry lookup over pure memory helpers.
-#[cfg_attr(coverage_nightly, coverage(off))]
-fn mmproj_bytes_for_row(
-    store: &crate::models::storage::ModelStore,
-    row: &crate::models::manifest::InstalledModel,
-) -> u64 {
-    let hint = row.mmproj_sha256.as_deref().and_then(|sha| {
-        std::fs::metadata(store.blob_path(sha))
-            .ok()
-            .map(|m| m.len())
-            .or_else(|| {
-                crate::models::registry::by_repo_file(&row.repo, &row.file_name)
-                    .map(|s| s.mmproj_bytes)
-            })
-    });
-    crate::models::memory::resolve_mmproj_bytes(row, hint)
-}
-
 /// Runs the pre-load memory gate (issue #296) for the built-in model
 /// `model_id` about to be loaded at `target_path`. Assembles the inputs the
 /// pure [`crate::models::memory::decide_load_gate`] needs and delegates every
@@ -345,7 +325,7 @@ pub(crate) fn preflight_memory_gate(
     // footprint.
     let target_weights = match crate::models::manifest::get(conn, model_id) {
         Ok(Some(row)) => {
-            let mm = mmproj_bytes_for_row(store, &row);
+            let mm = crate::models::memory::mmproj_bytes_for_model(store, &row);
             memory::model_load_bytes(&row, mm)
         }
         _ => return memory::MemoryGate::Proceed,
@@ -356,7 +336,7 @@ pub(crate) fn preflight_memory_gate(
         .unwrap_or_default()
         .into_iter()
         .map(|row| {
-            let mm = mmproj_bytes_for_row(store, &row);
+            let mm = crate::models::memory::mmproj_bytes_for_model(store, &row);
             (
                 memory::model_load_bytes(&row, mm),
                 store.blob_path(&row.sha256),
@@ -519,24 +499,27 @@ pub fn engine_start_error(detail: &str) -> EngineError {
     }
 }
 
-/// True when llama.cpp stderr indicates a vision projector / embedding mismatch.
+/// True when llama.cpp stderr indicates a vision projector mismatch.
 ///
-/// Matches common `n_embd` and mmproj compatibility failures so the UI can show
-/// a fixable message instead of a raw engine line.
+/// Requires the failure to actually name a projector: `mmproj`, `projector`, or
+/// `clip` appear in the engine's stderr only when a vision projector (`--mmproj`)
+/// is being loaded. Gating on that keeps a text-only load's metadata dump (which
+/// always prints an `n_embd = N` line) or a dyld / OS start failure from being
+/// mislabeled a projector mismatch and shadowing the unknown-architecture and OS
+/// arms below. Within a projector load, only an explicit incompatibility (never
+/// the bare `n_embd` dump line, never a lone `wrong`) marks a genuine mismatch;
+/// any other projector failure falls through to the raw engine reason.
 fn is_mmproj_mismatch(lower: &str) -> bool {
-    let n_embd = lower.contains("n_embd")
-        && (lower.contains("mismatch")
-            || lower.contains("does not match")
-            || lower.contains("incompatible")
-            || lower.contains("mmproj")
-            || lower.contains("projector"));
-    let mmproj_fail = (lower.contains("mmproj") || lower.contains("projector"))
-        && (lower.contains("incompatible")
-            || lower.contains("not compatible")
-            || lower.contains("wrong")
-            || lower.contains("mismatch")
-            || lower.contains("failed to load mmproj"));
-    n_embd || mmproj_fail
+    let mentions_projector =
+        lower.contains("mmproj") || lower.contains("projector") || lower.contains("clip");
+    if !mentions_projector {
+        return false;
+    }
+    lower.contains("failed to load mmproj")
+        || lower.contains("mismatch")
+        || lower.contains("does not match")
+        || lower.contains("incompatible")
+        || lower.contains("not compatible")
 }
 
 /// Runs the built-in-engine stage of a chat turn: mark activity, ensure the
@@ -3262,20 +3245,41 @@ mod tests {
     }
 
     #[test]
-    fn engine_start_error_n_embd_mmproj_mismatch() {
-        // Each n_embd OR-arm and the mmproj_fail path must be hit for coverage.
+    fn engine_start_error_projector_mismatch_positive() {
+        // Each projector-token arm (mmproj / projector / clip) paired with each
+        // incompatibility verb maps to the fixable projector-mismatch copy.
         for detail in [
+            "failed to load mmproj: bad projector file",
             "clip: n_embd (2048) does not match model n_embd (4096)",
-            "error: n_embd values are incompatible between tensors",
-            "load failed: n_embd and mmproj size disagree",
-            "load failed: n_embd and projector size disagree",
-            "failed to load mmproj: projector is not compatible",
-            "wrong mmproj for this model",
+            "projector tensors are incompatible with the model",
+            "mmproj embedding mismatch detected",
+            "vision projector is not compatible with these weights",
         ] {
             let err = engine_start_error(detail);
             assert_eq!(err.kind, EngineErrorKind::EngineStartFailed, "{detail}");
             assert!(
                 err.message.contains("Vision projector mismatch"),
+                "detail={detail} got={}",
+                err.message
+            );
+        }
+    }
+
+    #[test]
+    fn engine_start_error_projector_mismatch_needs_projector_and_verb() {
+        // A text-only failure never names a projector, so its ubiquitous
+        // `n_embd`/`mismatch` metadata dump must not be mislabeled a projector
+        // problem; and a projector load that fails for another reason (out of
+        // memory) or with only the dropped bare `wrong` token also falls through
+        // to the raw engine reason rather than the projector copy.
+        for detail in [
+            "n_embd values mismatch between tensors",
+            "clip_model_load: loaded; ggml backend: out of memory",
+            "clip loaded; wrong number of tensors",
+        ] {
+            let err = engine_start_error(detail);
+            assert!(
+                !err.message.contains("Vision projector mismatch"),
                 "detail={detail} got={}",
                 err.message
             );

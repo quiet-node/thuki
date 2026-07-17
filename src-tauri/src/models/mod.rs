@@ -1653,16 +1653,13 @@ pub fn sanitize_context_length(raw: Option<u64>) -> Option<u32> {
         .map(|n| n as u32)
 }
 
-/// One repo file in the HF listing. Only LFS-backed `.gguf` files matter.
+/// One repo file in the HF listing. Only LFS-backed `.gguf` files matter, so
+/// only the fields the listing reads are declared; serde ignores the rest of
+/// each sibling object (no `deny_unknown_fields`).
 #[derive(Deserialize)]
 struct HfSibling {
     #[serde(default)]
     rfilename: String,
-    /// Plain (non-LFS) size; kept for serde so HF responses still decode. Listing
-    /// is LFS-only and never uses this field for rows.
-    #[serde(default)]
-    #[allow(dead_code)]
-    size: Option<u64>,
     #[serde(default)]
     lfs: Option<HfLfs>,
 }
@@ -2329,8 +2326,7 @@ pub fn build_installed_views(
             let origin = starter.map(|s| s.origin.to_string());
             // Fold projector size into the fit estimate when known (Staff picks
             // always; Browse installs without a registry row keep weights-only).
-            let primary_bytes = memory::model_weights_bytes(&model);
-            let total_bytes = primary_bytes.saturating_add(mmproj_bytes);
+            let total_bytes = memory::model_load_bytes(&model, mmproj_bytes);
             let fit = if ram_bytes > 0 && total_bytes > 0 {
                 Some(registry::ram_fit(
                     estimate_runtime_gb_from_bytes(total_bytes),

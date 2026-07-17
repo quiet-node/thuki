@@ -171,6 +171,32 @@ pub fn resolve_mmproj_bytes(model: &InstalledModel, size_hint: Option<u64>) -> u
     size_hint.unwrap_or(0)
 }
 
+/// Projector bytes to fold into `model`'s load estimate: the store blob length
+/// when the mmproj blob is present, else the curated registry size, else `0`.
+///
+/// The single source of the blob-then-registry hint so the pre-load memory gate
+/// ([`crate::commands::preflight_memory_gate`]) and the fit estimate
+/// ([`estimate_model_fit`]) can never size the same projector differently.
+///
+/// Coverage-off: a thin filesystem + registry read. The size composition is the
+/// unit-tested [`resolve_mmproj_bytes`]; the blob-then-registry preference is
+/// `Option::or_else`.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn mmproj_bytes_for_model(
+    store: &crate::models::storage::ModelStore,
+    model: &InstalledModel,
+) -> u64 {
+    let hint = model.mmproj_sha256.as_deref().and_then(|sha| {
+        std::fs::metadata(store.blob_path(sha))
+            .ok()
+            .map(|m| m.len())
+            .or_else(|| {
+                super::registry::by_repo_file(&model.repo, &model.file_name).map(|s| s.mmproj_bytes)
+            })
+    });
+    resolve_mmproj_bytes(model, hint)
+}
+
 /// Weights bytes of the installed row whose weights blob path equals
 /// `resident_path`, or 0 when none matches. Lets the gate credit a resident
 /// model's footprint back into available memory, since the engine evicts the
@@ -524,18 +550,7 @@ pub fn estimate_model_fit(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "The selected model is not installed.".to_string())?;
     // Fold mmproj blob length / registry size so vision fit matches the gate.
-    let mmproj = {
-        let hint = row.mmproj_sha256.as_deref().and_then(|sha| {
-            std::fs::metadata(store.blob_path(sha))
-                .ok()
-                .map(|m| m.len())
-                .or_else(|| {
-                    super::registry::by_repo_file(&row.repo, &row.file_name).map(|s| s.mmproj_bytes)
-                })
-        });
-        resolve_mmproj_bytes(&row, hint)
-    };
-    let weights_bytes = model_load_bytes(&row, mmproj);
+    let weights_bytes = model_load_bytes(&row, mmproj_bytes_for_model(store.inner(), &row));
     // The target's weights blob path; for a single-file model this equals the
     // resident `model_path` the engine reports, giving exact credit parity with
     // the gate. Split models load through a shim path that never matches a blob
@@ -548,18 +563,7 @@ pub fn estimate_model_fit(
         .unwrap_or_default()
         .into_iter()
         .map(|r| {
-            let mm = {
-                let hint = r.mmproj_sha256.as_deref().and_then(|sha| {
-                    std::fs::metadata(store.blob_path(sha))
-                        .ok()
-                        .map(|m| m.len())
-                        .or_else(|| {
-                            super::registry::by_repo_file(&r.repo, &r.file_name)
-                                .map(|s| s.mmproj_bytes)
-                        })
-                });
-                resolve_mmproj_bytes(&r, hint)
-            };
+            let mm = mmproj_bytes_for_model(store.inner(), &r);
             (model_load_bytes(&r, mm), store.blob_path(&r.sha256))
         })
         .collect();
