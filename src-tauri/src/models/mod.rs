@@ -17,6 +17,7 @@
 
 pub mod download;
 pub mod gguf;
+pub mod gguf_role;
 pub mod manifest;
 pub mod memory;
 pub mod reasoning;
@@ -1707,20 +1708,25 @@ pub struct MmprojCompanion {
     pub size_bytes: u64,
 }
 
-/// True when `name` is an `mmproj*.gguf` vision projection companion. The
-/// presence of one is Thuki's ground-truth vision signal: llama.cpp cannot do
-/// image input without it, regardless of how the base model is tagged.
+/// True when `name` is a vision projector companion candidate (list/resolve).
+///
+/// Delegates to [`gguf_role::is_projector_companion_name`]: matches `mmproj*.gguf`
+/// and mid-name forms like `Bonsai-27B-mmproj-Q8_0.gguf`. Presence of such a
+/// sibling is Thuki's ground-truth vision signal for browse installs.
 fn is_mmproj(name: &str) -> bool {
-    name.starts_with("mmproj") && name.ends_with(".gguf")
+    gguf_role::is_projector_companion_name(name)
 }
 
 /// Pure parse of an HF repo listing into the spec for one target `file`.
-/// Capability rule for pasted repos: vision = an `mmproj*.gguf` sibling with
-/// complete LFS metadata exists. The reasoning class is recorded in two stages:
-/// [`repo_installed_model`] seeds `thinking` from the model name via
-/// [`detect_thinking`], then `finalize_install` refines `thinking` and sets
-/// `reasoning_always` from the downloaded GGUF's chat template (falling back to
-/// the name guess when the template cannot be read).
+/// Capability rule for pasted repos: vision = a projector companion sibling
+/// with complete LFS metadata exists. The target file must be a chat-weight
+/// candidate ([`gguf_role::is_chat_download_candidate`]); projectors and
+/// helpers are rejected here so they never enter the download pipeline.
+/// The reasoning class is recorded in two stages: [`repo_installed_model`]
+/// seeds `thinking` from the model name via [`detect_thinking`], then
+/// `finalize_install` refines `thinking` and sets `reasoning_always` from the
+/// downloaded GGUF's chat template (falling back to the name guess when the
+/// template cannot be read).
 pub fn resolve_listing(body: &[u8], file: &str) -> Result<RepoResolved, String> {
     let info: HfRepoInfo = serde_json::from_slice(body)
         .map_err(|e| format!("failed to decode Hugging Face API response: {e}"))?;
@@ -1732,6 +1738,8 @@ pub fn resolve_listing(body: &[u8], file: &str) -> Result<RepoResolved, String> 
     {
         return Err("Hugging Face API response carries no valid commit sha".to_string());
     }
+    // Boundary: never start a primary install for projector/helper GGUFs.
+    gguf_role::validate_primary_weights_role(file, None)?;
     let target = info
         .siblings
         .iter()
@@ -1776,15 +1784,18 @@ fn resolve_split_parts(siblings: &[HfSibling], file: &str) -> Vec<HfGgufPart> {
 }
 
 /// Projects an HF sibling listing onto the grouped `.gguf` browser rows: keeps
-/// LFS or plain-sized `.gguf` files, drops `mmproj*` companions, then collapses
-/// split shards into one entry each via [`group_split_files`]. The single
-/// sibling-to-row derivation, shared by [`parse_gguf_listing`] and
+/// LFS or plain-sized `.gguf` files that are chat-weight candidates (drops
+/// projectors and helpers via [`gguf_role::is_chat_download_candidate`]), then
+/// collapses split shards into one entry each via [`group_split_files`]. The
+/// single sibling-to-row derivation, shared by [`parse_gguf_listing`] and
 /// [`resolve_split_parts`] so the browser listing and the resolve path can never
 /// disagree about what is a split set.
 fn gguf_files_from_siblings(siblings: &[HfSibling]) -> Vec<HfGgufFile> {
     let files = siblings
         .iter()
-        .filter(|s| s.rfilename.ends_with(".gguf") && !is_mmproj(&s.rfilename))
+        .filter(|s| {
+            s.rfilename.ends_with(".gguf") && gguf_role::is_chat_download_candidate(&s.rfilename)
+        })
         .map(|s| {
             let size_bytes = s.lfs.as_ref().and_then(|l| l.size).or(s.size).unwrap_or(0);
             let sha256 = s
@@ -1903,9 +1914,10 @@ fn finish_split_group(mut parts: Vec<(u32, HfGgufPart)>, total: u32) -> Option<H
     })
 }
 
-/// Pure parse of an HF repo listing into the `.gguf` file browser rows. Excludes
-/// `mmproj*` companions (they download alongside their weights file and are never
-/// picked directly), then collapses split shards via [`group_split_files`].
+/// Pure parse of an HF repo listing into the `.gguf` file browser rows.
+/// Excludes projectors and non-chat helpers (they download alongside weights
+/// when relevant and are never picked as primary chat models), then collapses
+/// split shards via [`group_split_files`].
 pub fn parse_gguf_listing(body: &[u8]) -> Result<Vec<HfGgufFile>, String> {
     let info: HfRepoInfo = serde_json::from_slice(body)
         .map_err(|e| format!("failed to decode Hugging Face API response: {e}"))?;
@@ -2661,6 +2673,19 @@ fn resolve_reasoning_flags(
     reasoning_flags_from_metadata(template, architecture, repo, file_name)
 }
 
+/// Ensures a completed download may become a Ready primary chat model.
+///
+/// Uses on-disk GGUF metadata when the weights blob is readable; falls back to
+/// the file name alone when the header cannot be read (same soft signals as
+/// list-time). Pure relative to I/O: the blob read is injected via `meta` so
+/// unit tests drive the shipped gate without a filesystem.
+pub fn validate_primary_install(
+    file_name: &str,
+    meta: Option<&gguf::GgufMetadata>,
+) -> Result<(), String> {
+    gguf_role::validate_primary_weights_role(file_name, meta)
+}
+
 /// Re-classifies installed built-in rows whose `reasoning_always` is `NULL`
 /// (rows written before the classifier existed) and persists the result so they
 /// stop appearing in [`manifest::list_unclassified`]. Best-effort: any list,
@@ -3223,6 +3248,10 @@ fn finalize_install(
     model: &manifest::InstalledModel,
 ) -> Result<(), String> {
     let store = app.state::<storage::ModelStore>();
+    // Never mark a projector/helper as Ready: re-check role against the blob
+    // header (and file name) before the manifest insert.
+    let meta = gguf::read_gguf_metadata_from_file(&store.blob_path(&model.sha256));
+    validate_primary_install(&model.file_name, meta.as_ref())?;
     // Classify reasoning from the just-downloaded GGUF's chat template so the
     // picker badge and `/think` gate are correct the instant the install lands.
     // Curated starters keep their registry flags; a template that cannot be read
@@ -5670,6 +5699,35 @@ mod tests {
         );
     }
 
+    /// Bonsai-style multi-file repo: brains stay downloadable; mid-name mmproj,
+    /// dspark, and mtp helpers are not chat-download candidates.
+    #[test]
+    fn parse_gguf_listing_hides_mid_name_projector_and_helpers() {
+        let body = serde_json::json!({
+            "sha": "c".repeat(40),
+            "siblings": [
+                {"rfilename": "Bonsai-27B-Q1_0.gguf",
+                 "lfs": {"sha256": "a".repeat(64), "size": 3_900_000_000u64}},
+                {"rfilename": "Bonsai-27B-F16.gguf",
+                 "lfs": {"sha256": "b".repeat(64), "size": 53_800_000_000u64}},
+                {"rfilename": "Bonsai-27B-mmproj-Q8_0.gguf",
+                 "lfs": {"sha256": "c".repeat(64), "size": 600_000_000u64}},
+                {"rfilename": "Bonsai-27B-dspark-Q4_1.gguf",
+                 "lfs": {"sha256": "d".repeat(64), "size": 1_800_000_000u64}},
+                {"rfilename": "mtp-Bonsai-27B.gguf",
+                 "lfs": {"sha256": "e".repeat(64), "size": 500_000_000u64}},
+            ]
+        })
+        .to_string();
+        let files = parse_gguf_listing(body.as_bytes()).unwrap();
+        let names: Vec<&str> = files.iter().map(|f| f.file.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Bonsai-27B-Q1_0.gguf", "Bonsai-27B-F16.gguf"],
+            "only chat brains should list: {names:?}"
+        );
+    }
+
     #[test]
     fn sanitize_context_length_trusts_only_sane_values() {
         assert_eq!(sanitize_context_length(None), None);
@@ -5790,6 +5848,58 @@ mod tests {
         assert_eq!(mm.file, "mmproj-model-f16.gguf");
         assert_eq!(mm.sha256, "b".repeat(64));
         assert_eq!(mm.size_bytes, 200);
+    }
+
+    /// Mid-name projector siblings (e.g. Bonsai) attach as companions when the
+    /// user installs a brain, not as primary weights.
+    #[test]
+    fn resolve_listing_attaches_mid_name_mmproj_companion() {
+        let body = serde_json::json!({
+            "sha": "c".repeat(40),
+            "siblings": [
+                {"rfilename": "Bonsai-27B-Q1_0.gguf",
+                 "lfs": {"sha256": "a".repeat(64), "size": 1000}},
+                {"rfilename": "Bonsai-27B-mmproj-Q8_0.gguf",
+                 "lfs": {"sha256": "b".repeat(64), "size": 200}},
+            ]
+        })
+        .to_string();
+        let r = resolve_listing(body.as_bytes(), "Bonsai-27B-Q1_0.gguf").unwrap();
+        let mm = r.mmproj.expect("mid-name projector must attach");
+        assert_eq!(mm.file, "Bonsai-27B-mmproj-Q8_0.gguf");
+        assert_eq!(mm.sha256, "b".repeat(64));
+    }
+
+    #[test]
+    fn resolve_listing_rejects_projector_and_helper_as_primary() {
+        let body = serde_json::json!({
+            "sha": "c".repeat(40),
+            "siblings": [
+                {"rfilename": "Bonsai-27B-Q1_0.gguf",
+                 "lfs": {"sha256": "a".repeat(64), "size": 1000}},
+                {"rfilename": "Bonsai-27B-mmproj-Q8_0.gguf",
+                 "lfs": {"sha256": "b".repeat(64), "size": 200}},
+                {"rfilename": "Bonsai-27B-dspark-Q4_1.gguf",
+                 "lfs": {"sha256": "d".repeat(64), "size": 300}},
+            ]
+        })
+        .to_string();
+        let err = resolve_listing(body.as_bytes(), "Bonsai-27B-mmproj-Q8_0.gguf").unwrap_err();
+        assert!(err.contains("vision projector"), "got: {err}");
+        let err = resolve_listing(body.as_bytes(), "Bonsai-27B-dspark-Q4_1.gguf").unwrap_err();
+        assert!(err.contains("helper file"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_primary_install_rejects_clip_metadata() {
+        let meta = gguf::GgufMetadata {
+            chat_template: None,
+            architecture: Some("clip".into()),
+            general_type: Some("mmproj".into()),
+        };
+        let err = validate_primary_install("renamed-Q4.gguf", Some(&meta)).unwrap_err();
+        assert!(err.contains("vision projector"), "got: {err}");
+        assert!(validate_primary_install("brain-Q4_K_M.gguf", None).is_ok());
     }
 
     #[test]
