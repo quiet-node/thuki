@@ -221,10 +221,7 @@ mod tests {
 
     #[test]
     fn keychain_service_stable_matches_const() {
-        assert_eq!(
-            keychain_service("com.quietnode.thuki"),
-            KEYCHAIN_SERVICE
-        );
+        assert_eq!(keychain_service("com.quietnode.thuki"), KEYCHAIN_SERVICE);
     }
 
     #[test]
