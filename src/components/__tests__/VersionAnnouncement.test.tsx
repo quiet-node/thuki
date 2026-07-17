@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { VersionAnnouncement } from '../VersionAnnouncement';
 import {
   V016_AUTO_SEARCH_ANNOUNCEMENT,
-  V016_AUTO_SEARCH_LEARN_URL,
+  AUTO_SEARCH_PUBLIC_BLOG_POST_URL,
   v016AutoSearchSettingsCta,
 } from '../../config/versionAnnouncements';
 
@@ -64,7 +64,7 @@ describe('VersionAnnouncement', () => {
         body="B"
         learn={{
           label: 'Learn ↗',
-          url: V016_AUTO_SEARCH_LEARN_URL,
+          url: AUTO_SEARCH_PUBLIC_BLOG_POST_URL,
           testId: 'learn',
         }}
         actions={[]}
@@ -72,7 +72,7 @@ describe('VersionAnnouncement', () => {
     );
     fireEvent.click(screen.getByTestId('learn'));
     expect(invoke).toHaveBeenCalledWith('open_url', {
-      url: V016_AUTO_SEARCH_LEARN_URL,
+      url: AUTO_SEARCH_PUBLIC_BLOG_POST_URL,
     });
   });
 
@@ -106,7 +106,7 @@ describe('VersionAnnouncement', () => {
         title="T"
         body="B"
         testId="va"
-        learn={{ label: 'Learn ↗', url: V016_AUTO_SEARCH_LEARN_URL }}
+        learn={{ label: 'Learn ↗', url: AUTO_SEARCH_PUBLIC_BLOG_POST_URL }}
         actions={[]}
       />,
     );

@@ -5,8 +5,9 @@
  * persistence; this module holds copy and learn URLs only.
  */
 
-/** Blog index placeholder until the dedicated post slug lands (issue #320). */
-export const V016_AUTO_SEARCH_LEARN_URL = 'https://thuki.app/blog';
+/** Public blog post for Auto search / built-in web search disclosure. */
+export const AUTO_SEARCH_PUBLIC_BLOG_POST_URL =
+  'https://thuki.app/blog/thuki-built-in-web-search';
 
 /**
  * v0.16.0 Auto search spotlight shown on the ask bar until the user
@@ -17,7 +18,7 @@ export const V016_AUTO_SEARCH_ANNOUNCEMENT = {
   body: 'Since v0.16.0, when a question needs fresh facts, Thuki smartly searches the web for them. Turn Auto search off to stay fully local and use /search only when you want a look-up.',
   learn: {
     label: 'See how Auto search works ↗',
-    url: V016_AUTO_SEARCH_LEARN_URL,
+    url: AUTO_SEARCH_PUBLIC_BLOG_POST_URL,
   },
 } as const;
 
@@ -36,7 +37,7 @@ export function v016AutoSearchSettingsCta(autoSearchOn: boolean): string {
  * Shown until `behavior.auto_save_notice_acknowledged` is true.
  */
 export const AUTO_SAVE_NOTICE_ANNOUNCEMENT = {
-  title: 'Chats are now auto-saved',
+  title: 'Chats are now auto-saved!',
   body: 'Turn auto-save off if you prefer to bookmark only what matters.',
 } as const;
 
