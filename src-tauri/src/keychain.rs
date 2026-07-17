@@ -1,9 +1,14 @@
 //! Keychain integration for per-provider API key storage.
 //!
 //! API keys for `openai`-kind providers are stored in the macOS Keychain
-//! under [`KEYCHAIN_SERVICE`]. The Keychain is the only place keys ever
-//! live; they are never written to the TOML config and are never returned
-//! to the frontend (only existence is queryable via [`has_provider_api_key`]).
+//! under a service name derived from the app bundle identifier (see
+//! [`keychain_service`]). The Keychain is the only place keys ever live;
+//! they are never written to the TOML config and are never returned to the
+//! frontend (only existence is queryable via [`has_provider_api_key`]).
+//!
+//! Scoping by bundle id keeps stable (`com.quietnode.thuki`) and nightly
+//! (`com.quietnode.thuki.nightly`) from sharing provider API keys when both
+//! are installed side by side.
 //!
 //! ## Extension points
 //!
@@ -13,11 +18,17 @@
 
 use std::sync::Arc;
 
-// ─── Service constant ────────────────────────────────────────────────────────
+// ─── Service naming ──────────────────────────────────────────────────────────
 
-/// Keychain service name under which per-provider API keys are stored.
-/// Account = provider id. Stable: changing it orphans existing entries.
+/// Stable Keychain service name. Changing it orphans existing entries for the
+/// production app. Nightly uses a different service via [`keychain_service`].
 pub const KEYCHAIN_SERVICE: &str = "com.quietnode.thuki.provider-api-key";
+
+/// Keychain service name scoped by product identity so stable and nightly
+/// do not share provider API keys.
+pub fn keychain_service(bundle_id: &str) -> String {
+    format!("{bundle_id}.provider-api-key")
+}
 
 // ─── Trait ───────────────────────────────────────────────────────────────────
 
@@ -33,22 +44,36 @@ pub trait SecretStore: Send + Sync + 'static {
 /// macOS Keychain backend via the `keyring` crate. Thin wrapper: every method
 /// body is a direct `keyring::Entry` call plus error mapping.
 ///
+/// Service name is fixed at construction from the app bundle identifier so a
+/// nightly build cannot read or write stable's provider keys.
+///
 /// Not covered by the cargo coverage gate: this is a direct OS call with no
 /// branching logic of its own; logic lives in callers tested with
 /// [`FakeSecretStore`].
-pub struct KeyringStore;
+pub struct KeyringStore {
+    service: String,
+}
+
+impl KeyringStore {
+    /// Build a store whose Keychain service is `{bundle_id}.provider-api-key`.
+    pub fn new(bundle_id: &str) -> Self {
+        Self {
+            service: keychain_service(bundle_id),
+        }
+    }
+}
 
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl SecretStore for KeyringStore {
     fn set(&self, provider_id: &str, secret: &str) -> Result<(), String> {
-        keyring::Entry::new(KEYCHAIN_SERVICE, provider_id)
+        keyring::Entry::new(&self.service, provider_id)
             .map_err(|e| e.to_string())?
             .set_password(secret)
             .map_err(|e| e.to_string())
     }
 
     fn get(&self, provider_id: &str) -> Result<Option<String>, String> {
-        match keyring::Entry::new(KEYCHAIN_SERVICE, provider_id)
+        match keyring::Entry::new(&self.service, provider_id)
             .map_err(|e| e.to_string())?
             .get_password()
         {
@@ -59,7 +84,7 @@ impl SecretStore for KeyringStore {
     }
 
     fn delete(&self, provider_id: &str) -> Result<(), String> {
-        match keyring::Entry::new(KEYCHAIN_SERVICE, provider_id)
+        match keyring::Entry::new(&self.service, provider_id)
             .map_err(|e| e.to_string())?
             .delete_credential()
         {
@@ -192,6 +217,33 @@ mod tests {
     #[test]
     fn service_name_is_stable() {
         assert_eq!(KEYCHAIN_SERVICE, "com.quietnode.thuki.provider-api-key");
+    }
+
+    #[test]
+    fn keychain_service_stable_matches_const() {
+        assert_eq!(
+            keychain_service("com.quietnode.thuki"),
+            KEYCHAIN_SERVICE
+        );
+    }
+
+    #[test]
+    fn keychain_service_nightly_is_isolated() {
+        assert_eq!(
+            keychain_service("com.quietnode.thuki.nightly"),
+            "com.quietnode.thuki.nightly.provider-api-key"
+        );
+    }
+
+    #[test]
+    fn keyring_store_new_scopes_service() {
+        let stable = KeyringStore::new("com.quietnode.thuki");
+        assert_eq!(stable.service, KEYCHAIN_SERVICE);
+        let nightly = KeyringStore::new("com.quietnode.thuki.nightly");
+        assert_eq!(
+            nightly.service,
+            "com.quietnode.thuki.nightly.provider-api-key"
+        );
     }
 
     #[test]
