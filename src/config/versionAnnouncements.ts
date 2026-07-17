@@ -6,7 +6,7 @@
  */
 
 /** Public blog post for Auto search / built-in web search disclosure. */
-export const V016_AUTO_SEARCH_LEARN_URL =
+export const AUTO_SEARCH_PUBLIC_BLOG_POST_URL =
   'https://thuki.app/blog/thuki-built-in-web-search';
 
 /**
@@ -18,7 +18,7 @@ export const V016_AUTO_SEARCH_ANNOUNCEMENT = {
   body: 'Since v0.16.0, when a question needs fresh facts, Thuki smartly searches the web for them. Turn Auto search off to stay fully local and use /search only when you want a look-up.',
   learn: {
     label: 'See how Auto search works ↗',
-    url: V016_AUTO_SEARCH_LEARN_URL,
+    url: AUTO_SEARCH_PUBLIC_BLOG_POST_URL,
   },
 } as const;
 

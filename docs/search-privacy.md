@@ -58,4 +58,4 @@ Until acknowledged, Thuki shows a short v0.16 version announcement on the ask ba
 
 ## Hosting note
 
-The public blog post is live at `https://thuki.app/blog/thuki-built-in-web-search`. The in-app learn CTA uses `V016_AUTO_SEARCH_LEARN_URL` in `src/config/versionAnnouncements.ts`.
+The public blog post is live at `https://thuki.app/blog/thuki-built-in-web-search`. The in-app learn CTA uses `AUTO_SEARCH_PUBLIC_BLOG_POST_URL` in `src/config/versionAnnouncements.ts`.
