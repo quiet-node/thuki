@@ -69,6 +69,14 @@ curl -fsSL https://thuki.app/install.sh | sh
 
 This downloads the latest `Thuki.dmg` over HTTPS, verifies its RSA-4096 signature with the `openssl` already on your Mac, and installs it to `/Applications`. Because the download arrives without a quarantine flag, Thuki opens cleanly: no Gatekeeper "Apple could not verify" prompt and no manual `xattr` step.
 
+#### Nightly (separate app, side by side with stable)
+
+```bash
+curl -fsSL https://thuki.app/install.sh | THUKI_CHANNEL=nightly sh
+```
+
+Same script URL; the `THUKI_CHANNEL=nightly` env (or `sh -s -- --nightly`) installs **Thuki Nightly.app** beside stable `Thuki.app`. Nightly uses a different bundle id (`com.quietnode.thuki.nightly`), so data, Keychain secrets, and TCC grants stay separate. Not for production. Do not run both at once: they both claim double-tap Control and will fight over the hotkey.
+
 Want to read the script before running it? Visiting [thuki.app/install.sh](https://thuki.app/install.sh) downloads it; open the saved file in a text editor to review it first. Or read it in the terminal without saving anything:
 
 ```bash
@@ -81,17 +89,21 @@ curl -fsSL https://thuki.app/install.sh | less
 Prefer to download by hand? Grab the DMG and clear the quarantine flag yourself.
 
 1. Download `Thuki.dmg` from the [latest stable release](https://github.com/quiet-node/thuki/releases/latest), or grab the bleeding-edge build from the [`nightly`](https://github.com/quiet-node/thuki/releases/tag/nightly) channel, rebuilt automatically from `main`.
-2. Double-click `Thuki.dmg` to open it, then drag `Thuki` onto the `Applications` folder shortcut.
+2. Double-click `Thuki.dmg` to open it, then drag the app onto the `Applications` folder shortcut. Stable ships as `Thuki.app`; nightly as `Thuki Nightly.app`.
 3. Eject the disk image (drag it to Trash in the Finder sidebar, or right-click and choose Eject).
-4. **Before opening Thuki for the first time**, run this command in Terminal:
+4. **Before opening for the first time**, run this command in Terminal (use the path that matches the channel you installed):
 
    ```bash
+   # stable
    xattr -rd com.apple.quarantine /Applications/Thuki.app
+
+   # nightly
+   xattr -rd com.apple.quarantine "/Applications/Thuki Nightly.app"
    ```
 
    > **Why is this needed?** Thuki is a free, non-profit, open-source app distributed directly and not through the Mac App Store. Apple's Gatekeeper automatically blocks any app downloaded from the internet that has not gone through Apple's paid notarization process. This one-time command removes that block. It is safe and [officially documented by Apple](https://support.apple.com/en-us/102445). The one-line installer above handles this for you.
 
-5. Open Thuki. It will appear in your menu bar.
+5. Open the app. It will appear in your menu bar.
 
 </details>
 

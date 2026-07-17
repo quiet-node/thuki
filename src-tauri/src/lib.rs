@@ -2945,8 +2945,11 @@ pub fn run() {
             app.manage(models::DownloadState::default());
 
             // ── Keychain secret store ──────────────────────────────
+            // Service name is derived from the bundle identifier so nightly
+            // (com.quietnode.thuki.nightly) cannot share stable API keys.
+            let keychain_bundle_id = app.config().identifier.clone();
             app.manage(keychain::Secrets(std::sync::Arc::new(
-                keychain::KeyringStore,
+                keychain::KeyringStore::new(&keychain_bundle_id),
             )));
 
             // ── Built-in inference engine runner ───────────────────

@@ -107,6 +107,29 @@ jobs:
       - name: Run all tests with coverage enforcement
         run: bun run test:all:coverage
 
+      # Give nightly a separate product identity so it coexists with stable:
+      # different productName/identifier → distinct /Applications path, TCC
+      # grant, Keychain service, and app-data dir. Updater stays off so the
+      # rolling "nightly" tag cannot try to self-update from latest.json.
+      - name: Patch tauri.conf.json for nightly identity
+        run: |
+          command -v jq >/dev/null 2>&1 || brew install jq
+          tmp="$(mktemp)"
+          jq '
+            .productName = "Thuki Nightly"
+            | .identifier = "com.quietnode.thuki.nightly"
+            | .plugins.updater.active = false
+            | .app.windows |= map(
+                if .title == "Thuki" then .title = "Thuki Nightly"
+                elif .title == "Thuki Settings" then .title = "Thuki Nightly Settings"
+                else .
+                end
+              )
+          ' src-tauri/tauri.conf.json > "$tmp"
+          mv "$tmp" src-tauri/tauri.conf.json
+          jq '{productName, identifier, updater: .plugins.updater.active, titles: [.app.windows[].title]}' \
+            src-tauri/tauri.conf.json
+
       - name: Build Tauri app
         # VITE_GIT_COMMIT_SHA is set here, not on a separate frontend step, because
         # tauri build runs beforeBuildCommand (bun run build:frontend) internally.
@@ -119,33 +142,50 @@ jobs:
       # Ad-hoc signing with "-" satisfies Gatekeeper for drag-install without
       # requiring an Apple Developer certificate in CI secrets. The app is not
       # notarized, which is acceptable for a nightly/dev artifact.
+      # productName "Thuki Nightly" → bundle path has a space; quote carefully.
       - name: Ad-hoc sign the app
         run: |
-          codesign --deep --force --sign - src-tauri/target/release/bundle/macos/Thuki.app
-          codesign --verify --verbose src-tauri/target/release/bundle/macos/Thuki.app
+          APP_BUNDLE='src-tauri/target/release/bundle/macos/Thuki Nightly.app'
+          codesign --deep --force --sign - "$APP_BUNDLE"
+          codesign --verify --verbose "$APP_BUNDLE"
 
       - name: Install create-dmg
         run: brew install create-dmg
 
       - name: Create DMG installer
         run: |
+          # Stage only the .app. Asset filenames stay Thuki.dmg / Thuki.dmg.sig
+          # so install.sh can use the same names for stable and nightly.
           mkdir -p /tmp/thuki-dmg-src
-          cp -r src-tauri/target/release/bundle/macos/Thuki.app /tmp/thuki-dmg-src/
+          cp -R "src-tauri/target/release/bundle/macos/Thuki Nightly.app" /tmp/thuki-dmg-src/
 
           mkdir -p src-tauri/target/release/bundle/dmg
           create-dmg \
-            --volname "Thuki" \
+            --volname "Thuki Nightly" \
             --background "src-tauri/assets/dmg-background.png" \
             --window-pos 200 120 \
             --window-size 600 380 \
             --icon-size 128 \
-            --icon "Thuki.app" 170 170 \
-            --hide-extension "Thuki.app" \
+            --icon "Thuki Nightly.app" 170 170 \
+            --hide-extension "Thuki Nightly.app" \
             --app-drop-link 430 170 \
             "src-tauri/target/release/bundle/dmg/Thuki.dmg" \
             "/tmp/thuki-dmg-src"
 
           rm -rf /tmp/thuki-dmg-src
+
+      # Same detached RSA scheme as release-please "Sign DMG for install script".
+      # Private key never leaves the secret; public key is pinned in install.sh.
+      - name: Sign DMG for install script
+        env:
+          INSTALLER_SIGNING_KEY: ${{ secrets.THUKI_INSTALLER_RSA_PRIVATE_KEY }}
+        run: |
+          KEYFILE="$(mktemp)"
+          trap 'rm -f "$KEYFILE"' EXIT
+          printf '%s\n' "$INSTALLER_SIGNING_KEY" > "$KEYFILE"
+          openssl dgst -sha256 -sign "$KEYFILE" \
+            -out src-tauri/target/release/bundle/dmg/Thuki.dmg.sig \
+            src-tauri/target/release/bundle/dmg/Thuki.dmg
 
       # refs/tags/ is explicit to prevent ambiguity if a "nightly" branch
       # is ever created alongside the tag.
@@ -158,15 +198,25 @@ jobs:
 
       # Floating release: delete the previous nightly release (if it exists)
       # then recreate it. There is always exactly one nightly prerelease,
-      # always pointing to the latest build.
+      # always pointing to the latest build. Upload both DMG and signature.
       - name: Publish nightly prerelease
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # "|| true" tolerates the first run when no nightly release exists yet.
           gh release delete nightly --yes || true
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          NOTES="Automated build from main (${SHORT_SHA}).
+
+          Thuki Nightly is a separate app (Thuki Nightly.app, bundle id com.quietnode.thuki.nightly) that installs alongside stable Thuki. Not for production use.
+
+          Notes:
+          - Accessibility (and other TCC grants) may need to be re-granted for the nightly identity.
+          - Do not run stable and nightly at the same time: both claim double-tap Control and will fight over the hotkey.
+          - Auto-update is disabled for nightly; reinstall via the nightly channel to refresh."
           gh release create nightly \
             --title "Thuki Nightly" \
-            --notes "Automated build from main ($(git rev-parse --short HEAD)). Not for production use." \
+            --notes "$NOTES" \
             --prerelease \
-            src-tauri/target/release/bundle/dmg/Thuki.dmg
+            src-tauri/target/release/bundle/dmg/Thuki.dmg \
+            src-tauri/target/release/bundle/dmg/Thuki.dmg.sig
