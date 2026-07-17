@@ -37,7 +37,7 @@ export function v016AutoSearchSettingsCta(autoSearchOn: boolean): string {
  * Shown until `behavior.auto_save_notice_acknowledged` is true.
  */
 export const AUTO_SAVE_NOTICE_ANNOUNCEMENT = {
-  title: 'Chats are now auto-saved',
+  title: 'Chats are now auto-saved!',
   body: 'Turn auto-save off if you prefer to bookmark only what matters.',
 } as const;
 
