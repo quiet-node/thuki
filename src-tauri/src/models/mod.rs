@@ -1653,14 +1653,13 @@ pub fn sanitize_context_length(raw: Option<u64>) -> Option<u32> {
         .map(|n| n as u32)
 }
 
-/// One repo file in the HF listing. Only LFS-backed `.gguf` files matter.
+/// One repo file in the HF listing. Only LFS-backed `.gguf` files matter, so
+/// only the fields the listing reads are declared; serde ignores the rest of
+/// each sibling object (no `deny_unknown_fields`).
 #[derive(Deserialize)]
 struct HfSibling {
     #[serde(default)]
     rfilename: String,
-    /// Plain (non-LFS) size; fallback for the file browser listing.
-    #[serde(default)]
-    size: Option<u64>,
     #[serde(default)]
     lfs: Option<HfLfs>,
 }
@@ -1717,11 +1716,34 @@ fn is_mmproj(name: &str) -> bool {
     gguf_role::is_projector_companion_name(name)
 }
 
+/// Picks the best mmproj companion for `primary` (llama.cpp find_best_mmproj style).
+///
+/// Candidates are LFS-complete projector siblings. Ranking:
+/// 1. deeper shared directory prefix with the primary file,
+/// 2. smaller |quant_bits(mmproj) - quant_bits(primary)|,
+/// 3. stable file name tie-break.
+///
+/// Empty input yields `None`.
+pub fn pick_best_mmproj(primary: &str, candidates: &[MmprojCompanion]) -> Option<MmprojCompanion> {
+    let primary_bits = gguf_role::quant_bits(primary);
+    candidates
+        .iter()
+        .min_by_key(|c| {
+            let shared = gguf_role::shared_path_prefix_depth(primary, &c.file);
+            let quant_dist = gguf_role::quant_bits(&c.file).abs_diff(primary_bits);
+            // Prefer max shared prefix, then min quant distance, then name.
+            (std::cmp::Reverse(shared), quant_dist, c.file.as_str())
+        })
+        .cloned()
+}
+
 /// Pure parse of an HF repo listing into the spec for one target `file`.
 /// Capability rule for pasted repos: vision = a projector companion sibling
 /// with complete LFS metadata exists. The target file must be a chat-weight
 /// candidate ([`gguf_role::is_chat_download_candidate`]); projectors and
 /// helpers are rejected here so they never enter the download pipeline.
+/// When several mmproj siblings exist, [`pick_best_mmproj`] ranks them by
+/// shared path depth and quant proximity to the primary file.
 /// The reasoning class is recorded in two stages: [`repo_installed_model`]
 /// seeds `thinking` from the model name via [`detect_thinking`], then
 /// `finalize_install` refines `thinking` and sets `reasoning_always` from the
@@ -1747,17 +1769,19 @@ pub fn resolve_listing(body: &[u8], file: &str) -> Result<RepoResolved, String> 
         .ok_or_else(|| format!("file not found in repo: {file}"))?;
     let (weights_sha256, weights_size_bytes) =
         lfs_digest(target).ok_or_else(|| format!("file has no LFS digest metadata: {file}"))?;
-    let mmproj = info
+    let mmproj_candidates: Vec<MmprojCompanion> = info
         .siblings
         .iter()
         .filter(|s| is_mmproj(&s.rfilename))
-        .find_map(|s| {
+        .filter_map(|s| {
             lfs_digest(s).map(|(sha256, size_bytes)| MmprojCompanion {
                 file: s.rfilename.clone(),
                 sha256,
                 size_bytes,
             })
-        });
+        })
+        .collect();
+    let mmproj = pick_best_mmproj(file, &mmproj_candidates);
     let parts = resolve_split_parts(&info.siblings, file);
     Ok(RepoResolved {
         revision,
@@ -1784,32 +1808,30 @@ fn resolve_split_parts(siblings: &[HfSibling], file: &str) -> Vec<HfGgufPart> {
 }
 
 /// Projects an HF sibling listing onto the grouped `.gguf` browser rows: keeps
-/// LFS or plain-sized `.gguf` files that are chat-weight candidates (drops
-/// projectors and helpers via [`gguf_role::is_chat_download_candidate`]), then
-/// collapses split shards into one entry each via [`group_split_files`]. The
-/// single sibling-to-row derivation, shared by [`parse_gguf_listing`] and
-/// [`resolve_split_parts`] so the browser listing and the resolve path can never
-/// disagree about what is a split set.
+/// only LFS-complete (non-empty sha256 + size) `.gguf` chat-weight candidates
+/// (drops projectors and helpers via [`gguf_role::is_chat_download_candidate`]),
+/// then collapses split shards into one entry each via [`group_split_files`].
+/// Non-LFS rows cannot be content-addressed or verified, so they never appear.
+/// Shared by [`parse_gguf_listing`] and [`resolve_split_parts`] so the browser
+/// listing and the resolve path can never disagree about what is a split set.
 fn gguf_files_from_siblings(siblings: &[HfSibling]) -> Vec<HfGgufFile> {
     let files = siblings
         .iter()
         .filter(|s| {
             s.rfilename.ends_with(".gguf") && gguf_role::is_chat_download_candidate(&s.rfilename)
         })
-        .map(|s| {
-            let size_bytes = s.lfs.as_ref().and_then(|l| l.size).or(s.size).unwrap_or(0);
-            let sha256 = s
-                .lfs
-                .as_ref()
-                .and_then(|l| l.sha256.clone())
-                .unwrap_or_default();
-            HfGgufFile {
+        .filter_map(|s| {
+            let (sha256, size_bytes) = lfs_digest(s)?;
+            if sha256.is_empty() {
+                return None;
+            }
+            Some(HfGgufFile {
                 file: s.rfilename.clone(),
                 size_bytes,
                 sha256,
                 partial_bytes: None,
                 parts: Vec::new(),
-            }
+            })
         })
         .collect();
     group_split_files(files)
@@ -1890,8 +1912,9 @@ fn group_split_files(files: Vec<HfGgufFile>) -> Vec<HfGgufFile> {
 
 /// Builds the single [`HfGgufFile`] for a collected shard group, or `None` when
 /// the set is incomplete: ordered, the shards must number exactly `total` and
-/// cover the indices `1..=total` with no gap or duplicate. The first shard
-/// supplies the entry's name and digest; the size is the sum of all shards.
+/// cover the indices `1..=total` with no gap or duplicate. Empty digests are
+/// already excluded upstream (LFS-only listing). The first shard supplies the
+/// entry's name and digest; the size is the sum of all shards.
 fn finish_split_group(mut parts: Vec<(u32, HfGgufPart)>, total: u32) -> Option<HfGgufFile> {
     parts.sort_by_key(|(index, _)| *index);
     if parts.len() != total as usize
@@ -1902,6 +1925,7 @@ fn finish_split_group(mut parts: Vec<(u32, HfGgufPart)>, total: u32) -> Option<H
     {
         return None;
     }
+    // Empty digests are already dropped in [`gguf_files_from_siblings`] (LFS-only).
     let size_bytes = parts.iter().map(|(_, part)| part.size_bytes).sum();
     let parts: Vec<HfGgufPart> = parts.into_iter().map(|(_, part)| part).collect();
     let HfGgufPart { file, sha256, .. } = parts[0].clone();
@@ -2283,7 +2307,8 @@ pub fn attach_installed(
 }
 
 /// Annotates installed models with their RAM-fit on the host, from the recorded
-/// weights size. A model gets `None` when host RAM or the size is 0.
+/// weights size plus any known vision projector size. A model gets `None` when
+/// host RAM or the size is 0.
 pub fn build_installed_views(
     models: Vec<manifest::InstalledModel>,
     ram_bytes: u64,
@@ -2291,14 +2316,6 @@ pub fn build_installed_views(
     models
         .into_iter()
         .map(|model| {
-            let fit = if ram_bytes > 0 && model.size_bytes > 0 {
-                Some(registry::ram_fit(
-                    estimate_runtime_gb_from_bytes(model.size_bytes),
-                    ram_bytes,
-                ))
-            } else {
-                None
-            };
             // Curated models heal their context window, vision-projector size,
             // and maker from the registry so the Library row reads the same
             // facts Discover does; a pasted repo has no entry, so those stay
@@ -2307,6 +2324,17 @@ pub fn build_installed_views(
             let context_length = starter.map(|s| s.context_length);
             let mmproj_bytes = starter.map_or(0, |s| s.mmproj_bytes);
             let origin = starter.map(|s| s.origin.to_string());
+            // Fold projector size into the fit estimate when known (Staff picks
+            // always; Browse installs without a registry row keep weights-only).
+            let total_bytes = memory::model_load_bytes(&model, mmproj_bytes);
+            let fit = if ram_bytes > 0 && total_bytes > 0 {
+                Some(registry::ram_fit(
+                    estimate_runtime_gb_from_bytes(total_bytes),
+                    ram_bytes,
+                ))
+            } else {
+                None
+            };
             InstalledModelView {
                 model,
                 fit,
@@ -2677,13 +2705,17 @@ fn resolve_reasoning_flags(
 ///
 /// Uses on-disk GGUF metadata when the weights blob is readable; falls back to
 /// the file name alone when the header cannot be read (same soft signals as
-/// list-time). Pure relative to I/O: the blob read is injected via `meta` so
+/// list-time). Also rejects denylisted non-chat architectures when the header
+/// reports one ([`gguf_role::validate_primary_architecture`]); missing arch
+/// stays soft. Pure relative to I/O: the blob read is injected via `meta` so
 /// unit tests drive the shipped gate without a filesystem.
 pub fn validate_primary_install(
     file_name: &str,
     meta: Option<&gguf::GgufMetadata>,
 ) -> Result<(), String> {
-    gguf_role::validate_primary_weights_role(file_name, meta)
+    gguf_role::validate_primary_weights_role(file_name, meta)?;
+    let arch = meta.and_then(|m| m.architecture.as_deref());
+    gguf_role::validate_primary_architecture(arch)
 }
 
 /// Re-classifies installed built-in rows whose `reasoning_always` is `NULL`
@@ -5668,34 +5700,20 @@ mod tests {
     }
 
     #[test]
-    fn parse_gguf_listing_filters_mmproj_and_non_gguf() {
+    fn parse_gguf_listing_filters_mmproj_and_non_lfs() {
+        // LFS-only: non-LFS `extra.gguf` / `bare.gguf` from the fixture drop out;
+        // projectors and non-gguf never appear.
         let body = hf_fixture().to_string();
         let files = parse_gguf_listing(body.as_bytes()).unwrap();
         assert_eq!(
             files,
-            vec![
-                HfGgufFile {
-                    file: "model-Q4_K_M.gguf".to_string(),
-                    size_bytes: 1000,
-                    sha256: "a".repeat(64),
-                    partial_bytes: None,
-                    parts: Vec::new(),
-                },
-                HfGgufFile {
-                    file: "extra.gguf".to_string(),
-                    size_bytes: 7,
-                    sha256: String::new(),
-                    partial_bytes: None,
-                    parts: Vec::new(),
-                },
-                HfGgufFile {
-                    file: "bare.gguf".to_string(),
-                    size_bytes: 0,
-                    sha256: String::new(),
-                    partial_bytes: None,
-                    parts: Vec::new(),
-                },
-            ]
+            vec![HfGgufFile {
+                file: "model-Q4_K_M.gguf".to_string(),
+                size_bytes: 1000,
+                sha256: "a".repeat(64),
+                partial_bytes: None,
+                parts: Vec::new(),
+            },]
         );
     }
 
@@ -5900,6 +5918,96 @@ mod tests {
         let err = validate_primary_install("renamed-Q4.gguf", Some(&meta)).unwrap_err();
         assert!(err.contains("vision projector"), "got: {err}");
         assert!(validate_primary_install("brain-Q4_K_M.gguf", None).is_ok());
+    }
+
+    #[test]
+    fn validate_primary_install_rejects_denied_arch() {
+        let meta = gguf::GgufMetadata {
+            chat_template: None,
+            architecture: Some("bert".into()),
+            general_type: Some("model".into()),
+        };
+        // general.type=model would be Primary by role, but denylist still blocks.
+        let err = validate_primary_install("embed-Q4.gguf", Some(&meta)).unwrap_err();
+        // Role catches embed arch as Helper before arch denylist message.
+        assert!(
+            err.contains("helper file") || err.contains("not a chat model architecture"),
+            "got: {err}"
+        );
+        // Chat arch still ok.
+        let chat = gguf::GgufMetadata {
+            chat_template: None,
+            architecture: Some("gemma3".into()),
+            general_type: Some("model".into()),
+        };
+        assert!(validate_primary_install("gemma-Q4.gguf", Some(&chat)).is_ok());
+    }
+
+    #[test]
+    fn pick_best_mmproj_prefers_shared_prefix_then_quant() {
+        let primary = "models/gemma/Q4/weights-Q4_K_M.gguf";
+        let candidates = vec![
+            MmprojCompanion {
+                file: "other/mmproj-f16.gguf".into(),
+                sha256: "a".repeat(64),
+                size_bytes: 100,
+            },
+            MmprojCompanion {
+                file: "models/gemma/mmproj-Q8_0.gguf".into(),
+                sha256: "b".repeat(64),
+                size_bytes: 200,
+            },
+            MmprojCompanion {
+                file: "models/gemma/mmproj-Q4_0.gguf".into(),
+                sha256: "c".repeat(64),
+                size_bytes: 150,
+            },
+        ];
+        // Shared prefix `models/gemma` wins over `other/`; among those, Q4 beats Q8.
+        let best = pick_best_mmproj(primary, &candidates).unwrap();
+        assert_eq!(best.file, "models/gemma/mmproj-Q4_0.gguf");
+        assert!(pick_best_mmproj(primary, &[]).is_none());
+    }
+
+    #[test]
+    fn resolve_listing_ranks_mmproj_by_quant_when_flat() {
+        let body = serde_json::json!({
+            "sha": "c".repeat(40),
+            "siblings": [
+                {"rfilename": "brain-Q4_K_M.gguf",
+                 "lfs": {"sha256": "a".repeat(64), "size": 1000}},
+                {"rfilename": "mmproj-f16.gguf",
+                 "lfs": {"sha256": "b".repeat(64), "size": 200}},
+                {"rfilename": "mmproj-Q4_0.gguf",
+                 "lfs": {"sha256": "d".repeat(64), "size": 100}},
+            ]
+        })
+        .to_string();
+        let r = resolve_listing(body.as_bytes(), "brain-Q4_K_M.gguf").unwrap();
+        let mm = r.mmproj.expect("mmproj");
+        assert_eq!(mm.file, "mmproj-Q4_0.gguf");
+    }
+
+    #[test]
+    fn parse_gguf_listing_drops_empty_lfs_sha() {
+        // Empty LFS sha256 is not content-addressable → row dropped (LFS-only).
+        let body = serde_json::json!({
+            "sha": "c".repeat(40),
+            "siblings": [
+                {"rfilename": "model-Q4_K_M.gguf",
+                 "lfs": {"sha256": "", "size": 100}},
+                {"rfilename": "model-00001-of-00002.gguf",
+                 "lfs": {"sha256": "a".repeat(64), "size": 100}},
+                {"rfilename": "model-00002-of-00002.gguf",
+                 "lfs": {"sha256": "", "size": 100}},
+            ]
+        })
+        .to_string();
+        let files = parse_gguf_listing(body.as_bytes()).unwrap();
+        assert!(
+            files.is_empty(),
+            "empty-sha singles and incomplete splits must drop"
+        );
     }
 
     #[test]
@@ -6146,7 +6254,8 @@ mod tests {
         let files = fetch_repo_gguf_listing(&client, &server.url(), "o/r")
             .await
             .unwrap();
-        assert_eq!(files.len(), 3);
+        // LFS-only listing: fixture has one LFS chat GGUF (mmproj + non-LFS drop).
+        assert_eq!(files.len(), 1);
         assert_eq!(files[0].file, "model-Q4_K_M.gguf");
     }
 

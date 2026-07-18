@@ -128,7 +128,9 @@ In practice you rarely need to weigh any of this yourself: Discover's **Staff pi
 
 ### mmproj (vision)
 
-A vision model needs a second file, the **multimodal projector** (`mmproj`), that turns an image into something the model can read. Thuki downloads it alongside the main model and passes it to the engine with `--mmproj`. Models with this companion show a **Vision** badge. Projector files and other non-chat helpers (draft / MTP / dspark) never appear as standalone chat downloads in Browse all: only primary text weights are listed, and a matching projector is attached automatically when you install a brain from the same repo.
+A vision model needs a second file, the **multimodal projector** (`mmproj`), that turns an image into something the model can read. Thuki downloads it alongside the main model and passes it to the engine with `--mmproj`. Models with this companion show a **Vision** badge. Projector files and other non-chat helpers (draft / MTP / dspark / LoRA / embedders) never appear as standalone chat downloads in Browse all: only primary text weights with complete LFS metadata are listed, and a matching projector is attached automatically when you install a brain from the same repo. When a repo ships several projectors, Thuki ranks them like llama.cpp (shared path with the brain, then closest quant bit-width).
+
+At install and load time Thuki also re-reads the GGUF header: CLIP/mmproj roles, embedding architectures (bert, t5, …), and other non-chat helpers are rejected as primary chat models so they never become Ready. Missing architecture stays soft (filename heuristics). The denylist is pin-scoped: an engine bump may need a list update when new non-chat families appear.
 
 ### Capabilities
 
@@ -164,7 +166,7 @@ First it estimates the model's **resident size** at runtime:
 estimate = model file size + ~2 GB overhead
 ```
 
-The ~2 GB is a baseline for the engine's runtime buffers and KV cache. (The KV cache also grows with your context window, covered separately in the context-window guide.) For a vision model, a curated Staff pick folds its projector (`mmproj`) into the size; a Browse-all or installed-Library row counts only the single GGUF file you see on the row.
+The ~2 GB is a baseline for the engine's runtime buffers and KV cache. (The KV cache also grows with your context window, covered separately in the context-window guide.) For a vision model, Thuki folds the projector (`mmproj`) into the size when known: Staff picks use the curated projector size, and installed Library / load-gate paths use the on-disk projector blob (or the curated size when the blob length is not yet available).
 
 Then it compares that estimate against your Mac's **total physical memory**, read straight from the system (`hw.memsize`). Apple Silicon uses unified memory shared between the CPU and GPU, so a model competes for RAM with everything else you are running:
 

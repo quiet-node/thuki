@@ -258,15 +258,18 @@ pub fn builtin_target(
                 .to_string(),
         });
     };
-    // Refuse projector/helper rows left over from older installs or bypasses.
-    if let Err(message) = crate::models::validate_primary_install(&model.file_name, None) {
+    // Refuse projector/helper/denied-arch rows: re-read the local blob header
+    // so a renamed companion or embedding GGUF cannot load as chat primary.
+    let weights_blob = store.blob_path(&model.sha256);
+    let meta = crate::models::gguf::read_gguf_metadata_from_file(&weights_blob);
+    if let Err(message) = crate::models::validate_primary_install(&model.file_name, meta.as_ref()) {
         return Err(EngineError {
             kind: EngineErrorKind::ModelUnsupported,
             message,
         });
     }
     let model_path = if model.parts.is_empty() {
-        store.blob_path(&model.sha256)
+        weights_blob
     } else {
         store
             .materialize_split_shim(&model.parts)
@@ -292,7 +295,7 @@ pub fn builtin_target(
 /// pure [`crate::models::memory::decide_load_gate`] needs and delegates every
 /// decision to it (the single source of the block decision, shared with the
 /// frontend fit affordance so the two can never drift, issue #296):
-/// - the target's weights bytes from the manifest,
+/// - the target's weights bytes from the manifest (plus mmproj when known),
 /// - live available memory from the mach VM statistics,
 /// - the currently-resident model's path (so a same-model reload is a no-op and
 ///   a different resident model's footprint is credited back, since the engine
@@ -317,9 +320,14 @@ pub(crate) fn preflight_memory_gate(
     // Read the live engine status once: it feeds both the already-loading bypass
     // and the resident-credit path, both applied inside `decide_load_gate`.
     let status = engine.current_status();
-    // Cannot size the target -> do not block on a database hiccup.
+    // Cannot size the target -> do not block on a database hiccup. Fold mmproj
+    // blob length (or registry hint) when present so vision loads estimate true
+    // footprint.
     let target_weights = match crate::models::manifest::get(conn, model_id) {
-        Ok(Some(row)) => memory::model_weights_bytes(&row),
+        Ok(Some(row)) => {
+            let mm = crate::models::memory::mmproj_bytes_for_model(store, &row);
+            memory::model_load_bytes(&row, mm)
+        }
         _ => return memory::MemoryGate::Proceed,
     };
     // Map every installed row to (weights_bytes, weights blob path) so a
@@ -328,8 +336,9 @@ pub(crate) fn preflight_memory_gate(
         .unwrap_or_default()
         .into_iter()
         .map(|row| {
+            let mm = crate::models::memory::mmproj_bytes_for_model(store, &row);
             (
-                memory::model_weights_bytes(&row),
+                memory::model_load_bytes(&row, mm),
                 store.blob_path(&row.sha256),
             )
         })
@@ -462,6 +471,12 @@ pub fn engine_start_error(detail: &str) -> EngineError {
             kind: EngineErrorKind::ModelUnsupported,
             message: "This file is a vision projector, not a chat model.\nDownload a text model GGUF; Thuki attaches the projector automatically when the repo includes one.".to_string(),
         }
+    } else if is_mmproj_mismatch(&lower) {
+        // Wrong projector paired with text weights (n_embd / dim mismatch).
+        EngineError {
+            kind: EngineErrorKind::EngineStartFailed,
+            message: "Vision projector mismatch\nThis model's projector does not match the text weights. Re-download the model so Thuki can pick a matching mmproj, or choose another vision model.".to_string(),
+        }
     } else if lower.contains("unknown model architecture")
         || lower.contains("unknown architecture")
         || lower.contains("unsupported model architecture")
@@ -482,6 +497,29 @@ pub fn engine_start_error(detail: &str) -> EngineError {
             message: concise_detail(detail),
         }
     }
+}
+
+/// True when llama.cpp stderr indicates a vision projector mismatch.
+///
+/// Requires the failure to actually name a projector: `mmproj`, `projector`, or
+/// `clip` appear in the engine's stderr only when a vision projector (`--mmproj`)
+/// is being loaded. Gating on that keeps a text-only load's metadata dump (which
+/// always prints an `n_embd = N` line) or a dyld / OS start failure from being
+/// mislabeled a projector mismatch and shadowing the unknown-architecture and OS
+/// arms below. Within a projector load, only an explicit incompatibility (never
+/// the bare `n_embd` dump line, never a lone `wrong`) marks a genuine mismatch;
+/// any other projector failure falls through to the raw engine reason.
+fn is_mmproj_mismatch(lower: &str) -> bool {
+    let mentions_projector =
+        lower.contains("mmproj") || lower.contains("projector") || lower.contains("clip");
+    if !mentions_projector {
+        return false;
+    }
+    lower.contains("failed to load mmproj")
+        || lower.contains("mismatch")
+        || lower.contains("does not match")
+        || lower.contains("incompatible")
+        || lower.contains("not compatible")
 }
 
 /// Runs the built-in-engine stage of a chat turn: mark activity, ensure the
@@ -3204,6 +3242,48 @@ mod tests {
             "got: {}",
             err.message
         );
+    }
+
+    #[test]
+    fn engine_start_error_projector_mismatch_positive() {
+        // Each projector-token arm (mmproj / projector / clip) paired with each
+        // incompatibility verb maps to the fixable projector-mismatch copy.
+        for detail in [
+            "failed to load mmproj: bad projector file",
+            "clip: n_embd (2048) does not match model n_embd (4096)",
+            "projector tensors are incompatible with the model",
+            "mmproj embedding mismatch detected",
+            "vision projector is not compatible with these weights",
+        ] {
+            let err = engine_start_error(detail);
+            assert_eq!(err.kind, EngineErrorKind::EngineStartFailed, "{detail}");
+            assert!(
+                err.message.contains("Vision projector mismatch"),
+                "detail={detail} got={}",
+                err.message
+            );
+        }
+    }
+
+    #[test]
+    fn engine_start_error_projector_mismatch_needs_projector_and_verb() {
+        // A text-only failure never names a projector, so its ubiquitous
+        // `n_embd`/`mismatch` metadata dump must not be mislabeled a projector
+        // problem; and a projector load that fails for another reason (out of
+        // memory) or with only the dropped bare `wrong` token also falls through
+        // to the raw engine reason rather than the projector copy.
+        for detail in [
+            "n_embd values mismatch between tensors",
+            "clip_model_load: loaded; ggml backend: out of memory",
+            "clip loaded; wrong number of tensors",
+        ] {
+            let err = engine_start_error(detail);
+            assert!(
+                !err.message.contains("Vision projector mismatch"),
+                "detail={detail} got={}",
+                err.message
+            );
+        }
     }
 
     #[test]

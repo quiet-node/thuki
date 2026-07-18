@@ -7,11 +7,12 @@
 //! fit verdict the load paths gate on.
 //!
 //! The gate is deliberately *forgiving*: the footprint estimate is inherently
-//! approximate (weights-on-disk plus a fixed overhead, ignoring the mmproj
-//! blob and the context-scaled KV cache, mirroring the Library/Discover fit
-//! hint), and real-world estimators are documented to be off by up to ~2x. So
-//! it only ever hard-blocks a load whose estimate lands clearly above a
-//! ceiling of available memory, and a user-facing `force` always bypasses it.
+//! approximate (weights-on-disk plus optional mmproj size plus a fixed
+//! overhead, ignoring the context-scaled KV cache, mirroring the
+//! Library/Discover fit hint), and real-world estimators are documented to be
+//! off by up to ~2x. So it only ever hard-blocks a load whose estimate lands
+//! clearly above a ceiling of available memory, and a user-facing `force`
+//! always bypasses it.
 //!
 //! ## Why "available", not "total"
 //!
@@ -96,16 +97,19 @@ pub fn available_from_vm_stats(
 }
 
 /// Estimated resident footprint in bytes for a model whose weights occupy
-/// `weights_bytes` on disk: the weights plus the fixed [`RUNTIME_OVERHEAD_GB`]
-/// (KV cache at the default context plus runtime buffers). This is the
-/// byte-domain twin of `super::estimate_runtime_gb_from_bytes`, kept on the
-/// same weights-plus-overhead convention so the gate and the fit hint agree.
-/// Saturating so a corrupt manifest size cannot overflow.
-pub fn estimate_required_bytes(weights_bytes: u64) -> u64 {
+/// `weights_bytes` on disk and optional vision projector `mmproj_bytes`:
+/// weights + mmproj + the fixed [`RUNTIME_OVERHEAD_GB`] (KV cache at the
+/// default context plus runtime buffers). This is the byte-domain twin of
+/// `super::estimate_runtime_gb_from_bytes`, kept on the same
+/// weights-plus-overhead convention so the gate and the fit hint agree.
+/// Pass `0` for text-only models. Saturating so a corrupt size cannot overflow.
+pub fn estimate_required_bytes(weights_bytes: u64, mmproj_bytes: u64) -> u64 {
     // f64 -> u64 cast saturates at u64::MAX and floors negatives to 0; the
     // operand is a small positive constant so neither edge is reachable here.
     let overhead = (RUNTIME_OVERHEAD_GB * BYTES_PER_GIB as f64) as u64;
-    weights_bytes.saturating_add(overhead)
+    weights_bytes
+        .saturating_add(mmproj_bytes)
+        .saturating_add(overhead)
 }
 
 /// Fit verdict for `required_bytes` against `available_bytes`.
@@ -130,9 +134,11 @@ pub fn assess_fit(required_bytes: u64, available_bytes: u64) -> MemoryFit {
     }
 }
 
-/// Total on-disk weights bytes for an installed model: `size_bytes` for a
-/// single-file model, or the sum of every shard for a split model (whose
-/// `size_bytes` records only the first shard). Saturating on the sum.
+/// Total on-disk primary weights bytes for an installed model: `size_bytes` for
+/// a single-file model, or the sum of every shard for a split model (whose
+/// `size_bytes` records only the first shard). Does not include the mmproj;
+/// fold projector size via [`estimate_required_bytes`] or
+/// [`model_load_bytes`]. Saturating on the sum.
 pub fn model_weights_bytes(model: &InstalledModel) -> u64 {
     if model.parts.is_empty() {
         model.size_bytes
@@ -142,6 +148,53 @@ pub fn model_weights_bytes(model: &InstalledModel) -> u64 {
             .iter()
             .fold(0u64, |acc, part| acc.saturating_add(part.size_bytes))
     }
+}
+
+/// Primary weights plus optional projector size for load-footprint estimates.
+///
+/// `mmproj_bytes` comes from the registry, a store blob length, or `0` when
+/// unknown / text-only. Saturating so corrupt sizes cannot wrap.
+pub fn model_load_bytes(model: &InstalledModel, mmproj_bytes: u64) -> u64 {
+    model_weights_bytes(model).saturating_add(mmproj_bytes)
+}
+
+/// Projector size to fold into load estimates for `model`.
+///
+/// Returns `0` when the row has no mmproj. When it has one, prefers
+/// `size_hint` (blob metadata or registry). Missing hint yields `0` rather
+/// than inventing a size (conservative under-estimate, never a false block
+/// from phantom projector bytes).
+pub fn resolve_mmproj_bytes(model: &InstalledModel, size_hint: Option<u64>) -> u64 {
+    if model.mmproj_sha256.is_none() {
+        return 0;
+    }
+    size_hint.unwrap_or(0)
+}
+
+/// Projector bytes to fold into `model`'s load estimate: the store blob length
+/// when the mmproj blob is present, else the curated registry size, else `0`.
+///
+/// The single source of the blob-then-registry hint so the pre-load memory gate
+/// ([`crate::commands::preflight_memory_gate`]) and the fit estimate
+/// ([`estimate_model_fit`]) can never size the same projector differently.
+///
+/// Coverage-off: a thin filesystem + registry read. The size composition is the
+/// unit-tested [`resolve_mmproj_bytes`]; the blob-then-registry preference is
+/// `Option::or_else`.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn mmproj_bytes_for_model(
+    store: &crate::models::storage::ModelStore,
+    model: &InstalledModel,
+) -> u64 {
+    let hint = model.mmproj_sha256.as_deref().and_then(|sha| {
+        std::fs::metadata(store.blob_path(sha))
+            .ok()
+            .map(|m| m.len())
+            .or_else(|| {
+                super::registry::by_repo_file(&model.repo, &model.file_name).map(|s| s.mmproj_bytes)
+            })
+    });
+    resolve_mmproj_bytes(model, hint)
 }
 
 /// Weights bytes of the installed row whose weights blob path equals
@@ -253,7 +306,9 @@ pub fn evaluate_load_gate(
     if matches!(resident_path, Some(path) if path == target_path) {
         return MemoryGate::Proceed;
     }
-    let required_bytes = estimate_required_bytes(target_weights_bytes);
+    // Callers fold mmproj into `target_weights_bytes` (or pass primary-only when
+    // projector size is unknown); second arg stays 0 so the sum is not doubled.
+    let required_bytes = estimate_required_bytes(target_weights_bytes, 0);
     // A different resident model (or none) is credited back by the shared
     // helper, so the gate and the frontend fit estimate use identical math.
     let effective_available =
@@ -425,7 +480,8 @@ pub fn build_model_fit_estimate(
     target_path: &Path,
     installed: &[(u64, PathBuf)],
 ) -> ModelFitEstimate {
-    let required_bytes = estimate_required_bytes(weights_bytes);
+    // Callers fold mmproj into `weights_bytes` when known; second arg stays 0.
+    let required_bytes = estimate_required_bytes(weights_bytes, 0);
     // Fail open on a failed reader (0) before crediting, mirroring the gate:
     // crediting a resident model onto a 0 read would judge the estimate against
     // the credit alone, diverging from "we don't know available memory".
@@ -493,7 +549,8 @@ pub fn estimate_model_fit(
     let row = super::manifest::get(&conn, &model_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "The selected model is not installed.".to_string())?;
-    let weights_bytes = model_weights_bytes(&row);
+    // Fold mmproj blob length / registry size so vision fit matches the gate.
+    let weights_bytes = model_load_bytes(&row, mmproj_bytes_for_model(store.inner(), &row));
     // The target's weights blob path; for a single-file model this equals the
     // resident `model_path` the engine reports, giving exact credit parity with
     // the gate. Split models load through a shim path that never matches a blob
@@ -505,7 +562,10 @@ pub fn estimate_model_fit(
     let installed: Vec<(u64, PathBuf)> = super::manifest::list(&conn)
         .unwrap_or_default()
         .into_iter()
-        .map(|r| (model_weights_bytes(&r), store.blob_path(&r.sha256)))
+        .map(|r| {
+            let mm = mmproj_bytes_for_model(store.inner(), &r);
+            (model_load_bytes(&r, mm), store.blob_path(&r.sha256))
+        })
         .collect();
     // A live "loaded" status names the resident model's path; anything else
     // means nothing is resident to credit. The `"starting"` (already-loading)
@@ -600,16 +660,46 @@ mod tests {
     #[test]
     fn estimate_required_bytes_adds_fixed_overhead() {
         let overhead = (RUNTIME_OVERHEAD_GB * BYTES_PER_GIB as f64) as u64;
-        assert_eq!(estimate_required_bytes(0), overhead);
+        assert_eq!(estimate_required_bytes(0, 0), overhead);
         assert_eq!(
-            estimate_required_bytes(5 * BYTES_PER_GIB),
+            estimate_required_bytes(5 * BYTES_PER_GIB, 0),
             5 * BYTES_PER_GIB + overhead
         );
     }
 
     #[test]
+    fn estimate_required_bytes_includes_mmproj() {
+        let overhead = (RUNTIME_OVERHEAD_GB * BYTES_PER_GIB as f64) as u64;
+        assert_eq!(
+            estimate_required_bytes(5 * BYTES_PER_GIB, BYTES_PER_GIB),
+            6 * BYTES_PER_GIB + overhead
+        );
+    }
+
+    #[test]
     fn estimate_required_bytes_saturates() {
-        assert_eq!(estimate_required_bytes(u64::MAX), u64::MAX);
+        assert_eq!(estimate_required_bytes(u64::MAX, 0), u64::MAX);
+        assert_eq!(estimate_required_bytes(u64::MAX, 1), u64::MAX);
+    }
+
+    #[test]
+    fn model_load_bytes_adds_mmproj() {
+        let model = row(1000, vec![]);
+        assert_eq!(model_load_bytes(&model, 0), 1000);
+        assert_eq!(model_load_bytes(&model, 250), 1250);
+        let split = row(100, vec![part("a", 100), part("b", 200)]);
+        assert_eq!(model_load_bytes(&split, 50), 350);
+    }
+
+    #[test]
+    fn resolve_mmproj_bytes_respects_presence_and_hint() {
+        let text = row(1000, vec![]);
+        assert_eq!(resolve_mmproj_bytes(&text, Some(99)), 0);
+        let mut vision = row(1000, vec![]);
+        vision.mmproj_sha256 = Some("sha_mm".into());
+        vision.mmproj_file = Some("mmproj.gguf".into());
+        assert_eq!(resolve_mmproj_bytes(&vision, None), 0);
+        assert_eq!(resolve_mmproj_bytes(&vision, Some(500)), 500);
     }
 
     #[test]
@@ -876,7 +966,7 @@ mod tests {
         assert_eq!(
             gate,
             MemoryGate::Block {
-                required_bytes: estimate_required_bytes(20 * BYTES_PER_GIB),
+                required_bytes: estimate_required_bytes(20 * BYTES_PER_GIB, 0),
                 available_bytes: 10 * BYTES_PER_GIB,
             }
         );
@@ -925,7 +1015,7 @@ mod tests {
                 false
             ),
             MemoryGate::Block {
-                required_bytes: estimate_required_bytes(8 * BYTES_PER_GIB),
+                required_bytes: estimate_required_bytes(8 * BYTES_PER_GIB, 0),
                 available_bytes: BYTES_PER_GIB,
             }
         );
@@ -960,7 +1050,7 @@ mod tests {
         assert_eq!(
             gate,
             MemoryGate::Block {
-                required_bytes: estimate_required_bytes(30 * BYTES_PER_GIB),
+                required_bytes: estimate_required_bytes(30 * BYTES_PER_GIB, 0),
                 available_bytes: 6 * BYTES_PER_GIB,
             }
         );
@@ -996,7 +1086,7 @@ mod tests {
         );
         assert_eq!(
             estimate.required_bytes,
-            estimate_required_bytes(4 * BYTES_PER_GIB)
+            estimate_required_bytes(4 * BYTES_PER_GIB, 0)
         );
         assert_eq!(estimate.available_bytes, 24 * BYTES_PER_GIB);
         assert_eq!(estimate.verdict, MemoryFit::Comfortable);
@@ -1046,7 +1136,7 @@ mod tests {
         assert_eq!(
             decided,
             MemoryGate::Block {
-                required_bytes: estimate_required_bytes(20 * BYTES_PER_GIB),
+                required_bytes: estimate_required_bytes(20 * BYTES_PER_GIB, 0),
                 available_bytes: 10 * BYTES_PER_GIB,
             }
         );
@@ -1072,7 +1162,7 @@ mod tests {
         assert_eq!(
             unforced,
             MemoryGate::Block {
-                required_bytes: estimate_required_bytes(20 * BYTES_PER_GIB),
+                required_bytes: estimate_required_bytes(20 * BYTES_PER_GIB, 0),
                 available_bytes: 10 * BYTES_PER_GIB,
             }
         );
