@@ -149,9 +149,10 @@ interface ChatBubbleProps {
    *  model load is never a dead end. Forwarded to the ErrorCard. */
   onSwitchModel?: () => void;
   /** Replays the turn with the pre-load memory gate bypassed (issue #296).
-   *  Forwarded to the ErrorCard's `InsufficientMemory` branch as the "Load
-   *  anyway" action. */
-  onLoadAnyway?: () => void;
+   *  Forwarded to the ErrorCard's `InsufficientMemory` branch. `remember`
+   *  carries the split "Load once" (`false`) vs "Always allow this model"
+   *  (`true`) choice so the host can persist the per-model override. */
+  onLoadAnyway?: (remember: boolean) => void;
   /** Accumulated thinking/reasoning content from the model, if thinking mode was used. */
   thinkingContent?: string;
   /** Whether a `/think` turn is waiting for the first thinking tokens. */
@@ -210,7 +211,11 @@ interface ChatBubbleProps {
    * skipped, so the model name and GB figures never disagree during a "Switch
    * model" swap. Absent on the initial failure, where the fetch supplies them.
    */
-  memoryFit?: { requiredBytes: number; availableBytes: number };
+  memoryFit?: {
+    requiredBytes: number;
+    availableBytes: number;
+    canRemember: boolean;
+  };
 }
 
 /**
@@ -425,7 +430,12 @@ export function ChatBubble({
    * there and this stale value can never leak onto a re-attributed card.
    */
   const [insufficientMemoryInfo, setInsufficientMemoryInfo] = useState<
-    | { modelName: string; requiredBytes: number; availableBytes: number }
+    | {
+        modelName: string;
+        requiredBytes: number;
+        availableBytes: number;
+        canRemember: boolean;
+      }
     | undefined
   >(undefined);
 
@@ -440,6 +450,7 @@ export function ChatBubble({
       required_bytes: number;
       available_bytes: number;
       verdict: string;
+      can_remember: boolean;
     }>('estimate_model_fit', { modelId: modelName })
       .then((estimate) => {
         if (cancelled) return;
@@ -447,6 +458,7 @@ export function ChatBubble({
           modelName: resolveMemoryModelName(modelName, displayNames),
           requiredBytes: estimate.required_bytes,
           availableBytes: estimate.available_bytes,
+          canRemember: estimate.can_remember,
         });
       })
       .catch(() => {
@@ -469,6 +481,7 @@ export function ChatBubble({
         modelName: resolveMemoryModelName(modelName, displayNames),
         requiredBytes: memoryFit.requiredBytes,
         availableBytes: memoryFit.availableBytes,
+        canRemember: memoryFit.canRemember,
       }
     : insufficientMemoryInfo;
 

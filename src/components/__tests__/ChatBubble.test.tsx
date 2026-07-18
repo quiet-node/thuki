@@ -600,6 +600,9 @@ describe('ChatBubble', () => {
         required_bytes: 8 * 1024 ** 3,
         available_bytes: 4 * 1024 ** 3,
         verdict: 'insufficient',
+        // Mild band: these cases assert the model-name copy, not the
+        // freeze-band presentation (covered in ErrorCard's own tests).
+        can_remember: true,
       }));
       render(
         <ChatBubble
@@ -629,6 +632,9 @@ describe('ChatBubble', () => {
         required_bytes: 13.3 * 1024 ** 3,
         available_bytes: 4 * 1024 ** 3,
         verdict: 'insufficient',
+        // Mild band: these cases assert the model-name copy, not the
+        // freeze-band presentation (covered in ErrorCard's own tests).
+        can_remember: true,
       }));
       const { rerender } = render(
         <ChatBubble
@@ -676,6 +682,9 @@ describe('ChatBubble', () => {
         required_bytes: 13.3 * 1024 ** 3,
         available_bytes: 4 * 1024 ** 3,
         verdict: 'insufficient',
+        // Mild band: these cases assert the model-name copy, not the
+        // freeze-band presentation (covered in ErrorCard's own tests).
+        can_remember: true,
       }));
       const displayNames = {
         'model-a-slug': 'Model A',
@@ -714,6 +723,7 @@ describe('ChatBubble', () => {
           memoryFit={{
             requiredBytes: 6 * 1024 ** 3,
             availableBytes: 4 * 1024 ** 3,
+            canRemember: true,
           }}
         />,
       );
@@ -741,6 +751,9 @@ describe('ChatBubble', () => {
         required_bytes: 1,
         available_bytes: 1,
         verdict: 'insufficient',
+        // Mild band: these cases assert the model-name copy, not the
+        // freeze-band presentation (covered in ErrorCard's own tests).
+        can_remember: true,
       }));
       render(
         <ChatBubble
@@ -761,6 +774,9 @@ describe('ChatBubble', () => {
         required_bytes: 1,
         available_bytes: 1,
         verdict: 'insufficient',
+        // Mild band: these cases assert the model-name copy, not the
+        // freeze-band presentation (covered in ErrorCard's own tests).
+        can_remember: true,
       }));
       render(
         <ChatBubble
@@ -780,6 +796,9 @@ describe('ChatBubble', () => {
         required_bytes: 1,
         available_bytes: 1,
         verdict: 'insufficient',
+        // Mild band: these cases assert the model-name copy, not the
+        // freeze-band presentation (covered in ErrorCard's own tests).
+        can_remember: true,
       }));
       const onLoadAnyway = vi.fn();
       render(
@@ -791,10 +810,10 @@ describe('ChatBubble', () => {
           onLoadAnyway={onLoadAnyway}
         />,
       );
-      fireEvent.click(
-        await screen.findByRole('button', { name: 'Load anyway' }),
-      );
+      // Mild band: the non-remembering half of the split forwards `false`.
+      fireEvent.click(await screen.findByRole('button', { name: 'Load once' }));
       expect(onLoadAnyway).toHaveBeenCalledTimes(1);
+      expect(onLoadAnyway).toHaveBeenCalledWith(false);
     });
 
     it('falls back to the generic message render when estimate_model_fit rejects', async () => {
@@ -840,6 +859,9 @@ describe('ChatBubble', () => {
         required_bytes: 1,
         available_bytes: 1,
         verdict: 'insufficient',
+        // Mild band: these cases assert the model-name copy, not the
+        // freeze-band presentation (covered in ErrorCard's own tests).
+        can_remember: true,
       });
       // Flush the now-ignored resolution; nothing should throw.
       await Promise.resolve();

@@ -110,6 +110,9 @@ export interface InstalledModel {
   id: string;
   /** Human-readable label (e.g. the GGUF file stem). */
   display_name: string;
+  /** Weights content address (SHA-256). Keys the remembered memory-fit override
+   *  list, so the Behavior tab can resolve a remembered sha back to this name. */
+  sha256: string;
   /** Weights file size in bytes, for the installed-list size column. */
   size_bytes: number;
   /** Quantisation label (e.g. "Q4_K_M"); empty when unknown. */

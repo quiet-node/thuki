@@ -3032,6 +3032,8 @@ pub fn run() {
             settings_commands::update_provider_field,
             settings_commands::add_openai_provider,
             settings_commands::remove_openai_provider,
+            settings_commands::remember_model_memory_fit,
+            settings_commands::forget_model_memory_fit,
             settings_commands::reset_config,
             settings_commands::reload_config_from_disk,
             settings_commands::get_corrupt_marker,

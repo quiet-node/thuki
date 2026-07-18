@@ -106,6 +106,10 @@ auto_save_conversations = true
 history_retention_days = -1
 # Set true after the one-shot auto-save chat notice is dismissed ("Acknowledge").
 auto_save_notice_acknowledged = false
+# Weights SHA-256 of models you chose to load past the mild "may not fit in
+# memory" warning. Managed from the warning card and removable in Settings;
+# freeze-risk loads still warn. Sanitized on load (64-hex only, deduped, capped).
+dismissed_memory_fit_models = []
 
 [debug]
 # Records every chat conversation, including its built-in web-search turns, to
@@ -254,6 +258,16 @@ Controls rewrite/replace dismiss behavior and whether the built-in engine may op
 | `auto_save_conversations` | `true` | Yes | — | — | On (default): each completed turn is written to local history without a bookmark click. Off: only an explicit Save persists the chat. Toggle from Settings › Behavior. |
 | `history_retention_days` | `-1` | Yes | n/a | `-1` or `1`..`3650` | How many days saved chats are kept by last activity (`updated_at`) before a startup or confirmed retention-change prune deletes them. Raise to keep history longer; lower to reclaim disk sooner; `-1` to keep forever. `0` and other out-of-range values reset to the default. Changing to a finite window asks for confirmation before write + prune. |
 | `auto_save_notice_acknowledged` | `false` | Yes | — | — | When false, after the first auto-saved turn Thuki can show a one-shot chat-header notice that chats are being saved. Set true on Acknowledge; the notice never returns. Independent of `auto_save_conversations`. |
+| `dismissed_memory_fit_models` | `[]` | Yes | — | up to 64 entries | Weights SHA-256 of models you chose to load past the mild "may not fit in memory" warning ("Don't warn me about this model again"). A listed model skips the warning only in the mild over-limit band; a freeze-risk load (estimate at or above free memory) still warns. Managed from the warning card and removable per row in Settings › Behavior. Sanitized on load: only 64-char lowercase-hex entries are kept, duplicates are dropped, and the list is capped FIFO at 64. |
+
+### Memory-fit gate
+
+Loading a model estimates its resident footprint and compares it to the memory free right now, refusing an un-forced load that would not fit. The two fractions below bound that decision; both are baked-in safety constants, not preferences.
+
+| Constant | Value | Tunable? | Why not tunable | Description |
+| :------- | :---- | :------- | :-------------- | :---------- |
+| `MODEL_FIT_HARD_BLOCK_FRACTION` | `3.00` | No | Defense-in-depth freeze bound | Freeze-band floor: at or above 3x free memory, the "may not fit" warning always fires and can never be suppressed by a per-model remember (`dismissed_memory_fit_models`), so the "Always allow this model" action is hidden and only the single force plus "Switch model" remain. A load needing at least triple the free memory is a gross over-commit that risks a non-pageable Metal wiring and a hard freeze. Below this floor a merely-over-the-ceiling load (up to 3x free RAM: the common "squeeze it out" case where the estimate is conservative and it usually still fits) can be remembered. A per-turn "Load once" still bypasses the floor; a persisted remember never does, because free RAM is dynamic. |
+| `MAX_DISMISSED_MEMORY_FIT_MODELS` | `64` | No | Bound on a user-editable list | Cap on how many remembered memory-fit overrides are kept in config and memory. Adding beyond the cap evicts the oldest entry FIFO, so repeated opt-ins can never grow the list without bound. |
 
 ### Web search
 

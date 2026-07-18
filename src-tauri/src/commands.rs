@@ -303,6 +303,15 @@ pub fn builtin_target(
 /// rather than blocking a load on a database hiccup. Coverage-off: pure wiring
 /// over tested functions; the gate logic lives in `models::memory`.
 ///
+/// `dismissed_shas` is the caller's snapshot of
+/// `behavior.dismissed_memory_fit_models` (read from managed config at the
+/// command boundary). The target's weights SHA-256 comes from the same manifest
+/// row that sizes it, so no extra lookup is needed; when that sha is in the
+/// list, the model is treated as `dismissed` and
+/// [`memory::apply_dismissed_override`] downgrades a MILD over-limit block to
+/// Proceed. A freeze-band block is never downgraded, so the remember can never
+/// defeat the guardrail on the dangerous case.
+///
 /// [`MemoryGate::Proceed`]: crate::models::memory::MemoryGate::Proceed
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn preflight_memory_gate(
@@ -312,14 +321,19 @@ pub(crate) fn preflight_memory_gate(
     model_id: &str,
     target_path: &std::path::Path,
     forced: bool,
+    dismissed_shas: &[String],
 ) -> crate::models::memory::MemoryGate {
     use crate::models::memory;
     // Read the live engine status once: it feeds both the already-loading bypass
     // and the resident-credit path, both applied inside `decide_load_gate`.
     let status = engine.current_status();
-    // Cannot size the target -> do not block on a database hiccup.
-    let target_weights = match crate::models::manifest::get(conn, model_id) {
-        Ok(Some(row)) => memory::model_weights_bytes(&row),
+    // Cannot size the target -> do not block on a database hiccup. The same row
+    // carries the weights SHA-256 that keys the remembered-override list.
+    let (target_weights, dismissed) = match crate::models::manifest::get(conn, model_id) {
+        Ok(Some(row)) => (
+            memory::model_weights_bytes(&row),
+            memory::is_model_remembered(&row.sha256, dismissed_shas),
+        ),
         _ => return memory::MemoryGate::Proceed,
     };
     // Map every installed row to (weights_bytes, weights blob path) so a
@@ -341,7 +355,7 @@ pub(crate) fn preflight_memory_gate(
     // Single source of the block decision, shared with `estimate_model_fit`'s
     // `build_model_fit_estimate` so the gate and the frontend fit affordance can
     // never diverge (issue #296). It folds in the already-loading bypass.
-    memory::decide_load_gate(
+    let gate = memory::decide_load_gate(
         &status.state,
         &status.model_path,
         target_weights,
@@ -350,7 +364,10 @@ pub(crate) fn preflight_memory_gate(
         target_path,
         &installed,
         forced,
-    )
+    );
+    // Apply the per-model remember: a mild over-limit block for a dismissed
+    // model becomes Proceed, while a freeze-band block always stands.
+    memory::apply_dismissed_override(gate, dismissed)
 }
 
 /// Parses llama-server's `GET /props` response and reports whether the
@@ -1631,6 +1648,11 @@ pub enum TransportError {
 /// swallow. When the model fits, or the exact model is already resident, the
 /// load proceeds exactly as before. Non-builtin routes ignore `policy`.
 ///
+/// `dismissed_shas` is the caller's snapshot of the remembered memory-fit
+/// overrides (`behavior.dismissed_memory_fit_models`), threaded to
+/// [`preflight_memory_gate`] on the builtin arm so a mild over-limit load of a
+/// remembered model proceeds silently while a freeze-band load still refuses.
+///
 /// [`Target`]: crate::engine::state::Target
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_llm_transport(
@@ -1642,6 +1664,7 @@ pub(crate) async fn resolve_llm_transport(
     num_ctx: u32,
     cancel_token: &CancellationToken,
     policy: OversizePolicy,
+    dismissed_shas: &[String],
 ) -> Result<LlmTransport, TransportError> {
     match route {
         ChatRoute::OllamaNative { endpoint } => Ok(LlmTransport::OllamaNative { endpoint }),
@@ -1675,6 +1698,7 @@ pub(crate) async fn resolve_llm_transport(
                     &model_id,
                     &target.model_path,
                     forced,
+                    dismissed_shas,
                 );
                 (target, gate)
             };
@@ -2500,6 +2524,7 @@ pub async fn ask_model(
                             &model_id,
                             &target.model_path,
                             allow_oversized == Some(true),
+                            &config.behavior.dismissed_memory_fit_models,
                         );
                         (target, gate)
                     },
@@ -6214,6 +6239,7 @@ mod tests {
             // Non-builtin route: the memory gate never runs, so the policy is
             // irrelevant here.
             OversizePolicy::Block { forced: false },
+            &[],
         )
         .await
         .unwrap();
@@ -6251,6 +6277,7 @@ mod tests {
             &CancellationToken::new(),
             // Non-builtin route: the memory gate never runs.
             OversizePolicy::Block { forced: false },
+            &[],
         )
         .await
         .unwrap();
@@ -6296,6 +6323,7 @@ mod tests {
             // Force past the memory gate: this test exercises the ensure path,
             // orthogonal to the gate (covered separately below).
             OversizePolicy::Block { forced: true },
+            &[],
         )
         .await
         .unwrap();
@@ -6335,6 +6363,7 @@ mod tests {
             // `builtin_target` errors on the missing row before the gate runs,
             // so the policy is irrelevant.
             OversizePolicy::Block { forced: false },
+            &[],
         )
         .await
         .unwrap_err();
@@ -6383,6 +6412,7 @@ mod tests {
             &CancellationToken::new(),
             // Force past the gate: this test exercises poisoned-lock recovery.
             OversizePolicy::Block { forced: true },
+            &[],
         )
         .await
         .unwrap();
@@ -6429,6 +6459,7 @@ mod tests {
             // Force past the gate: this asserts the spawn StartFailed mapping,
             // which a gate Block would preempt on a low-memory runner.
             OversizePolicy::Block { forced: true },
+            &[],
         )
         .await
         .unwrap_err();
@@ -6473,6 +6504,7 @@ mod tests {
                     // Force past the gate: this asserts the unload-preempt
                     // Superseded mapping, orthogonal to the memory gate.
                     OversizePolicy::Block { forced: true },
+                    &[],
                 )
                 .await
             })
@@ -6528,6 +6560,7 @@ mod tests {
                     // Force past the gate: this asserts the cancel-during-ensure
                     // mapping, orthogonal to the memory gate.
                     OversizePolicy::Block { forced: true },
+                    &[],
                 )
                 .await
             })
@@ -6585,6 +6618,7 @@ mod tests {
             DEFAULT_NUM_CTX,
             &CancellationToken::new(),
             OversizePolicy::Block { forced: false },
+            &[],
         )
         .await
         .unwrap_err();
@@ -6624,6 +6658,7 @@ mod tests {
             DEFAULT_NUM_CTX,
             &CancellationToken::new(),
             OversizePolicy::Block { forced: true },
+            &[],
         )
         .await
         .unwrap();
@@ -6667,6 +6702,7 @@ mod tests {
             DEFAULT_NUM_CTX,
             &CancellationToken::new(),
             OversizePolicy::SilentSkip,
+            &[],
         )
         .await
         .unwrap_err();
@@ -6708,6 +6744,7 @@ mod tests {
             DEFAULT_NUM_CTX,
             &CancellationToken::new(),
             OversizePolicy::Block { forced: true },
+            &[],
         )
         .await
         .unwrap();
@@ -6727,6 +6764,7 @@ mod tests {
             DEFAULT_NUM_CTX,
             &CancellationToken::new(),
             OversizePolicy::Block { forced: false },
+            &[],
         )
         .await
         .unwrap();
@@ -6741,6 +6779,7 @@ mod tests {
             DEFAULT_NUM_CTX,
             &CancellationToken::new(),
             OversizePolicy::SilentSkip,
+            &[],
         )
         .await
         .unwrap();

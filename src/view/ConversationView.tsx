@@ -111,10 +111,11 @@ interface ConversationViewProps {
   onSwitchModel?: (snapshot?: RetrySnapshot) => void;
   /** Replays a specific turn with the pre-load memory gate bypassed (issue
    *  #296), given that turn's immutable `RetrySnapshot`. Wrapped per-message
-   *  below and forwarded to each ChatBubble's ErrorCard as the "Load anyway"
-   *  action, so a later turn superseding an earlier one can never cause the
-   *  wrong turn to be replayed. */
-  onLoadAnyway?: (snapshot: RetrySnapshot) => void;
+   *  below and forwarded to each ChatBubble's ErrorCard, so a later turn
+   *  superseding an earlier one can never cause the wrong turn to be replayed.
+   *  `remember` carries the split "Load once" (`false`) vs "Always allow this
+   *  model" (`true`) choice from the card's action buttons. */
+  onLoadAnyway?: (snapshot: RetrySnapshot, remember: boolean) => void;
   /**
    * Called when the user clicks the minimize (yellow) dot.
    * Omit when there is no conversation to park (ask-bar mode).
@@ -440,7 +441,7 @@ export function ConversationView({
                 }
                 onLoadAnyway={
                   retrySnapshot && onLoadAnyway
-                    ? () => onLoadAnyway(retrySnapshot)
+                    ? (remember) => onLoadAnyway(retrySnapshot, remember)
                     : undefined
                 }
                 thinkingContent={msg.thinkingContent}

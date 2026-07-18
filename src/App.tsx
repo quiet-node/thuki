@@ -420,6 +420,7 @@ function App() {
     requiredBytes: number;
     availableBytes: number;
     ceilingFraction: number;
+    canRemember: boolean;
   } | null>(null);
 
   /**
@@ -3663,6 +3664,7 @@ function App() {
                 would_block: boolean;
                 required_bytes: number;
                 available_bytes: number;
+                can_remember: boolean;
               }
             | undefined;
           try {
@@ -3681,6 +3683,7 @@ function App() {
             updateErroredMessageModel(retry.assistantMessageId, model, {
               requiredBytes: estimate.required_bytes,
               availableBytes: estimate.available_bytes,
+              canRemember: estimate.can_remember,
             });
           } else {
             retryMessage(retry, model);
@@ -3748,6 +3751,29 @@ function App() {
   );
 
   /**
+   * "Load anyway" on the `InsufficientMemory` card. Replays the turn past the
+   * per-turn memory gate; when `remember` is true (the "Always allow this
+   * model" split action) it also persists the per-model override so the mild
+   * over-limit warning is suppressed on future loads. Persistence is
+   * fire-and-forget: a failed `remember_model_memory_fit` must never block the
+   * load the user just asked for, and a freeze-band load still re-warns because
+   * the backend never suppresses that band (and never offers the remember).
+   */
+  const handleLoadAnywayWithRemember = useCallback(
+    (snapshot: RetrySnapshot, remember: boolean) => {
+      if (remember) {
+        // The active model is always the one this card describes. The backend
+        // no-ops on an empty / uninstalled id, so no extra guard is needed.
+        void invoke('remember_model_memory_fit', {
+          modelId: activeModel,
+        }).catch(() => {});
+      }
+      retryMessageWithOversized(snapshot);
+    },
+    [activeModel, retryMessageWithOversized],
+  );
+
+  /**
    * Props for the ambient memory-gate warning strip (issue #296), or `null`
    * when there is nothing to warn about. Suppressed while the download strip
    * is showing, same one-strip-at-a-time rule `liveCapabilityConflictMessage`
@@ -3766,12 +3792,13 @@ function App() {
           requiredBytes: autoPrimeSkipped.requiredBytes,
           availableBytes: autoPrimeSkipped.availableBytes,
           ceilingFraction: autoPrimeSkipped.ceilingFraction,
+          canRemember: autoPrimeSkipped.canRemember,
           onSwitchModel: () => handleSwitchModelFromError(),
           // "Load anyway" (issue #296): force-prime the model past the memory
           // gate. `force: true` routes through the SAME `preflight_memory_gate`
           // decision the auto-prime runs, admitting the load the user just
-          // consented to.
-          onLoadAnyway: () => {
+          // consented to. `remember` carries the stage-2 opt-in.
+          onLoadAnyway: (remember: boolean) => {
             // why: the user has consented, so the affordance is dismissed
             // optimistically - clear the ambient warning synchronously BEFORE
             // firing the IPC so the strip disappears on the click, with no wait
@@ -3782,7 +3809,16 @@ function App() {
             // never by resurrecting this strip. `invoke` can reject (IO
             // boundary), so the rejection is swallowed rather than left
             // unhandled.
+            const modelId = autoPrimeSkipped.modelId;
             setAutoPrimeSkipped(null);
+            // Persist the per-model remember when the box was checked, before
+            // the force-load. Fire-and-forget: a persist failure must never
+            // block the load the user just consented to.
+            if (remember) {
+              void invoke('remember_model_memory_fit', { modelId }).catch(
+                () => {},
+              );
+            }
             void invoke('warm_up_model', { force: true }).catch(() => {});
           },
         }
@@ -3871,12 +3907,14 @@ function App() {
         required_bytes: number;
         available_bytes: number;
         ceiling_fraction: number;
+        can_remember: boolean;
       }>('warmup:builtin-skipped', ({ payload }) => {
         setAutoPrimeSkipped({
           modelId: payload.model_id,
           requiredBytes: payload.required_bytes,
           availableBytes: payload.available_bytes,
           ceilingFraction: payload.ceiling_fraction,
+          canRemember: payload.can_remember,
         });
       });
       // Settings cleared SQLite history: drop local conversation identity only
@@ -4268,7 +4306,7 @@ function App() {
                                 }
                                 isModelPickerOpen={isModelPickerOpen}
                                 onSwitchModel={handleSwitchModelFromError}
-                                onLoadAnyway={retryMessageWithOversized}
+                                onLoadAnyway={handleLoadAnywayWithRemember}
                                 onMinimize={handleMinimize}
                                 onExportToggle={
                                   messages.length > 0

@@ -76,7 +76,11 @@ export interface Message {
    * rendering them forever if that refetch rejects). Absent on the initial
    * failure, where `ChatBubble` fetches the figures itself.
    */
-  memoryFit?: { requiredBytes: number; availableBytes: number };
+  memoryFit?: {
+    requiredBytes: number;
+    availableBytes: number;
+    canRemember: boolean;
+  };
 }
 
 /** Raw streaming chunk payload emitted from the Rust chat backend. */
@@ -1035,7 +1039,11 @@ export function useModel(
     (
       assistantMessageId: string,
       modelName: string,
-      memoryFit: { requiredBytes: number; availableBytes: number },
+      memoryFit: {
+        requiredBytes: number;
+        availableBytes: number;
+        canRemember: boolean;
+      },
     ) => {
       setMessages((prev) =>
         prev.map((message) =>

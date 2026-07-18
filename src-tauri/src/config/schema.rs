@@ -317,6 +317,16 @@ pub struct BehaviorSection {
     /// When `true`, the one-shot auto-save chat notice has been dismissed and
     /// should not show again. Default `false` until the user acknowledges it.
     pub auto_save_notice_acknowledged: bool,
+    /// Weights SHA-256 (content-addressed blob id) of models the user chose to
+    /// load over the mild memory-fit limit without being re-warned. A model
+    /// listed here suppresses the "may not fit" card only in the mild
+    /// over-limit band; a freeze-band load (estimate at or above available
+    /// memory) still warns regardless. Managed via the warning card's opt-in
+    /// and removable per row in Settings. Not a flat `set_config_field` key:
+    /// the loader sanitizes it and the dedicated add/remove commands own the
+    /// writes, so it is intentionally absent from `ALLOWED_FIELDS`.
+    #[serde(default)]
+    pub dismissed_memory_fit_models: Vec<String>,
 }
 
 impl Default for BehaviorSection {
@@ -329,6 +339,7 @@ impl Default for BehaviorSection {
             auto_save_conversations: DEFAULT_AUTO_SAVE_CONVERSATIONS,
             history_retention_days: DEFAULT_HISTORY_RETENTION_DAYS,
             auto_save_notice_acknowledged: DEFAULT_AUTO_SAVE_NOTICE_ACKNOWLEDGED,
+            dismissed_memory_fit_models: Vec::new(),
         }
     }
 }

@@ -33,8 +33,8 @@ use super::defaults::{
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX,
     DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT,
     DEFAULT_TRACE_RETENTION_DAYS, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS,
-    DEFAULT_UPDATER_MANIFEST_URL, HISTORY_RETENTION_FOREVER, SLASH_COMMAND_PROMPT_APPENDIX,
-    TRACE_RETENTION_FOREVER,
+    DEFAULT_UPDATER_MANIFEST_URL, HISTORY_RETENTION_FOREVER, MAX_DISMISSED_MEMORY_FIT_MODELS,
+    SLASH_COMMAND_PROMPT_APPENDIX, TRACE_RETENTION_FOREVER,
 };
 use super::error::ConfigError;
 use super::schema::AppConfig;
@@ -221,6 +221,12 @@ pub(crate) fn resolve(config: &mut AppConfig) {
         HISTORY_RETENTION_FOREVER,
         BOUNDS_HISTORY_RETENTION_DAYS,
         "behavior.history_retention_days",
+    );
+    // The remembered memory-fit override list is user-editable TOML: drop any
+    // entry that is not a well-formed weights SHA-256, dedupe, and cap the
+    // length so a hand-edited file can never inject garbage or grow unbounded.
+    config.behavior.dismissed_memory_fit_models = sanitize_dismissed_memory_fit_models(
+        std::mem::take(&mut config.behavior.dismissed_memory_fit_models),
     );
 
     // Debug section: trace_enabled is a boolean (any value valid); the
@@ -485,6 +491,61 @@ fn clamp_font_weight(value: &mut u32, default: u32, field: &str) {
         );
         *value = default;
     }
+}
+
+/// True when `sha` is a well-formed weights SHA-256 blob id: exactly 64
+/// lowercase hexadecimal characters. The content-addressed blob store keys its
+/// files on this digest, so only strings that could name a real blob are
+/// accepted; anything else (wrong length, uppercase, non-hex) is rejected. Used
+/// both to sanitize the loaded list and to normalize an id before it is added.
+pub(crate) fn is_valid_weights_sha(sha: &str) -> bool {
+    sha.len() == 64
+        && sha
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Sanitizes a user-supplied `dismissed_memory_fit_models` list: keeps only
+/// entries that are well-formed weights SHA-256 ids (see [`is_valid_weights_sha`]),
+/// removes duplicates preserving the first occurrence, then caps the length to
+/// [`MAX_DISMISSED_MEMORY_FIT_MODELS`] by dropping the oldest (front) entries so
+/// the most recently added survive. Never panics: any malformed input simply
+/// yields a shorter (possibly empty) list.
+pub(crate) fn sanitize_dismissed_memory_fit_models(raw: Vec<String>) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::with_capacity(raw.len().min(MAX_DISMISSED_MEMORY_FIT_MODELS));
+    for entry in raw {
+        if is_valid_weights_sha(&entry) && !seen.contains(&entry) {
+            seen.push(entry);
+        }
+    }
+    // Cap keeping the most recent: drop from the front (oldest) so a list that
+    // grew past the cap evicts FIFO.
+    if seen.len() > MAX_DISMISSED_MEMORY_FIT_MODELS {
+        let overflow = seen.len() - MAX_DISMISSED_MEMORY_FIT_MODELS;
+        seen.drain(0..overflow);
+    }
+    seen
+}
+
+/// Returns `existing` with `sha` appended as a remembered memory-fit override,
+/// then re-sanitized (see [`sanitize_dismissed_memory_fit_models`]) so the add
+/// is idempotent (a sha already present is not duplicated) and the list stays
+/// capped FIFO. The incoming `sha` is lowercased and trimmed first so a caller
+/// passing an upper-case or padded digest still lands a valid entry; a `sha`
+/// that is not a valid weights digest is dropped by the sanitize pass and
+/// leaves the list unchanged. Pure and unit-tested.
+pub(crate) fn with_dismissed_model_added(mut existing: Vec<String>, sha: &str) -> Vec<String> {
+    existing.push(sha.trim().to_ascii_lowercase());
+    sanitize_dismissed_memory_fit_models(existing)
+}
+
+/// Returns `existing` with every entry equal to `sha` removed (keyed by the
+/// digest so an orphaned entry whose model is no longer installed is still
+/// removable). The incoming `sha` is lowercased and trimmed to match the stored
+/// form. Pure and unit-tested.
+pub(crate) fn with_dismissed_model_removed(existing: Vec<String>, sha: &str) -> Vec<String> {
+    let target = sha.trim().to_ascii_lowercase();
+    existing.into_iter().filter(|s| *s != target).collect()
 }
 
 fn clamp_u32(value: &mut u32, bounds: (u32, u32), default: u32, field: &str) {

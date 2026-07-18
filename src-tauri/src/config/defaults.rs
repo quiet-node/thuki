@@ -520,6 +520,32 @@ pub const MODEL_FIT_COMFORT_FRACTION: f64 = 0.60;
 /// only clearly above the ceiling and a user `force` always bypasses it.
 pub const MODEL_FIT_CEILING_FRACTION: f64 = 0.80;
 
+/// Freeze-band floor: the fit ratio (estimated footprint over live available
+/// memory) at or above which the memory warning ALWAYS fires and can never be
+/// suppressed by a per-model "remember" override. At `3.00` the estimate needs
+/// at least triple the memory the machine can hand out right now, a gross
+/// over-commit that would force macOS to wire non-pageable Metal memory it does
+/// not have, risking a hard freeze and a reboot. Below this floor a load merely
+/// over the mild ceiling (needing up to 3x free RAM: the common "squeeze it
+/// out" case where the estimate is conservative and it usually still fits) is
+/// offered the per-model "Always allow this model" override, so the user is not
+/// re-warned. A per-turn `force` ("load anyway") still bypasses this floor, but
+/// a persisted remember never does: free RAM is dynamic, so a model that fit
+/// when RAM was free must re-warn if RAM later drops it into this band.
+///
+/// Not user-tunable: a defense-in-depth freeze bound on the most dangerous
+/// load, not a preference.
+pub const MODEL_FIT_HARD_BLOCK_FRACTION: f64 = 3.00;
+
+/// Cap on the number of remembered memory-fit overrides
+/// (`behavior.dismissed_memory_fit_models`) kept in config and memory. Beyond
+/// this the oldest entry is evicted FIFO when a new one is added, so the list
+/// can never grow without bound from repeated opt-ins.
+///
+/// Not user-tunable: a defense-in-depth bound on a user-editable list, not a
+/// preference.
+pub const MAX_DISMISSED_MEMORY_FIT_MODELS: usize = 64;
+
 /// Maximum accepted byte length for a Hugging Face search query before it is
 /// sent upstream. Defense-in-depth bound on attacker-influenced input: the
 /// query reaches the fixed Hub host (no SSRF) and is percent-encoded by the

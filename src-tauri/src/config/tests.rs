@@ -12,6 +12,7 @@
 
 use std::path::PathBuf;
 
+use super::defaults::MAX_DISMISSED_MEMORY_FIT_MODELS;
 use super::defaults::{
     DEFAULT_ACTIVE_PROVIDER, DEFAULT_AUTO_CLOSE, DEFAULT_AUTO_REPLACE,
     DEFAULT_AUTO_SAVE_CONVERSATIONS, DEFAULT_AUTO_SAVE_NOTICE_ACKNOWLEDGED, DEFAULT_AUTO_SEARCH,
@@ -27,7 +28,10 @@ use super::defaults::{
     SLASH_COMMAND_PROMPT_APPENDIX,
 };
 use super::error::ConfigError;
-use super::loader::{compose_system_prompt, load_from_path, resolve};
+use super::loader::{
+    compose_system_prompt, is_valid_weights_sha, load_from_path, resolve,
+    sanitize_dismissed_memory_fit_models, with_dismissed_model_added, with_dismissed_model_removed,
+};
 use super::migrate::{attach_legacy_active_model, toml_has_providers};
 use super::schema::{
     ollama_provider, openai_provider, AppConfig, BehaviorSection, DebugSection, InferenceSection,
@@ -1152,6 +1156,10 @@ fn behavior_section_default_matches_compiled_defaults() {
         b.auto_save_notice_acknowledged,
         DEFAULT_AUTO_SAVE_NOTICE_ACKNOWLEDGED
     );
+    assert!(
+        b.dismissed_memory_fit_models.is_empty(),
+        "dismissed memory-fit list defaults to empty"
+    );
 }
 
 #[test]
@@ -1176,6 +1184,7 @@ fn app_config_default_includes_behavior_section_with_compiled_defaults() {
         c.behavior.auto_save_notice_acknowledged,
         DEFAULT_AUTO_SAVE_NOTICE_ACKNOWLEDGED
     );
+    assert!(c.behavior.dismissed_memory_fit_models.is_empty());
 }
 
 #[test]
@@ -1212,6 +1221,145 @@ fn behavior_search_notice_acknowledged_round_trips_through_load() {
     std::fs::write(&path, "[behavior]\nsearch_notice_acknowledged = true\n").unwrap();
     let loaded = load_from_path(&path).unwrap();
     assert!(loaded.behavior.search_notice_acknowledged);
+}
+
+/// A valid 64-char lowercase-hex weights SHA built from a single hex nibble,
+/// so distinct test entries stay easy to read and compare.
+fn sha(nibble: char) -> String {
+    std::iter::repeat(nibble).take(64).collect()
+}
+
+#[test]
+fn is_valid_weights_sha_accepts_only_64_lowercase_hex() {
+    assert!(is_valid_weights_sha(&sha('a')));
+    assert!(is_valid_weights_sha(&sha('0')));
+    assert!(is_valid_weights_sha(&sha('f')));
+    // Too short / too long.
+    assert!(!is_valid_weights_sha(&"a".repeat(63)));
+    assert!(!is_valid_weights_sha(&"a".repeat(65)));
+    // Uppercase hex is rejected (blob ids are lowercase).
+    assert!(!is_valid_weights_sha(&"A".repeat(64)));
+    // Non-hex character.
+    assert!(!is_valid_weights_sha(&"g".repeat(64)));
+    // Empty.
+    assert!(!is_valid_weights_sha(""));
+}
+
+#[test]
+fn sanitize_dismissed_keeps_valid_drops_invalid_and_dedupes() {
+    let raw = vec![
+        sha('a'),
+        "not-a-sha".to_string(),
+        sha('a'),       // duplicate of the first
+        "A".repeat(64), // uppercase, dropped
+        sha('b'),
+    ];
+    let cleaned = sanitize_dismissed_memory_fit_models(raw);
+    // First occurrence of `a` kept, duplicate collapsed, invalids dropped,
+    // order preserved.
+    assert_eq!(cleaned, vec![sha('a'), sha('b')]);
+}
+
+#[test]
+fn sanitize_dismissed_empty_is_ok() {
+    assert!(sanitize_dismissed_memory_fit_models(Vec::new()).is_empty());
+}
+
+#[test]
+fn sanitize_dismissed_caps_length_keeping_most_recent() {
+    // Build MAX + 3 distinct valid shas; the three oldest (front) must drop.
+    let over = MAX_DISMISSED_MEMORY_FIT_MODELS + 3;
+    let raw: Vec<String> = (0..over).map(|i| format!("{i:0>64x}")).collect();
+    let cleaned = sanitize_dismissed_memory_fit_models(raw.clone());
+    assert_eq!(cleaned.len(), MAX_DISMISSED_MEMORY_FIT_MODELS);
+    // The most recent MAX entries survive; the first three are evicted.
+    assert_eq!(cleaned, raw[3..].to_vec());
+}
+
+#[test]
+fn with_dismissed_added_is_idempotent_and_normalizes_case() {
+    let base = vec![sha('a')];
+    // Adding an existing sha does not duplicate it.
+    assert_eq!(with_dismissed_model_added(base.clone(), &sha('a')), base);
+    // A new sha appends at the end.
+    assert_eq!(
+        with_dismissed_model_added(base.clone(), &sha('b')),
+        vec![sha('a'), sha('b')]
+    );
+    // An upper-case / padded digest is normalized before it lands.
+    assert_eq!(
+        with_dismissed_model_added(Vec::new(), &format!("  {}  ", "A".repeat(64))),
+        vec![sha('a')]
+    );
+    // An invalid digest is dropped by the sanitize pass, leaving the list as-is.
+    assert_eq!(with_dismissed_model_added(base.clone(), "not-a-sha"), base);
+}
+
+#[test]
+fn with_dismissed_added_evicts_oldest_at_cap() {
+    let full: Vec<String> = (0..MAX_DISMISSED_MEMORY_FIT_MODELS)
+        .map(|i| format!("{i:0>64x}"))
+        .collect();
+    let after = with_dismissed_model_added(full.clone(), &sha('f'));
+    assert_eq!(after.len(), MAX_DISMISSED_MEMORY_FIT_MODELS);
+    // Oldest (front) evicted; the new sha is now last.
+    assert_eq!(after.first(), full.get(1));
+    assert_eq!(after.last(), Some(&sha('f')));
+}
+
+#[test]
+fn with_dismissed_removed_deletes_by_sha() {
+    let base = vec![sha('a'), sha('b')];
+    assert_eq!(
+        with_dismissed_model_removed(base.clone(), &sha('a')),
+        vec![sha('b')]
+    );
+    // Case-insensitive / trimmed match on the removal key.
+    assert_eq!(
+        with_dismissed_model_removed(base.clone(), &format!(" {} ", "B".repeat(64))),
+        vec![sha('a')]
+    );
+    // Removing an absent sha is a no-op.
+    assert_eq!(with_dismissed_model_removed(base.clone(), &sha('c')), base);
+}
+
+#[test]
+fn behavior_dismissed_memory_fit_models_round_trips_through_load() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    std::fs::write(
+        &path,
+        format!(
+            "[behavior]\ndismissed_memory_fit_models = [\"{}\", \"{}\"]\n",
+            sha('a'),
+            sha('b')
+        ),
+    )
+    .unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(
+        loaded.behavior.dismissed_memory_fit_models,
+        vec![sha('a'), sha('b')]
+    );
+}
+
+#[test]
+fn behavior_dismissed_memory_fit_models_sanitized_on_load() {
+    let dir = fresh_temp_dir();
+    let path = config_path_in(&dir);
+    // A hand-edited file with a valid sha, an invalid entry, and a duplicate:
+    // the loader must drop the junk, dedupe, and never panic.
+    std::fs::write(
+        &path,
+        format!(
+            "[behavior]\ndismissed_memory_fit_models = [\"{}\", \"garbage\", \"{}\"]\n",
+            sha('a'),
+            sha('a')
+        ),
+    )
+    .unwrap();
+    let loaded = load_from_path(&path).unwrap();
+    assert_eq!(loaded.behavior.dismissed_memory_fit_models, vec![sha('a')]);
 }
 
 #[test]

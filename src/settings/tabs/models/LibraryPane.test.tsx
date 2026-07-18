@@ -77,6 +77,7 @@ const BASE_CONFIG: RawAppConfig = {
     auto_save_conversations: true,
     history_retention_days: -1,
     auto_save_notice_acknowledged: false,
+    dismissed_memory_fit_models: [],
   },
   debug: { trace_enabled: false, trace_retention_days: 7 },
 };
@@ -104,6 +105,7 @@ function makeConfig(builtinModel: string): RawAppConfig {
 
 const GEMMA: InstalledModel = {
   id: 'org/gemma:gemma.gguf',
+  sha256: 'a'.repeat(64),
   size_bytes: 2_489_757_856,
   // A vision projector healed from the registry: folded into the shown total.
   mmproj_bytes: 500_000_000,
@@ -118,6 +120,7 @@ const GEMMA: InstalledModel = {
 // that exercises the "RAM unknown" / weights-only / maker-fallback branches.
 const QWEN: InstalledModel = {
   id: 'org/qwen:qwen.gguf',
+  sha256: 'b'.repeat(64),
   display_name: 'qwen',
   size_bytes: 9_000_000_000,
   quant: '',

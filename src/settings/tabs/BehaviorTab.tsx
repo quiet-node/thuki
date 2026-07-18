@@ -25,6 +25,7 @@ import {
   Toggle,
 } from '../components';
 import { DrawCheckIcon } from '../../components/DrawCheckIcon';
+import { DismissedMemoryFitSection } from './DismissedMemoryFitSection';
 import { SaveField } from '../components/SaveField';
 import { useDebouncedSave } from '../hooks/useDebouncedSave';
 import { configHelp } from '../configHelpers';
@@ -664,6 +665,8 @@ export function BehaviorTab({
           ) : null}
         </SettingRow>
       </Section>
+
+      <DismissedMemoryFitSection config={config} onSaved={onSaved} />
 
       <div className={styles.devSection}>
         <button

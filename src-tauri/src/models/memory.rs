@@ -35,7 +35,8 @@ use serde::Serialize;
 
 use super::manifest::InstalledModel;
 use crate::config::defaults::{
-    MODEL_FIT_CEILING_FRACTION, MODEL_FIT_COMFORT_FRACTION, RUNTIME_OVERHEAD_GB,
+    MODEL_FIT_CEILING_FRACTION, MODEL_FIT_COMFORT_FRACTION, MODEL_FIT_HARD_BLOCK_FRACTION,
+    RUNTIME_OVERHEAD_GB,
 };
 
 /// Bytes in one gibibyte (2^30), the unit `RUNTIME_OVERHEAD_GB` is expressed in.
@@ -127,6 +128,54 @@ pub fn assess_fit(required_bytes: u64, available_bytes: u64) -> MemoryFit {
         MemoryFit::Tight
     } else {
         MemoryFit::Comfortable
+    }
+}
+
+/// True when `required_bytes` lands in the freeze band: at or above
+/// [`MODEL_FIT_HARD_BLOCK_FRACTION`] times `available_bytes` (the estimate needs
+/// at least that multiple of the memory free right now). A load in this band can
+/// wire non-pageable Metal memory the machine does not have and hard-freeze
+/// macOS, so the memory warning here can never be suppressed by a per-model
+/// remember (only a per-turn `force` still bypasses it, upstream). The threshold
+/// lives entirely in the constant so this predicate can never drift from its
+/// value.
+///
+/// `available_bytes == 0` is a failed/unknown reader, not a real over-commit,
+/// so it is never treated as the freeze band; the gate fails open on a 0 read
+/// elsewhere and this keeps that decision coherent.
+pub fn is_freeze_band(required_bytes: u64, available_bytes: u64) -> bool {
+    if available_bytes == 0 {
+        return false;
+    }
+    required_bytes as f64 >= MODEL_FIT_HARD_BLOCK_FRACTION * available_bytes as f64
+}
+
+/// True when `sha` (a model's weights SHA-256) is present in `dismissed_shas`,
+/// the caller's snapshot of `behavior.dismissed_memory_fit_models`. The single
+/// membership predicate the admission gate consults to decide whether a mild
+/// over-limit load was already remembered by the user.
+pub fn is_model_remembered(sha: &str, dismissed_shas: &[String]) -> bool {
+    dismissed_shas.iter().any(|entry| entry == sha)
+}
+
+/// Applies a per-model "remember this model" override to a gate outcome.
+///
+/// The remember only rescues the MILD over-limit band: a [`MemoryGate::Block`]
+/// whose figures are below the freeze band (see [`is_freeze_band`]) is
+/// downgraded to [`MemoryGate::Proceed`] when the model is `dismissed`. A block
+/// in the freeze band is returned unchanged even when `dismissed`, because free
+/// RAM is dynamic and a gross over-commit must always re-warn (the reliability
+/// floor). [`MemoryGate::Proceed`] passes through untouched: a forced load and
+/// a comfortable/tight fit both already resolved to Proceed upstream, so there
+/// is nothing to override. Pure and unit-tested; this is the single place the
+/// dismissed flag changes a load decision.
+pub fn apply_dismissed_override(gate: MemoryGate, dismissed: bool) -> MemoryGate {
+    match gate {
+        MemoryGate::Block {
+            required_bytes,
+            available_bytes,
+        } if dismissed && !is_freeze_band(required_bytes, available_bytes) => MemoryGate::Proceed,
+        other => other,
     }
 }
 
@@ -399,6 +448,13 @@ pub struct ModelFitEstimate {
     /// would still admit (a resident-exact or already-loading model), so a
     /// control decision must never be derived from `verdict`.
     pub would_block: bool,
+    /// Whether a per-model "remember" could suppress this warning: true unless
+    /// the load is in the freeze band ([`is_freeze_band`]). The single source of
+    /// truth for the frontend's "Always allow this model" action, so the
+    /// freeze-floor fraction is never duplicated as a magic number on the
+    /// frontend. A freeze-band load is never remember-able, so that action is
+    /// hidden for it.
+    pub can_remember: bool,
 }
 
 /// Pure core of [`estimate_model_fit`]: assembles the full [`ModelFitEstimate`]
@@ -456,6 +512,10 @@ pub fn build_model_fit_estimate(
         available_bytes: effective_available,
         verdict: assess_fit(required_bytes, effective_available),
         would_block,
+        // Computed against the SAME credited available the gate blocks on, so the
+        // remember action is hidden for exactly the loads
+        // `apply_dismissed_override` refuses to suppress.
+        can_remember: !is_freeze_band(required_bytes, effective_available),
     }
 }
 
@@ -1001,6 +1061,8 @@ mod tests {
         assert_eq!(estimate.available_bytes, 24 * BYTES_PER_GIB);
         assert_eq!(estimate.verdict, MemoryFit::Comfortable);
         assert!(!estimate.would_block);
+        // Well under the freeze floor, so a remember could suppress it.
+        assert!(estimate.can_remember);
     }
 
     #[test]
@@ -1105,6 +1167,25 @@ mod tests {
         );
         assert_eq!(estimate.verdict, MemoryFit::Insufficient);
         assert!(estimate.would_block);
+        // 22 GiB needed / 10 GiB free = ratio 2.20: over the ceiling (so it
+        // blocks) but under the 3x freeze floor, so it stays remember-able.
+        // `would_block` and `can_remember` are independent by design.
+        assert!(estimate.can_remember);
+
+        // Push the same load into the freeze band (42 GiB needed / 10 GiB free
+        // = ratio 4.20): still blocked, and no longer remember-able, so the
+        // frontend hides the "Always allow this model" action.
+        let freeze = build_model_fit_estimate(
+            "loaded",
+            "/blobs/other",
+            40 * BYTES_PER_GIB,
+            10 * BYTES_PER_GIB,
+            None,
+            &target,
+            &[],
+        );
+        assert!(freeze.would_block);
+        assert!(!freeze.can_remember);
     }
 
     #[test]
@@ -1194,5 +1275,120 @@ mod tests {
             matches!(gate, MemoryGate::Block { .. })
         );
         assert!(estimate.would_block);
+    }
+
+    #[test]
+    fn is_freeze_band_triggers_at_or_above_triple_available() {
+        // Ratio exactly 3.00 (required == 3x available) is the freeze floor
+        // (>=, so the boundary itself is freeze).
+        assert!(is_freeze_band(30 * BYTES_PER_GIB, 10 * BYTES_PER_GIB));
+        // Above 3.00.
+        assert!(is_freeze_band(40 * BYTES_PER_GIB, 10 * BYTES_PER_GIB));
+        // Just under the floor (ratio 2.90) is still rememberable.
+        assert!(!is_freeze_band(29 * BYTES_PER_GIB, 10 * BYTES_PER_GIB));
+        // Mid-band (ratio 2.00) and the user's "squeeze it out" case (1.10):
+        // over the mild ceiling but below the freeze floor, so NOT freeze.
+        assert!(!is_freeze_band(20 * BYTES_PER_GIB, 10 * BYTES_PER_GIB));
+        assert!(!is_freeze_band(11 * BYTES_PER_GIB, 10 * BYTES_PER_GIB));
+        // A failed/unknown reader (0 available) is never treated as freeze.
+        assert!(!is_freeze_band(30 * BYTES_PER_GIB, 0));
+    }
+
+    #[test]
+    fn is_model_remembered_matches_list_membership() {
+        let sha_a = "a".repeat(64);
+        let sha_b = "b".repeat(64);
+        let list = vec![sha_a.clone()];
+        assert!(is_model_remembered(&sha_a, &list));
+        assert!(!is_model_remembered(&sha_b, &list));
+        // Empty list: nothing is remembered.
+        assert!(!is_model_remembered(&sha_a, &[]));
+    }
+
+    #[test]
+    fn apply_dismissed_override_proceeds_pass_through() {
+        // Proceed (forced load, or a comfortable/tight fit) is never touched,
+        // regardless of the dismissed flag.
+        assert_eq!(
+            apply_dismissed_override(MemoryGate::Proceed, true),
+            MemoryGate::Proceed
+        );
+        assert_eq!(
+            apply_dismissed_override(MemoryGate::Proceed, false),
+            MemoryGate::Proceed
+        );
+    }
+
+    #[test]
+    fn apply_dismissed_override_rescues_mild_band_only_when_dismissed() {
+        // The user's "squeeze it out" case: over the mild ceiling at ratio 1.10
+        // (11 needed / 10 free), below the 3x freeze floor. Dismissed
+        // downgrades to Proceed; not-dismissed still blocks.
+        let mild = MemoryGate::Block {
+            required_bytes: 11 * BYTES_PER_GIB,
+            available_bytes: 10 * BYTES_PER_GIB,
+        };
+        assert_eq!(apply_dismissed_override(mild, true), MemoryGate::Proceed);
+        assert_eq!(apply_dismissed_override(mild, false), mild);
+
+        // The newly-widened middle: ratio 2.00 is still under the 3x floor, so
+        // it is rememberable too.
+        let mid = MemoryGate::Block {
+            required_bytes: 20 * BYTES_PER_GIB,
+            available_bytes: 10 * BYTES_PER_GIB,
+        };
+        assert_eq!(apply_dismissed_override(mid, true), MemoryGate::Proceed);
+        assert_eq!(apply_dismissed_override(mid, false), mid);
+    }
+
+    #[test]
+    fn apply_dismissed_override_never_rescues_freeze_band() {
+        // RELIABILITY FLOOR (issue: memory-fit override): a freeze-band block
+        // (ratio >= 3x free RAM, here 30 needed / 10 free) must stand even
+        // when the model is dismissed. The remember can never defeat the
+        // guardrail on the dangerous case.
+        let freeze = MemoryGate::Block {
+            required_bytes: 30 * BYTES_PER_GIB,
+            available_bytes: 10 * BYTES_PER_GIB,
+        };
+        assert_eq!(apply_dismissed_override(freeze, true), freeze);
+        assert_eq!(apply_dismissed_override(freeze, false), freeze);
+    }
+
+    #[test]
+    fn dismissed_override_end_to_end_bands() {
+        let target = PathBuf::from("/blobs/target");
+        let available = 10 * BYTES_PER_GIB;
+        // Comfortable: well under the ceiling -> Proceed regardless of dismissed.
+        let comfy = evaluate_load_gate(BYTES_PER_GIB, available, None, &target, &[], false);
+        assert_eq!(apply_dismissed_override(comfy, false), MemoryGate::Proceed);
+
+        // Mild band, the "squeeze it out" case: weights sized so required lands
+        // just OVER available but far below the 3x freeze floor.
+        // `estimate_required_bytes` adds RUNTIME_OVERHEAD_GB (2 GiB), so 9 GiB
+        // weights -> 11 GiB required / 10 GiB available = ratio 1.10.
+        let mild_weights = 9 * BYTES_PER_GIB;
+        let mild = evaluate_load_gate(mild_weights, available, None, &target, &[], false);
+        // Unforced + not dismissed blocks; dismissed rescues it.
+        assert!(matches!(mild, MemoryGate::Block { .. }));
+        assert_eq!(apply_dismissed_override(mild, false), mild);
+        assert_eq!(apply_dismissed_override(mild, true), MemoryGate::Proceed);
+
+        // Middle of the widened rememberable band: 18 GiB weights -> 20 GiB
+        // required / 10 GiB available = ratio 2.00, still under the floor.
+        let mid = evaluate_load_gate(18 * BYTES_PER_GIB, available, None, &target, &[], false);
+        assert!(matches!(mid, MemoryGate::Block { .. }));
+        assert_eq!(apply_dismissed_override(mid, true), MemoryGate::Proceed);
+
+        // Freeze band: 40 GiB weights -> 42 GiB required / 10 GiB available =
+        // ratio 4.20, at or above the 3x floor.
+        let freeze = evaluate_load_gate(40 * BYTES_PER_GIB, available, None, &target, &[], false);
+        assert!(matches!(freeze, MemoryGate::Block { .. }));
+        // Dismissed still blocks in the freeze band.
+        assert_eq!(apply_dismissed_override(freeze, true), freeze);
+        // Forced proceeds upstream, and the override passes Proceed through.
+        let forced = evaluate_load_gate(40 * BYTES_PER_GIB, available, None, &target, &[], true);
+        assert_eq!(forced, MemoryGate::Proceed);
+        assert_eq!(apply_dismissed_override(forced, true), MemoryGate::Proceed);
     }
 }
