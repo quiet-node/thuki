@@ -53,6 +53,12 @@ export function DismissedMemoryFitSection({
   const shas = config.behavior.dismissed_memory_fit_models;
   const [installed, setInstalled] = useState<InstalledModel[]>([]);
 
+  // Key the manifest fetch on the remembered digests themselves, not on the
+  // array identity: the parent replaces the whole config object on every
+  // `config-updated`, so depending on `shas` would re-issue this IPC on
+  // unrelated setting changes.
+  const shaKey = shas.join(',');
+
   // Load the installed manifest so a remembered sha can be shown as a model
   // name. Re-run when the remembered set changes (a newly remembered model may
   // not have been in the first fetch); a failed or non-array read leaves the
@@ -61,7 +67,7 @@ export function DismissedMemoryFitSection({
     void invoke<InstalledModel[]>('list_installed_models')
       .then((rows) => setInstalled(Array.isArray(rows) ? rows : []))
       .catch(() => setInstalled([]));
-  }, [shas]);
+  }, [shaKey]);
 
   /**
    * Re-arms the memory warning for one model by removing its sha, then lifts
@@ -96,7 +102,11 @@ export function DismissedMemoryFitSection({
             <motion.div
               key={sha}
               className={styles.providerRow}
-              initial={false}
+              // Rows added while Settings is open animate open as well as
+              // closed; `initial={false}` on the AnimatePresence above keeps
+              // the first paint of an existing list from animating.
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
               transition={{ duration: 0.2, ease: HOUSE_EASE }}
               style={{ overflow: 'hidden' }}
