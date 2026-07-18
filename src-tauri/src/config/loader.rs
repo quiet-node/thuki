@@ -18,6 +18,7 @@
 //! fatal (the app cannot boot in a writable-hostile environment and the user
 //! cannot fix that from the UI).
 
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -511,20 +512,31 @@ pub(crate) fn is_valid_weights_sha(sha: &str) -> bool {
 /// [`MAX_DISMISSED_MEMORY_FIT_MODELS`] by dropping the oldest (front) entries so
 /// the most recently added survive. Never panics: any malformed input simply
 /// yields a shorter (possibly empty) list.
+///
+/// Dedupe goes through a hash set rather than a linear scan of what has been
+/// kept: this list is read straight off a hand-editable TOML file, and a linear
+/// membership test would make a pathological file cost O(n^2) string
+/// comparisons on the startup path. The cap is enforced inside the loop so the
+/// retained queue never grows past it, whatever the file holds.
 pub(crate) fn sanitize_dismissed_memory_fit_models(raw: Vec<String>) -> Vec<String> {
-    let mut seen: Vec<String> = Vec::with_capacity(raw.len().min(MAX_DISMISSED_MEMORY_FIT_MODELS));
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut kept: VecDeque<String> = VecDeque::with_capacity(MAX_DISMISSED_MEMORY_FIT_MODELS);
     for entry in raw {
-        if is_valid_weights_sha(&entry) && !seen.contains(&entry) {
-            seen.push(entry);
+        // `insert` returning false means this digest was already accepted
+        // earlier, so the first occurrence is the one that counts.
+        if !is_valid_weights_sha(&entry) || !seen.insert(entry.clone()) {
+            continue;
+        }
+        kept.push_back(entry);
+        // Cap keeping the most recent: drop from the front (oldest) so a list
+        // that grew past the cap evicts FIFO. `seen` deliberately keeps the
+        // evicted digest, so a later duplicate of it does not resurrect the
+        // entry and the result matches a dedupe-then-truncate pass exactly.
+        if kept.len() > MAX_DISMISSED_MEMORY_FIT_MODELS {
+            kept.pop_front();
         }
     }
-    // Cap keeping the most recent: drop from the front (oldest) so a list that
-    // grew past the cap evicts FIFO.
-    if seen.len() > MAX_DISMISSED_MEMORY_FIT_MODELS {
-        let overflow = seen.len() - MAX_DISMISSED_MEMORY_FIT_MODELS;
-        seen.drain(0..overflow);
-    }
-    seen
+    kept.into()
 }
 
 /// Returns `existing` with `sha` appended as a remembered memory-fit override,
