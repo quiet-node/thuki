@@ -22,6 +22,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING**: Renamed the `[model]` section in `config.toml` to `[inference]` and reshaped it from a single `ollama_url` string into the providers schema described above. There is no backward-compatibility shim for the section name: if you had a custom `[model]` section, rename it to `[inference]` after upgrading; a flat `ollama_url` inside `[inference]` is migrated automatically.
 - Active model selection is now strictly Option-typed end to end: when nothing is installed and nothing is persisted, Thuki refuses to dispatch requests and surfaces a "Pick a model" prompt instead of falling back to a hardcoded slug. The previous `DEFAULT_MODEL_NAME` constant has been removed.
 
+## [0.16.0](https://github.com/quiet-node/thuki/compare/v0.15.9...v0.16.0) (2026-07-18)
+
+
+### Features
+
+* built-in web search with auto-search, citation audit, and progressive trace ([#312](https://github.com/quiet-node/thuki/issues/312)) ([7972b31](https://github.com/quiet-node/thuki/commit/7972b31346f5dd55e4ca396026e26fc974282e1c))
+* **ci:** ship Thuki Nightly as side-by-side signed install ([#336](https://github.com/quiet-node/thuki/issues/336)) ([3810dd1](https://github.com/quiet-node/thuki/commit/3810dd15cdff0c22276cd3e71c4347b6394a2253))
+* conversation-wide search evidence reuse ([#330](https://github.com/quiet-node/thuki/issues/330)) ([1fe32a4](https://github.com/quiet-node/thuki/commit/1fe32a4769b73a1acae7409b69933c9787853f03))
+* cut ForceWeb search latency and harden answer quality ([#324](https://github.com/quiet-node/thuki/issues/324)) ([51d2c1f](https://github.com/quiet-node/thuki/commit/51d2c1f5c281fce61e6ed415f18c7924f034d49b))
+* **history:** auto-save chats with retention and free chats ([#331](https://github.com/quiet-node/thuki/issues/331)) ([057b089](https://github.com/quiet-node/thuki/commit/057b089db4df43bc7f4560d3348550812b890717))
+* move Diagnostics to Behavior tab with trace retention and folder actions ([#325](https://github.com/quiet-node/thuki/issues/325)) ([70d68ac](https://github.com/quiet-node/thuki/commit/70d68ac489515699c2a2b46d162ffbd64faa2b54))
+* search language parity across retrieval and answers ([#326](https://github.com/quiet-node/thuki/issues/326)) ([9005d44](https://github.com/quiet-node/thuki/commit/9005d44ac14538d8f8dffdf74de6ad4c187ad75f))
+* search resilience and citation a11y ([#327](https://github.com/quiet-node/thuki/issues/327)) ([e8e2fd7](https://github.com/quiet-node/thuki/commit/e8e2fd73b98ed8d1cea1172d4c33fe88f72c79ae))
+* search trust and lawfulness package ([#323](https://github.com/quiet-node/thuki/issues/323)) ([151adf6](https://github.com/quiet-node/thuki/commit/151adf6768b4760039397d51f296f68e9064c4e1))
+* **settings:** Changelog tab with full release history ([#328](https://github.com/quiet-node/thuki/issues/328)) ([fd909fe](https://github.com/quiet-node/thuki/commit/fd909feda2c748136591a4629ad6ff852ef71e42))
+
+
+### Bug Fixes
+
+* **ci:** make engine-gate throughput report-only instead of a blocking floor ([#321](https://github.com/quiet-node/thuki/issues/321)) ([07f1ca8](https://github.com/quiet-node/thuki/commit/07f1ca8afc9f2317395528d6e23371ec0d3e8218))
+* disclose when a requested web search can't reach the web or finds nothing ([#314](https://github.com/quiet-node/thuki/issues/314)) ([2a4d749](https://github.com/quiet-node/thuki/commit/2a4d749eb519540573085ef7d035a1ac0e75cd6c))
+* **models:** gate browse installs to chat brains only ([07e0b35](https://github.com/quiet-node/thuki/commit/07e0b35eae8d363f3476c3f072e9494a8d397b72))
+* **models:** gate Browse installs to chat brains only ([#337](https://github.com/quiet-node/thuki/issues/337)) ([07e0b35](https://github.com/quiet-node/thuki/commit/07e0b35eae8d363f3476c3f072e9494a8d397b72))
+* **search:** disclose when a requested web search is unreachable or finds nothing ([2a4d749](https://github.com/quiet-node/thuki/commit/2a4d749eb519540573085ef7d035a1ac0e75cd6c))
+* surface the 80% memory headroom rule in the model-fit warning ([#322](https://github.com/quiet-node/thuki/issues/322)) ([a9d5bb4](https://github.com/quiet-node/thuki/commit/a9d5bb4a297ae38a2b0739e28ff5ef22e746e507))
+* wire Auto search learn URL to disclosure blog post ([#335](https://github.com/quiet-node/thuki/issues/335)) ([01a99e2](https://github.com/quiet-node/thuki/commit/01a99e28790f916f5ce6d850cb917aae56ef9df9))
+
 ## [0.15.9](https://github.com/quiet-node/thuki/compare/v0.15.8...v0.15.9) (2026-07-10)
 
 

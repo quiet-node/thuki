@@ -574,6 +574,34 @@ pub const MAX_GGUF_KEY_BYTES: u64 = 1024;
 /// corrupt or hostile length field can demand.
 pub const MAX_GGUF_STRING_BYTES: u64 = 4 * 1024 * 1024;
 
+/// GGUF architectures that must never load as a primary chat model under the
+/// pinned engine (consumed by `models::gguf_role`).
+///
+/// Pragmatic denylist of known non-chat families (embedding, encoder-only,
+/// audio tokenizers). Chat arches (llama*, gemma*, qwen*, phi*, mistral*,
+/// deepseek*, gpt-oss, ...) are intentionally absent so they pass. When a
+/// GGUF's architecture is missing, validation skips this list and keeps the
+/// soft filename path, so an incomplete header never bricks an install.
+///
+/// Baked-in: a defense-in-depth bound on attacker-influenced GGUF headers, and
+/// pin-scoped (an engine bump may add families that should stay out of the
+/// primary chat load path). Lives here so the one place the repo documents all
+/// baked-in constants stays authoritative.
+pub const DENIED_PRIMARY_ARCHES: &[&str] = &[
+    "bert",
+    "nomic-bert",
+    "jina-bert-v2",
+    "jina-bert-v3",
+    "jina-bert",
+    "t5",
+    "t5encoder",
+    "clip",
+    "wavtokenizer-dec",
+    "wavtokenizer",
+    "roberta",
+    "jina-code-embeddings",
+];
+
 /// Authoritative allowlist of `(section, key)` pairs the Settings GUI is
 /// permitted to write via the `set_config_field` Tauri command.
 ///
