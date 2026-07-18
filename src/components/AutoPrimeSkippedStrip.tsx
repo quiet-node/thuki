@@ -98,15 +98,20 @@ const GHOST_BTN_CLASS =
 /**
  * Renders the ambient memory warning.
  *
- * The FREEZE band (`canRemember` false) is single-stage: the severity chip, the
- * free-vs-needed title, and the blunt note state the danger in full up front, so
- * "Load anyway" force-loads directly rather than gating behind a second
- * confirm click that added ceremony but no information.
+ * BOTH bands gate the force behind two clicks, and the dangerous one is never
+ * the cheaper click. The first "Load anyway" only advances the stage; the load
+ * fires on the second.
  *
- * The MILD band keeps the two-stage confirm: stage 1 shows the fit figures with
- * Switch model / Load anyway (which only advances), and stage 2 adds the
- * consequence copy plus "Load once" / "Always allow this model" / "Switch
- * model". The `confirming` state is therefore only ever reachable in this band.
+ * The FREEZE band (`canRemember` false) leads with the severity chip, the
+ * free-vs-needed title, and the blunt note, then confirms with a single
+ * "Acknowledge". The second click is not there to inform (the chip already
+ * did that): it is there so a stray click on a strip that appears unprompted
+ * cannot wire memory the machine does not have and lock up the Mac. No
+ * remember is offered, because the backend refuses to honor one at this ratio.
+ *
+ * The MILD band shows the fit figures, then stage 2 adds the consequence copy
+ * and splits the force into "Load once" / "Always allow this model", with
+ * "Switch model" as the ghost escape.
  */
 export function AutoPrimeSkippedStrip({
   modelName,
@@ -121,8 +126,8 @@ export function AutoPrimeSkippedStrip({
   // pure presentation detail. The first "Load anyway" click only flips this;
   // the actual force-load fires on the stage-2 click. Keeping it internal also
   // means the strip resets to stage 1 whenever the host remounts it (a fresh
-  // skip event), so a stale confirm never carries over to a new warning. Only
-  // the mild band ever reads it: the freeze band returns before any use.
+  // skip event), so a stale confirm never carries over to a new warning. Both
+  // bands read it, so neither can be force-loaded on a single click.
   const [confirming, setConfirming] = useState(false);
   const reduceMotion = useReducedMotion();
 
@@ -152,14 +157,31 @@ export function AutoPrimeSkippedStrip({
               {MEMORY_FREEZE_NOTE}
             </p>
             <div className="mt-2.5 flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                aria-label="Load anyway"
-                onClick={() => onLoadAnyway(false)}
-                className={PRIMARY_BTN_CLASS}
-              >
-                Load anyway
-              </button>
+              {!confirming ? (
+                // Stage 1: "Load anyway" only advances, so the riskiest load in
+                // the app is never one click away.
+                <button
+                  type="button"
+                  aria-label="Load anyway"
+                  onClick={() => setConfirming(true)}
+                  className={PRIMARY_BTN_CLASS}
+                >
+                  Load anyway
+                </button>
+              ) : (
+                // Stage 2: the deliberate force. Same "Load once" wording as
+                // the mild band, and for the same reason (a one-time force
+                // that persists nothing), but without the "Always allow this
+                // model" half, which the backend refuses to honor here.
+                <button
+                  type="button"
+                  aria-label="Load once"
+                  onClick={() => onLoadAnyway(false)}
+                  className={PRIMARY_BTN_CLASS}
+                >
+                  Load once
+                </button>
+              )}
               <button
                 type="button"
                 aria-label="Switch model"

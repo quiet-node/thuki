@@ -11537,7 +11537,7 @@ describe('App', () => {
       expect(invoke).toHaveBeenCalledWith('warm_up_model', { force: true });
     });
 
-    it('freeze-band skip (can_remember false) is single-stage and force-loads directly', async () => {
+    it('freeze-band skip (can_remember false) confirms before force-loading and never remembers', async () => {
       render(<App />);
       await act(async () => {});
       await showOverlay();
@@ -11561,7 +11561,17 @@ describe('App', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
       await act(async () => {});
 
-      // One click force-primes; it never advanced to a second confirm step.
+      // The first click only advances: the riskiest load in the app must never
+      // be reachable from a single stray click on an unprompted strip.
+      expect(invoke).not.toHaveBeenCalledWith(
+        'warm_up_model',
+        expect.anything(),
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Load once' }));
+      await act(async () => {});
+
+      // The stage-2 click force-primes, and still never persists a remember.
       expect(invoke).toHaveBeenCalledWith('warm_up_model', { force: true });
       expect(invoke).not.toHaveBeenCalledWith(
         'remember_model_memory_fit',

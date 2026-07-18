@@ -202,7 +202,7 @@ describe('AutoPrimeSkippedStrip', () => {
     expect(onLoadAnyway).toHaveBeenCalledWith(true);
   });
 
-  it('freeze band is single-stage: chip, title, note and both actions with no click', () => {
+  it('freeze band states the danger up front: chip, title, note and both actions with no click', () => {
     render(
       <AutoPrimeSkippedStrip
         modelName="Qwen3.5 9B"
@@ -243,7 +243,7 @@ describe('AutoPrimeSkippedStrip', () => {
     expect(screen.queryByRole('button', { name: 'Load once' })).toBeNull();
   });
 
-  it('freeze band "Load anyway" force-loads directly instead of advancing a stage', () => {
+  it('freeze band "Load anyway" only advances, so the riskiest load is never one click', () => {
     const onLoadAnyway = vi.fn();
     const onSwitchModel = vi.fn();
     render(
@@ -257,11 +257,21 @@ describe('AutoPrimeSkippedStrip', () => {
         onLoadAnyway={onLoadAnyway}
       />,
     );
+    // First click must NOT load: a stray click on an unprompted strip cannot
+    // wire memory the machine does not have.
     fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
+    expect(onLoadAnyway).not.toHaveBeenCalled();
+    // Stage 2 offers the one-time force only: no remember at this ratio.
+    expect(screen.queryByRole('button', { name: 'Load anyway' })).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: 'Always allow this model' }),
+    ).toBeNull();
+    // The severity copy stays put across both stages.
+    expect(screen.getByTestId('memory-critical-chip')).toBeInTheDocument();
+    expect(screen.getByTestId('memory-freeze-note')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Load once' }));
     expect(onLoadAnyway).toHaveBeenCalledTimes(1);
     expect(onLoadAnyway).toHaveBeenCalledWith(false);
-    // Still single-stage after the click: no consequence step appeared.
-    expect(screen.queryByTestId('auto-prime-skipped-consequence')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
     expect(onSwitchModel).toHaveBeenCalledTimes(1);
   });
