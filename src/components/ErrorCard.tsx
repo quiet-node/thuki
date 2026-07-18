@@ -12,10 +12,13 @@ interface ErrorCardProps {
   onSwitchModel?: () => void;
   /**
    * Replays the turn with the pre-load memory gate bypassed (issue #296).
-   * Wired only for `InsufficientMemory`: it renders the "Load anyway"
-   * recovery button beside "Switch model".
+   * Wired only for `InsufficientMemory`. `remember` carries the user's choice
+   * between the split "Load once" (`false`) and "Always allow this model"
+   * (`true`) actions, so the host can persist the per-model override on the
+   * remember variant; in the freeze band only the single "Load anyway"
+   * (`false`) force button is offered.
    */
-  onLoadAnyway?: () => void;
+  onLoadAnyway?: (remember: boolean) => void;
   /**
    * Machine-readable figures backing the `InsufficientMemory` card copy,
    * sourced from the `estimate_model_fit` command. When absent (the fetch
@@ -26,6 +29,15 @@ interface ErrorCardProps {
     modelName: string;
     requiredBytes: number;
     availableBytes: number;
+    /**
+     * Whether a per-model "remember" could suppress this warning (backend
+     * `!is_freeze_band`). True in the mild band, where the card offers the
+     * "Always allow this model" action; false in the freeze band, where only
+     * the single "Load anyway" force is offered because the backend never
+     * honors a remember for such a load. The single source of truth for the
+     * freeze-floor fraction; the frontend keeps no magic number of its own.
+     */
+    canRemember: boolean;
   };
 }
 
@@ -56,6 +68,51 @@ const barColors: Record<EngineErrorKind, string> = {
 export const INSUFFICIENT_MEMORY_CONSEQUENCE =
   'To fit this model, your Mac may compress memory, which can slow things down or, in extreme cases, freeze the entire machine and require a reboot.';
 
+/**
+ * The single freeze-band explainer, shown to everyone in that band. It speaks
+ * only to severity: naming a saved setting explains nothing to a user who does
+ * not recall choosing it months earlier, so this deliberately makes no mention
+ * of any remembered override. Exported so the ambient `AutoPrimeSkippedStrip`
+ * and this in-chat card render byte-identical wording from one source.
+ */
+export const MEMORY_FREEZE_NOTE =
+  'That is far too tight to load on its own. Thuki always asks at this level, because loading can slow your Mac badly or freeze it.';
+
+/**
+ * Red "Memory critically low" severity tag that heads the freeze-band warning.
+ * Exported as a component so both memory surfaces render identical severity
+ * chrome rather than duplicating the token values.
+ *
+ * Text only: it carries no dot of its own, because each surface already shows
+ * exactly one indicator in this band (the strip drops its status dot here, and
+ * the card tints its accent bar red to match). Squared corners at 5px, just
+ * under the card's own 6px radius, so it reads as a tag rather than a pill.
+ */
+export const MEMORY_CRITICAL_RED = '#f87171';
+
+export function MemoryCriticalChip() {
+  return (
+    <span
+      data-testid="memory-critical-chip"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        fontSize: '10px',
+        fontWeight: 700,
+        letterSpacing: '0.08em',
+        textTransform: 'uppercase',
+        padding: '3px 8px',
+        borderRadius: '5px',
+        color: MEMORY_CRITICAL_RED,
+        background: 'rgba(248, 113, 113, 0.12)',
+        border: '1px solid rgba(248, 113, 113, 0.35)',
+      }}
+    >
+      Memory critically low
+    </span>
+  );
+}
+
 /** Bytes per gigabyte, matching the Rust gate's `1u64 << 30` GiB divisor. */
 const BYTES_PER_GB = 1024 ** 3;
 
@@ -68,6 +125,20 @@ function formatGb(bytes: number): string {
  *  it verbatim, so the title stays a stable, human heading regardless of the
  *  raw llama-server output. */
 const ENGINE_START_FAILED_TITLE = "Thuki's engine couldn't start this model";
+
+/** Outlined primary action button (transparent fill). Used by "Switch model"
+ *  on other cards, and by "Load once" / "Load anyway" on the memory card. */
+const OUTLINE_BTN_CLASS =
+  'text-[11.5px] font-semibold text-primary bg-transparent border border-primary/45 rounded-lg px-3 py-1.5 cursor-pointer';
+
+/** Emphasized "Always allow this model" button: the same outline plus a soft
+ *  primary fill, marking it as the remember choice among the split actions. */
+const ALWAYS_ALLOW_BTN_CLASS =
+  'text-[11.5px] font-semibold text-primary bg-primary/[0.14] border border-primary/45 rounded-lg px-3 py-1.5 cursor-pointer';
+
+/** Ghost secondary action button (no border, muted text). */
+const GHOST_BTN_CLASS =
+  'text-[11.5px] font-medium text-white/50 bg-transparent border-0 px-1 py-1.5 cursor-pointer';
 
 /**
  * Renders a Minimal Line error callout inline in the chat thread.
@@ -89,14 +160,20 @@ export function ErrorCard({
   onLoadAnyway,
   insufficientMemoryInfo,
 }: ErrorCardProps) {
-  const bar = (
+  /**
+   * Renders the card's left accent bar in `color`. Factored so the freeze-band
+   * body can tint it red to match its severity tag without duplicating the bar
+   * markup or mutating `barColors`, which every other kind still reads.
+   */
+  const accentBar = (color: string) => (
     <div
       data-error-bar
       data-kind={kind}
       className="w-[2.5px] rounded-sm flex-shrink-0 self-stretch min-h-[36px]"
-      style={{ background: barColors[kind] }}
+      style={{ background: color }}
     />
   );
+  const bar = accentBar(barColors[kind]);
 
   if (kind === 'EngineStartFailed') {
     return (
@@ -138,7 +215,55 @@ export function ErrorCard({
   }
 
   if (kind === 'InsufficientMemory' && insufficientMemoryInfo) {
-    const { modelName, requiredBytes, availableBytes } = insufficientMemoryInfo;
+    const { modelName, requiredBytes, availableBytes, canRemember } =
+      insufficientMemoryInfo;
+    // Freeze band: severity-first. The chip plus a single blunt note replace the
+    // usual fit/estimate lines and the consequence copy, because at this ratio
+    // the only useful message is how bad it is. No remember is possible here, so
+    // "Always allow this model" is never offered.
+    if (!canRemember) {
+      return (
+        <div className="flex items-stretch gap-3 px-1 py-2 rounded-md bg-white/[0.025]">
+          {/* Red accent, not the shared amber: it must read as one severity
+              signal with the tag rather than clashing with it. */}
+          {accentBar(MEMORY_CRITICAL_RED)}
+          <div className="min-w-0">
+            <MemoryCriticalChip />
+            <p className="text-[12.5px] font-[590] text-white/[0.82] leading-snug tracking-[-0.01em] mt-[7px]">
+              {`Only ~${formatGb(availableBytes)} GB free. ${modelName} needs ~${formatGb(requiredBytes)} GB.`}
+            </p>
+            <p
+              data-testid="memory-freeze-note"
+              className="text-[11.5px] text-white/[0.38] leading-snug mt-0.5"
+            >
+              {MEMORY_FREEZE_NOTE}
+            </p>
+            {(onSwitchModel || onLoadAnyway) && (
+              <div className="flex flex-wrap items-center gap-2 mt-[11px]">
+                {onLoadAnyway && (
+                  <button
+                    type="button"
+                    onClick={() => onLoadAnyway(false)}
+                    className={OUTLINE_BTN_CLASS}
+                  >
+                    Load anyway
+                  </button>
+                )}
+                {onSwitchModel && (
+                  <button
+                    type="button"
+                    onClick={onSwitchModel}
+                    className={GHOST_BTN_CLASS}
+                  >
+                    Switch model
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="flex items-stretch gap-3 px-1 py-2 rounded-md bg-white/[0.025]">
         {bar}
@@ -153,23 +278,35 @@ export function ErrorCard({
             {INSUFFICIENT_MEMORY_CONSEQUENCE}
           </p>
           {(onSwitchModel || onLoadAnyway) && (
-            <div className="flex items-center gap-2 mt-[11px]">
+            <div className="flex flex-wrap items-center gap-2 mt-[11px]">
+              {/* Mild band: split the force into "Load once" and the emphasized
+                  "Always allow this model" (persists the per-model override),
+                  with Switch model demoted to the ghost escape. */}
+              {onLoadAnyway && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => onLoadAnyway(false)}
+                    className={OUTLINE_BTN_CLASS}
+                  >
+                    Load once
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onLoadAnyway(true)}
+                    className={ALWAYS_ALLOW_BTN_CLASS}
+                  >
+                    Always allow this model
+                  </button>
+                </>
+              )}
               {onSwitchModel && (
                 <button
                   type="button"
                   onClick={onSwitchModel}
-                  className="text-[11.5px] font-semibold text-primary bg-transparent border border-primary/45 rounded-lg px-3 py-1.5 cursor-pointer"
+                  className={GHOST_BTN_CLASS}
                 >
                   Switch model
-                </button>
-              )}
-              {onLoadAnyway && (
-                <button
-                  type="button"
-                  onClick={onLoadAnyway}
-                  className="text-[11.5px] font-medium text-white/50 bg-transparent border-0 px-1 py-1.5 cursor-pointer"
-                >
-                  Load anyway
                 </button>
               )}
             </div>

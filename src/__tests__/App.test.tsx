@@ -769,6 +769,9 @@ describe('App', () => {
         estimate_model_fit: {
           required_bytes: 8 * 1024 ** 3,
           available_bytes: 4 * 1024 ** 3,
+          // Mild band: these cases assert retry/attribution wiring, not the
+          // freeze-band presentation (covered in ErrorCard's own tests).
+          can_remember: true,
         },
       });
       render(<App />);
@@ -814,6 +817,112 @@ describe('App', () => {
       );
     });
 
+    it('remembers the model on the "Always allow this model" split action', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+        estimate_model_fit: {
+          required_bytes: 8 * 1024 ** 3,
+          available_bytes: 4 * 1024 ** 3,
+          // Mild band (not freeze): the "Always allow this model" action shows.
+          can_remember: true,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+
+      act(() => {
+        getLastChannel()?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+      await screen.findByText(/may not fit in memory/);
+
+      // Reject the persistence so the fire-and-forget `.catch` runs: a failed
+      // remember must be swallowed and must never block the load.
+      const prior = invoke.getMockImplementation();
+      invoke.mockImplementation(
+        async (cmd: string, args?: Record<string, unknown>) => {
+          if (cmd === 'remember_model_memory_fit') {
+            throw new Error('persist failed');
+          }
+          return prior?.(cmd, args);
+        },
+      );
+      invoke.mockClear();
+      fireEvent.click(
+        await screen.findByRole('button', { name: 'Always allow this model' }),
+      );
+      await act(async () => {});
+
+      // The active model is remembered, and the turn replays with the gate
+      // bypassed for this load even though persistence rejected.
+      expect(invoke).toHaveBeenCalledWith('remember_model_memory_fit', {
+        modelId: 'gemma4:e2b',
+      });
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'hi', allowOversized: true }),
+      );
+    });
+
+    it('does not remember the model on the "Load once" split action', async () => {
+      enableChannelCaptureWithResponses({
+        get_model_picker_state: {
+          active: 'gemma4:e2b',
+          all: ['gemma4:e2b', 'qwen2.5:7b'],
+          ollamaReachable: true,
+        },
+        estimate_model_fit: {
+          required_bytes: 8 * 1024 ** 3,
+          available_bytes: 4 * 1024 ** 3,
+          can_remember: true,
+        },
+      });
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      const textarea = getAskInput();
+      setAskValue('hi');
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await act(async () => {});
+
+      act(() => {
+        getLastChannel()?.simulateMessage({
+          type: 'Error',
+          data: { kind: 'InsufficientMemory', message: 'may not fit' },
+        });
+      });
+      await act(async () => {});
+      await screen.findByText(/may not fit in memory/);
+
+      invoke.mockClear();
+      // "Load once" is the non-remembering force.
+      fireEvent.click(await screen.findByRole('button', { name: 'Load once' }));
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith(
+        'remember_model_memory_fit',
+        expect.anything(),
+      );
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({ message: 'hi', allowOversized: true }),
+      );
+    });
+
     it('does not replay the abandoned turn when the model switch itself fails', async () => {
       let capturedChannel: { simulateMessage: (data: unknown) => void } | null =
         null;
@@ -833,6 +942,7 @@ describe('App', () => {
             return {
               required_bytes: 8 * 1024 ** 3,
               available_bytes: 4 * 1024 ** 3,
+              can_remember: true,
             };
           }
           if (cmd === 'set_active_model') {
@@ -885,6 +995,9 @@ describe('App', () => {
         estimate_model_fit: {
           required_bytes: 8 * 1024 ** 3,
           available_bytes: 4 * 1024 ** 3,
+          // Mild band: these cases assert retry/attribution wiring, not the
+          // freeze-band presentation (covered in ErrorCard's own tests).
+          can_remember: true,
         },
       });
       render(<App />);
@@ -946,6 +1059,7 @@ describe('App', () => {
           available_bytes: 24 * 1024 ** 3,
           verdict: 'comfortable',
           would_block: false,
+          can_remember: true,
         },
       });
       render(<App />);
@@ -1026,6 +1140,9 @@ describe('App', () => {
         estimate_model_fit: {
           required_bytes: 8 * 1024 ** 3,
           available_bytes: 4 * 1024 ** 3,
+          // Mild band: these cases assert retry/attribution wiring, not the
+          // freeze-band presentation (covered in ErrorCard's own tests).
+          can_remember: true,
         },
       });
       render(<App />);
@@ -1082,6 +1199,9 @@ describe('App', () => {
         estimate_model_fit: {
           required_bytes: 8 * 1024 ** 3,
           available_bytes: 4 * 1024 ** 3,
+          // Mild band: these cases assert retry/attribution wiring, not the
+          // freeze-band presentation (covered in ErrorCard's own tests).
+          can_remember: true,
         },
       });
       render(<App />);
@@ -1180,6 +1300,7 @@ describe('App', () => {
           available_bytes: 4 * 1024 ** 3,
           verdict: 'insufficient',
           would_block: true,
+          can_remember: true,
         },
       });
       render(<App />);
@@ -1238,6 +1359,7 @@ describe('App', () => {
           available_bytes: 24 * 1024 ** 3,
           verdict: 'comfortable',
           would_block: false,
+          can_remember: true,
         },
       });
       render(<App />);
@@ -1302,6 +1424,7 @@ describe('App', () => {
               available_bytes: 4 * 1024 ** 3,
               verdict: 'insufficient',
               would_block: true,
+              can_remember: true,
             };
           }
           return undefined;
@@ -11220,6 +11343,8 @@ describe('App', () => {
       required_bytes: 8 * 1024 ** 3,
       available_bytes: 4 * 1024 ** 3,
       ceiling_fraction: 0.8,
+      // Mild band (not freeze): the stage-2 opt-in checkbox is offered.
+      can_remember: true,
     };
 
     it('shows the ambient strip with the friendly model name and GB figures after warmup:builtin-skipped fires', async () => {
@@ -11289,7 +11414,7 @@ describe('App', () => {
       ).toBeInTheDocument();
     });
 
-    it('force-primes and dismisses the strip synchronously on the two-stage "Acknowledge" confirm', async () => {
+    it('force-primes and dismisses the strip synchronously on the two-stage "Load once" confirm', async () => {
       render(<App />);
       await act(async () => {});
       await showOverlay();
@@ -11318,14 +11443,11 @@ describe('App', () => {
         expect.anything(),
       );
 
-      // Stage 2: the confirmed "Acknowledge" click clears the strip
+      // Stage 2 (mild band): the "Load once" click clears the strip
       // synchronously (asserted WITHOUT awaiting the invoke round trip) and
-      // fires the force-prime. Scope to the strip: VersionAnnouncement also
-      // ships an "Acknowledge" primary CTA on first paint.
+      // fires the force-prime.
       const strip = screen.getByTestId('auto-prime-skipped-strip');
-      fireEvent.click(
-        within(strip).getByRole('button', { name: 'Acknowledge' }),
-      );
+      fireEvent.click(within(strip).getByRole('button', { name: 'Load once' }));
       expect(
         screen.queryByTestId('auto-prime-skipped-strip'),
       ).not.toBeInTheDocument();
@@ -11337,6 +11459,124 @@ describe('App', () => {
       expect(
         screen.queryByTestId('auto-prime-skipped-strip'),
       ).not.toBeInTheDocument();
+    });
+
+    it('threads can_remember to the strip: stage 2 shows the "Always allow this model" action', async () => {
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => emitTauriEvent('warmup:builtin-skipped', SKIPPED_PAYLOAD));
+      await act(async () => {});
+
+      // Stage 1: no split action yet.
+      expect(
+        screen.queryByRole('button', { name: 'Always allow this model' }),
+      ).toBeNull();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
+      await act(async () => {});
+      // Stage 2: the mild-band skip offers the remember split action.
+      expect(
+        screen.getByRole('button', { name: 'Always allow this model' }),
+      ).toBeInTheDocument();
+    });
+
+    it('remembers the model on the strip\'s "Always allow this model" action', async () => {
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => emitTauriEvent('warmup:builtin-skipped', SKIPPED_PAYLOAD));
+      await act(async () => {});
+
+      invoke.mockClear();
+      // Reject the persistence so the fire-and-forget `.catch` runs: a failed
+      // remember must never block the force-load.
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'remember_model_memory_fit') {
+          throw new Error('persist failed');
+        }
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
+      await act(async () => {});
+      const strip = screen.getByTestId('auto-prime-skipped-strip');
+      fireEvent.click(
+        within(strip).getByRole('button', { name: 'Always allow this model' }),
+      );
+      await act(async () => {});
+
+      // The active model is remembered (by its id from the event), and the
+      // force-prime still fires even though persistence rejected.
+      expect(invoke).toHaveBeenCalledWith('remember_model_memory_fit', {
+        modelId: 'gemma4:e2b',
+      });
+      expect(invoke).toHaveBeenCalledWith('warm_up_model', { force: true });
+    });
+
+    it('does not remember on the strip\'s "Load once" action, only warm force', async () => {
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() => emitTauriEvent('warmup:builtin-skipped', SKIPPED_PAYLOAD));
+      await act(async () => {});
+
+      invoke.mockClear();
+      fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
+      await act(async () => {});
+      const strip = screen.getByTestId('auto-prime-skipped-strip');
+      fireEvent.click(within(strip).getByRole('button', { name: 'Load once' }));
+      await act(async () => {});
+
+      expect(invoke).not.toHaveBeenCalledWith(
+        'remember_model_memory_fit',
+        expect.anything(),
+      );
+      expect(invoke).toHaveBeenCalledWith('warm_up_model', { force: true });
+    });
+
+    it('freeze-band skip (can_remember false) confirms before force-loading and never remembers', async () => {
+      render(<App />);
+      await act(async () => {});
+      await showOverlay();
+
+      act(() =>
+        emitTauriEvent('warmup:builtin-skipped', {
+          ...SKIPPED_PAYLOAD,
+          can_remember: false,
+        }),
+      );
+      await act(async () => {});
+
+      // Severity stated up front, with no advance click and no remember action.
+      expect(screen.getByTestId('memory-critical-chip')).toBeInTheDocument();
+      expect(screen.getByTestId('memory-freeze-note')).toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: 'Always allow this model' }),
+      ).toBeNull();
+
+      invoke.mockClear();
+      fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
+      await act(async () => {});
+
+      // The first click only advances: the riskiest load in the app must never
+      // be reachable from a single stray click on an unprompted strip.
+      expect(invoke).not.toHaveBeenCalledWith(
+        'warm_up_model',
+        expect.anything(),
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Load once' }));
+      await act(async () => {});
+
+      // The stage-2 click force-primes, and still never persists a remember.
+      expect(invoke).toHaveBeenCalledWith('warm_up_model', { force: true });
+      expect(invoke).not.toHaveBeenCalledWith(
+        'remember_model_memory_fit',
+        expect.anything(),
+      );
     });
 
     it('clears when the active model changes', async () => {

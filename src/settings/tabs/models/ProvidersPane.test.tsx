@@ -93,6 +93,7 @@ function makeConfig(
       auto_save_conversations: true,
       history_retention_days: -1,
       auto_save_notice_acknowledged: false,
+      dismissed_memory_fit_models: [],
     },
     debug: { trace_enabled: false, trace_retention_days: 7 },
   };

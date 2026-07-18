@@ -18,6 +18,7 @@
 //! fatal (the app cannot boot in a writable-hostile environment and the user
 //! cannot fix that from the UI).
 
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -33,8 +34,8 @@ use super::defaults::{
     DEFAULT_QUOTE_MAX_DISPLAY_LINES, DEFAULT_SYSTEM_PROMPT_BASE, DEFAULT_TEXT_BASE_PX,
     DEFAULT_TEXT_FONT_WEIGHT, DEFAULT_TEXT_LETTER_SPACING_PX, DEFAULT_TEXT_LINE_HEIGHT,
     DEFAULT_TRACE_RETENTION_DAYS, DEFAULT_UPDATER_CHECK_INTERVAL_HOURS,
-    DEFAULT_UPDATER_MANIFEST_URL, HISTORY_RETENTION_FOREVER, SLASH_COMMAND_PROMPT_APPENDIX,
-    TRACE_RETENTION_FOREVER,
+    DEFAULT_UPDATER_MANIFEST_URL, HISTORY_RETENTION_FOREVER, MAX_DISMISSED_MEMORY_FIT_MODELS,
+    SLASH_COMMAND_PROMPT_APPENDIX, TRACE_RETENTION_FOREVER,
 };
 use super::error::ConfigError;
 use super::schema::AppConfig;
@@ -221,6 +222,12 @@ pub(crate) fn resolve(config: &mut AppConfig) {
         HISTORY_RETENTION_FOREVER,
         BOUNDS_HISTORY_RETENTION_DAYS,
         "behavior.history_retention_days",
+    );
+    // The remembered memory-fit override list is user-editable TOML: drop any
+    // entry that is not a well-formed weights SHA-256, dedupe, and cap the
+    // length so a hand-edited file can never inject garbage or grow unbounded.
+    config.behavior.dismissed_memory_fit_models = sanitize_dismissed_memory_fit_models(
+        std::mem::take(&mut config.behavior.dismissed_memory_fit_models),
     );
 
     // Debug section: trace_enabled is a boolean (any value valid); the
@@ -485,6 +492,72 @@ fn clamp_font_weight(value: &mut u32, default: u32, field: &str) {
         );
         *value = default;
     }
+}
+
+/// True when `sha` is a well-formed weights SHA-256 blob id: exactly 64
+/// lowercase hexadecimal characters. The content-addressed blob store keys its
+/// files on this digest, so only strings that could name a real blob are
+/// accepted; anything else (wrong length, uppercase, non-hex) is rejected. Used
+/// both to sanitize the loaded list and to normalize an id before it is added.
+pub(crate) fn is_valid_weights_sha(sha: &str) -> bool {
+    sha.len() == 64
+        && sha
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Sanitizes a user-supplied `dismissed_memory_fit_models` list: keeps only
+/// entries that are well-formed weights SHA-256 ids (see [`is_valid_weights_sha`]),
+/// removes duplicates preserving the first occurrence, then caps the length to
+/// [`MAX_DISMISSED_MEMORY_FIT_MODELS`] by dropping the oldest (front) entries so
+/// the most recently added survive. Never panics: any malformed input simply
+/// yields a shorter (possibly empty) list.
+///
+/// Dedupe goes through a hash set rather than a linear scan of what has been
+/// kept: this list is read straight off a hand-editable TOML file, and a linear
+/// membership test would make a pathological file cost O(n^2) string
+/// comparisons on the startup path. The cap is enforced inside the loop so the
+/// retained queue never grows past it, whatever the file holds.
+pub(crate) fn sanitize_dismissed_memory_fit_models(raw: Vec<String>) -> Vec<String> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut kept: VecDeque<String> = VecDeque::with_capacity(MAX_DISMISSED_MEMORY_FIT_MODELS);
+    for entry in raw {
+        // `insert` returning false means this digest was already accepted
+        // earlier, so the first occurrence is the one that counts.
+        if !is_valid_weights_sha(&entry) || !seen.insert(entry.clone()) {
+            continue;
+        }
+        kept.push_back(entry);
+        // Cap keeping the most recent: drop from the front (oldest) so a list
+        // that grew past the cap evicts FIFO. `seen` deliberately keeps the
+        // evicted digest, so a later duplicate of it does not resurrect the
+        // entry and the result matches a dedupe-then-truncate pass exactly.
+        if kept.len() > MAX_DISMISSED_MEMORY_FIT_MODELS {
+            kept.pop_front();
+        }
+    }
+    kept.into()
+}
+
+/// Returns `existing` with `sha` appended as a remembered memory-fit override,
+/// then re-sanitized (see [`sanitize_dismissed_memory_fit_models`]) so the add
+/// is idempotent (a sha already present is not duplicated) and the list stays
+/// capped FIFO. The incoming `sha` is lowercased and trimmed first so a caller
+/// passing an upper-case or padded digest still lands a valid entry; a `sha`
+/// that is not a valid weights digest is dropped by the sanitize pass and
+/// leaves the list unchanged. Pure and unit-tested.
+pub(crate) fn with_dismissed_model_added(mut existing: Vec<String>, sha: &str) -> Vec<String> {
+    existing.push(sha.trim().to_ascii_lowercase());
+    sanitize_dismissed_memory_fit_models(existing)
+}
+
+/// Returns `existing` with every entry equal to `sha` removed (keyed by the
+/// digest so an orphaned entry whose model is no longer installed is still
+/// removable). The incoming `sha` is lowercased and trimmed to match the stored
+/// form. Pure and unit-tested.
+pub(crate) fn with_dismissed_model_removed(existing: Vec<String>, sha: &str) -> Vec<String> {
+    let target = sha.trim().to_ascii_lowercase();
+    existing.into_iter().filter(|s| *s != target).collect()
 }
 
 fn clamp_u32(value: &mut u32, bounds: (u32, u32), default: u32, field: &str) {

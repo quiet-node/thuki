@@ -345,6 +345,159 @@ pub fn set_ollama_url(
     Ok(resolved)
 }
 
+/// Remembers the built-in model `model_id` as an accepted over-the-mild-limit
+/// load: its weights SHA-256 is appended to `behavior.dismissed_memory_fit_models`
+/// so the "may not fit" card is not shown again for it in the mild band. A
+/// freeze-band load still warns regardless. Idempotent (a model already
+/// remembered is a no-op), FIFO-capped, and persisted through the exact same
+/// lock + atomic-write + broadcast path as every other config mutation.
+///
+/// Thin Tauri wrapper (coverage-off): it resolves the model's weights SHA from
+/// the manifest (a missing/unreadable row means nothing to remember, so the
+/// current config is returned unchanged) and delegates the list mutation to the
+/// unit-tested [`write_dismissed_memory_fit_added_to_disk`].
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn remember_model_memory_fit(
+    model_id: String,
+    app: AppHandle,
+    state: State<'_, RwLock<AppConfig>>,
+    db: State<'_, crate::history::Database>,
+) -> Result<AppConfig, ConfigError> {
+    let path = config_path(&app)?;
+    // Resolve the weights SHA-256 that keys the override list. A poisoned lock is
+    // recovered (an unrelated panic does not invalidate the connection). No row
+    // means the model is not installed, so there is nothing to remember.
+    let sha = {
+        let conn = match db.0.lock() {
+            Ok(conn) => conn,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        match crate::models::manifest::get(&conn, &model_id) {
+            Ok(Some(row)) => row.sha256,
+            _ => return Ok(state.read().clone()),
+        }
+    };
+    let resolved = {
+        let mut guard = state.write();
+        let resolved = write_dismissed_memory_fit_added_to_disk(&path, &sha)?;
+        *guard = resolved.clone();
+        resolved
+    };
+    emit_config_updated(&app);
+    Ok(resolved)
+}
+
+/// Removes the weights SHA-256 `model_sha` from
+/// `behavior.dismissed_memory_fit_models`, so the "may not fit" card warns again
+/// for that model. Keyed by sha (not model id) so an orphaned entry whose model
+/// is no longer installed is still removable from Settings. Persisted through
+/// the same lock + atomic-write + broadcast path as every other config
+/// mutation.
+///
+/// Thin Tauri wrapper (coverage-off): delegates the list mutation to the
+/// unit-tested [`write_dismissed_memory_fit_removed_to_disk`].
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub fn forget_model_memory_fit(
+    model_sha: String,
+    app: AppHandle,
+    state: State<'_, RwLock<AppConfig>>,
+) -> Result<AppConfig, ConfigError> {
+    let path = config_path(&app)?;
+    let resolved = {
+        let mut guard = state.write();
+        let resolved = write_dismissed_memory_fit_removed_to_disk(&path, &model_sha)?;
+        *guard = resolved.clone();
+        resolved
+    };
+    emit_config_updated(&app);
+    Ok(resolved)
+}
+
+/// Reads the current `behavior.dismissed_memory_fit_models` array out of a
+/// parsed config document as plain strings, or an empty vec when the key (or
+/// the whole section) is absent. Non-string array entries are skipped. The
+/// loader re-sanitizes the list on the reload that follows every write, so this
+/// only needs to recover the raw stored strings.
+fn read_dismissed_memory_fit_models(doc: &DocumentMut) -> Vec<String> {
+    doc.get("behavior")
+        .and_then(Item::as_table)
+        .and_then(|table| table.get("dismissed_memory_fit_models"))
+        .and_then(Item::as_array)
+        .map(|array| {
+            array
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Writes a `Vec<String>` back into the `[behavior]` table's
+/// `dismissed_memory_fit_models` key as a TOML array, materializing an empty
+/// `[behavior]` table first when the on-disk file predates the section (mirrors
+/// [`write_field_to_disk`]).
+fn set_dismissed_memory_fit_models(doc: &mut DocumentMut, models: Vec<String>) {
+    if doc.get("behavior").and_then(Item::as_table).is_none() {
+        doc.insert("behavior", Item::Table(Table::new()));
+    }
+    let mut array = Array::new();
+    for sha in models {
+        array.push(sha);
+    }
+    // A `[behavior]` table is guaranteed present by the block above.
+    if let Some(table) = doc.get_mut("behavior").and_then(Item::as_table_mut) {
+        table.insert(
+            "dismissed_memory_fit_models",
+            Item::Value(TomlValue::Array(array)),
+        );
+    }
+}
+
+/// Appends `sha` to the on-disk `behavior.dismissed_memory_fit_models` list
+/// (deduped + FIFO-capped via [`crate::config::loader::with_dismissed_model_added`]),
+/// then reloads + resolves. Pulled out of the Tauri wrapper so the read, list
+/// mutation, atomic write, and post-write reload are exercised without an
+/// `AppHandle`.
+pub(crate) fn write_dismissed_memory_fit_added_to_disk(
+    path: &Path,
+    sha: &str,
+) -> Result<AppConfig, ConfigError> {
+    let mut doc = read_document(path)?;
+    let current = read_dismissed_memory_fit_models(&doc);
+    let updated = crate::config::loader::with_dismissed_model_added(current, sha);
+    set_dismissed_memory_fit_models(&mut doc, updated);
+    config::atomic_write_bytes(path, doc.to_string().as_bytes()).map_err(|source| {
+        ConfigError::IoError {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    config::load_from_path(path)
+}
+
+/// Removes `sha` from the on-disk `behavior.dismissed_memory_fit_models` list
+/// (via [`crate::config::loader::with_dismissed_model_removed`]), then reloads +
+/// resolves. Pulled out of the Tauri wrapper so the read, list mutation, atomic
+/// write, and post-write reload are exercised without an `AppHandle`.
+pub(crate) fn write_dismissed_memory_fit_removed_to_disk(
+    path: &Path,
+    sha: &str,
+) -> Result<AppConfig, ConfigError> {
+    let mut doc = read_document(path)?;
+    let current = read_dismissed_memory_fit_models(&doc);
+    let updated = crate::config::loader::with_dismissed_model_removed(current, sha);
+    set_dismissed_memory_fit_models(&mut doc, updated);
+    config::atomic_write_bytes(path, doc.to_string().as_bytes()).map_err(|source| {
+        ConfigError::IoError {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    config::load_from_path(path)
+}
+
 /// Patches one `(section, key)` to disk and returns the resolved `AppConfig`
 /// the loader produces from the new file. Pulled out of the Tauri wrapper so
 /// the allowlist guard, document patch, atomic write, and post-write reload

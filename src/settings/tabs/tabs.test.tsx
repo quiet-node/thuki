@@ -83,6 +83,7 @@ const CONFIG: RawAppConfig = {
     auto_save_conversations: true,
     history_retention_days: -1,
     auto_save_notice_acknowledged: false,
+    dismissed_memory_fit_models: [],
   },
   debug: {
     trace_enabled: false,
@@ -573,6 +574,7 @@ describe('BehaviorTab', () => {
             auto_save_conversations: true,
             history_retention_days: -1,
             auto_save_notice_acknowledged: false,
+            dismissed_memory_fit_models: [],
           },
         }}
         resyncToken={0}
@@ -656,6 +658,7 @@ describe('BehaviorTab', () => {
             auto_save_conversations: true,
             history_retention_days: -1,
             auto_save_notice_acknowledged: false,
+            dismissed_memory_fit_models: [],
           },
         }}
         resyncToken={0}
@@ -692,6 +695,7 @@ describe('BehaviorTab', () => {
             auto_save_conversations: true,
             history_retention_days: -1,
             auto_save_notice_acknowledged: false,
+            dismissed_memory_fit_models: [],
           },
         }}
         resyncToken={0}

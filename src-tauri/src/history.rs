@@ -631,6 +631,7 @@ pub async fn generate_title(
         app_config.inference.num_ctx,
         &tokio_util::sync::CancellationToken::new(),
         crate::commands::OversizePolicy::SilentSkip,
+        &app_config.behavior.dismissed_memory_fit_models,
     )
     .await
     else {

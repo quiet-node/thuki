@@ -424,6 +424,31 @@ pub(crate) struct BuiltinSkippedPayload {
     /// blocked against, echoed to the frontend so the ambient warning strip can
     /// state the actual headroom rule instead of a hardcoded percentage.
     pub ceiling_fraction: f64,
+    /// Whether a per-model "remember" could suppress this warning: true unless
+    /// the skip is in the freeze band
+    /// ([`crate::models::memory::is_freeze_band`]). The single source of truth
+    /// for the freeze-floor fraction so the ambient strip's opt-in checkbox is
+    /// shown or hidden without the frontend duplicating a magic number, matching
+    /// the `estimate_model_fit` payload the chat card reads.
+    pub can_remember: bool,
+}
+
+impl BuiltinSkippedPayload {
+    /// Builds the ambient-skip payload from the memory figures the gate blocked
+    /// on, deriving `ceiling_fraction` and `can_remember` so both stay in lock
+    /// step with the gate. `can_remember` is `!is_freeze_band(required,
+    /// available)`, computed against the SAME figures the skip used, so the
+    /// strip offers the remember action for exactly the loads a remember can
+    /// suppress.
+    pub(crate) fn new(model_id: String, required_bytes: u64, available_bytes: u64) -> Self {
+        Self {
+            model_id,
+            required_bytes,
+            available_bytes,
+            ceiling_fraction: MODEL_FIT_CEILING_FRACTION,
+            can_remember: !crate::models::memory::is_freeze_band(required_bytes, available_bytes),
+        }
+    }
 }
 
 /// Maps a resolved `(Target, MemoryGate)` - or a resolve error - to the
@@ -516,6 +541,18 @@ pub(crate) fn spawn_gated_builtin_warmup(
     if !builtin_should_warm(&model_id) {
         return;
     }
+    // Snapshot the remembered memory-fit overrides before taking the DB lock so a
+    // model the user chose to load over the mild limit auto-primes silently
+    // instead of being skipped by the gate. Read outside the conn scope to avoid
+    // nesting the config and DB locks.
+    let dismissed_shas = {
+        use tauri::Manager;
+        app.state::<parking_lot::RwLock<crate::config::AppConfig>>()
+            .read()
+            .behavior
+            .dismissed_memory_fit_models
+            .clone()
+    };
     // Resolve the manifest row to an engine Target and run the pre-load memory
     // gate inside one scope so the connection guard drops before the spawned
     // load. A poisoned lock is recovered: an unrelated panic does not
@@ -538,6 +575,7 @@ pub(crate) fn spawn_gated_builtin_warmup(
                 &model_id,
                 &target.model_path,
                 force,
+                &dismissed_shas,
             );
             (target, gate)
         })
@@ -590,12 +628,7 @@ pub(crate) fn spawn_gated_builtin_warmup(
             }
             let _ = app.emit(
                 "warmup:builtin-skipped",
-                BuiltinSkippedPayload {
-                    model_id,
-                    required_bytes,
-                    available_bytes,
-                    ceiling_fraction: MODEL_FIT_CEILING_FRACTION,
-                },
+                BuiltinSkippedPayload::new(model_id, required_bytes, available_bytes),
             );
         }
         BuiltinWarmupAction::Skip => {}
@@ -1033,6 +1066,24 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn builtin_skipped_payload_can_remember_reflects_freeze_band() {
+        const GIB: u64 = 1 << 30;
+        // Mild band: 11 GiB needed / 10 GiB available (ratio 1.10, below the 3x
+        // freeze floor) is remember-able, so the ambient strip offers the
+        // "Always allow this model" action.
+        let mild = BuiltinSkippedPayload::new("model".to_string(), 11 * GIB, 10 * GIB);
+        assert!(mild.can_remember);
+        assert_eq!(mild.ceiling_fraction, MODEL_FIT_CEILING_FRACTION);
+        // Mid-band: 20 GiB / 10 GiB (ratio 2.00) is still under the floor.
+        let mid = BuiltinSkippedPayload::new("model".to_string(), 20 * GIB, 10 * GIB);
+        assert!(mid.can_remember);
+        // Freeze band: 30 GiB / 10 GiB (ratio 3.00, the boundary) is never
+        // remember-able, so the strip hides "Always allow this model".
+        let freeze = BuiltinSkippedPayload::new("model".to_string(), 30 * GIB, 10 * GIB);
+        assert!(!freeze.can_remember);
     }
 
     #[tokio::test]

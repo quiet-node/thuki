@@ -2603,6 +2603,7 @@ describe('useModel', () => {
         result.current.updateErroredMessageModel(assistantId, 'qwen2.5:7b', {
           requiredBytes: 8 * 1024 ** 3,
           availableBytes: 4 * 1024 ** 3,
+          canRemember: true,
         });
       });
 
@@ -2612,6 +2613,7 @@ describe('useModel', () => {
       expect(result.current.messages[1].memoryFit).toEqual({
         requiredBytes: 8 * 1024 ** 3,
         availableBytes: 4 * 1024 ** 3,
+        canRemember: true,
       });
       expect(result.current.messages[1].errorKind).toBe('InsufficientMemory');
       expect(result.current.messages[1].retrySnapshot).toBe(originalSnapshot);
@@ -2639,6 +2641,7 @@ describe('useModel', () => {
           result.current.updateErroredMessageModel('no-such-id', 'qwen2.5:7b', {
             requiredBytes: 8 * 1024 ** 3,
             availableBytes: 4 * 1024 ** 3,
+            canRemember: true,
           });
         });
       }).not.toThrow();

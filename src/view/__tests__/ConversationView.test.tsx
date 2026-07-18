@@ -1569,12 +1569,14 @@ describe('ConversationView', () => {
         />,
       );
 
+      // Freeze band (estimate has no can_remember): the single "Load anyway"
+      // force forwards remember=false with the card's own snapshot.
       fireEvent.click(
         await screen.findByRole('button', { name: 'Load anyway' }),
       );
 
       expect(onLoadAnyway).toHaveBeenCalledTimes(1);
-      expect(onLoadAnyway).toHaveBeenCalledWith(retrySnapshot);
+      expect(onLoadAnyway).toHaveBeenCalledWith(retrySnapshot, false);
     });
 
     it('omits the button instead of crashing when a message has no retrySnapshot', async () => {
@@ -1599,7 +1601,9 @@ describe('ConversationView', () => {
         />,
       );
 
-      await screen.findByText('This model may not fit in memory right now.');
+      // Freeze band (estimate has no can_remember): the card still renders, but
+      // with no retrySnapshot there is no force action to wire.
+      await screen.findByText('Only ~0.0 GB free. This model needs ~0.0 GB.');
       expect(
         screen.queryByRole('button', { name: 'Load anyway' }),
       ).not.toBeInTheDocument();

@@ -63,6 +63,12 @@ export interface RawAppConfig {
     history_retention_days: number;
     /** When true, one-shot auto-save chat notice has been dismissed forever. */
     auto_save_notice_acknowledged: boolean;
+    /**
+     * Weights SHA-256 of models the user chose to load over the mild memory
+     * limit without being re-warned. Managed via the warning card opt-in and
+     * removable per row here in Settings. Freeze-band loads still warn.
+     */
+    dismissed_memory_fit_models: string[];
   };
   debug: {
     trace_enabled: boolean;

@@ -19,7 +19,8 @@ use super::{
     prune_traces_for_retention, prune_traces_older_than, read_document,
     remove_openai_provider_from_disk, reset_section_on_disk, trace_enabled_changed,
     trace_retention_days_changed, traces_stats_for, validate_provider_value,
-    write_active_provider_to_disk, write_field_to_disk, write_provider_field_to_disk,
+    write_active_provider_to_disk, write_dismissed_memory_fit_added_to_disk,
+    write_dismissed_memory_fit_removed_to_disk, write_field_to_disk, write_provider_field_to_disk,
 };
 use crate::config::defaults::{ALLOWED_FIELDS, ALLOWED_SECTIONS};
 use crate::config::{AppConfig, ConfigError};
@@ -120,9 +121,12 @@ fn allowed_fields_count_matches_schema_field_count() {
     // because they have no perceptible effect across their usable range.
     // `prompt.system_customized` is an internal migration flag co-written by
     // set_config_field when prompt.system is saved; it is not directly user-tunable
-    // and is intentionally absent from ALLOWED_FIELDS. If this assertion fails, the
-    // schema has drifted from the allowlist and someone added a field without
-    // extending ALLOWED_FIELDS.
+    // and is intentionally absent from ALLOWED_FIELDS.
+    // `behavior.dismissed_memory_fit_models` is an array, not a flat scalar: it is
+    // written through the dedicated remember_model_memory_fit / forget_model_memory_fit
+    // commands (mirroring the providers array), so it too is intentionally absent
+    // from ALLOWED_FIELDS. If this assertion fails, the schema has drifted from the
+    // allowlist and someone added a flat field without extending ALLOWED_FIELDS.
     assert_eq!(ALLOWED_FIELDS.len(), 25);
 }
 
@@ -736,6 +740,138 @@ fn write_field_to_disk_creates_section_absent_from_older_file() {
     let on_disk = std::fs::read_to_string(&path).unwrap();
     assert!(on_disk.contains("[behavior]"));
     assert!(on_disk.contains("auto_replace = true"));
+}
+
+// ─── dismissed_memory_fit_models add / remove ───────────────────────────────
+
+/// A valid 64-char lowercase-hex weights SHA from a single hex nibble.
+fn fit_sha(nibble: char) -> String {
+    std::iter::repeat(nibble).take(64).collect()
+}
+
+#[test]
+fn write_dismissed_added_persists_and_creates_section() {
+    // SAMPLE_CONFIG has no [behavior] table: adding must materialize it.
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+
+    let resolved = write_dismissed_memory_fit_added_to_disk(&path, &fit_sha('a')).unwrap();
+    assert_eq!(
+        resolved.behavior.dismissed_memory_fit_models,
+        vec![fit_sha('a')]
+    );
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("[behavior]"));
+    assert!(on_disk.contains(&fit_sha('a')));
+}
+
+#[test]
+fn write_dismissed_added_is_idempotent_and_appends_new() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+
+    write_dismissed_memory_fit_added_to_disk(&path, &fit_sha('a')).unwrap();
+    // Re-adding the same sha does not duplicate it.
+    let again = write_dismissed_memory_fit_added_to_disk(&path, &fit_sha('a')).unwrap();
+    assert_eq!(
+        again.behavior.dismissed_memory_fit_models,
+        vec![fit_sha('a')]
+    );
+    // A different sha appends.
+    let two = write_dismissed_memory_fit_added_to_disk(&path, &fit_sha('b')).unwrap();
+    assert_eq!(
+        two.behavior.dismissed_memory_fit_models,
+        vec![fit_sha('a'), fit_sha('b')]
+    );
+}
+
+#[test]
+fn write_dismissed_removed_deletes_by_sha() {
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(
+        &path,
+        format!(
+            "[behavior]\ndismissed_memory_fit_models = [\"{}\", \"{}\"]\n",
+            fit_sha('a'),
+            fit_sha('b')
+        ),
+    )
+    .unwrap();
+
+    let resolved = write_dismissed_memory_fit_removed_to_disk(&path, &fit_sha('a')).unwrap();
+    assert_eq!(
+        resolved.behavior.dismissed_memory_fit_models,
+        vec![fit_sha('b')]
+    );
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(!on_disk.contains(&fit_sha('a')));
+    assert!(on_disk.contains(&fit_sha('b')));
+}
+
+#[test]
+fn write_dismissed_removed_on_absent_sha_is_noop() {
+    // Removing a sha the list never had (orphan-safe) leaves the file valid and
+    // the list unchanged; the [behavior] section is materialized either way.
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+
+    let resolved = write_dismissed_memory_fit_removed_to_disk(&path, &fit_sha('c')).unwrap();
+    assert!(resolved.behavior.dismissed_memory_fit_models.is_empty());
+}
+
+#[test]
+fn write_dismissed_added_propagates_io_error_when_parent_dir_is_readonly() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, SAMPLE_CONFIG).unwrap();
+
+    // Read-only directory: the existing file reads, but the temp file for the
+    // atomic rename swap cannot be created, so the write fails.
+    let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+    perms.set_mode(0o500);
+    std::fs::set_permissions(&dir, perms.clone()).unwrap();
+
+    let err = write_dismissed_memory_fit_added_to_disk(&path, &fit_sha('a')).unwrap_err();
+
+    let mut restore = perms;
+    restore.set_mode(0o700);
+    std::fs::set_permissions(&dir, restore).unwrap();
+
+    matches!(err, ConfigError::IoError { .. });
+}
+
+#[test]
+fn write_dismissed_removed_propagates_io_error_when_parent_dir_is_readonly() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir();
+    let path = dir.join("config.toml");
+    std::fs::write(
+        &path,
+        format!(
+            "[behavior]\ndismissed_memory_fit_models = [\"{}\"]\n",
+            fit_sha('a')
+        ),
+    )
+    .unwrap();
+
+    let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+    perms.set_mode(0o500);
+    std::fs::set_permissions(&dir, perms.clone()).unwrap();
+
+    let err = write_dismissed_memory_fit_removed_to_disk(&path, &fit_sha('a')).unwrap_err();
+
+    let mut restore = perms;
+    restore.set_mode(0o700);
+    std::fs::set_permissions(&dir, restore).unwrap();
+
+    matches!(err, ConfigError::IoError { .. });
 }
 
 #[test]

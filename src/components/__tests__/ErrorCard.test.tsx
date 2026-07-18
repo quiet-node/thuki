@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
-import { ErrorCard } from '../ErrorCard';
+import { ErrorCard, INSUFFICIENT_MEMORY_CONSEQUENCE } from '../ErrorCard';
 
 describe('ErrorCard', () => {
   it('renders the title (first line of message)', () => {
@@ -251,6 +251,7 @@ describe('ErrorCard', () => {
       modelName: 'Qwen3.5 9B',
       requiredBytes: 8 * 1024 ** 3,
       availableBytes: 4 * 1024 ** 3,
+      canRemember: true,
     };
     const FALLBACK_MESSAGE =
       'This model may not fit in memory\nClose some apps, pick a smaller model, or load it anyway.';
@@ -298,7 +299,7 @@ describe('ErrorCard', () => {
       ).toBeInTheDocument();
     });
 
-    it('applies the amber accent bar', () => {
+    it('applies the amber accent bar in the mild band', () => {
       const { container } = render(
         <ErrorCard
           kind="InsufficientMemory"
@@ -313,7 +314,136 @@ describe('ErrorCard', () => {
       );
     });
 
-    it('renders only Switch model when onLoadAnyway is absent, and fires it', () => {
+    it('tints the accent bar red in the freeze band so it matches the severity tag', () => {
+      const { container } = render(
+        <ErrorCard
+          kind="InsufficientMemory"
+          message={FALLBACK_MESSAGE}
+          insufficientMemoryInfo={{ ...INFO, canRemember: false }}
+        />,
+      );
+      const bar = container.querySelector('[data-error-bar]');
+      expect((bar as HTMLElement | null)?.style.background).toBe(
+        'rgb(248, 113, 113)',
+      );
+    });
+
+    it('renders the three split actions in the mild band (canRemember true)', () => {
+      render(
+        <ErrorCard
+          kind="InsufficientMemory"
+          message={FALLBACK_MESSAGE}
+          insufficientMemoryInfo={INFO}
+          onLoadAnyway={vi.fn()}
+          onSwitchModel={vi.fn()}
+        />,
+      );
+      expect(
+        screen.getByRole('button', { name: 'Load once' }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Always allow this model' }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Switch model' }),
+      ).toBeInTheDocument();
+      // No single "Load anyway" in the mild band; it is split.
+      expect(screen.queryByRole('button', { name: 'Load anyway' })).toBeNull();
+    });
+
+    it('mild band: "Load once" fires onLoadAnyway(false), "Always allow this model" fires onLoadAnyway(true), Switch fires onSwitchModel', () => {
+      const onLoadAnyway = vi.fn();
+      const onSwitchModel = vi.fn();
+      render(
+        <ErrorCard
+          kind="InsufficientMemory"
+          message={FALLBACK_MESSAGE}
+          insufficientMemoryInfo={INFO}
+          onLoadAnyway={onLoadAnyway}
+          onSwitchModel={onSwitchModel}
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Load once' }));
+      expect(onLoadAnyway).toHaveBeenLastCalledWith(false);
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Always allow this model' }),
+      );
+      expect(onLoadAnyway).toHaveBeenLastCalledWith(true);
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      expect(onSwitchModel).toHaveBeenCalledTimes(1);
+    });
+
+    it('freeze band (canRemember false): chip, free-vs-needed title, single note, two buttons', () => {
+      const onLoadAnyway = vi.fn();
+      const onSwitchModel = vi.fn();
+      render(
+        <ErrorCard
+          kind="InsufficientMemory"
+          message={FALLBACK_MESSAGE}
+          insufficientMemoryInfo={{ ...INFO, canRemember: false }}
+          onLoadAnyway={onLoadAnyway}
+          onSwitchModel={onSwitchModel}
+        />,
+      );
+      // Severity tag: red tokens, squared corners, and no dot of its own.
+      const chip = screen.getByTestId('memory-critical-chip') as HTMLElement;
+      expect(chip).toHaveTextContent('Memory critically low');
+      expect(chip.style.color).toBe('rgb(248, 113, 113)');
+      expect(chip.style.background).toBe('rgba(248, 113, 113, 0.12)');
+      expect(chip.style.border).toBe('1px solid rgba(248, 113, 113, 0.35)');
+      // Squared-off tag, not a pill.
+      expect(chip.style.borderRadius).toBe('5px');
+      expect(chip.style.fontSize).toBe('10px');
+      expect(chip.style.fontWeight).toBe('700');
+      expect(chip.style.letterSpacing).toBe('0.08em');
+      expect(chip.style.padding).toBe('3px 8px');
+      expect(chip.style.textTransform).toBe('uppercase');
+      // Text only: the tag itself is the indicator, so it carries no dot.
+      expect(chip.querySelector('span')).toBeNull();
+      // Free-vs-needed title, using the card's existing GB rounding.
+      expect(
+        screen.getByText('Only ~4.0 GB free. Qwen3.5 9B needs ~8.0 GB.'),
+      ).toBeInTheDocument();
+      // The single severity note.
+      expect(screen.getByTestId('memory-freeze-note')).toHaveTextContent(
+        'That is far too tight to load on its own. Thuki always asks at this level, because loading can slow your Mac badly or freeze it.',
+      );
+      // The old fit/estimate/consequence copy is gone in this band.
+      expect(
+        screen.queryByText('Qwen3.5 9B may not fit in memory right now.'),
+      ).toBeNull();
+      expect(
+        screen.queryByText(
+          'Estimated need: ~8.0 GB. Currently available: ~4.0 GB.',
+        ),
+      ).toBeNull();
+      expect(screen.queryByText(INSUFFICIENT_MEMORY_CONSEQUENCE)).toBeNull();
+      // Exactly Load anyway + Switch model; never "Always allow this model".
+      expect(
+        screen.queryByRole('button', { name: 'Always allow this model' }),
+      ).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Load once' })).toBeNull();
+      expect(screen.getAllByRole('button')).toHaveLength(2);
+      fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
+      expect(onLoadAnyway).toHaveBeenCalledWith(false);
+      fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
+      expect(onSwitchModel).toHaveBeenCalledTimes(1);
+    });
+
+    it('mild band renders no chip and no freeze note', () => {
+      render(
+        <ErrorCard
+          kind="InsufficientMemory"
+          message={FALLBACK_MESSAGE}
+          insufficientMemoryInfo={INFO}
+          onLoadAnyway={vi.fn()}
+        />,
+      );
+      expect(screen.queryByTestId('memory-freeze-note')).toBeNull();
+      expect(screen.queryByTestId('memory-critical-chip')).toBeNull();
+    });
+
+    it('renders only Switch model when onLoadAnyway is absent (mild band)', () => {
       const onSwitchModel = vi.fn();
       render(
         <ErrorCard
@@ -326,18 +456,21 @@ describe('ErrorCard', () => {
       expect(
         screen.getByRole('button', { name: 'Switch model' }),
       ).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Load anyway' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Load once' })).toBeNull();
+      expect(
+        screen.queryByRole('button', { name: 'Always allow this model' }),
+      ).toBeNull();
       fireEvent.click(screen.getByRole('button', { name: 'Switch model' }));
       expect(onSwitchModel).toHaveBeenCalledTimes(1);
     });
 
-    it('renders only Load anyway when onSwitchModel is absent, and fires it', () => {
+    it('renders only the force button when onSwitchModel is absent (freeze band)', () => {
       const onLoadAnyway = vi.fn();
       render(
         <ErrorCard
           kind="InsufficientMemory"
           message={FALLBACK_MESSAGE}
-          insufficientMemoryInfo={INFO}
+          insufficientMemoryInfo={{ ...INFO, canRemember: false }}
           onLoadAnyway={onLoadAnyway}
         />,
       );
@@ -346,10 +479,10 @@ describe('ErrorCard', () => {
       ).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Switch model' })).toBeNull();
       fireEvent.click(screen.getByRole('button', { name: 'Load anyway' }));
-      expect(onLoadAnyway).toHaveBeenCalledTimes(1);
+      expect(onLoadAnyway).toHaveBeenCalledWith(false);
     });
 
-    it('omits both buttons when neither handler is provided', () => {
+    it('omits all action buttons when neither handler is provided', () => {
       render(
         <ErrorCard
           kind="InsufficientMemory"
