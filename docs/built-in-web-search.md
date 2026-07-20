@@ -135,8 +135,8 @@ These principles drive the design. Everything later is an application of them.
 | **Evidence over confidence**   | “Today” and price questions drop stale archive URLs and numberless marketing pages so the model cannot sound sure on empty chrome.                                                                                                                             |
 | **Bounded work**               | Fixed budgets: pages, tokens, repair rounds, at most one requery. Fixed stage order in the **orchestrator** (the module that runs stages in order and handles cancel/outcomes).                                                                                |
 | **Honest when empty**          | If search was needed but nothing usable returned, disclose that; do not fake “current” knowledge.                                                                                                                                                              |
-| **Privacy of cache**           | Conversation page cache and scrape caches live in process memory only; process exit wipes them.                                                                                                                                                                |
-| **Reuse is gated**             | Classifier `cached` only hints; re-rank stored **pages** for the new question and run a buffered writer check; escalate to a full search if pages cannot ground the answer.                                                                                    |
+| **Privacy of cache**           | Conversation page cache and scrape caches live in process memory only; process exit wipes them.                                                                                                                                                               |
+| **Reuse is gated**             | Classifier `cached` only hints; re-rank stored **pages** for the new question and run a buffered writer check; escalate to a full search if pages cannot ground the answer.                                                                                   |
 
 ---
 
@@ -185,24 +185,24 @@ flowchart TD
 
 **Stages and helpers** (code under `src-tauri/src/websearch/`):
 
-| Order  | Stage                           | One-line role                                                             |
-| ------ | ------------------------------- | ------------------------------------------------------------------------- |
-| 1      | `prefilter`                     | Code rules: must search / must not / unsure                               |
-| 2      | `prepass`                       | Classifier model: `no` / `cached` / `web` + queries (+ optional `lang`)   |
-| (side) | ForceWeb SERP race              | On engine-shaped ForceWeb, raw-query SERP runs **with** the classifier    |
-| (side) | `clock`                         | Place-time for clock questions (not a search)                             |
-| 3      | `lang`                          | Resolve language once from the user message; shape every channel          |
-| 4      | `cache` / `serp_cache`          | Conversation page cache (reuse) + process SERP/page scrape cache          |
-| 5      | Verticals                       | Weather, news, Wikipedia, sports APIs                                     |
-| 6      | `judge`                         | Did the vertical actually answer? Else escalate                           |
-| 7      | `engine`                        | Scrape keyless SERPs, fuse ranks (RRF + credibility list)                 |
-| 8      | `fetch`                         | Download pages, extract readable text                                     |
-| 9      | `rank` + `recency` + `evidence` | Passages, freshness prior, price/freshness filters                        |
-| 10     | `assemble`                      | Numbered source blocks under a token budget                               |
+| Order  | Stage                           | One-line role                                                           |
+| ------ | ------------------------------- | ----------------------------------------------------------------------- |
+| 1      | `prefilter`                     | Code rules: must search / must not / unsure                             |
+| 2      | `prepass`                       | Classifier model: `no` / `cached` / `web` + queries (+ optional `lang`) |
+| (side) | ForceWeb SERP race              | On engine-shaped ForceWeb, raw-query SERP runs **with** the classifier  |
+| (side) | `clock`                         | Place-time for clock questions (not a search)                           |
+| 3      | `lang`                          | Resolve language once from the user message; shape every channel        |
+| 4      | `cache` / `serp_cache`          | Conversation page cache (reuse) + process SERP/page scrape cache        |
+| 5      | Verticals                       | Weather, news, Wikipedia, sports APIs                                   |
+| 6      | `judge`                         | Did the vertical actually answer? Else escalate                         |
+| 7      | `engine`                        | Scrape keyless SERPs, fuse ranks (RRF + credibility list)               |
+| 8      | `fetch`                         | Download pages, extract readable text                                   |
+| 9      | `rank` + `recency` + `evidence` | Passages, freshness prior, price/freshness filters                      |
+| 10     | `assemble`                      | Numbered source blocks under a token budget                             |
 | 11     | `writer`                        | Grounded answer stream; cache tier may buffer for `INSUFFICIENT_EVIDENCE` |
-| 12     | `cite_check`                    | Mechanical citation support + optional repair                             |
-| glue   | `orchestrator`                  | Fixed order, cancellation, outcomes, timings                              |
-| glue   | `stage_timing`                  | Per-stage wall times → stderr + chat trace                                |
+| 12     | `cite_check`                    | Mechanical citation support + optional repair                           |
+| glue   | `orchestrator`                  | Fixed order, cancellation, outcomes, timings                            |
+| glue   | `stage_timing`                  | Per-stage wall times → stderr + chat trace                              |
 
 Outbound HTTP goes through `src-tauri/src/net/`: SSRF-safe transport (every fetch re-checks that the target is a public internet address, not private/LAN).
 
@@ -447,10 +447,10 @@ Code: `clock.rs`, `prefilter` helpers, `commands.rs`.
 
 **What.** Two different in-memory caches. Do not mix them up.
 
-| Cache                                 | Holds                                                                                                                             | Scope                                                          | Why                                                                                    |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| **Conversation page cache** (`cache`) | Full **fetched page texts** from recent successful **engine-tier** searches (up to **4** entries), not pre-assembled `[n]` blocks | Per conversation (epoch scope) + per-entry **TTL** (~10 min)   | Follow-ups can re-answer from pages already downloaded without re-hitting the open web |
-| **Web scrape cache** (`serp_cache`)   | Per-engine SERP hit lists + extracted page bodies keyed by query                                                                  | Process-wide; SERP ~5 min, pages ~15 min; **FIFO** max entries | Same scrape twice soon: save latency and rate-limit budget                             |
+| Cache | Holds | Scope | Why |
+| --- | --- | --- | --- |
+| **Conversation page cache** (`cache`) | Full **fetched page texts** from recent successful **engine-tier** searches (up to **4** entries), not pre-assembled `[n]` blocks | Per conversation (epoch scope) + per-entry **TTL** (~10 min) | Follow-ups can re-answer from pages already downloaded without re-hitting the open web |
+| **Web scrape cache** (`serp_cache`) | Per-engine SERP hit lists + extracted page bodies keyed by query | Process-wide; SERP ~5 min, pages ~15 min; **FIFO** max entries | Same scrape twice soon: save latency and rate-limit budget |
 
 **Rule:** memory only. Process exit wipes both. Queries and page text stay off disk.
 
@@ -794,39 +794,39 @@ How to run: [search-eval.md](./search-eval.md).
 
 ## Glossary
 
-| Term                  | Plain meaning                                                      |
-| --------------------- | ------------------------------------------------------------------ |
-| Auto search           | Setting that allows plain turns to open the web when needed        |
-| Builtin               | Thuki’s bundled llama.cpp / `llama-server` provider                |
-| Pipeline              | Fixed multi-step stages run in order                               |
-| Keyless               | No user-supplied API key for those sources                         |
-| Classifier / prepass  | Short model call that only routes search (JSON form)               |
-| Prefilter             | Code-only search / must-not / unsure rules                         |
-| ForceWeb / ForceNo    | Prefilter: force web / force no web                                |
-| Cached (classifier)   | Hint to try conversation page reuse; still gated                   |
-| Page cache reuse      | Re-rank stored engine pages for a follow-up; escalate if thin      |
-| INSUFFICIENT_EVIDENCE | Buffered-writer sentinel: reuse failed grounding → fresh search    |
-| Vertical              | Specialized API path (weather, news, wiki, sports)                 |
-| SERP                  | **S**earch **E**ngine **R**esults **P**age (hit list + snippets)   |
-| RRF                   | **R**eciprocal **R**ank **F**usion: merge lists by `1/(k+rank)`    |
-| BM25                  | Classic keyword relevance score (Okapi BM25)                       |
-| DDG                   | DuckDuckGo HTML search                                             |
-| SSRF                  | **S**erver-**s**ide **r**equest **f**orgery risk; blocked by `net` |
-| Nonce                 | One-time random fence token around untrusted page text             |
-| TTL                   | Time-to-live (cache expiry)                                        |
-| FIFO                  | First-in first-out eviction when a cache is full                   |
-| Readability           | Extract main article text from HTML                                |
-| num_ctx               | Model context window size (tokens)                                 |
-| IPC                   | Inter-process messages (Rust ↔ UI)                                 |
-| TTFT                  | Time to first streamed answer token                                |
-| Punycode              | ASCII encoding of international domain names                       |
-| User-Agent            | Client identity string on HTTP requests                            |
-| Citation audit        | Post-check that `[n]` claims match source text                     |
-| Attribution           | Licence/provider credit on a source (UI + metadata)                |
-| Language parity       | Retrieval and answers follow the user’s language                   |
-| ForceWeb race         | Parallel raw SERP while the classifier rewrites                    |
-| Evidence filters      | Post-rank drops for stale archives / bad prices                    |
-| Orchestrator          | Module that runs stages, cancel, and outcomes                      |
+| Term                 | Plain meaning                                                      |
+| -------------------- | ------------------------------------------------------------------ |
+| Auto search          | Setting that allows plain turns to open the web when needed        |
+| Builtin              | Thuki’s bundled llama.cpp / `llama-server` provider                |
+| Pipeline             | Fixed multi-step stages run in order                               |
+| Keyless              | No user-supplied API key for those sources                         |
+| Classifier / prepass | Short model call that only routes search (JSON form)               |
+| Prefilter            | Code-only search / must-not / unsure rules                         |
+| ForceWeb / ForceNo   | Prefilter: force web / force no web                                |
+| Cached (classifier)  | Hint to try conversation page reuse; still gated                   |
+| Page cache reuse     | Re-rank stored engine pages for a follow-up; escalate if thin      |
+| INSUFFICIENT_EVIDENCE | Buffered-writer sentinel: reuse failed grounding → fresh search   |
+| Vertical             | Specialized API path (weather, news, wiki, sports)                 |
+| SERP                 | **S**earch **E**ngine **R**esults **P**age (hit list + snippets)   |
+| RRF                  | **R**eciprocal **R**ank **F**usion: merge lists by `1/(k+rank)`    |
+| BM25                 | Classic keyword relevance score (Okapi BM25)                       |
+| DDG                  | DuckDuckGo HTML search                                             |
+| SSRF                 | **S**erver-**s**ide **r**equest **f**orgery risk; blocked by `net` |
+| Nonce                | One-time random fence token around untrusted page text             |
+| TTL                  | Time-to-live (cache expiry)                                        |
+| FIFO                 | First-in first-out eviction when a cache is full                   |
+| Readability          | Extract main article text from HTML                                |
+| num_ctx              | Model context window size (tokens)                                 |
+| IPC                  | Inter-process messages (Rust ↔ UI)                                 |
+| TTFT                 | Time to first streamed answer token                                |
+| Punycode             | ASCII encoding of international domain names                       |
+| User-Agent           | Client identity string on HTTP requests                            |
+| Citation audit       | Post-check that `[n]` claims match source text                     |
+| Attribution          | Licence/provider credit on a source (UI + metadata)                |
+| Language parity      | Retrieval and answers follow the user’s language                   |
+| ForceWeb race        | Parallel raw SERP while the classifier rewrites                    |
+| Evidence filters     | Post-rank drops for stale archives / bad prices                    |
+| Orchestrator         | Module that runs stages, cancel, and outcomes                      |
 
 ---
 
