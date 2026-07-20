@@ -16,10 +16,8 @@
 
 # cluster: editorial judgment -- impostor/hoax "news" domains, individually verified active 2026-07-10 via en.wikipedia.org/wiki/List_of_fake_news_websites (cross-cited PolitiFact/NewsGuard/Snopes/Lead Stories); not a bulk copy of that page
 actionnews3.com
-breaking13news.com
 dailybuzzlive.com
 news4ktla.com
-news4local.com
 now8news.com
 channel22news.com
 channel24news.com
@@ -36,7 +34,6 @@ current-affairs.org
 # cluster: editorial judgment -- 2026-07-14 gold-price smoke (giá vàng hôm nay): SEO scrapes /
 # free-blog hosts that assembled stale "SJC 80 triệu" / 2020 USD quotes ahead of real VN hubs
 blogdanica.com
-globaleasyforex.com
 ponselharian.com
 kulturellen.net
 
