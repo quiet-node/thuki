@@ -152,7 +152,7 @@ function parseUblacklistFormat(text: string): string[] {
   const domains: string[] = [];
   for (const rawLine of text.split('\n')) {
     const line = rawLine.trim();
-    if (line.length === 0) {
+    if (line.length === 0 || line.startsWith('#')) {
       continue;
     }
     const withoutScheme = line.replace(/^\*:\/\//, '');
@@ -297,8 +297,13 @@ async function checkLiveness(domain: string): Promise<LivenessVerdict> {
     timeoutHandle = setTimeout(() => resolve('timeout'), DNS_TIMEOUT_MS);
   });
   try {
+    // Held separately from the race so a late rejection (arriving after the
+    // timeout branch has already won) still has a handler attached and does
+    // not surface as an unhandledRejection once main() has moved on.
+    const lookup = dns.lookup(domain);
+    lookup.catch(() => {});
     const outcome = await Promise.race([
-      dns.lookup(domain).then(() => 'resolved' as const),
+      lookup.then(() => 'resolved' as const),
       timeout,
     ]);
     if (outcome === 'timeout') {
