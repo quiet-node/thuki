@@ -33,8 +33,8 @@ import { fileURLToPath } from 'node:url';
 // on this commit, so a moved or forged tag is rejected before it is built. Bump
 // both together; see "Bumping the pinned llama.cpp version" in
 // docs/release-process.md.
-const LLAMA_CPP_TAG = 'b9946';
-const LLAMA_CPP_COMMIT = 'fb30ba9a6c5b4674174d06aed14794832ab33278';
+const LLAMA_CPP_TAG = 'b10054';
+const LLAMA_CPP_COMMIT = 'ac2557cb24def295888ef47f1a35b401d978c510';
 const LLAMA_CPP_REPO = 'https://github.com/ggml-org/llama.cpp.git';
 
 // Minimum macOS Thuki supports, and the engine's build deployment target. This
