@@ -58,7 +58,6 @@ describe('PermissionsStep', () => {
     enableChannelCaptureWithResponses({
       ...BASE_RESPONSES,
       reset_and_relaunch_for_grant: false,
-      open_accessibility_settings: undefined,
     });
 
     render(<PermissionsStep />);
@@ -97,7 +96,6 @@ describe('PermissionsStep', () => {
     enableChannelCaptureWithResponses({
       ...BASE_RESPONSES,
       reset_and_relaunch_for_grant: false,
-      open_accessibility_settings: undefined,
     });
 
     render(<PermissionsStep />);
@@ -240,8 +238,8 @@ describe('PermissionsStep', () => {
       expect(invoke).toHaveBeenCalledWith('request_screen_recording_access');
       expect(invoke).toHaveBeenCalledWith('open_screen_recording_settings');
       expect(
-        screen.getAllByRole('button', { name: 'Checking...' }).length,
-      ).toBeGreaterThan(0);
+        screen.getByRole('button', { name: 'Checking...' }),
+      ).toBeInTheDocument();
     });
 
     it('shows Quit & Reopen once Screen Recording polling detects the permission, and it invokes quit_and_relaunch', async () => {
@@ -272,8 +270,8 @@ describe('PermissionsStep', () => {
         await vi.advanceTimersByTimeAsync(500);
       });
       expect(
-        screen.getAllByRole('button', { name: 'Checking...' }).length,
-      ).toBeGreaterThan(0);
+        screen.getByRole('button', { name: 'Checking...' }),
+      ).toBeInTheDocument();
 
       screenGranted = true;
       await act(async () => {
@@ -346,6 +344,10 @@ describe('PermissionsStep', () => {
     // call resolves after the component has already unmounted, and the
     // resulting state update / follow-on call must be skipped rather than
     // throwing on an unmounted component.
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
 
     it('skips the mount-effect state updates when unmounted before consume_pending_grant_resume resolves', async () => {
       let resolveResume: (value: string | null) => void = () => {};
@@ -439,8 +441,6 @@ describe('PermissionsStep', () => {
         await vi.advanceTimersByTimeAsync(500);
       });
       expect(invoke).not.toHaveBeenCalledWith('check_accessibility_permission');
-
-      vi.useRealTimers();
     });
 
     it('skips a poll tick while the previous Accessibility poll invoke is still in flight', async () => {
@@ -485,8 +485,6 @@ describe('PermissionsStep', () => {
         resolveFirstCheck(false);
         await Promise.resolve();
       });
-
-      vi.useRealTimers();
     });
 
     it('skips a poll-tick state update when unmounted while check_accessibility_permission is in flight', async () => {
@@ -533,8 +531,6 @@ describe('PermissionsStep', () => {
         resolveGrantedCheck(true);
         await Promise.resolve();
       });
-
-      vi.useRealTimers();
     });
 
     it('skips resetting Accessibility status when unmounted before reset_and_relaunch_for_grant resolves', async () => {
@@ -612,8 +608,6 @@ describe('PermissionsStep', () => {
       expect(invoke).not.toHaveBeenCalledWith(
         'check_screen_recording_tcc_granted',
       );
-
-      vi.useRealTimers();
     });
 
     it('skips a poll tick while the previous Screen Recording poll invoke is still in flight', async () => {
@@ -662,8 +656,6 @@ describe('PermissionsStep', () => {
         resolveFirstCheck(false);
         await Promise.resolve();
       });
-
-      vi.useRealTimers();
     });
 
     it('skips a poll-tick state update when unmounted while check_screen_recording_tcc_granted is in flight', async () => {
@@ -714,8 +706,6 @@ describe('PermissionsStep', () => {
         resolveGrantedCheck(true);
         await Promise.resolve();
       });
-
-      vi.useRealTimers();
     });
 
     it('skips resetting Screen Recording status when unmounted before reset_and_relaunch_for_grant resolves', async () => {
