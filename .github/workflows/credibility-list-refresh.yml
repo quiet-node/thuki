@@ -16,9 +16,9 @@ name: Credibility List Refresh
 
 on:
   schedule:
-    # Monthly, 06:17 UTC on the 1st. Off-the-hour minute to avoid the
+    # Weekly, 06:17 UTC on Mondays. Off-the-hour minute to avoid the
     # scheduled-workflow thundering herd at :00.
-    - cron: '17 6 1 * *'
+    - cron: '17 6 * * 1'
   workflow_dispatch:
 
 permissions:
