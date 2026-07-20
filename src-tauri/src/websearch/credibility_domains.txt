@@ -7,6 +7,10 @@
 # Lines beginning with # other than the three section headers are courtesy source
 # credits and are ignored by the parser. Every domain traces to a CC0/Unlicense
 # source or individual editorial verification; no attribution is required.
+# Regions between "# BEGIN AUTOGEN <source-id>" and "# END AUTOGEN <source-id>" are
+# rewritten verbatim by scripts/refresh-credibility-list.ts; do not hand-edit domains
+# inside them, hand-edit the upstream list instead. Everything outside those regions
+# is hand-curated and left untouched by the script.
 
 # drop
 
@@ -38,12 +42,14 @@ kulturellen.net
 
 # penalize
 
-# cluster: quenhus/uBlock-Origin-dev-filter (dist/duckduckgo/seo_spam.txt) -- Unlicense
+# BEGIN AUTOGEN quenhus-seo-spam
+# source: quenhus/uBlock-Origin-dev-filter (dist/other_format/domains/seo_spam.txt), Unlicense
 900913.ru
 actingcollegeses.com
 answerforyou.net
 azazworld.com
 bong-faq.com
+brianlovin.com
 britguidenewyork.net
 code-discuss.com
 codertw.com
@@ -77,10 +83,13 @@ thesassway.com
 topcode.in
 unbate.com
 worldgrowthtoday.com
+# END AUTOGEN quenhus-seo-spam
 
-# cluster: quenhus/uBlock-Origin-dev-filter (dist/duckduckgo/wikipedia_copycats.txt) -- Unlicense
+# BEGIN AUTOGEN quenhus-wikipedia-copycats
+# source: quenhus/uBlock-Origin-dev-filter (dist/other_format/domains/wikipedia_copycats.txt), Unlicense
 360wiki.ru
 accordeonmuseum.nl
+algebra.com
 buildwiki.ru
 cyclowiki.org
 datewiki.ru
@@ -98,7 +107,9 @@ hmong.ru
 livepcwiki.ru
 mediawiki.feverous.co.uk
 ru-wiki.ru
+scholarship.edu.vn
 second.wiki
+secret-bases.co.uk
 static.hlt.bme.hu
 sv.abcdef.wiki
 th.hmong.wiki
@@ -122,51 +133,77 @@ wikiwand.com
 wikizero.com
 wiwa.wiki
 zxc.wiki
+# END AUTOGEN quenhus-wikipedia-copycats
 
-# cluster: arosh/ublacklist-stackoverflow-translation (uBlacklist.txt) -- CC0-1.0
+# BEGIN AUTOGEN arosh-stackoverflow-copycats
+# source: arosh/ublacklist-stackoverflow-translation (uBlacklist.txt), CC0-1.0
 16892.net
 1r1g.com
 55276.net
+5axxw.com
 711web.com
 9ishenzhen.com
 9to5answer.com
 ajaxhispano.com
 answer-id.com
+answerlib.com
+anycodings.com
+appsloveworld.com
 arip-photo.org
 ask-dev.ru
 askcodez.com
+binarydevelop.com
 bitcoden.com
 cainiaojiaocheng.com
 code-examples.net
+codebaoku.com
 codegrepr.com
 codeguides.site
+codenong.com
+coder.work
 coderoad.ru
 codeutility.org
 copyprogramming.com
 daplus.net
 de-vraag.com
+debugcn.com
+debugko.com
+desenv-web-rp.com
 developreference.com
 digitrain.ru
 doraprojects.net
 dovov.com
+edureka.co
 errorsfixing.com
 exchangetuts.com
+fixes.pub
 fluffyfables.com
 flutterhq.com
 fmihm.org
 fullstackuser.com
+generacodice.com
+intellipaat.com
 iquestion.pro
 isolution.pro
+it-swarm-fr.com
+it-swarm-ja.com
+it-swarm-ja.tech
+it-swarm.jp.net
 itecnote.com
 itecnotes.com
 itectec.com
 iteramos.com
+javaer101.com
+javafixing.com
 jike.in
 jonic.cn
 jtuto.com
+kutombawewe.net
 kzen.dev
+linuxfixes.com
 living-sun.com
 mediatagtw.com
+mejorcodigo.com
 microeducate.tech
 mlink.in
 narkive.jp
@@ -196,9 +233,11 @@ qastack.net.bd
 qastack.ru
 qastack.vn
 qi-u.com
+querythreads.com
 question-it.com
 questu.ru
 routinepanic.com
+semicolonworld.com
 shenghuobao.net
 shenzhenjia.cn
 shenzhenjia.net
@@ -207,6 +246,7 @@ softwareuser.asklobster.com
 solveforum.com
 splunktool.com
 sqlite.in
+stackfinder.ru
 stackguides.com
 stackoom.com
 stackovergo.com
@@ -221,45 +261,21 @@ vigge.cn
 vigge.net
 vigges.net
 voidcc.com
-web-dev-qa-db-fra.com
-webdevask.com
-webdevdesigner.com
-wujigu.com
-5axxw.com
-answerlib.com
-anycodings.com
-appsloveworld.com
-binarydevelop.com
-codebaoku.com
-codenong.com
-coder.work
-debugcn.com
-debugko.com
-desenv-web-rp.com
-fixes.pub
-generacodice.com
-it-swarm-fr.com
-it-swarm-ja.com
-it-swarm-ja.tech
-it-swarm.jp.net
-javaer101.com
-javafixing.com
-kutombawewe.net
-linuxfixes.com
-mejorcodigo.com
-querythreads.com
-semicolonworld.com
-stackfinder.ru
 wake-up-neo.net
 web-dev-qa-db-fr.com
+web-dev-qa-db-fra.com
 web-dev-qa-db-ja.com
 web-dev-qa-db-pt.com
 web-dev-qa.com
+webdevask.com
+webdevdesigner.com
+wujigu.com
 xstack.ru
 xstack.us
 yaoply.com
 zaizhele.cn
 zaizhele.net
+# END AUTOGEN arosh-stackoverflow-copycats
 
 # cluster: editorial judgment -- thin finance/ranking-content aggregators (user-observed offenders; only 2 independently confirmed, category needs expansion -- see report)
 wealthrank.in
