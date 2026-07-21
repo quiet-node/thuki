@@ -38,11 +38,11 @@
   },
   "dependencies": {
     "@fontsource/nunito": "^5.2.7",
-    "@lexical/react": "^0.47.0",
+    "@lexical/react": "^0.48.0",
     "@tauri-apps/api": "^2.11.0",
     "framer-motion": "^12.38.0",
-    "katex": "^0.17.0",
-    "lexical": "^0.47.0",
+    "katex": "^0.18.1",
+    "lexical": "^0.48.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "rehype-katex": "^7.0.1",
@@ -57,7 +57,7 @@
     "brace-expansion": "^5.0.7"
   },
   "devDependencies": {
-    "@eslint-react/eslint-plugin": "5.14.8",
+    "@eslint-react/eslint-plugin": "5.17.3",
     "@eslint/js": "^10.0.1",
     "@tailwindcss/vite": "^4.2.2",
     "@tauri-apps/cli": "^2.10.1",
