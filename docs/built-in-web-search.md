@@ -559,6 +559,8 @@ Code: `judge.rs`, `orchestrator.rs`.
 **Example.**  
 Query `openai ceo` → DuckDuckGo ranks A,B,C; Mojeek ranks B,D → B’s RRF score wins → fetch B first.
 
+**Maintenance.** The bulk-imported penalize clusters in `credibility_domains.txt` are refreshed by a scheduled GitHub Action that pulls the latest upstream license-clean spam/copycat lists and opens a reviewable PR when the diff is non-empty; a human still reviews and merges every change. The app itself never fetches these lists at runtime, so the no-phone-home privacy stance is unchanged; updates only ship inside a release.
+
 Code: `engine.rs`, `credibility.rs`.
 
 ---

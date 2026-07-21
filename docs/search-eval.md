@@ -118,6 +118,10 @@ Deterministic-first, never pairwise, never a rubric score:
 
 Before trusting the gate, hand-label a sample of 30-40 rows spanning all three graded sources and volatility buckets with your own CORRECT/INCORRECT/NOT_ATTEMPTED judgment against the same predicted answers the harness generated, then run the live judge (majority-of-3) over that identical sample and compute agreement: the fraction of rows where the judge's majority verdict matches your hand label. This is the only way to know whether the local judge model is reliable enough for `CONFIDENTLY_WRONG_GATE` to mean anything, and is a prerequisite for tightening it. It needs a live model and a human rater (Logan), so it is a documented manual procedure, not code in this repository.
 
+## Related automation
+
+These harnesses are dev-machine tools, run by hand as documented above; no CI workflow executes them. The domain-credibility list has its own scheduled refresh workflow (`.github/workflows/credibility-list-refresh.yml`); see [built-in-web-search.md](./built-in-web-search.md) for that automation.
+
 ## Judging: pairwise superseded by absolute SimpleQA grading
 
 An earlier revision of this doc sketched pairwise, position-swapped LLM-as-judge scoring, following [Brave's published search-eval methodology](https://brave.com/blog/), as the intended next step once two capture runs existed to compare: an LLM judge shown both runs' answers in one order, then the swapped order, with a majority vote across both orderings deciding the winner or a tie.
