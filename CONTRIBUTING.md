@@ -41,9 +41,21 @@ rustup toolchain install nightly-2026-03-30 --component llvm-tools
 
 **macOS:** Thuki is macOS-only. It uses NSPanel and Core Graphics APIs that are not available on other platforms.
 
+**CMake:** required to build the bundled llama.cpp inference engine from source
+
+```bash
+brew install cmake
+```
+
+**Xcode:** full Xcode.app (from the App Store) is required, not just the Command Line Tools. The engine build needs `xcodebuild` to fetch the Metal toolchain that compiles its GPU shaders, and `xcodebuild` refuses to run when the active developer directory is the Command Line Tools. After installing Xcode, point `xcode-select` at it:
+
+```bash
+sudo xcode-select -s /Applications/Xcode.app
+```
+
 ### Optional
 
-No AI backend setup is required: Thuki bundles its own llama.cpp inference engine, and the dev/build scripts fetch the pinned `llama-server` sidecar automatically (see Development Setup below). Install these only if you want to develop against an alternative provider:
+No AI backend setup is required: Thuki bundles its own llama.cpp inference engine, and the dev/build scripts build the pinned `llama-server` sidecar from source automatically (this uses the CMake and Xcode prerequisites above; see Development Setup below). Install these only if you want to develop against an alternative provider:
 
 **Ollama:** to test the Ollama provider against a native install
 
@@ -66,9 +78,9 @@ No AI backend setup is required: Thuki bundles its own llama.cpp inference engin
    bun install
    ```
 
-3. **AI engine: nothing to set up**
+3. **AI engine: built automatically**
 
-   Thuki bundles its own inference engine (llama.cpp's `llama-server`). On a fresh clone, the first `bun run dev` (or `build:backend` / `build:release`) automatically runs `bun run engine:ensure`, which downloads the pinned llama.cpp release, verifies its sha256, and installs the binary and its dylibs under `src-tauri/binaries/` (gitignored). This happens once; later runs are an instant no-op until the pin changes. You pick and download a starter model inside the app's onboarding flow.
+   Thuki bundles its own inference engine (llama.cpp's `llama-server`). On a fresh clone, the first `bun run dev` (or `build:backend` / `build:release`) automatically runs `bun run engine:ensure`, which clones the pinned llama.cpp tag, verifies the commit, then builds and installs the binary and its dylibs under `src-tauri/binaries/` (gitignored). That first build compiles llama.cpp from source, so it takes a while and needs the CMake and Xcode prerequisites above; later runs are an instant no-op until the pin changes. You pick and download a starter model inside the app's onboarding flow.
 
    **Optional: develop against an alternative provider**
 
@@ -87,6 +99,8 @@ No AI backend setup is required: Thuki bundles its own llama.cpp inference engin
    ```
 
    On first run, macOS will prompt for Accessibility permission. This is required for the global keyboard shortcut. Grant it once; it persists across restarts.
+
+   **Dev runs and permissions:** `bun run dev` launches a bare binary (`src-tauri/target/debug/thuki`), not an app bundle, so macOS attributes Accessibility and Screen Recording grants to the terminal app running the command (Terminal.app, iTerm, VS Code, etc.), not to Thuki. Grant both permissions to that terminal app. Switching terminal apps means re-granting.
 
 ---
 

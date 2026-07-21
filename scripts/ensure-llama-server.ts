@@ -206,6 +206,88 @@ async function verifyFrameworksList(needed: Set<string>): Promise<void> {
   }
 }
 
+/**
+ * Outcome of a build-tool probe. `unknown` means the probe itself could not
+ * produce an answer (spawn threw, failed at the OS level for an unrelated
+ * reason, or returned no exit status).
+ */
+type ProbeResult = 'present' | 'missing' | 'unknown';
+
+/**
+ * Probes a build tool by running a cheap version or lookup command.
+ *
+ * Every failure mode of the spawn is handled here: a probe must never throw out
+ * of preflight. Only a definitive answer is reported as `missing`; anything
+ * ambiguous is `unknown` so preflight stays out of the way and the existing
+ * build path fails as it does today. A permissive probe that misses a missing
+ * tool is an annoyance; a strict probe that trips on a working machine breaks
+ * every dev build and every release.
+ *
+ * @param command Tool to probe, resolved through `$PATH`.
+ * @param args Arguments for the probe invocation, kept cheap and side effect free.
+ * @returns Whether the tool is definitively present, definitively missing, or unknown.
+ */
+function probeTool(command: string, args: string[]): ProbeResult {
+  let result: ReturnType<typeof spawnSync>;
+  try {
+    result = spawnSync(command, args, { stdio: 'ignore' });
+  } catch {
+    return 'unknown';
+  }
+  if (result.error) {
+    const code = (result.error as NodeJS.ErrnoException).code;
+    // ENOENT (not on PATH) and EACCES (present but not executable) are the two
+    // definitive answers; any other spawn error says nothing about the tool.
+    return code === 'ENOENT' || code === 'EACCES' ? 'missing' : 'unknown';
+  }
+  if (typeof result.status !== 'number') {
+    return 'unknown';
+  }
+  return result.status === 0 ? 'present' : 'missing';
+}
+
+/**
+ * Checks the build prerequisites before any build work starts, and reports all
+ * of them at once so a contributor does not install one tool, re-run, and
+ * discover the next.
+ *
+ * Exits the process with an actionable message when a prerequisite is
+ * definitively missing; returns normally otherwise.
+ */
+function preflightBuildTools(): void {
+  const problems: string[] = [];
+
+  if (probeTool('cmake', ['--version']) === 'missing') {
+    problems.push(
+      '  cmake is not installed. Install it with: brew install cmake',
+      '    (see the prerequisites section of CONTRIBUTING.md)',
+    );
+  }
+
+  // The metal compiler probe is the source of truth: if the compiler is already
+  // there, the build needs nothing from Xcode.app and xcodebuild is irrelevant.
+  // xcodebuild only matters on the one path that uses it, the toolchain
+  // download in ensureMetalCompiler. `xcodebuild -version` is the same gate that
+  // download hits: it exits nonzero when the active developer directory is a
+  // Command Line Tools instance rather than Xcode.app.
+  if (
+    probeTool('xcrun', ['-sdk', 'macosx', '-f', 'metal']) === 'missing' &&
+    probeTool('xcodebuild', ['-version']) === 'missing'
+  ) {
+    problems.push(
+      '  the Metal shader compiler is missing and xcodebuild cannot download it,',
+      '    because the active developer directory is a Command Line Tools instance.',
+      '    Install Xcode from the App Store, then run:',
+      '      sudo xcode-select -s /Applications/Xcode.app',
+      '    (see the prerequisites section of CONTRIBUTING.md)',
+    );
+  }
+
+  if (problems.length > 0) {
+    fail(['missing build prerequisites:', ...problems].join('\n'));
+  }
+}
+
 // Ensures Apple's Metal shader compiler is available. GGML_METAL_EMBED_LIBRARY
 // needs it to compile the shaders into the dylib at build time. It ships with
 // Xcode <= 16; Xcode 26 split it into a separately downloadable component. The
@@ -317,6 +399,8 @@ if (await exists(binPath)) {
     process.exit(0);
   }
 }
+
+preflightBuildTools();
 
 const workDir = await mkdtemp(join(tmpdir(), 'thuki-llama-'));
 try {
