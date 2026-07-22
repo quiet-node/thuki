@@ -148,16 +148,34 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 
 ## Features
 
-- **Always available:** double-tap Control <kbd>⌃</kbd> to summon the overlay from any app, including fullscreen apps.
-- **Context-aware quotes:** highlight any text, then double-tap Control <kbd>⌃</kbd> to open Thuki with the selection pre-filled as a quote.
-- **Built-in AI engine and model library:** Thuki bundles a llama.cpp inference engine and lets you download curated Staff Picks, or any GGUF straight from Hugging Face, browse your Library, and switch the active model from the ask bar, all from inside the app.
-- **Instant follow-ups:** Thuki can keep your model warm in memory between messages, so replies start right away instead of stalling to reload the model on every ask.
-- **Image input and screen capture:** paste or drag images directly into the chat, or type `/screen` to capture your entire screen and attach it as context.
-- **Read text in images, on any model:** commands like `/extract`, `/explain`, `/tldr`, and `/translate` pull the _text_ out of an attached image with on-device macOS Vision OCR, so they work on screenshots and documents even when the active model has no vision capability. They read text, not scenes: describing a textless image (say, a photo of the sky) still needs a vision model. See [docs/ocr-commands.md](docs/ocr-commands.md).
-- **Built-in web search:** With Auto search on (Settings → Behavior, default), Thuki may search the web when a plain message needs current information. Turn it off to stay fully local and use `/search` only when you want an on-demand look-up. Keyless; answers are grounded in retrieved sources with inline citations. See [docs/built-in-web-search.md](docs/built-in-web-search.md), [docs/search-privacy.md](docs/search-privacy.md), [docs/privacy.md](docs/privacy.md), [docs/commands.md](docs/commands.md) (`/search`), and [docs/configurations.md](docs/configurations.md) (`auto_search` and built-in search constants).
-- **Slash commands:** built-in shortcuts for search and prompt actions: `/search`, `/extract`, `/explain`, `/translate`, `/rewrite`, `/tldr`, `/refine`, `/bullets`, `/todos`.
-- **On-demand reasoning:** on models that support reasoning (not every model does), add `/think` to any message to make it work through the problem step by step before answering. It is off by default, so everyday asks stay fast.
-- **Cross-model continuity:** swap models mid-conversation and Thuki sanitizes history and filters capabilities (vision, reasoning) to whatever the new model supports.
+**Always one keystroke away:** double-tap Control <kbd>⌃</kbd> from any app, even fullscreen. Thuki floats on top, no window-switching.
+
+<video src="https://github.com/user-attachments/assets/0ad85f74-6bc8-45e1-9909-f541f84db6d1"></video>
+
+**Highlight, then ask:** select text in any app, then double-tap Control <kbd>⌃</kbd>. Your selection is pre-filled as a quote, so Thuki already has the context.
+
+<video src="https://github.com/user-attachments/assets/f7da4d6d-a25a-4ccb-b90c-8593bebeb9e2"></video>
+
+**Capture your screen:** type `/screen` and Thuki attaches a full-desktop screenshot as visual context for vision-capable models.
+
+<video src="https://github.com/user-attachments/assets/571e681c-84c0-4db2-8ccb-ffebd5f0b757"></video>
+
+**Built-in web search:** with Auto search on (default), Thuki decides on-device when a question needs the web, then fetches and cites live sources with inline citations. `/search` forces it. Keyless, no setup. See [docs/built-in-web-search.md](docs/built-in-web-search.md) and [docs/search-privacy.md](docs/search-privacy.md).
+
+<video src="https://github.com/user-attachments/assets/983a66e0-f755-44ab-a91d-513659791978"></video>
+
+**On-device model library:** bundles a llama.cpp engine and lets you download curated Staff Picks or any GGUF from Hugging Face, see what fits your Mac, and switch the active model from the ask bar.
+
+<video src="https://github.com/user-attachments/assets/6b76b6ff-490f-4c26-b4df-52bd1d8bd21d"></video>
+
+### More
+
+- **Instant follow-ups:** keep your model warm in memory between messages, so replies start right away instead of reloading on every ask.
+- **Image input:** paste or drag images straight into the chat as visual context.
+- **Read text in images, on any model:** `/extract`, `/explain`, `/tldr`, and `/translate` use on-device macOS Vision OCR to pull text from an attached image, even without a vision model. Reads text, not scenes. See [docs/ocr-commands.md](docs/ocr-commands.md).
+- **Slash commands:** shortcuts for search and prompt actions: `/search`, `/extract`, `/explain`, `/translate`, `/rewrite`, `/tldr`, `/refine`, `/bullets`, `/todos`. See [docs/commands.md](docs/commands.md).
+- **On-demand reasoning:** add `/think` on models that support it to reason step by step before answering. Off by default, so everyday asks stay fast.
+- **Cross-model continuity:** swap models mid-conversation; Thuki sanitizes history and filters capabilities (vision, reasoning) to whatever the new model supports.
 
 ## Models & providers
 
