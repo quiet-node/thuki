@@ -148,25 +148,44 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 
 ## Features
 
-**Always one keystroke away:** double-tap Control <kbd>⌃</kbd> from any app, even fullscreen. Thuki floats on top, no window-switching.
+Click any demo to expand and play it inline.
+
+<details>
+<summary><b>Always one keystroke away:</b> double-tap Control <kbd>⌃</kbd> to summon from any app, even fullscreen.</summary>
 
 <video src="https://github.com/user-attachments/assets/0ad85f74-6bc8-45e1-9909-f541f84db6d1"></video>
 
-**Highlight, then ask:** select text in any app, then double-tap Control <kbd>⌃</kbd>. Your selection is pre-filled as a quote, so Thuki already has the context.
+</details>
+
+<details>
+<summary><b>Highlight, then ask:</b> select text anywhere, double-tap, and it is pre-filled as a quote with context.</summary>
 
 <video src="https://github.com/user-attachments/assets/f7da4d6d-a25a-4ccb-b90c-8593bebeb9e2"></video>
 
-**Capture your screen:** type `/screen` and Thuki attaches a full-desktop screenshot as visual context for vision-capable models.
+</details>
+
+<details>
+<summary><b>Capture your screen:</b> <code>/screen</code> attaches a full-desktop screenshot as visual context.</summary>
 
 <video src="https://github.com/user-attachments/assets/571e681c-84c0-4db2-8ccb-ffebd5f0b757"></video>
 
-**Built-in web search:** with Auto search on (default), Thuki decides on-device when a question needs the web, then fetches and cites live sources with inline citations. `/search` forces it. Keyless, no setup. See [docs/built-in-web-search.md](docs/built-in-web-search.md) and [docs/search-privacy.md](docs/search-privacy.md).
+</details>
+
+<details>
+<summary><b>Built-in web search:</b> keyless, cited, decided on-device. <code>/search</code> forces it.</summary>
 
 <video src="https://github.com/user-attachments/assets/983a66e0-f755-44ab-a91d-513659791978"></video>
 
-**On-device model library:** bundles a llama.cpp engine and lets you download curated Staff Picks or any GGUF from Hugging Face, see what fits your Mac, and switch the active model from the ask bar.
+See [docs/built-in-web-search.md](docs/built-in-web-search.md) and [docs/search-privacy.md](docs/search-privacy.md).
+
+</details>
+
+<details>
+<summary><b>On-device model library:</b> download any GGUF from Hugging Face and switch models from the ask bar.</summary>
 
 <video src="https://github.com/user-attachments/assets/6b76b6ff-490f-4c26-b4df-52bd1d8bd21d"></video>
+
+</details>
 
 ### More
 
