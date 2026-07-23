@@ -1,6 +1,12 @@
 # Installing Thuki
 
-The [README](../README.md#install-on-macos) covers the recommended one-line install. This page holds the alternative paths.
+The recommended install is the one-line script (see the [README](../README.md#install-on-macos) for what it does):
+
+```bash
+curl -fsSL https://thuki.app/install.sh | sh
+```
+
+This page holds the alternative paths.
 
 ## Inspect the install script
 
