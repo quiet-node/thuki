@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <strong>Free and open source. Local inference costs you nothing, no per-query fees, ever.</strong>
+  <strong>Free and open source.</strong>
 </p>
 
 <p align="center">
@@ -37,8 +37,6 @@
 </p>
 
 ---
-
-**No API keys. No subscriptions. No cloud. No telemetry.**
 
 Thuki (thư kí, Vietnamese for secretary) is a lightweight macOS overlay powered by local AI models running entirely on your own machine, built for quick, uninterrupted asks without ever leaving what you're doing.
 
@@ -88,7 +86,7 @@ Prefer to download by hand? Grab the DMG and clear the quarantine flag yourself.
    xattr -rd com.apple.quarantine "/Applications/Thuki Nightly.app"
    ```
 
-   > **Why is this needed?** Thuki is a free, non-profit, open-source app distributed directly and not through the Mac App Store. Apple's Gatekeeper automatically blocks any app downloaded from the internet that has not gone through Apple's paid notarization process. This one-time command removes that block. It is safe and [officially documented by Apple](https://support.apple.com/en-us/102445). The one-line installer above handles this for you.
+   > **Why is this needed?** Thuki ships outside the Mac App Store, so Gatekeeper blocks it until this one-time command clears the quarantine flag. It is safe and [documented by Apple](https://support.apple.com/en-us/102445). The one-line installer does this for you.
 
 5. Open the app. It will appear in your menu bar.
 
@@ -126,12 +124,13 @@ open src-tauri/target/release/bundle/macos/Thuki.app
 
 ## Why Thuki?
 
-Most AI tools require accounts, API keys, or subscriptions that bill you per token. Thuki is different:
+**Most local AI tools are a place you go. Thuki is a key you press.**
 
-- **It works everywhere.** Double-tap Control <kbd>⌃</kbd> and Thuki appears on your desktop, inside a browser, inside a terminal, and even in fullscreen apps. Your favorite AI chat apps can't do that.
-- **100% free local AI.** You run the model on your own machine, so there is no per-query cost, ever.
-- **Private by design.** No remote server, no cloud backend, no analytics, no telemetry. Conversations live in a local SQLite database on your machine and nowhere else.
-- **Works offline.** Once your model is downloaded, inference runs without an internet connection. Downloads and web search still need the network; turn off Auto search in Settings → Behavior to keep chat fully offline.
+- **It arrives knowing what you were looking at.** Highlight text in any app, double-tap Control <kbd>⌃</kbd>, and your selection is already quoted. One gesture, no copy-paste round trip.
+- **Nothing to install, pay, or configure first.** Thuki ships its own llama.cpp engine and browses Hugging Face in-app, so any open model is a click away. No terminal, no separate server, no API key, no license fee.
+- **It sees your screen, not just your clipboard.** `/screen` attaches your whole desktop as visual context for any vision-capable model.
+- **Free and open source, running only on your machine.** No accounts, no per-query cost, no telemetry. Your conversations stay in a local database and nowhere else.
+- **Works offline.** Once a model is downloaded, inference needs no connection. Only downloads and web search use the network, and Auto search is one toggle from off.
 
 ## Features
 
@@ -161,7 +160,7 @@ A bundled llama.cpp `llama-server` that Thuki spawns, supervises, and shuts down
 Thuki can also run inference through an external provider instead of the built-in engine.
 
 - **Ollama.** Prefer your own [Ollama](https://ollama.com) install? Switch to it anytime from Settings.
-- **Your own OpenAI-compatible server (coming soon).** Support for pointing Thuki at any OpenAI-compatible endpoint you run yourself (a local or self-hosted server) is on the [roadmap](#whats-next-for-thuki).
+- **Your own OpenAI-compatible server (coming soon).** Support for pointing Thuki at any OpenAI-compatible endpoint you run yourself (a local or self-hosted server) is on the [roadmap](#roadmap).
 
 See [docs/models-and-providers.md](docs/models-and-providers.md) for the full model library and provider guide.
 
@@ -171,34 +170,7 @@ Inference runs on-device, so your prompts, context, and replies never leave your
 
 ## Architecture & security
 
-<details>
-<summary>Click to expand</summary>
-
-Thuki is a [Tauri v2](https://v2.tauri.app/) app: a Rust backend with a React and TypeScript frontend.
-
-| Layer    | Technology                           |
-| -------- | ------------------------------------ |
-| Shell    | Tauri v2                             |
-| Backend  | Rust (stable)                        |
-| Frontend | React 19, TypeScript, Tailwind CSS 4 |
-| Engine   | Bundled llama.cpp `llama-server`     |
-| Storage  | SQLite (bundled)                     |
-
-### Process model
-
-Two processes, with a narrow boundary between them:
-
-1. **App (Tauri/React).** The UI runs in a secure system webview with restricted IPC. Streaming uses Tauri's Channel API: the Rust backend sends typed `StreamChunk` enum variants, and the frontend hook accumulates tokens into React state.
-
-2. **Engine.** The default engine runs as a separate `llama-server` process that Thuki spawns, supervises, and kills on quit, bound to `127.0.0.1` only with its web UI disabled, so nothing outside your Mac can reach it. The pinned llama.cpp release is sha256-verified at build time, and every model download is checked against a pinned Hugging Face revision before install.
-
-### Window lifecycle
-
-The app starts hidden. The hotkey or tray menu shows it. The window close button hides the window rather than quitting; quit is only available from the tray. `ActivationPolicy::Accessory` hides the Dock icon, and `macOSPrivateApi: true` enables the NSPanel that lets Thuki float above fullscreen apps.
-
-For the engine internals (sidecar lifecycle, Keep Warm, the spawn line, model store), see [docs/models-and-providers.md](docs/models-and-providers.md). For the full security posture and how to report an issue, see [SECURITY.md](SECURITY.md).
-
-</details>
+Tauri v2 (Rust backend, React and TypeScript frontend) with a bundled llama.cpp `llama-server` engine bound to `127.0.0.1` and killed on quit. The pinned engine release is sha256-verified at build time and every model download is checked against a pinned Hugging Face revision. See [docs/models-and-providers.md](docs/models-and-providers.md) for engine internals and [SECURITY.md](SECURITY.md) for the full security posture.
 
 ## Configuration
 
@@ -208,34 +180,11 @@ See [docs/configurations.md](docs/configurations.md) for the full schema, [docs/
 
 ## Contributing
 
-Contributions are welcome! Read [CONTRIBUTING.md](CONTRIBUTING.md) to get started. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+Contributions are welcome! Read [CONTRIBUTING.md](CONTRIBUTING.md) to get started, and follow the [Code of Conduct](CODE_OF_CONDUCT.md). Community-maintained Windows ports: [ThukiWin](https://github.com/ayzekhdawy/thukiwin) and [Mate](https://github.com/M31i55a/windowsMate-Thuki).
 
-## Community ports
+## Roadmap
 
-Thuki is macOS-only, but the community has been busy bringing it to other platforms. Huge shoutout to these contributors 🎊🚀!
-
-| Platform      | Repo                                                 | Author                                       |
-| ------------- | ---------------------------------------------------- | -------------------------------------------- |
-| Windows 10/11 | [ThukiWin](https://github.com/ayzekhdawy/thukiwin)   | [@ayzekhdawy](https://github.com/ayzekhdawy) |
-| Windows 10/11 | [Mate](https://github.com/M31i55a/windowsMate-Thuki) | [@M31i55a](https://github.com/M31i55a)       |
-
-> Each port is independently maintained by its author. For issues or questions about a specific port, head to that repo directly.
-
-## What's next for Thuki
-
-Thuki is just getting started. Here's where it's headed:
-
-- **Connect your tools:** integrate via [MCP](https://modelcontextprotocol.io/) with Gmail, Slack, Discord, Calendar, and more, so you can draft a reply, summarize a thread, or schedule a meeting without leaving your current app.
-- **Type with your voice:** press a key, speak, and get clean text in any app.
-- **Notes from any meeting:** live transcripts and summaries of any meeting.
-- **Automate the routine:** teach Thuki multi-step tasks and run them on a word.
-- **More providers:** bring your own OpenAI-compatible server (a local or self-hosted endpoint) alongside the built-in engine and Ollama.
-
-Whatever comes next, the aim stays the same: a local-first secretary that runs open models on your own machine. Network use stays minimal and user-controlled, from Auto search (on by default, one toggle away from off) to any future integration.
-
----
-
-Have a feature idea? [Open an issue](https://github.com/quiet-node/thuki/issues) and let's talk about it.
+MCP tool integrations (Gmail, Slack, Calendar), voice input, meeting notes, task automation, and bring-your-own OpenAI-compatible server. Have an idea? [Open an issue](https://github.com/quiet-node/thuki/issues).
 
 ## Founder note
 
