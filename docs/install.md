@@ -1,12 +1,18 @@
 # Installing Thuki
 
-The recommended install is the one-line script (see the [README](../README.md#install-on-macos) for what it does):
+**Requirements:** macOS 13.4 (Ventura) or later, Apple Silicon (M1-M5).
+
+## Recommended: one-line install
 
 ```bash
 curl -fsSL https://thuki.app/install.sh | sh
 ```
 
-This page holds the alternative paths.
+This downloads the latest `Thuki.dmg` over HTTPS, verifies its RSA-4096 signature with the `openssl` already on your Mac, and installs it to `/Applications`. Because the download arrives without a quarantine flag, Thuki opens cleanly with no Gatekeeper prompt and no manual `xattr` step.
+
+On first launch macOS asks for two permissions: **Accessibility** (the global hotkey that summons Thuki from any app) and **Screen Recording** (the `/screen` command). Grant both once; they persist across restarts. Onboarding then downloads a starter model right inside the app.
+
+The sections below cover the alternative paths.
 
 ## Inspect the install script
 
