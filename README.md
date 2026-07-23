@@ -42,19 +42,6 @@
 
 Thuki (thư kí, Vietnamese for secretary) is a lightweight macOS overlay powered by local AI models running entirely on your own machine, built for quick, uninterrupted asks without ever leaving what you're doing.
 
-## See it in action
-
-Double-tap Control <kbd>⌃</kbd> to summon Thuki from anywhere, even over fullscreen apps. Highlight text first and it opens with your selection pre-filled as a quote. Ask a question, attach your screen with `/screen`, get an answer, and dismiss without ever leaving what you're doing.
-
-
-
-
-https://github.com/user-attachments/assets/b321725e-860d-4177-8309-f78a0eb26261
-
-
-
-
-
 ## Install on macOS
 
 Install the app, pick a model during onboarding, and start asking.
@@ -150,27 +137,21 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 
 <table>
 <tr>
-<td width="33%"><b>Always one keystroke away</b><br><sub>Double-tap Control <kbd>⌃</kbd> to summon from any app, even fullscreen.</sub><br><video src="https://github.com/user-attachments/assets/0ad85f74-6bc8-45e1-9909-f541f84db6d1"></video></td>
-<td width="33%"><b>Highlight, then ask</b><br><sub>Select text anywhere, double-tap, and it is pre-filled as a quote.</sub><br><video src="https://github.com/user-attachments/assets/f7da4d6d-a25a-4ccb-b90c-8593bebeb9e2"></video></td>
-<td width="33%"><b>Capture your screen</b><br><sub><code>/screen</code> attaches a full-desktop screenshot as context.</sub><br><video src="https://github.com/user-attachments/assets/571e681c-84c0-4db2-8ccb-ffebd5f0b757"></video></td>
+<td width="33%"><b>Always one keystroke away</b><br><sub>Double-tap Control from any app, even fullscreen.</sub><br><video src="https://github.com/user-attachments/assets/0ad85f74-6bc8-45e1-9909-f541f84db6d1"></video></td>
+<td width="33%"><b>Highlight, then ask</b><br><sub>Select text, double-tap, it arrives as a quote.</sub><br><video src="https://github.com/user-attachments/assets/f7da4d6d-a25a-4ccb-b90c-8593bebeb9e2"></video></td>
+<td width="33%"><b>Capture your screen</b><br><sub><code>/screen</code> attaches your whole desktop as context.</sub><br><video src="https://github.com/user-attachments/assets/571e681c-84c0-4db2-8ccb-ffebd5f0b757"></video></td>
 </tr>
 <tr>
-<td width="33%"><b>Built-in web search</b><br><sub>Keyless, cited, decided on-device. <code>/search</code> forces it.</sub><br><video src="https://github.com/user-attachments/assets/983a66e0-f755-44ab-a91d-513659791978"></video></td>
-<td width="33%"><b>On-device model library</b><br><sub>Download any GGUF from Hugging Face, switch models from the ask bar.</sub><br><video src="https://github.com/user-attachments/assets/6b76b6ff-490f-4c26-b4df-52bd1d8bd21d"></video></td>
-<td width="33%"></td>
+<td width="33%"><b>Built-in web search</b><br><sub>Keyless and cited. <code>/search</code> forces a lookup.</sub><br><video src="https://github.com/user-attachments/assets/983a66e0-f755-44ab-a91d-513659791978"></video></td>
+<td width="33%"><b>On-device model library</b><br><sub>Any GGUF from Hugging Face, switched from the ask bar.</sub><br><video src="https://github.com/user-attachments/assets/6b76b6ff-490f-4c26-b4df-52bd1d8bd21d"></video></td>
+<td width="33%"><b>Just a slash, zero menus</b><br><sub>Every task is a verb. No dropdowns, no settings.</sub><br><pre><code>/translate  /tldr
+/rewrite    /screen
+/extract    /search
+/think      /explain
+/bullets    /todos
+/refine</code></pre></td>
 </tr>
 </table>
-
-Search details: [docs/built-in-web-search.md](docs/built-in-web-search.md) and [docs/search-privacy.md](docs/search-privacy.md).
-
-### More
-
-- **Instant follow-ups:** keep your model warm in memory between messages, so replies start right away instead of reloading on every ask.
-- **Image input:** paste or drag images straight into the chat as visual context.
-- **Read text in images, on any model:** `/extract`, `/explain`, `/tldr`, and `/translate` use on-device macOS Vision OCR to pull text from an attached image, even without a vision model. Reads text, not scenes. See [docs/ocr-commands.md](docs/ocr-commands.md).
-- **Slash commands:** shortcuts for search and prompt actions: `/search`, `/extract`, `/explain`, `/translate`, `/rewrite`, `/tldr`, `/refine`, `/bullets`, `/todos`. See [docs/commands.md](docs/commands.md).
-- **On-demand reasoning:** add `/think` on models that support it to reason step by step before answering. Off by default, so everyday asks stay fast.
-- **Cross-model continuity:** swap models mid-conversation; Thuki sanitizes history and filters capabilities (vision, reasoning) to whatever the new model supports.
 
 ## Models & providers
 
