@@ -6,10 +6,6 @@
   <a href="https://www.thuki.app/" target="_blank" rel="noopener noreferrer"><img src="public/thuki-logo.png" alt="Thuki: a private, local AI secretary overlay for macOS" width="300" /></a>
 </p>
 
-<!-- <p align="center">
-  <a href="https://www.producthunt.com/products/thuki?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-thuki" target="_blank" rel="noopener noreferrer"><img alt="Thuki  - Floating AI for macOS. Free &amp; Local. No cloud, no API keys. | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1122707&amp;theme=light&amp;t=1776150241085">  </a>
-</p> -->
-
 <p align="center">
   A floating AI secretary for macOS. Double-tap Control to summon a spotlight-style overlay anywhere, even over fullscreen apps. It runs entirely on your Mac with its own built-in engine: private, with no cloud and no API keys.
 </p>
@@ -42,7 +38,7 @@ Thuki (thư kí, Vietnamese for secretary) is a lightweight macOS overlay powere
 
 ## Install on macOS
 
-> **Requirements:** macOS 13.4 (Ventura) or later, Apple Silicon (M1–M5).
+> **Requirements:** macOS 13.4 (Ventura) or later, Apple Silicon (M1-M5).
 
 ```bash
 curl -fsSL https://thuki.app/install.sh | sh
