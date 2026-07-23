@@ -148,44 +148,20 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 
 ## Features
 
-Click any demo to expand and play it inline.
+<table>
+<tr>
+<td width="33%"><b>Always one keystroke away</b><br><sub>Double-tap Control <kbd>⌃</kbd> to summon from any app, even fullscreen.</sub><br><video src="https://github.com/user-attachments/assets/0ad85f74-6bc8-45e1-9909-f541f84db6d1"></video></td>
+<td width="33%"><b>Highlight, then ask</b><br><sub>Select text anywhere, double-tap, and it is pre-filled as a quote.</sub><br><video src="https://github.com/user-attachments/assets/f7da4d6d-a25a-4ccb-b90c-8593bebeb9e2"></video></td>
+<td width="33%"><b>Capture your screen</b><br><sub><code>/screen</code> attaches a full-desktop screenshot as context.</sub><br><video src="https://github.com/user-attachments/assets/571e681c-84c0-4db2-8ccb-ffebd5f0b757"></video></td>
+</tr>
+<tr>
+<td width="33%"><b>Built-in web search</b><br><sub>Keyless, cited, decided on-device. <code>/search</code> forces it.</sub><br><video src="https://github.com/user-attachments/assets/983a66e0-f755-44ab-a91d-513659791978"></video></td>
+<td width="33%"><b>On-device model library</b><br><sub>Download any GGUF from Hugging Face, switch models from the ask bar.</sub><br><video src="https://github.com/user-attachments/assets/6b76b6ff-490f-4c26-b4df-52bd1d8bd21d"></video></td>
+<td width="33%"></td>
+</tr>
+</table>
 
-<details>
-<summary><b>Always one keystroke away:</b> double-tap Control <kbd>⌃</kbd> to summon from any app, even fullscreen.</summary>
-
-<video src="https://github.com/user-attachments/assets/0ad85f74-6bc8-45e1-9909-f541f84db6d1"></video>
-
-</details>
-
-<details>
-<summary><b>Highlight, then ask:</b> select text anywhere, double-tap, and it is pre-filled as a quote with context.</summary>
-
-<video src="https://github.com/user-attachments/assets/f7da4d6d-a25a-4ccb-b90c-8593bebeb9e2"></video>
-
-</details>
-
-<details>
-<summary><b>Capture your screen:</b> <code>/screen</code> attaches a full-desktop screenshot as visual context.</summary>
-
-<video src="https://github.com/user-attachments/assets/571e681c-84c0-4db2-8ccb-ffebd5f0b757"></video>
-
-</details>
-
-<details>
-<summary><b>Built-in web search:</b> keyless, cited, decided on-device. <code>/search</code> forces it.</summary>
-
-<video src="https://github.com/user-attachments/assets/983a66e0-f755-44ab-a91d-513659791978"></video>
-
-See [docs/built-in-web-search.md](docs/built-in-web-search.md) and [docs/search-privacy.md](docs/search-privacy.md).
-
-</details>
-
-<details>
-<summary><b>On-device model library:</b> download any GGUF from Hugging Face and switch models from the ask bar.</summary>
-
-<video src="https://github.com/user-attachments/assets/6b76b6ff-490f-4c26-b4df-52bd1d8bd21d"></video>
-
-</details>
+Search details: [docs/built-in-web-search.md](docs/built-in-web-search.md) and [docs/search-privacy.md](docs/search-privacy.md).
 
 ### More
 
