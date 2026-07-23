@@ -144,12 +144,7 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 <tr>
 <td width="33%"><b>Built-in web search</b><br><sub>Keyless and cited. <code>/search</code> forces a lookup.</sub><br><video src="https://github.com/user-attachments/assets/983a66e0-f755-44ab-a91d-513659791978"></video></td>
 <td width="33%"><b>On-device model library</b><br><sub>Any GGUF from Hugging Face, switched from the ask bar.</sub><br><video src="https://github.com/user-attachments/assets/6b76b6ff-490f-4c26-b4df-52bd1d8bd21d"></video></td>
-<td width="33%"><b>Just a slash, zero menus</b><br><sub>Every task is a verb. No dropdowns, no settings.</sub><br><pre><code>/translate  /tldr
-/rewrite    /screen
-/extract    /search
-/think      /explain
-/bullets    /todos
-/refine</code></pre></td>
+<td width="33%"><b>Just a slash, zero menus</b><br><sub>Every task is a verb. No dropdowns, no settings.</sub><br><img src="docs/assets/slash-commands.png" alt="Thuki slash commands"></td>
 </tr>
 </table>
 
