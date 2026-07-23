@@ -52,7 +52,7 @@ Downloads the latest `Thuki.dmg` over HTTPS, verifies its RSA-4096 signature wit
 
 On first launch macOS asks for **Accessibility** (the global hotkey) and **Screen Recording** (`/screen`); grant both once. Onboarding then downloads a starter model (~2-9 GB) right inside the app, and you can add any GGUF from Hugging Face later in Settings → Models → Discover.
 
-Other paths: [inspect the script](docs/install.md#inspect-the-install-script) · [manual DMG and Nightly](docs/install.md) · [build from source](docs/install.md#build-from-source).
+Other paths: [inspect the script](docs/install.md#inspect-the-install-script) · [manual DMG](docs/install.md#manual-install-download-the-dmg) · [Nightly](docs/install.md#nightly-side-by-side-with-stable) · [build from source](docs/install.md#build-from-source).
 
 ## Why Thuki?
 
