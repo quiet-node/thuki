@@ -67,7 +67,7 @@ bun install
 bun run dev
 ```
 
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for the full development setup guide.
+See [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup) for the full development setup guide.
 
 To produce a standalone app instead of running the dev server, build it and open the bundle directly:
 
