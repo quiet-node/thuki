@@ -136,13 +136,13 @@ open src-tauri/target/release/bundle/macos/Thuki.app
 
 <table>
 <tr>
-<td width="33%"><b>Always one keystroke away</b><br><sub>Double-tap Control from any app, even fullscreen.</sub><br><video src="https://github.com/user-attachments/assets/0ad85f74-6bc8-45e1-9909-f541f84db6d1"></video></td>
-<td width="33%"><b>Highlight, then ask</b><br><sub>Select text, double-tap, it arrives as a quote.</sub><br><video src="https://github.com/user-attachments/assets/f7da4d6d-a25a-4ccb-b90c-8593bebeb9e2"></video></td>
-<td width="33%"><b>Capture your screen</b><br><sub><code>/screen</code> attaches your whole desktop as context.</sub><br><video src="https://github.com/user-attachments/assets/571e681c-84c0-4db2-8ccb-ffebd5f0b757"></video></td>
+<td width="33%"><b>Always one keystroke away</b><br><sub>Double-tap Control from any app, even fullscreen.</sub><br><video src="https://github.com/user-attachments/assets/632d1af8-af83-4c46-8432-713054df8a21"></video></td>
+<td width="33%"><b>Highlight, then ask</b><br><sub>Select text, double-tap, it arrives as a quote.</sub><br><video src="https://github.com/user-attachments/assets/1fcb8994-5dbb-42ca-9913-1001e2f1ac15"></video></td>
+<td width="33%"><b>Capture your screen</b><br><sub><code>/screen</code> attaches your whole desktop as context.</sub><br><video src="https://github.com/user-attachments/assets/d2400c9d-d99b-4460-aa7c-9d5322c7236b"></video></td>
 </tr>
 <tr>
-<td width="33%"><b>Built-in web search</b><br><sub>Keyless and cited. <code>/search</code> forces a lookup.</sub><br><video src="https://github.com/user-attachments/assets/983a66e0-f755-44ab-a91d-513659791978"></video></td>
-<td width="33%"><b>On-device model library</b><br><sub>Download any GGUF, switch from the ask bar.</sub><br><video src="https://github.com/user-attachments/assets/6b76b6ff-490f-4c26-b4df-52bd1d8bd21d"></video></td>
+<td width="33%"><b>Built-in web search</b><br><sub>Keyless and cited. <code>/search</code> forces a lookup.</sub><br><video src="https://github.com/user-attachments/assets/328d2ae5-5805-4137-b5cc-b895d2375915"></video></td>
+<td width="33%"><b>On-device model library</b><br><sub>Download any GGUF, switch from the ask bar.</sub><br><video src="https://github.com/user-attachments/assets/bfffd639-6145-4893-a221-8cefdaafcb34"></video></td>
 <td width="33%"><b>Just a slash, zero menus</b><br><sub>Every task is a verb. No dropdowns, no settings.</sub><br><img src="docs/assets/slash-commands.png" alt="Thuki slash commands" width="100%"></td>
 </tr>
 </table>
