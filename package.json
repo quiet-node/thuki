@@ -41,7 +41,7 @@
     "@lexical/react": "^0.48.0",
     "@tauri-apps/api": "^2.11.0",
     "framer-motion": "^12.38.0",
-    "katex": "^0.16.44",
+    "katex": "^0.18.1",
     "lexical": "^0.48.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
@@ -57,7 +57,7 @@
     "brace-expansion": "^5.0.7"
   },
   "devDependencies": {
-    "@eslint-react/eslint-plugin": "5.17.3",
+    "@eslint-react/eslint-plugin": "5.18.0",
     "@eslint/js": "^10.0.1",
     "@tailwindcss/vite": "^4.2.2",
     "@tauri-apps/cli": "^2.10.1",
