@@ -40,7 +40,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
-base64 = "0.22"
+base64 = "0.23"
 html-escape = "0.2"
 thiserror = "2"
 time = { version = "0.3", features = ["std", "local-offset", "macros", "parsing"] }
