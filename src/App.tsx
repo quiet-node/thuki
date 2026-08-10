@@ -3207,8 +3207,15 @@ function App() {
   }, [isExportOpen]);
 
   const handleSubmit = useCallback(() => {
+    // Sanitized selection, resolved up front: it decides whether an empty ask
+    // bar still has something to send. The backend only ever receives this
+    // value, so every gate below reads it rather than the raw selection.
+    const context = sanitizeContext(selectedContext, quote.maxContextLength);
+
     if (
-      (query.trim().length === 0 && attachedImages.length === 0) ||
+      (query.trim().length === 0 &&
+        attachedImages.length === 0 &&
+        context === undefined) ||
       isGenerating ||
       isSubmitPending
     )
@@ -3301,13 +3308,14 @@ function App() {
     // Nothing to send if the message is only commands with no content or images.
     // Utility triggers are excluded: they fall through to their own block below
     // which shakes + shows an error when no input is found.
-    // Exception: /think with pre-filled selected context is valid.
+    // Exception: pre-filled selected context is content in its own right, so
+    // it carries a submit that has no typed text (with or without /think).
     if (
       !strippedMessage &&
       attachedImages.length === 0 &&
       !hasScreen &&
       !utilityTrigger &&
-      !(hasThink && selectedContext?.trim())
+      !context
     )
       return;
 
@@ -3320,8 +3328,6 @@ function App() {
     } else if (utilityTrigger || hasScreen || hasThink || hasExtract) {
       stickyReplaceCommandRef.current = null;
     }
-
-    const context = sanitizeContext(selectedContext, quote.maxContextLength);
 
     // Unified pre-flight pending-images gate. Every command that needs
     // resolved image paths waits here: /extract, /screen, utility-OCR, and

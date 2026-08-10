@@ -1984,6 +1984,47 @@ describe('App', () => {
     expect(invoke).not.toHaveBeenCalledWith('ask_model', expect.anything());
   });
 
+  it('submits an empty query when selected context is attached', async () => {
+    render(<App />);
+    await act(async () => {});
+
+    await showOverlay('selected snippet');
+
+    const textarea = getAskInput();
+
+    // Press Enter with an empty textarea: the selection is the whole message.
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+
+    await act(async () => {});
+
+    expect(invoke).toHaveBeenCalledWith(
+      'ask_model',
+      expect.objectContaining({
+        message: '',
+        quotedText: 'selected snippet',
+      }),
+    );
+  });
+
+  it('does not submit an empty query when the selected context is blank', async () => {
+    render(<App />);
+    await act(async () => {});
+
+    await showOverlay('   \n ');
+
+    const textarea = getAskInput();
+
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+
+    await act(async () => {});
+
+    expect(invoke).not.toHaveBeenCalledWith('ask_model', expect.anything());
+  });
+
   it('lets the user keep drafting while a response streams, without sending', async () => {
     enableChannelCapture();
     render(<App />);

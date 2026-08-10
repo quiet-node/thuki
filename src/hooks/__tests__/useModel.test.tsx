@@ -816,6 +816,41 @@ describe('useModel', () => {
       expect(result.current.messages).toHaveLength(0);
     });
 
+    it('allows ask() with empty text but a non-blank quotedText', async () => {
+      const { result } = renderHook(() => useModel(''));
+
+      await act(async () => {
+        await result.current.ask('', 'selected page text');
+      });
+
+      expect(result.current.messages).toHaveLength(2);
+      expect(result.current.messages[0]).toEqual(
+        expect.objectContaining({
+          role: 'user',
+          content: '',
+          quotedText: 'selected page text',
+        }),
+      );
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({
+          message: '',
+          quotedText: 'selected page text',
+        }),
+      );
+    });
+
+    it('returns early for empty text AND whitespace-only quotedText', async () => {
+      const { result } = renderHook(() => useModel(''));
+
+      await act(async () => {
+        await result.current.ask('', '   \n ');
+      });
+
+      expect(invoke).not.toHaveBeenCalled();
+      expect(result.current.messages).toHaveLength(0);
+    });
+
     it('includes imagePaths in message and invoke when text AND imagePaths are provided', async () => {
       const { result } = renderHook(() => useModel(''));
 
