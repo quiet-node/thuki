@@ -3284,10 +3284,6 @@ function App() {
     if (hasSearch) {
       const searchQuery = strippedMessage.trim();
       if (!searchQuery) return;
-      const searchContext = sanitizeContext(
-        selectedContext,
-        quote.maxContextLength,
-      );
       // Bubble shows the literal typed text (with `/search`); backend gets the
       // stripped query without the trigger prefix. Images use resolved paths only.
       const searchDisplay = trimmedQuery;
@@ -3301,7 +3297,7 @@ function App() {
         URL.revokeObjectURL(img.blobUrl);
       }
       setAttachedImages([]);
-      void askSearch(searchQuery, searchDisplay, searchContext, searchImages);
+      void askSearch(searchQuery, searchDisplay, context, searchImages);
       return;
     }
 
@@ -3321,11 +3317,17 @@ function App() {
 
     // Maintain sticky rewrite mode. A replaceable command (re)starts it; any
     // other command exits it; a plain follow-up leaves it intact so its
-    // refinement inherits the Replace button through `executeSubmit`. Search
-    // turns have already returned above, so `/search` needs no branch here.
+    // refinement inherits the Replace button through `executeSubmit`. A
+    // selection-only submit (no typed text, no command, no images) also exits
+    // it: that turn is a fresh question about the selection, not a refinement,
+    // so inheriting a stale `/rewrite` would let auto-replace overwrite the
+    // user's selection in the source app with a free-form answer. Search turns
+    // have already returned above, so `/search` needs no branch here.
     if (utilityTrigger && REPLACEABLE_COMMANDS.has(utilityTrigger)) {
       stickyReplaceCommandRef.current = utilityTrigger;
     } else if (utilityTrigger || hasScreen || hasThink || hasExtract) {
+      stickyReplaceCommandRef.current = null;
+    } else if (!strippedMessage && attachedImages.length === 0) {
       stickyReplaceCommandRef.current = null;
     }
 
