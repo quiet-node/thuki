@@ -14,11 +14,9 @@ import { invoke } from '@tauri-apps/api/core';
 
 import thukiLogo from '../../../src-tauri/icons/128x128.png';
 import pkg from '../../../package.json';
-import { Section, ConfirmDialog, TextField } from '../components';
+import { Section, ConfirmDialog } from '../components';
 import { DrawCheckIcon } from '../../components/DrawCheckIcon';
 import { InlineLink } from '../../components/InlineLink';
-import { isValidEmail } from '../../utils/email';
-import { subscribeErrorMessage } from '../../utils/subscribeError';
 import { Tooltip } from '../../components/Tooltip';
 import { useUpdater } from '../../hooks/useUpdater';
 import { formatRelative } from '../../utils/relativeTime';
@@ -342,8 +340,6 @@ export function AboutTab({ onSaved, onReload }: AboutTabProps) {
         </div>
       </Section>
 
-      <ShapeThukiCard />
-
       <Section heading="File">
         <div className={styles.aboutLinkRow}>
           <button
@@ -391,119 +387,6 @@ export function AboutTab({ onSaved, onReload }: AboutTabProps) {
         onCancel={() => setConfirmResetAll(false)}
       />
     </div>
-  );
-}
-
-/**
- * Permanent "Help shape Thuki" card: the same optional email ask shown once
- * during onboarding, kept reachable for users who skipped it or arrived before
- * the onboarding screen existed. Passive and opt-in: the email is sent to the
- * `subscribe_email` command only on an explicit click with a valid address, and
- * an already-subscribed address resolves as success, so it is safe to re-send.
- */
-function ShapeThukiCard() {
-  const [email, setEmail] = useState('');
-  const [status, setStatus] = useState<'idle' | 'sending' | 'sent'>('idle');
-  const [error, setError] = useState<string | null>(null);
-
-  const handleSubmit = async () => {
-    const trimmed = email.trim();
-    if (!isValidEmail(trimmed)) {
-      setError('Enter a valid email address.');
-      return;
-    }
-    setStatus('sending');
-    setError(null);
-    try {
-      await invoke('subscribe_email', { email: trimmed });
-      setStatus('sent');
-    } catch (err) {
-      // Return to the idle, editable state with a gentle, retryable notice
-      // (rate-limit-aware via the shared mapper).
-      setStatus('idle');
-      setError(subscribeErrorMessage(err));
-    }
-  };
-
-  if (status === 'sent') {
-    return (
-      <Section heading="Help shape Thuki">
-        <div className={styles.rowHelper} role="status">
-          Thanks! I'll be in touch!
-          <span
-            style={{
-              display: 'block',
-              marginTop: 4,
-              fontStyle: 'italic',
-              color: 'var(--accent)',
-            }}
-          >
-            &ndash; Logan
-          </span>
-        </div>
-      </Section>
-    );
-  }
-
-  return (
-    <Section heading="Help shape Thuki">
-      {/* First-person note in the founder's voice, mirroring the onboarding
-          roadmap screen. Italic so it reads as Logan speaking directly. It
-          drops that screen's "shape these upcoming features" phrasing since no
-          roadmap list is shown here. */}
-      <div
-        className={styles.rowHelper}
-        style={{ marginBottom: 10, fontStyle: 'italic' }}
-      >
-        Hey, I'm{' '}
-        <InlineLink
-          url="https://x.com/quiet_node"
-          ariaLabel="Open Logan's profile on X"
-          style={{ fontWeight: 600 }}
-        >
-          Logan
-        </InlineLink>
-        , the founder here. Thuki is early and I'm building it around how people
-        really use it. I'd love to learn how you will use it and hear your
-        ideas, so I can shape what's next to genuinely help you. Leave your
-        email and I'll reach out personally. Thanks!
-      </div>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        <div style={{ flex: 1 }}>
-          <TextField
-            value={email}
-            onChange={(next) => {
-              setEmail(next);
-              if (error) setError(null);
-            }}
-            placeholder="you@example.com"
-            ariaLabel="Email address"
-            errored={error !== null}
-          />
-        </div>
-        <button
-          type="button"
-          className={`${styles.button} ${styles.buttonPrimary}`}
-          disabled={status === 'sending'}
-          onClick={() => void handleSubmit()}
-        >
-          {status === 'sending' ? 'Sending…' : 'Share email'}
-        </button>
-      </div>
-      {error ? (
-        <div className={styles.rowError} role="alert" style={{ marginTop: 6 }}>
-          {error}
-        </div>
-      ) : null}
-      {/* Trust reassurance kept out of the personal note above so Logan's
-          voice reads clean, mirroring the onboarding screen's separate line. */}
-      <div
-        className={styles.rowHelper}
-        style={{ marginTop: 8, fontSize: 11, opacity: 0.7 }}
-      >
-        No spam, no tracking, never shared or sold. Unsubscribe anytime.
-      </div>
-    </Section>
   );
 }
 
