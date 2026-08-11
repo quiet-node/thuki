@@ -172,7 +172,8 @@ fn true_lang(row: &EvalRow) -> Option<&str> {
 /// The production two-stage decision collapsed to "would this turn search?",
 /// against the BRANCH classifier (today's real [`BuiltinPrePass`]).
 async fn branch_is_search(prepass: &BuiltinPrePass, message: &str, today: &str) -> bool {
-    match prefilter(message, today) {
+    // Eval turns are typed queries: `has_user_request` is always true.
+    match prefilter(message, today, true) {
         PreFilterVerdict::ForceNo => false,
         PreFilterVerdict::ForceWeb => true,
         PreFilterVerdict::Ambiguous => match prepass
@@ -190,7 +191,8 @@ async fn branch_is_search(prepass: &BuiltinPrePass, message: &str, today: &str) 
 
 /// Against BASELINE.
 async fn baseline_would_search(base_url: &str, message: &str, today: &str) -> bool {
-    match prefilter(message, today) {
+    // Eval turns are typed queries: `has_user_request` is always true.
+    match prefilter(message, today, true) {
         PreFilterVerdict::ForceNo => false,
         PreFilterVerdict::ForceWeb => true,
         PreFilterVerdict::Ambiguous => baseline_is_search(base_url, message, today).await,

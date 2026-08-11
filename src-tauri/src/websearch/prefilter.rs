@@ -27,6 +27,12 @@
 //! over skip signals, so "summarise the latest news" searches rather than being
 //! caught by the "summarise" transform rule.
 //!
+//! Force-search signals only speak for the user when the user wrote them. A turn
+//! carrying no typed request (an empty ask bar submitted with an auto-captured
+//! host-app selection) is scanned prose, not an expressed intent, so those
+//! signals resolve to `Ambiguous` there and a model decides whether the content
+//! needs fresh data. See `has_user_request` on [`prefilter`].
+//!
 //! The scan is bounded ([`PREFILTER_MAX_SCAN_CHARS`]) and tokenised in a single
 //! linear pass with no backtracking, so a pathologically large pasted message
 //! cannot turn the per-turn decision into a CPU denial-of-service.
@@ -314,8 +320,11 @@ const MAX_CLOCK_QUESTION_TOKENS: usize = 10;
 
 /// Resolves the deterministic verdict for `message`. `today` is the `YYYY-MM-DD`
 /// date string used to recognise current-or-future year tokens as a freshness
-/// signal. Pure and total: any input yields a verdict.
-pub fn prefilter(message: &str, today: &str) -> PreFilterVerdict {
+/// signal. `has_user_request` is `false` on a turn where the user typed nothing
+/// and the message is only the auto-captured host-app selection (issue #363):
+/// see the force-search branch below for what that changes. Pure and total: any
+/// input yields a verdict.
+pub fn prefilter(message: &str, today: &str, has_user_request: bool) -> PreFilterVerdict {
     // Bound the scan so tokenisation cost is a small constant regardless of a
     // hostile or accidentally huge pasted message.
     let bounded: String = message
@@ -345,9 +354,21 @@ pub fn prefilter(message: &str, today: &str) -> PreFilterVerdict {
         return PreFilterVerdict::ForceNo;
     }
 
-    // Force-search signals win over every skip rule.
+    // Force-search signals win over every skip rule, but only when the user
+    // actually wrote the text they appear in. On a no-request turn the scanned
+    // text is host-app prose the user merely highlighted, where a link, a year,
+    // or a word like "latest" is the author's wording, not the user's intent, so
+    // the deterministic shortcut is handed back to the classifier. Deliberately
+    // `Ambiguous` and not a fall-through: auto-search must stay reachable on
+    // these turns, so this never reaches the skip rules below. (A turn with
+    // neither a request nor a selection cannot arrive here: an empty message
+    // resolves at the `tokens.is_empty()` check above.)
     if has_force_web_signal(&bounded, &normalised, &tokens, today) {
-        return PreFilterVerdict::ForceWeb;
+        return if has_user_request {
+            PreFilterVerdict::ForceWeb
+        } else {
+            PreFilterVerdict::Ambiguous
+        };
     }
 
     if is_greeting_or_ack(&tokens) || is_pure_math(&bounded, &tokens) || has_transform_lead(&tokens)
@@ -567,7 +588,14 @@ mod tests {
     const TODAY: &str = "2026-07-07";
 
     fn verdict(message: &str) -> PreFilterVerdict {
-        prefilter(message, TODAY)
+        prefilter(message, TODAY, true)
+    }
+
+    /// Same turn text, but submitted with no typed request (the empty-ask-bar +
+    /// selection path). Paired with [`verdict`] so a no-request assertion is
+    /// always an A/B against the identical string.
+    fn verdict_no_request(message: &str) -> PreFilterVerdict {
+        prefilter(message, TODAY, false)
     }
 
     // ── the three live-smoke failures, pinned deterministically ───────────────
@@ -667,6 +695,59 @@ mod tests {
         );
     }
 
+    // ── no typed request (empty ask bar + host-app selection, issue #363) ─────
+    //
+    // The same text is asserted both ways: with a typed request the force-web
+    // shortcut still fires; with none it must reach the classifier instead.
+
+    #[test]
+    fn force_web_words_still_fire_with_a_typed_request() {
+        for m in [
+            "what is the latest release",
+            "see https://example.com/article",
+            "the roadmap for 2026",
+        ] {
+            assert_eq!(verdict(m), PreFilterVerdict::ForceWeb, "{m}");
+        }
+    }
+
+    #[test]
+    fn force_web_words_are_ambiguous_without_a_typed_request() {
+        // Word, URL, and year arms of `has_force_web_signal`, all handed to the
+        // classifier when the user typed nothing.
+        for m in [
+            "what is the latest release",
+            "see https://example.com/article",
+            "the roadmap for 2026",
+        ] {
+            assert_eq!(verdict_no_request(m), PreFilterVerdict::Ambiguous, "{m}");
+        }
+    }
+
+    #[test]
+    fn no_typed_request_never_hard_skips_a_force_web_turn() {
+        // The point of the no-request route is that a model still decides, so
+        // this may never collapse into a deterministic skip.
+        assert_ne!(
+            verdict_no_request("summarize the latest news on the merger"),
+            PreFilterVerdict::ForceNo
+        );
+        assert_eq!(
+            verdict_no_request("summarize the latest news on the merger"),
+            PreFilterVerdict::Ambiguous
+        );
+    }
+
+    #[test]
+    fn highlighted_selection_without_a_request_is_ambiguous() {
+        // The exact content `commands::build_user_content` composes when the ask
+        // bar is empty and a host-app selection is attached.
+        let msg =
+            "[Highlighted Text]\n\"The latest figures were published on www.example.com in 2026.\"";
+        assert_eq!(verdict(msg), PreFilterVerdict::ForceWeb);
+        assert_eq!(verdict_no_request(msg), PreFilterVerdict::Ambiguous);
+    }
+
     // ── relative-date-arithmetic signals ──────────────────────────────────────
     //
     // Live-smoke regression (2026-07-11): "how many days until christmas" fell
@@ -721,11 +802,11 @@ mod tests {
     fn year_signal_uses_today_not_a_hardcoded_year() {
         // With a 2020 "today", 2026 is future -> force; 2019 is past -> not.
         assert_eq!(
-            prefilter("outlook for 2026", "2020-01-01"),
+            prefilter("outlook for 2026", "2020-01-01", true),
             PreFilterVerdict::ForceWeb
         );
         assert_eq!(
-            prefilter("what happened in 2019", "2020-01-01"),
+            prefilter("what happened in 2019", "2020-01-01", true),
             PreFilterVerdict::Ambiguous
         );
     }
@@ -735,11 +816,11 @@ mod tests {
         // A non-date `today` cannot yield a year, so the year rule is inert, but
         // other signals still fire.
         assert_eq!(
-            prefilter("outlook for 2027", "not-a-date"),
+            prefilter("outlook for 2027", "not-a-date", true),
             PreFilterVerdict::Ambiguous
         );
         assert_eq!(
-            prefilter("tokyo weather", "not-a-date"),
+            prefilter("tokyo weather", "not-a-date", true),
             PreFilterVerdict::ForceWeb
         );
     }
@@ -961,14 +1042,14 @@ mod tests {
         // prefix is plain filler text -> falls through to the classifier.
         let mut msg = "a".repeat(PREFILTER_MAX_SCAN_CHARS);
         msg.push_str(" weather");
-        assert_eq!(prefilter(&msg, TODAY), PreFilterVerdict::Ambiguous);
+        assert_eq!(prefilter(&msg, TODAY, true), PreFilterVerdict::Ambiguous);
     }
 
     #[test]
     fn huge_input_is_handled_in_bounded_time() {
         // Sanity: a multi-megabyte message returns without scanning all of it.
         let msg = "latest ".to_string() + &"x".repeat(4_000_000);
-        assert_eq!(prefilter(&msg, TODAY), PreFilterVerdict::ForceWeb);
+        assert_eq!(prefilter(&msg, TODAY, true), PreFilterVerdict::ForceWeb);
     }
 
     // ── curated eval corpus (the measurement instrument) ──────────────────────
@@ -997,7 +1078,7 @@ mod tests {
     #[test]
     fn prefilter_never_contradicts_a_labelled_row() {
         for row in eval_rows() {
-            let v = prefilter(&row.message, TODAY);
+            let v = prefilter(&row.message, TODAY, true);
             // A should-search row may never be force-skipped; a should-not-search
             // row may never be force-searched. Label validity itself is checked in
             // `corpus_is_a_meaningful_size_and_balance`.
@@ -1048,7 +1129,7 @@ mod tests {
         let total = search.len();
         let forced = search
             .iter()
-            .filter(|r| prefilter(&r.message, TODAY) == PreFilterVerdict::ForceWeb)
+            .filter(|r| prefilter(&r.message, TODAY, true) == PreFilterVerdict::ForceWeb)
             .count();
         assert!(
             forced * 10 >= total * 6,
@@ -1074,7 +1155,7 @@ mod tests {
             .collect();
         assert!(!rows.is_empty(), "expected non-English rows in the corpus");
         for row in rows {
-            let v = prefilter(&row.message, TODAY);
+            let v = prefilter(&row.message, TODAY, true);
             let forbidden = if row.label == "search" {
                 PreFilterVerdict::ForceNo
             } else {

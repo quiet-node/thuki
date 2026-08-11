@@ -330,6 +330,8 @@ async fn cache_reuse_repro_delivers_birthdate_to_the_reuse_gate() {
         web_cache: &web_cache,
         local_zone: None,
         force_search: false,
+        // Eval turns are typed queries, never a bare host-app selection.
+        has_user_request: true,
         latest_images: None,
         timings: &timings,
     };

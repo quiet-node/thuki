@@ -165,6 +165,8 @@ async fn live_turn_with_lang(
         web_cache: &web_cache,
         local_zone: None,
         force_search: false,
+        // Eval turns are typed queries, never a bare host-app selection.
+        has_user_request: true,
         latest_images: None,
         timings: &timings,
     };

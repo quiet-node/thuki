@@ -1066,6 +1066,10 @@ async fn run_builtin_search(
     warm_state: &crate::warmup::BuiltinWarmState,
     cache_scope: u64,
     force_search: bool,
+    // False when the ask bar was submitted empty and `latest_user` carries only
+    // the host-app selection, so the pre-filter withholds its deterministic
+    // force-search shortcut and the classifier decides instead (issue #363).
+    has_user_request: bool,
 ) -> BuiltinSearchResult {
     // The engine is already warm (the caller holds an activity guard); this
     // re-ensure just reads back the live port for the pre-pass and writer.
@@ -1144,6 +1148,7 @@ async fn run_builtin_search(
         // of the pre-pass decision, with cache read-bypass, write-through
         // semantics (see `SearchDeps::force_search`).
         force_search,
+        has_user_request,
         // Vision turns only: classifier + writer keep the photo; engines stay text.
         latest_images,
         timings: &timing_bag,
@@ -2414,6 +2419,13 @@ pub async fn ask_model(
     // high-precision gate anyway.
     let clock_probe = message.clone();
 
+    // Whether the user typed anything this turn. An empty ask bar submitted with
+    // an auto-captured selection (issue #363) sends only the highlighted text,
+    // so the built-in search pre-filter must not read that prose as the user's
+    // own freshness intent (see `websearch::prefilter::prefilter`). Captured
+    // before `message` moves into the wrapper below, which would hide it.
+    let has_user_request = !message.trim().is_empty();
+
     // Build user message content.  When quoted text is present, label it
     // explicitly so the model knows the highlighted text is the primary
     // subject and any attached images provide surrounding context.
@@ -2672,6 +2684,7 @@ pub async fn ask_model(
                                 &warm_state,
                                 epoch_at_start,
                                 force,
+                                has_user_request,
                             )
                             .await
                         }
