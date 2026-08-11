@@ -1984,6 +1984,47 @@ describe('App', () => {
     expect(invoke).not.toHaveBeenCalledWith('ask_model', expect.anything());
   });
 
+  it('submits an empty query when selected context is attached', async () => {
+    render(<App />);
+    await act(async () => {});
+
+    await showOverlay('selected snippet');
+
+    const textarea = getAskInput();
+
+    // Press Enter with an empty textarea: the selection is the whole message.
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+
+    await act(async () => {});
+
+    expect(invoke).toHaveBeenCalledWith(
+      'ask_model',
+      expect.objectContaining({
+        message: '',
+        quotedText: 'selected snippet',
+      }),
+    );
+  });
+
+  it('does not submit an empty query when the selected context is blank', async () => {
+    render(<App />);
+    await act(async () => {});
+
+    await showOverlay('   \n ');
+
+    const textarea = getAskInput();
+
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+
+    await act(async () => {});
+
+    expect(invoke).not.toHaveBeenCalledWith('ask_model', expect.anything());
+  });
+
   it('lets the user keep drafting while a response streams, without sending', async () => {
     enableChannelCapture();
     render(<App />);
@@ -2436,6 +2477,102 @@ describe('App', () => {
 
     // Auto-replace is off, so neither completed turn may write back on its
     // own: the source app is only touched when the user clicks Replace.
+    expect(invoke).not.toHaveBeenCalledWith(
+      'replace_selection',
+      expect.anything(),
+    );
+  });
+
+  it('drops sticky rewrite mode on a selection-only empty submit', async () => {
+    // A deferred /rewrite whose image fails restores both the query and the
+    // selection, leaving sticky rewrite mode armed with a live selection.
+    // Submitting the bare selection after that is a fresh question, so it must
+    // not inherit the rewrite and auto-replace over the user's selection.
+    let rejectSave: ((err: Error) => void) | null = null;
+    const savePromise = new Promise<string>((_, reject) => {
+      rejectSave = reject;
+    });
+    // The app only attaches its handler once it awaits the pending save, so
+    // this no-op keeps the deliberate rejection from surfacing as unhandled.
+    void savePromise.catch(() => {});
+    enableChannelCaptureWithResponses({ save_image_command: savePromise });
+
+    render(
+      <ConfigProviderForTest
+        value={{
+          ...DEFAULT_CONFIG,
+          behavior: {
+            autoReplace: true,
+            autoClose: false,
+            autoSearch: true,
+            searchNoticeAcknowledged: false,
+            autoSaveConversations: true,
+            historyRetentionDays: -1,
+            autoSaveNoticeAcknowledged: false,
+          },
+        }}
+      >
+        <App />
+      </ConfigProviderForTest>,
+    );
+    await act(async () => {});
+    await showOverlay('draft email text');
+
+    const textarea = getAskInput();
+    const file = new File(['data'], 'img.png', { type: 'image/png' });
+    await act(async () => {
+      fireEvent.paste(textarea, {
+        clipboardData: {
+          getData: () => '',
+          items: [{ type: 'image/png', getAsFile: () => file }],
+        },
+      });
+    });
+    await vi.waitFor(() => {
+      expect(
+        screen.getByRole('list', { name: /attached images/i }),
+      ).toBeInTheDocument();
+    });
+    await act(async () => {
+      await vi.waitFor(() => {
+        expect(rejectSave).not.toBeNull();
+      });
+    });
+
+    // Arms sticky rewrite mode, then defers on the still-processing image.
+    act(() => {
+      setAskValue('/rewrite ');
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+
+    // The image fails: query and selection come back, sticky mode stays armed.
+    await act(async () => {
+      rejectSave!(new Error('disk full'));
+    });
+    await waitFor(() => expect(getAskInput().textContent).toBe('/rewrite'));
+
+    // Clear the ask bar: the restored selection alone carries this submit.
+    act(() => {
+      setAskValue('');
+    });
+    act(() => {
+      fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    });
+    await act(async () => {});
+    act(() => {
+      getLastChannel()?.simulateMessage({
+        type: 'Token',
+        data: 'Here is what the selection says',
+      });
+      getLastChannel()?.simulateMessage({ type: 'Done' });
+    });
+    await act(async () => {});
+
+    expect(
+      screen.queryAllByLabelText('Replace selection in source app'),
+    ).toHaveLength(0);
     expect(invoke).not.toHaveBeenCalledWith(
       'replace_selection',
       expect.anything(),
@@ -9069,6 +9206,34 @@ describe('App', () => {
       expect(
         container.querySelectorAll('p[class*="text-white/60"]'),
       ).toHaveLength(1);
+    });
+
+    it('sends the sanitized selection as the /search quoted text', async () => {
+      enableChannelCapture();
+      render(<App />);
+      await act(async () => {});
+      // Longer than the 4096-char cap, so the assertion below fails if the
+      // /search branch ever forwards the raw selection instead of the
+      // sanitized one.
+      const longSelection = 'selection '.repeat(500);
+      await showOverlay(longSelection);
+
+      const textarea = getAskInput();
+      act(() => {
+        setAskValue('/search explain this selection');
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      });
+
+      expect(invoke).toHaveBeenCalledWith(
+        'ask_model',
+        expect.objectContaining({
+          message: 'explain this selection',
+          quotedText: longSelection.slice(0, 4096),
+          forceSearch: true,
+        }),
+      );
     });
 
     it('completes force-search as one-shot then routes a plain follow-up to ask_model without forceSearch', async () => {

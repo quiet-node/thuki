@@ -48,7 +48,8 @@ async fn would_search(
     message: &str,
     today: &str,
 ) -> (bool, &'static str) {
-    match prefilter(message, today) {
+    // Eval turns are typed queries: `has_user_request` is always true.
+    match prefilter(message, today, true) {
         PreFilterVerdict::ForceNo => (false, "prefilter"),
         PreFilterVerdict::ForceWeb => (true, "prefilter"),
         PreFilterVerdict::Ambiguous => {

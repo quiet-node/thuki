@@ -281,6 +281,14 @@ pub struct SearchDeps<'a> {
     /// `local_zone` does: it is a per-turn caller input the call sites should not
     /// each have to thread.
     pub force_search: bool,
+    /// Whether the user typed a request this turn. `false` when the ask bar was
+    /// submitted empty and `latest_user` is only the auto-captured host-app
+    /// selection (issue #363). Passed to the pre-filter, where it withholds the
+    /// deterministic force-search shortcut from text the user did not write (see
+    /// [`crate::websearch::prefilter::prefilter`]); the turn still reaches the
+    /// classifier, so auto-search stays available on it. Rides in `deps` for the
+    /// same reason `force_search` does.
+    pub has_user_request: bool,
     /// Base64 image payloads for the latest user turn when the active model is
     /// vision-capable. Passed to the classifier and re-attached on the writer
     /// so grounded answers keep the photo. `None` or empty keeps the text-only
@@ -397,7 +405,7 @@ async fn run_search_inner(
     }
 
     // Stage one: deterministic pre-filter, no model call.
-    let verdict = prefilter(latest_user, today);
+    let verdict = prefilter(latest_user, today, deps.has_user_request);
     eprintln!("[search] prefilter={verdict:?}");
     // The `/search` command forces a search even when the pre-filter would
     // force-skip (e.g. a message that reads like a greeting): the user asked
@@ -3048,6 +3056,7 @@ mod tests {
             // through, so tests here run without one (date-only event lines).
             local_zone: None,
             force_search: false,
+            has_user_request: true,
             latest_images: None,
             timings: Box::leak(Box::new(TimingBag::new())),
         }
@@ -3089,6 +3098,7 @@ mod tests {
             ))),
             local_zone: None,
             force_search: false,
+            has_user_request: true,
             latest_images: None,
             timings: Box::leak(Box::new(TimingBag::new())),
         }
@@ -3126,6 +3136,7 @@ mod tests {
             web_cache,
             local_zone: None,
             force_search: false,
+            has_user_request: true,
             latest_images: None,
             timings: Box::leak(Box::new(TimingBag::new())),
         }
@@ -3169,6 +3180,7 @@ mod tests {
             ))),
             local_zone: None,
             force_search: false,
+            has_user_request: true,
             latest_images: None,
             timings: Box::leak(Box::new(TimingBag::new())),
         }
@@ -3581,6 +3593,75 @@ mod tests {
         let (phases, status) = recorder();
         let outcome = run_search(
             &deps(&prepass, &transport, &Bm25Scorer),
+            "sys",
+            &[],
+            "the latest on the treaty",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::Answer { .. }));
+        assert_eq!(
+            *phases.lock().unwrap(),
+            vec![
+                SearchPhase::Deciding,
+                SearchPhase::Searching,
+                SearchPhase::Reading
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn no_user_request_hands_a_force_web_turn_to_the_classifier() {
+        // Same "latest ..." text as the test above, but submitted with an empty
+        // ask bar (issue #363): the freshness word is the highlighted author's,
+        // not the user's, so the classifier decides and its `no` now stands.
+        // The Deciding phase proves this is the classifier route, not a skip.
+        let prepass = FakePrePass::returning(Ok(PrePassDecision {
+            decision: SearchDecision::No,
+            route: SearchRoute::Web,
+            standalone_question: "when was the treaty of versailles signed in paris".into(),
+            queries: vec![],
+            explicit_search: false,
+            lang: "en".into(),
+        }));
+        let transport = transport_with_serp_and_page();
+        let (phases, status) = recorder();
+        let mut deps = deps(&prepass, &transport, &Bm25Scorer);
+        deps.has_user_request = false;
+        let outcome = run_search(
+            &deps,
+            "sys",
+            &[],
+            "the latest on the treaty",
+            16384,
+            "2026-07-05",
+            "en-US",
+            &CancellationToken::new(),
+            &status,
+        )
+        .await;
+        assert!(matches!(outcome, SearchOutcome::NoSearch));
+        assert_eq!(*phases.lock().unwrap(), vec![SearchPhase::Deciding]);
+    }
+
+    #[tokio::test]
+    async fn no_user_request_still_searches_when_the_classifier_says_web() {
+        // Auto-search stays reachable on a no-request turn: withholding the
+        // deterministic shortcut moves the decision to the model, it does not
+        // close the web off.
+        let prepass = FakePrePass::returning(Ok(web_decision(vec![
+            "when was the treaty of versailles signed in paris",
+        ])));
+        let transport = transport_with_serp_and_page();
+        let (phases, status) = recorder();
+        let mut deps = deps(&prepass, &transport, &Bm25Scorer);
+        deps.has_user_request = false;
+        let outcome = run_search(
+            &deps,
             "sys",
             &[],
             "the latest on the treaty",

@@ -433,7 +433,11 @@ export function useModel(
       forceSearch?: boolean,
       slashCommand?: string,
     ) => {
-      if (!displayContent.trim() && (!imagePaths || imagePaths.length === 0)) {
+      if (
+        !displayContent.trim() &&
+        (!imagePaths || imagePaths.length === 0) &&
+        !quotedText?.trim()
+      ) {
         return;
       }
 

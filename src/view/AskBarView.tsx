@@ -344,7 +344,9 @@ export function AskBarView({
     downloadStatus?.kind === 'verifying' ||
     downloadStatus?.kind === 'paused';
   const canSubmit =
-    (query.trim().length > 0 || attachedImages.length > 0) &&
+    (query.trim().length > 0 ||
+      attachedImages.length > 0 ||
+      Boolean(selectedText?.trim())) &&
     !isBusy &&
     !(isDownloadHolding && !hasUsableModel);
   const isAtMaxImages = attachedImages.length >= maxImages;

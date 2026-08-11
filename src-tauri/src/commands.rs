@@ -1066,6 +1066,10 @@ async fn run_builtin_search(
     warm_state: &crate::warmup::BuiltinWarmState,
     cache_scope: u64,
     force_search: bool,
+    // False when the ask bar was submitted empty and `latest_user` carries only
+    // the host-app selection, so the pre-filter withholds its deterministic
+    // force-search shortcut and the classifier decides instead (issue #363).
+    has_user_request: bool,
 ) -> BuiltinSearchResult {
     // The engine is already warm (the caller holds an activity guard); this
     // re-ensure just reads back the live port for the pre-pass and writer.
@@ -1144,6 +1148,7 @@ async fn run_builtin_search(
         // of the pre-pass decision, with cache read-bypass, write-through
         // semantics (see `SearchDeps::force_search`).
         force_search,
+        has_user_request,
         // Vision turns only: classifier + writer keep the photo; engines stay text.
         latest_images,
         timings: &timing_bag,
@@ -2266,6 +2271,28 @@ pub(crate) fn record_conversation_start_if_first_turn(
     }
 }
 
+/// Builds the user message content for a turn, labelling highlighted host-app
+/// text explicitly so the model treats it as the primary subject and any
+/// attached images as surrounding context.
+///
+/// A turn may carry a selection with no typed request (issue #363). In that
+/// case the highlighted block stands alone: no `[Request]` header is emitted,
+/// leaving the system prompt as the sole authority on what to do with the
+/// content. Pulled out of [`ask_model`] so the branch is covered by tests
+/// instead of the coverage-off Tauri command body.
+fn build_user_content(message: String, quoted_text: Option<&str>) -> String {
+    match quoted_text {
+        Some(qt) if !qt.trim().is_empty() => {
+            if message.trim().is_empty() {
+                format!("[Highlighted Text]\n\"{}\"", qt)
+            } else {
+                format!("[Highlighted Text]\n\"{}\"\n\n[Request]\n{}", qt, message)
+            }
+        }
+        _ => message,
+    }
+}
+
 /// Streams a chat response from the local Ollama backend. Appends the user
 /// message and assistant response to conversation history after completion
 /// or cancellation (retaining context for follow-up requests). Uses an epoch
@@ -2392,15 +2419,17 @@ pub async fn ask_model(
     // high-precision gate anyway.
     let clock_probe = message.clone();
 
+    // Whether the user typed anything this turn. An empty ask bar submitted with
+    // an auto-captured selection (issue #363) sends only the highlighted text,
+    // so the built-in search pre-filter must not read that prose as the user's
+    // own freshness intent (see `websearch::prefilter::prefilter`). Captured
+    // before `message` moves into the wrapper below, which would hide it.
+    let has_user_request = !message.trim().is_empty();
+
     // Build user message content.  When quoted text is present, label it
     // explicitly so the model knows the highlighted text is the primary
     // subject and any attached images provide surrounding context.
-    let content = match quoted_text {
-        Some(ref qt) if !qt.trim().is_empty() => {
-            format!("[Highlighted Text]\n\"{}\"\n\n[Request]\n{}", qt, message)
-        }
-        _ => message,
-    };
+    let content = build_user_content(message, quoted_text.as_deref());
 
     // Emit UserMessage before any image base64 work, so the trace
     // captures the user's intent even if encoding fails. Image paths
@@ -2655,6 +2684,7 @@ pub async fn ask_model(
                                 &warm_state,
                                 epoch_at_start,
                                 force,
+                                has_user_request,
                             )
                             .await
                         }
@@ -2942,6 +2972,39 @@ mod tests {
     /// `format_datetime_context` test formats.
     fn fixed_utc() -> time::OffsetDateTime {
         time::macros::datetime!(2026-07-10 01:15:30 UTC)
+    }
+
+    // ── user message content ──────────────────────────────────────────────
+
+    #[test]
+    fn build_user_content_wraps_quote_and_request() {
+        assert_eq!(
+            build_user_content("summarize this".to_string(), Some("some page text")),
+            "[Highlighted Text]\n\"some page text\"\n\n[Request]\nsummarize this"
+        );
+    }
+
+    #[test]
+    fn build_user_content_omits_request_header_for_empty_message() {
+        assert_eq!(
+            build_user_content(String::new(), Some("some page text")),
+            "[Highlighted Text]\n\"some page text\""
+        );
+        assert_eq!(
+            build_user_content("   \n".to_string(), Some("some page text")),
+            "[Highlighted Text]\n\"some page text\""
+        );
+    }
+
+    #[test]
+    fn build_user_content_passes_message_through_without_quote() {
+        assert_eq!(
+            build_user_content("plain turn".to_string(), None),
+            "plain turn"
+        );
+        // Blank quote is treated as absent; an images-only turn keeps its
+        // empty message untouched.
+        assert_eq!(build_user_content(String::new(), Some("  \n ")), "");
     }
 
     #[test]

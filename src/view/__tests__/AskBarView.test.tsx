@@ -427,6 +427,58 @@ describe('AskBarView', () => {
     ).toBeInTheDocument();
   });
 
+  it('disables the send button with an empty query and no selected text', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={false}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+  });
+
+  it('enables the send button with an empty query when selected text is attached', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={false}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        selectedText="some highlighted text"
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Send message' }),
+    ).not.toBeDisabled();
+  });
+
+  it('keeps the send button disabled when the selected text is blank', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={false}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+        selectedText="   "
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+  });
+
   it('renders a model picker trigger in ask-bar mode when models are available', () => {
     render(
       <AskBarView

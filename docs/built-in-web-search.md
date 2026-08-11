@@ -279,6 +279,7 @@ Search uses a **two-stage decision** before spending network or a full answer ca
    - word list (`latest`, `weather`, `price`, …) or phrase list (`who won`, `right now`, `search for`, …) → **ForceWeb**
    - current/future year, URL, relative-date math (“how many days until…”) → **ForceWeb**
    - force-search signals beat skip signals (e.g. “summarise the latest news” still ForceWeb)
+   - force-search signals apply only to text the user typed: on a turn submitted with an empty ask bar and an auto-captured selection, they yield **Ambiguous** so the classifier judges the highlighted prose instead
 4. If nothing matches with certainty → **Ambiguous** (hand to prepass).
 
 **Example.**  
