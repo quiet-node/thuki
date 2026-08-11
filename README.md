@@ -1,5 +1,5 @@
 <h1 align="center">
-  Thuki - WIP
+  Thuki
 </h1>
 
 <p align="center">
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-beta-yellow.svg" alt="Beta" />
+  <img src="https://img.shields.io/badge/status-maintenance-blue.svg" alt="Maintenance" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" /></a>
   <a href="https://www.thuki.app/" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/thuki.app-000000?style=flat" alt="thuki.app" /></a>
   <a href="https://github.com/quiet-node/thuki/actions/workflows/pr-pipeline.yml"><img src="https://github.com/quiet-node/thuki/actions/workflows/pr-pipeline.yml/badge.svg" alt="CI" /></a>
@@ -35,6 +35,18 @@
 ---
 
 Thuki (thư kí, Vietnamese for secretary) is a lightweight macOS overlay powered by local AI models running entirely on your own machine, built for quick, uninterrupted asks without ever leaving what you're doing.
+
+## Project status
+
+Thuki is in maintenance mode. The app is stable, free, and fully open source, and it keeps doing everything described below.
+
+My focus has moved to other early-stage products, so new feature work has stopped. What continues:
+
+- Reported bugs, crashes, and security issues get triaged and fixed. [Open an issue](https://github.com/quiet-node/thuki/issues).
+- Dependency, engine, and macOS compatibility updates keep landing.
+- Pull requests are welcome and reviewed.
+
+If Thuki is part of your workflow it will keep working, and the Apache 2.0 license means you are free to fork it and take it further.
 
 ## Install on macOS
 
@@ -88,7 +100,6 @@ A bundled llama.cpp `llama-server` that Thuki spawns, supervises, and shuts down
 Thuki can also run inference through an external provider instead of the built-in engine.
 
 - **Ollama.** Prefer your own [Ollama](https://ollama.com) install? Switch to it anytime from Settings.
-- **Your own OpenAI-compatible server (coming soon).** Support for pointing Thuki at any OpenAI-compatible endpoint you run yourself (a local or self-hosted server) is on the [roadmap](#roadmap).
 
 See [docs/models-and-providers.md](docs/models-and-providers.md) for the full model library and provider guide.
 
@@ -111,14 +122,6 @@ See [docs/configurations.md](docs/configurations.md) for the full schema, [docs/
 Contributions are welcome! Read [CONTRIBUTING.md](CONTRIBUTING.md) to get started, and follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 Community-maintained Windows ports: [ThukiWin](https://github.com/ayzekhdawy/thukiwin) and [Mate](https://github.com/M31i55a/windowsMate-Thuki).
-
-## Roadmap
-
-MCP tool integrations (Gmail, Slack, Calendar), voice input, meeting notes, task automation, and bring-your-own OpenAI-compatible server. Have an idea? [Open an issue](https://github.com/quiet-node/thuki/issues).
-
-## Founder note
-
-Hey, Logan here. I'm building Thuki around how people actually use it, so if you have feedback, an idea, or just want to say hi, [reach out on X](https://x.com/quiet_node). Or [leave your email](https://thuki.app/subscribe) and I'll reach out personally. I read everything.
 
 ## License
 
