@@ -24,7 +24,7 @@ jobs:
         run: rustup toolchain install nightly-2026-03-30 --component llvm-tools --no-self-update
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf  # v2.85.2
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe  # v2.87.27
         with:
           tool: cargo-llvm-cov
 
